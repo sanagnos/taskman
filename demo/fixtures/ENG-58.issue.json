@@ -1,0 +1,7 @@
+{
+  "summary": "Export orders to CSV",
+  "status": "To Do", "status_category": "new",
+  "issue_type": "Story", "priority": "Low", "assignee": "",
+  "description": "Finance wants a CSV export of orders for a date range, with the same columns as the import.",
+  "comments": []
+}

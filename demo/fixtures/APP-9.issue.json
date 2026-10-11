@@ -1,0 +1,7 @@
+{
+  "summary": "Dark mode colour tokens",
+  "status": "Todo", "status_category": "new",
+  "issue_type": "design", "priority": "", "assignee": "Mia Chen",
+  "description": "Add dark variants for every colour token and switch on the system setting.",
+  "comments": []
+}

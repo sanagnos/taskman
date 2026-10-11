@@ -1,0 +1,11 @@
+{
+  "number": 412, "title": "Validate CSV rows before a bulk import",
+  "head": "feat/ENG-52-validate-import-rows", "review_decision": "CHANGES_REQUESTED", "mergeable": "MERGEABLE",
+  "checks": [
+    { "name": "ci / unit", "state": "pass" }, { "name": "ci / lint", "state": "pass" },
+    { "name": "ci / types", "state": "pass" }, { "name": "ci / e2e", "state": "fail", "ago": "4m" },
+    { "name": "deploy / preview", "state": "pending" }
+  ],
+  "reviews": [ { "id": "r1", "author": "ana-costa", "state": "CHANGES_REQUESTED", "ago": "30m" } ],
+  "comments": [ { "id": "p1", "author": "ana-costa", "ago": "30m", "body": "Looks good overall. The e2e run fails on the empty-file case: we return 500 instead of a 400 with a message." } ]
+}

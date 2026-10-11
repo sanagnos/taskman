@@ -45,6 +45,22 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146097 + doe - 719468
 }
 
+/// Unix seconds → `YYYY-MM-DDTHH:MM:SSZ`, the format `parse_ts` reads.
+pub fn iso_from_unix(ts: i64) -> String {
+    let (days, secs) = (ts.div_euclid(86400), ts.rem_euclid(86400));
+    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + (m <= 2) as i64;
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", secs / 3600, secs % 3600 / 60, secs % 60)
+}
+
 /// "now", "5m", "3h", "2d", "6w".
 pub fn ago(ts: i64) -> String {
     let s = (now() - ts).max(0);
@@ -189,5 +205,8 @@ mod tests {
         assert_eq!(parse_ts("2024-03-01T13:00:00.123+0100"), Some(1709294400));
         assert_eq!(parse_ts("2024-03-01T07:00:00-05:00"), Some(1709294400));
         assert_eq!(parse_ts("garbage"), None);
+        for ts in [0, 1709294400, 951782400, 4102444799] {
+            assert_eq!(parse_ts(&iso_from_unix(ts)), Some(ts));
+        }
     }
 }

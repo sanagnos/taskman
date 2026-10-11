@@ -196,6 +196,9 @@ pub fn is_note(e: &str) -> bool {
 /// Checks `folder` without the network: its remotes' hosts, then `gh auth token` for them, which
 /// reads gh's own login.
 pub fn probe(folder: &Path) -> Gh {
+    if crate::demo::dir().is_some() {
+        return crate::demo::probe(folder);
+    }
     let Ok(out) = git(folder, &["remote", "-v"]) else { return Gh::NotGit };
     if !out.status.success() {
         return Gh::NotGit;
@@ -493,6 +496,9 @@ pub fn fetch(
     key: &str,
     closes: Option<&Closes>,
 ) -> Result<Lookup, String> {
+    if let Some(dir) = crate::demo::dir() {
+        return crate::demo::pr(&dir, repo, key);
+    }
     // A failed query only means falling back to the search: the calls after it say what's wrong.
     if let Some(c) = closes
         && let Ok(linked) = closing(repo, c)

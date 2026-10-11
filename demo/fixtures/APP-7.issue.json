@@ -1,0 +1,7 @@
+{
+  "summary": "Offline mode for the cart",
+  "status": "In Progress", "status_category": "indeterminate",
+  "issue_type": "feature, mobile", "priority": "Urgent", "assignee": "Sam Rivera",
+  "description": "Keep the cart usable without a connection: queue changes locally and sync when back online.\n\n• Show an offline banner\n• Queue add / remove / quantity changes\n• Resolve conflicts with the server's cart on reconnect",
+  "comments": [ { "id": "l1", "author": "Mia Chen", "ago": "25m", "body": "Design for the offline banner is in Figma now." } ]
+}

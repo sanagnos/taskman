@@ -1,0 +1,5 @@
+{
+  "number": 88, "title": "Offline cart: queue changes and sync on reconnect", "draft": true,
+  "head": "sam/app-7-offline-cart", "review_decision": "REVIEW_REQUIRED",
+  "checks": [ { "name": "build / ios", "state": "pending" }, { "name": "build / android", "state": "pass" }, { "name": "test", "state": "pass" } ]
+}

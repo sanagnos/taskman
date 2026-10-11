@@ -80,6 +80,8 @@ pub enum Client {
     Local(PathBuf),
     /// A GitHub repository's issues, through gh.
     Github(GithubConfig),
+    /// Demo mode: issues from fixture files in this folder.
+    Demo(PathBuf),
 }
 
 impl Client {
@@ -90,6 +92,12 @@ impl Client {
         repo: &Path,
         account: Option<(&Account, &str)>,
     ) -> Option<Client> {
+        // A Local files board is real even in demo mode; the other trackers come from fixtures.
+        if tracker.provider != Provider::Local
+            && let Some(dir) = crate::demo::dir()
+        {
+            return Some(Client::Demo(dir));
+        }
         match (tracker.provider, account) {
             (Provider::Local, _) => tracker.board(repo).map(Client::Local),
             (Provider::Github, _) => GithubConfig::new(&tracker.site, repo).map(Client::Github),
@@ -107,7 +115,7 @@ impl Client {
     /// as the TUI, reading the token now; None for a project without a tracker.
     pub fn for_project(config: &Config, project: &Project) -> Result<Option<Client>, String> {
         let Some(t) = &project.tracker else { return Ok(None) };
-        if !t.provider.needs_account() {
+        if !t.provider.needs_account() || crate::demo::dir().is_some() {
             return Ok(Client::new(t, &project.repo, None));
         }
         let Some(i) = config.account_for(t) else {
@@ -132,6 +140,7 @@ impl Client {
             Client::Linear(c) => linear::fetch(c, key, text),
             Client::Local(board) => local::fetch(board, key, text).map(|(i, _)| i),
             Client::Github(c) => c.fetch(key, text),
+            Client::Demo(dir) => crate::demo::issue(dir, key),
         }
     }
 
@@ -139,7 +148,7 @@ impl Client {
     pub fn board(&self) -> Option<&Path> {
         match self {
             Client::Local(board) => Some(board),
-            Client::Jira(_) | Client::Linear(_) | Client::Github(_) => None,
+            Client::Jira(_) | Client::Linear(_) | Client::Github(_) | Client::Demo(_) => None,
         }
     }
 
@@ -154,7 +163,7 @@ impl Client {
     pub fn project_exists(&self, prefix: &str) -> Result<bool, String> {
         match self {
             Client::Jira(c) => c.project_exists(prefix),
-            Client::Linear(_) | Client::Local(_) | Client::Github(_) => Ok(true),
+            Client::Linear(_) | Client::Local(_) | Client::Github(_) | Client::Demo(_) => Ok(true),
         }
     }
 }
@@ -223,6 +232,7 @@ impl Client {
             Client::Linear(c) => c.open_issues(prefix)?,
             Client::Local(board) => local::open_issues(board),
             Client::Github(c) => c.open_issues(prefix)?,
+            Client::Demo(_) => Vec::new(),
         };
         // A key names a worktree and a branch: one the tracker wrote some other way is left out.
         issues.retain(|l| well_formed(&l.key));
@@ -355,6 +365,10 @@ impl Clients {
     pub fn access(&self, config: &Config, project: Option<&Project>) -> Access {
         let Some(p) = project else { return Access::NoTracker };
         let Some(tracker) = &p.tracker else { return Access::NoTracker };
+        // Demo mode needs no account: Jira and Linear issues come from fixtures.
+        if tracker.provider != Provider::Local && crate::demo::dir().is_some() {
+            return Client::new(tracker, &p.repo, None).map_or(Access::NoTracker, Access::Client);
+        }
         if !tracker.provider.needs_account() {
             return Client::new(tracker, &p.repo, None).map_or(Access::NoTracker, Access::Client);
         }

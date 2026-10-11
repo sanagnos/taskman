@@ -1,0 +1,11 @@
+{
+  "summary": "Validate rows before a bulk import",
+  "status": "In Progress", "status_category": "indeterminate",
+  "issue_type": "Story", "priority": "High", "assignee": "Sam Rivera",
+  "description": "Bulk imports accept a CSV of orders and write them in one go. Today a bad row fails the whole import halfway through.\n\nAcceptance criteria\n• Every row is validated before anything is written\n• The response lists each invalid row with its line number and reason\n• Valid files import exactly as before",
+  "comments": [
+    { "id": "c3", "author": "Ana Costa", "ago": "6m", "body": "Can we also cover empty files? Support saw a 500 on an empty upload this morning." },
+    { "id": "c2", "author": "Sam Rivera", "ago": "2h", "body": "Plan: validate in a first pass, collect errors, then write. PR coming." },
+    { "id": "c1", "author": "Lee Park", "ago": "1d", "body": "Priority bumped: two customers hit this during month-end." }
+  ]
+}

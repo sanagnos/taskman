@@ -1,0 +1,7 @@
+{
+  "summary": "Retry failed payment webhooks",
+  "status": "In Review", "status_category": "indeterminate",
+  "issue_type": "Bug", "priority": "Medium", "assignee": "Sam Rivera",
+  "description": "Payment provider webhooks that fail with a 5xx are dropped. Retry them with backoff, up to 5 times, and alert after the last failure.",
+  "comments": [ { "id": "c1", "author": "Lee Park", "ago": "3h", "body": "Approved on my side once CI is green." } ]
+}

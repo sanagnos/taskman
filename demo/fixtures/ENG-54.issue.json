@@ -1,0 +1,7 @@
+{
+  "summary": "Page on-call when a webhook keeps failing",
+  "status": "In Progress", "status_category": "indeterminate",
+  "issue_type": "Story", "priority": "High", "assignee": "Sam Rivera",
+  "description": "Once ENG-53 gives up on a webhook after 5 attempts, page the payments on-call instead of only logging it. Builds on ENG-53's retry loop, so it branches from it.",
+  "comments": [ { "id": "c1", "author": "Lee Park", "ago": "50m", "body": "Stack it on ENG-53 so we can review them separately." } ]
+}

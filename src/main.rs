@@ -5,6 +5,7 @@ mod add;
 mod app;
 mod cli;
 mod close;
+mod demo;
 mod github;
 mod github_issues;
 mod hook;
