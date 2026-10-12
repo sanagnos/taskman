@@ -23,7 +23,7 @@ fn tracker_fields() -> Vec<Field> {
         .collect();
     vec![
         Field::choice("Tracker", trackers, "None", ""),
-        Field::text("Site", "", "Jira: you.atlassian.net · Linear: workspace"),
+        Field::text("Site", "", ""),
         Field::text(
             "Tickets folder",
             local::FOLDER,
@@ -56,6 +56,14 @@ pub(super) fn show_project_rows(form: &mut Form, git: bool) {
                 .map_or(
                     "none: agents only · ←/→ to connect a tracker (Jira, Linear, Local files, GitHub Issues) for tickets",
                     Provider::hint,
+                )
+                .into();
+        }
+        if f.label == "Site" {
+            f.hint = provider
+                .map_or(
+                    "Jira: your-site.atlassian.net · Linear: the workspace",
+                    Provider::site_hint,
                 )
                 .into();
         }
@@ -413,10 +421,12 @@ impl App {
                     Some(p) => AfterAccount::Update(p, Box::new(project)),
                     None => AfterAccount::Add(Box::new(project)),
                 };
-                let mut form = self.new_account_form(t.provider, t.site, Some(then));
+                let site = t.provider.site_for_input(&t.site);
+                let mut form = self.new_account_form(t.provider, site, Some(then));
                 form.note = Some(format!(
-                    "Add the {} account this project should use.",
-                    t.provider.label()
+                    "Add the {} account this project should use.\n{}",
+                    t.provider.label(),
+                    form.note.take().unwrap_or_default()
                 ));
                 self.settings_show(SettingsItem::NewAccount, form, true);
             }

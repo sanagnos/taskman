@@ -4,6 +4,9 @@ What changed in each release; a release's notes on GitHub are its section here. 
 
 ## Unreleased
 
+- The account form can save a Jira or Linear token to your keychain in one step: on macOS and on Linux with a desktop keyring, paste it into the form and taskman keeps it in the macOS Keychain or Secret Service, saving only `keychain:jira-1`. Deleting the account offers to delete the token there too.
+- Clearer first-run token setup: the account form no longer starts with `env:JIRA_API_TOKEN` filled in, links the page that makes a token, and says taskman never saves the token in its files. A variable that isn't set says what to add to which file, and a token command that fails points to the guide.
+
 ## 0.1.0 - 2026-10-12
 
 - First public release. taskman is a terminal UI for working on several tickets at once: each ticket gets the real `claude` or `codex` CLI in its own git worktree, with its Jira, Linear, GitHub Issues or Local files issue and its GitHub PR beside it.

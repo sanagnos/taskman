@@ -23,11 +23,33 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &mut App) {
         Mode::Settings(_) => draw_settings(f, app),
         Mode::ConfirmDeleteAccount(i) => {
             let label = app.config.accounts.get(*i).map(|a| a.label()).unwrap_or_default();
-            draw_confirm(
-                f,
-                &format!("Delete account {label}?"),
-                "No project uses it. The token itself (variable or password manager) is untouched.",
-            );
+            let question = format!("Delete account {label}?");
+            match app.own_keychain_item(*i) {
+                Some(name) => draw_confirm_lines(
+                    f,
+                    &question,
+                    vec![Line::from(Span::styled(
+                        format!(
+                            "No project uses it. Its token is in your {} as taskman {name}.",
+                            app.keychain.as_ref().map_or_else(
+                                || crate::keychain::Keychain::os().label(),
+                                |k| k.label()
+                            )
+                        ),
+                        dim(),
+                    ))],
+                    &[
+                        ("Enter", "delete, keep the token"),
+                        ("d", "delete the token too"),
+                        ("Esc", "cancel"),
+                    ],
+                ),
+                None => draw_confirm(
+                    f,
+                    &question,
+                    "No project uses it. The token itself (variable or password manager) is untouched.",
+                ),
+            }
         }
         Mode::ConfirmClose => {
             let (name, agent) = app
@@ -372,7 +394,7 @@ fn draw_form(f: &mut Frame, app: &App) {
     let w = (78 + DIALOG_PAD_W).min(f.area().width.saturating_sub(2));
     // The note can wrap on a narrow terminal; size to the wrapped text so the key row still shows.
     let inner_w = w.saturating_sub(2 + DIALOG_PAD_W);
-    let rows = form_rows(form_lines(form, true, keys, inner_w).0, inner_w);
+    let rows = form_rows(form_lines(form, true, keys, inner_w).0.lines, inner_w);
     let r = centered(f, w, rows + 2 + DIALOG_PAD_H);
     f.render_widget(Clear, r);
     let block = dialog(form.title).padding(DIALOG_PAD);
@@ -386,11 +408,20 @@ fn draw_form(f: &mut Frame, app: &App) {
 fn render_form(f: &mut Frame, form: &Form, area: Rect, active: bool, keys: &str) {
     let (text, cursor) = form_lines(form, active, keys, area.width);
     if let Some((line, col)) = cursor {
-        let row = form_rows(text[..line].to_vec(), area.width);
+        let row = form_rows(text.lines[..line].to_vec(), area.width);
         let x = (area.x + col).min(area.right().saturating_sub(1));
         f.set_cursor_position((x, area.y + row));
     }
-    f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), area);
+    let paragraph = |lines| Paragraph::new(lines).wrap(Wrap { trim: false });
+    if !text.urls().is_empty() {
+        let mut coded = ratatui::buffer::Buffer::empty(area);
+        ratatui::widgets::Widget::render(paragraph(text.coded(0)), area, &mut coded);
+        f.render_widget(paragraph(text.lines.clone()), area);
+        let urls: Vec<&str> = text.urls().iter().map(String::as_str).collect();
+        crate::links::mark_coded(f.buffer_mut(), &coded, area, &urls);
+    } else {
+        f.render_widget(paragraph(text.lines), area);
+    }
 }
 
 /// Rows `lines` take wrapped at `width`, as `render_form` draws them.
@@ -398,15 +429,15 @@ fn form_rows(lines: Vec<Line>, width: u16) -> u16 {
     Paragraph::new(lines).wrap(Wrap { trim: false }).line_count(width.max(1)) as u16
 }
 
-/// A form's lines, and the focused text field's line and column for the cursor when `active`.
-/// Values are cut to fit `width` and hints wrap under them, so neither runs under the labels;
-/// notes wrap across the whole width.
+/// A form's lines with their links, and the focused text field's line and column for the cursor
+/// when `active`. Values are cut to fit `width` and hints wrap under them, so neither runs under
+/// the labels; notes wrap across the whole width.
 fn form_lines(
     form: &Form,
     active: bool,
     keys: &str,
     width: u16,
-) -> (Vec<Line<'static>>, Option<(usize, u16)>) {
+) -> (crate::links::Linked, Option<(usize, u16)>) {
     let label_w = form
         .fields
         .iter()
@@ -416,6 +447,8 @@ fn form_lines(
         .unwrap_or(8)
         + 2;
     let mut text: Vec<Line> = Vec::new();
+    // The lines that link somewhere, each linked whole after its indent (span 1).
+    let mut linked: Vec<(usize, String)> = Vec::new();
     if let Some(note) = &form.note {
         text.extend(
             note.lines()
@@ -474,11 +507,13 @@ fn form_lines(
                 row.push(arrow("‹ "));
             }
             // The cursor is at the end, so a value being typed keeps its end in view; one room
-            // is kept for the cursor.
-            let value = if focused {
-                truncate_start(&field.value, room.saturating_sub(1))
-            } else {
-                fit(field, room)
+            // is kept for the cursor. A secret shows as a dot a character.
+            let dots = field.masked.then(|| "•".repeat(field.value.chars().count()));
+            let value = match (&dots, focused) {
+                (Some(d), true) => truncate_start(d, room.saturating_sub(1)),
+                (Some(d), false) => truncate(d, room),
+                (None, true) => truncate_start(&field.value, room.saturating_sub(1)),
+                (None, false) => fit(field, room),
             };
             if focused {
                 let open = if presets { 2 } else { 0 };
@@ -505,6 +540,15 @@ fn form_lines(
                 .into_iter()
                 .map(|l| Line::from(Span::styled(format!("{:label_w$}{l}", ""), dim()))),
         );
+        for (before, label, url) in &field.links {
+            for l in wrap_prose(&format!("{before}{label}"), hint_room) {
+                linked.push((text.len(), url.clone()));
+                text.push(Line::from(vec![
+                    Span::raw(format!("{:label_w$}", "")),
+                    Span::styled(l, dim().add_modifier(ratatui::style::Modifier::UNDERLINED)),
+                ]));
+            }
+        }
         // The highlighted issue on the sidebar's selected card's background, across the room.
         let highlighted = field.list.highlighted().filter(|_| focused);
         text.extend(field.list.lines.iter().enumerate().map(|(n, l)| {
@@ -530,7 +574,14 @@ fn form_lines(
         None => text.push(Line::from("")),
     }
     text.push(Line::from(Span::styled(keys.to_string(), dim())));
-    (text, cursor)
+    let mut out = crate::links::Linked::default();
+    for (n, line) in text.into_iter().enumerate() {
+        out.push(line);
+        for (_, url) in linked.iter().filter(|(l, _)| *l == n) {
+            out.link(1, url);
+        }
+    }
+    (out, cursor)
 }
 
 /// The most lines a prose field takes; a longer one scrolls while typed and is cut otherwise.
@@ -595,7 +646,7 @@ fn draw_settings(f: &mut Frame, app: &App) {
     // always show; 3 rows for the borders and the pane title. The form is as wide as the dialog
     // `centered` gives, less its borders, the list and the pane's border and gap.
     let form_w = 108u16.min(f.area().width.saturating_sub(2)).saturating_sub(2 + 30 + 2);
-    let rows = form_rows(form_lines(&s.form, s.editing, keys, form_w).0, form_w);
+    let rows = form_rows(form_lines(&s.form, s.editing, keys, form_w).0.lines, form_w);
     let r = centered(f, 108, (rows + 3).max(28));
     f.render_widget(Clear, r);
     let block = dialog("Settings");
@@ -816,6 +867,7 @@ mod tests {
         let width = 50;
         let rows = |form: &Form| {
             let (lines, cursor) = form_lines(form, true, "", width);
+            let lines = lines.lines;
             assert_eq!(form_rows(lines.clone(), width), lines.len() as u16, "a line wrapped");
             (lines.iter().map(|l| l.to_string()).collect::<Vec<_>>(), cursor)
         };
@@ -837,6 +889,7 @@ mod tests {
         let form = Form::new(FormKind::Project, "Project", vec![Field::text("Folder", "", hint)]);
         let width = 40;
         let (lines, _) = form_lines(&form, false, "", width);
+        let lines = lines.lines;
         assert_eq!(form_rows(lines.clone(), width), lines.len() as u16, "a line wrapped");
         let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         assert_eq!(
@@ -873,6 +926,7 @@ mod tests {
         let form = Form::new(FormKind::Ticket, "Add", vec![field]);
         let bg = |active: bool| -> Vec<bool> {
             let (lines, _) = form_lines(&form, active, "", 40);
+            let lines = lines.lines;
             let shaded = |l: &Line| l.spans.iter().any(|s| s.style.bg == Some(selection_bg()));
             lines[2..5].iter().map(shaded).collect()
         };
@@ -892,6 +946,7 @@ mod tests {
         let width = 40;
         let lines = |form: &Form| {
             let (lines, cursor) = form_lines(form, true, "", width);
+            let lines = lines.lines;
             assert_eq!(form_rows(lines.clone(), width), lines.len() as u16, "a line wrapped");
             (lines.iter().map(|l| l.to_string()).collect::<Vec<_>>(), cursor)
         };

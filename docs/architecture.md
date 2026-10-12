@@ -35,9 +35,9 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 | `src/app/launch.rs` | how a session's CLI starts (`Launch`, `App::launch`): arguments, environment, the ticket's and agent's briefs |
 | `src/app/input.rs` | keys: the modes, the prefix commands, paste, the links list, the session's history in `$EDITOR` |
 | `src/app/mouse.rs` | the wheel, drag-selecting text in a pane, copying it |
-| `src/app/forms.rs` | `Field` and `Form` (fields reached by label, never by index), a field's `List` (the Add form's open issues, ↑/↓ moving a highlight), form keys, submitting with a background `Check` |
+| `src/app/forms.rs` | `Field` and `Form` (fields reached by label, never by index), a field's `List` (the Add form's open issues, ↑/↓ moving a highlight), masked fields and linked hint lines, form keys, submitting with a background `Check` |
 | `src/app/add_form.rs` | the Add form: ticket or agent, CLI, worktree and base; the open issues it lists (`OpenIssues`), each list matched to its request (`Listing`) so a late one is dropped, and the one picked with ↑/↓; `parse_key` |
-| `src/app/settings.rs`, `projects.rs`, `accounts.rs` | the Settings popover and its General form; the project forms and saving a project; the account forms and testing a connection |
+| `src/app/settings.rs`, `projects.rs`, `accounts.rs` | the Settings popover and its General form; the project forms and saving a project; the account forms (Keep in: the keychain or a source), saving a pasted token to the keychain, testing a connection, deleting an account and its keychain item |
 | `src/app/tickets.rs` | adding, closing and renaming tickets and agents; stacking (`base_named`, `stack_of`, `pr_target`) |
 | `src/app/inbox.rs` | the TUI's side of `taskman add` and `taskman close`: taking requests, the agent approval dialog, the replies |
 | `src/selection.rs` | selecting text with the mouse: what keys do while text is selected, the frozen screen, reading the text back (joining wrapped lines), copying it to the clipboard |
@@ -73,6 +73,7 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 | File | What it holds |
 |---|---|
 | `src/store.rs` | saved state (projects, tickets, UI prefs), config (accounts, the auto-update toggle, the prefix), paths, `write_atomic` (synced, then renamed over); in unit tests, a scratch state folder and config file per test (`scratch`) and a made-up home |
+| `src/keychain.rs` | the OS keychain the account form saves tokens to: `security` on macOS (`security -i`, the command on stdin), `secret-tool` on Linux (the token on stdin); `probe` for whether there's one, `store` (read back to check), `read`, `delete`; the `keychain:NAME` source and its naming; in unit tests, a stub in the scratch folder (`stub`) |
 | `src/proc.rs` | `proc::run`: git, gh and token commands with a time limit, no terminal and prompts off; `run_with_input` feeds a command's stdin (the updater pipes the download into `tar`) |
 | `src/untrusted.rs` | tracker and PR text printed as data: `clean` strips terminal control characters and the characters that hide text from a reader (bidirectional controls, Unicode tags), `line` and `block` keep it in its own line or indented block, `labelled` adds the note `taskman status` prints above it |
 | `src/util.rs` | timestamps, relative ages, opening URLs, and cutting text to fit: `truncate` (keeps the start), `truncate_start`, `truncate_middle` (account labels), `fit_label` (display width; sidebar names) |
@@ -116,7 +117,7 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 - **Stopping sessions.** A stopped CLI takes a moment to go (hung up, then killed, on a thread): until it's reaped, the ticket's `reaper` (`TicketView::stop_session`) keeps a new session from starting, a closed ticket's worktree from being removed and, after a hand-off, the claim from being let go, the owner file reading `Owner::Stopping` meanwhile. See "Stopping a session" in [design.md](design.md).
 - **Stacked tickets.** `Ticket::base` names the ticket a worktree started from; whether it merged comes from the base ticket's PR or from the ticket's own PR's `baseRefName` (`App::stack_of`).
 - **Background work** runs on plain threads and reports back over an `mpsc` channel (`Msg`); there is no async runtime. `Remote<T>` holds fetched data with its freshness and refresh flags. Keep network calls and token commands off the UI thread; commands go through `proc::run` so a hung one gives up.
-- **Accounts vs projects.** An account is credentials (`store::Account`, id like `jira-1`); a project's tracker names its account or falls back to `Config::account_for`. Tokens are never stored: `env:VAR` or `cmd:COMMAND`, read in the background by `tracker::Clients`.
+- **Accounts vs projects.** An account is credentials (`store::Account`, id like `jira-1`); a project's tracker names its account or falls back to `Config::account_for`. Tokens are never stored: `env:VAR`, `cmd:COMMAND` or `keychain:NAME`, read in the background by `tracker::Clients`. The account form can write a pasted token to the keychain first (`keychain::Keychain::store`), in its background check.
 - **Trackers.** Fetching goes through `tracker::Client`, and each difference between providers is a method on `Provider` or `Tracker` in `tracker.rs` (`needs_account`, `has_board`, `branch_source`, ...): use those rather than matching on a provider. The account forms (`app/accounts.rs`: Jira's email, Linear's workspace) and `Account::who` still match on it. A new provider is a `store::Provider` variant, its API module, a `tracker::Client` variant, one arm per method in `tracker.rs`, and its account form fields.
 - **Modes.** `Mode` decides where keys go: Claude (Normal), a form, Settings, or a confirm dialog. Every key goes to Claude except after the prefix (`ctrl+a` unless changed). Hints name it through `keys::prefix()`, never a literal `ctrl+a`.
 
@@ -129,7 +130,7 @@ What must stay true whatever changes. Each has a section in [design.md](design.m
 - **One conversation per session.** `session_ids::claim` refuses an id another ticket or agent holds, wherever an id comes in.
 - **The user's own CLI settings are never touched.** Hooks and permissions come in through `--settings` (Codex: `-c` overrides) on each launch.
 - **Tracker and PR text is untrusted.** It's printed through `untrusted` and never goes into a brief, since anyone who can write a comment could write instructions.
-- **Tokens are never stored.** Accounts say where a token comes from (`env:VAR` or `cmd:COMMAND`); it's read in the background when needed.
+- **Tokens are never stored.** Accounts say where a token comes from (`env:VAR`, `cmd:COMMAND` or `keychain:NAME`); it's read in the background when needed. A token pasted into the account form lives in the form only until it's in the keychain.
 - **Nothing slow runs on the UI thread.** Network calls and token commands run on threads; git, gh and token commands go through `proc::run`, with a time limit and no terminal.
 - **Saved state is never replaced by less.** Only a missing file reads as empty; a file this build can't read stops the TUI rather than being overwritten. New fields get `#[serde(default)]`.
 - **Sessions change the TUI's state only through the inbox.** `taskman add` and `taskman close` leave requests for the running TUI instead of editing `tickets.json`; a changed request gets a new `add::INBOX_FORMAT`.

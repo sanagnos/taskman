@@ -9,6 +9,7 @@ mod github;
 mod github_issues;
 mod hook;
 mod jira;
+mod keychain;
 mod keys;
 mod linear;
 mod links;

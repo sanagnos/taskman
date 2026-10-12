@@ -37,9 +37,10 @@ taskman gives Claude sessions permission (through `--settings`, for that session
 An account's token field says where to read the token, never the token itself:
 
 - `env:VAR` reads an environment variable. Sessions inherit taskman's environment, so every session can see that variable, as can anything else you run from that shell.
-- `cmd:COMMAND` runs a command (a password manager, say) through `sh`, as you, without a terminal and with a time limit. The token isn't in the sessions' environment, so `cmd:` is the one to use to keep a token out of what sessions see by default. A session runs as you, though, so it could run the same command; a password manager that asks before handing a secret out is what stops that.
+- `keychain:NAME` reads taskman's item `NAME` (the account's id) under the service `taskman` in the macOS Keychain or the Linux Secret Service, through `security` or `secret-tool`, as `cmd:` runs a command. The account form writes it there when you paste a token: the token goes to the program on its standard input, never on its command line, where other users' `ps` could see it, and is kept in memory only until it's written, then cleared from the form. A session runs as you, so it could read the item the same way: macOS lets `security` read an item it saved without asking, and an unlocked Linux keyring doesn't ask either.
+- `cmd:COMMAND` runs a command (a password manager, say) through `sh`, as you, without a terminal and with a time limit. The token isn't in the sessions' environment, so `cmd:` and `keychain:` are the ones to use to keep a token out of what sessions see by default. A session runs as you, though, so it could run the same command; a password manager that asks before handing a secret out is what stops that.
 
-The account form refuses a token field that starts with neither, before testing or saving anything.
+The account form refuses a source that is none of these, before testing or saving anything.
 
 The config file (`~/.config/taskman/config.json`, or `TASKMAN_CONFIG`) and the state folder (`~/.local/state/taskman`) are created readable by you only.
 

@@ -95,38 +95,25 @@ Under **Worktrees**, a project with a tracker in a git repository says how its n
 An **account** is a set of credentials: a provider, an email (Jira) and where the token comes from.
 
 - **Jira:** an API token (id.atlassian.com → Security → API tokens) belongs to you and works on every site you can reach, so one Jira account can serve all your Jira projects.
-- **Linear:** a personal API key (Settings → Security & access → Personal API keys) belongs to one workspace, so each workspace gets its own account. Saving one checks the key works and belongs to the workspace entered. A second workspace defaults to its own variable (`env:LINEAR_API_KEY_<WORKSPACE>`) so two workspaces never share a key by accident.
+- **Linear:** a personal API key (Settings → Security & access → Personal API keys) belongs to one workspace, so each workspace gets its own account. Saving one checks the key works and belongs to the workspace entered. A second workspace's suggested variable is its own (`env:LINEAR_API_KEY_<WORKSPACE>`) so two workspaces never share a key by accident.
 
-The token field says where to read the token from, never the token itself: `env:JIRA_API_TOKEN` reads an environment variable (`$JIRA_API_TOKEN` works too and is saved as `env:JIRA_API_TOKEN`), `cmd:op read op://vault/jira/token` runs a command (a password manager, say). The form refuses anything else, so a token pasted there is never saved; an account an older version saved with the token itself says so on its Settings page, and its tracker panels say what to change. A command runs once, in the background and without a terminal, so it can't ask for a password there (a password manager's own window is fine); after 60 s it gives up. Saving a Jira account tests the connection. An account a project uses can't be deleted until no project does. Accounts live in `~/.config/taskman/config.json`.
+taskman never saves a token in its own files, only where to read it from. On macOS, and on Linux with a desktop keyring, **Keep in** starts on **Keychain**: paste the token into **Token** (it shows as dots) and saving puts it in your keychain and saves only `keychain:jira-1`. The form forgets the token once it's there; to replace it, paste a new one on the account's Settings page. Pick **Variable or command** instead, or where there's no keychain (WSL, a server), and **Read from** says where to read the token: `env:JIRA_API_TOKEN` reads an environment variable (`$JIRA_API_TOKEN` works too and is saved as `env:JIRA_API_TOKEN`), `cmd:op read op://vault/jira/token` runs a command (a password manager, say). Read from refuses anything else, so a token pasted there is never saved; an account an older version saved with the token itself says so on its Settings page, and its tracker panels say what to change. A command runs once, in the background and without a terminal, so it can't ask for a password there (a password manager's own window is fine); after 60 s it gives up. Saving an account tests the connection (a Jira account against its site, or the project's). An account a project uses can't be deleted until no project does; deleting one whose token is in the keychain offers `d` to delete the token there too. Accounts live in `~/.config/taskman/config.json`.
 
 ### Storing a token
 
-Pick one way to keep the token, then give taskman its source. In each, the token is typed into a hidden prompt or a file of yours, never into taskman, and never into a chat with Claude: a chat would send it to the model. Replace `jira` with `linear` (or `linear-acme` for a second workspace) for a Linear key.
+Make the token first. Jira: [id.atlassian.com → Security → API tokens](https://id.atlassian.com/manage-profile/security/api-tokens), Create API token. Linear: [Settings → Security & access → Personal API keys](https://linear.app/settings/account/security). The account form links the page. Paste the token only into taskman's Token field, your keychain or your password manager, never into a chat with Claude: a chat would send it to the model.
 
-- **macOS Keychain.** Store it; with `-w` last, `security` asks for the token (twice) without showing it, and `-U` replaces one stored before:
-
-  ```bash
-  security add-generic-password -U -a "$USER" -s taskman-jira -w
-  ```
-
-  Token: `cmd:security find-generic-password -a "$USER" -s taskman-jira -w`. If macOS asks whether `security` may use the item, choose Always Allow.
-- **Linux desktop keyring** (GNOME Keyring or KWallet, through `secret-tool`, package `libsecret-tools` on Debian and Ubuntu). It asks for the token:
-
-  ```bash
-  secret-tool store --label="taskman jira" service taskman account jira
-  ```
-
-  Token: `cmd:secret-tool lookup service taskman account jira`. The keyring must be unlocked, as it is once you've logged in to the desktop; WSL usually has none, so use one of the others there.
-- **A password manager's command line,** if you use one: 1Password's `cmd:op read op://Private/Jira/credential` (the app's Copy Secret Reference gives the exact `op://` path), or `cmd:pass show taskman/jira` for `pass`. It must work without a terminal: a desktop app's unlock window is fine, a password typed in the terminal isn't.
-- **An environment variable,** the simplest, in a plain file: anything you run can read it. Add the line to your shell's startup file, `~/.zshrc` on macOS or `~/.bashrc` on Linux and WSL, then open a new terminal before starting taskman:
+- **Your keychain, through the account form,** the simplest: leave Keep in on Keychain and paste the token. taskman hands it to `security` (macOS Keychain) or `secret-tool` (Linux: GNOME Keyring or KWallet) on its input, never on a command line, where other programs could see it, and reads it back to check. It's saved as the item `taskman` / `jira-1` (the account's id), which Keychain Access or Seahorse shows. If macOS asks whether `security` may use the item, choose Always Allow. On Linux the keyring must be unlocked, as it is once you've logged in to the desktop; `secret-tool` comes in the package `libsecret-tools` on Debian and Ubuntu, and taskman offers the keychain only when it finds it working. WSL usually has none, so use one of the ways below there.
+- **A password manager's command line,** if you use one: pick Variable or command, then Read from `cmd:op read op://Private/Jira/credential` for 1Password (the app's Copy Secret Reference gives the exact `op://` path), or `cmd:pass show taskman/jira` for `pass`. It must work without a terminal: a desktop app's unlock window is fine, a password typed in the terminal isn't.
+- **An environment variable,** in a plain file: anything you run can read it, every session included. Add the line to your shell's startup file, `~/.zshrc` on macOS or `~/.bashrc` on Linux and WSL:
 
   ```bash
   export JIRA_API_TOKEN='paste-the-token-here'
   ```
 
-  Token: `env:JIRA_API_TOKEN`. Keep that file out of any dotfiles repository you share.
+  Then open a new terminal and start taskman there: one opened before doesn't have the variable. Read from: `env:JIRA_API_TOKEN`. Keep that file out of any dotfiles repository you share. Replace `JIRA_API_TOKEN` with `LINEAR_API_KEY` (or `LINEAR_API_KEY_ACME` for a second workspace) for a Linear key.
 
-taskman reads the token when it starts and again when you save the account. After changing a stored token, save the account again (Settings, the account, Enter) and it's read anew; after changing an environment variable, quit taskman and start it from a new terminal, which has the new value.
+taskman reads the token when it starts and again when you save the account. After changing a token in your password manager, save the account again (Settings, the account, Enter) and it's read anew; after changing an environment variable, quit taskman and start it from a new terminal, which has the new value.
 
 ## Use
 

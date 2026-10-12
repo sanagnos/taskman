@@ -506,6 +506,39 @@ impl Provider {
         }
     }
 
+    /// The project form's hint under Site once this one is picked.
+    pub fn site_hint(self) -> &'static str {
+        match self {
+            Provider::Jira => "your Jira site, like your-site.atlassian.net",
+            Provider::Linear => "the workspace: the part after linear.app/",
+            Provider::Local | Provider::Github => "",
+        }
+    }
+
+    /// The environment variable the account form suggests for its token.
+    pub fn token_var(self) -> &'static str {
+        match self {
+            Provider::Jira => "JIRA_API_TOKEN",
+            Provider::Linear => "LINEAR_API_KEY",
+            Provider::Local | Provider::Github => "",
+        }
+    }
+
+    /// Where to make a token: the way there in the tracker's menus, and the page.
+    pub fn token_page(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Provider::Jira => Some((
+                "id.atlassian.com → Security → API tokens",
+                "https://id.atlassian.com/manage-profile/security/api-tokens",
+            )),
+            Provider::Linear => Some((
+                "Settings → Security & access → Personal API keys",
+                "https://linear.app/settings/account/security",
+            )),
+            Provider::Local | Provider::Github => None,
+        }
+    }
+
     /// The project form's hint under Ticket prefix.
     pub fn prefix_hint(self) -> &'static str {
         match self {

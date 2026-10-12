@@ -386,6 +386,20 @@ pub(crate) fn settle(app: &mut App) {
     app.drain_messages();
 }
 
+/// Answers the open form's connection test with `found` as if it had run, without running it: no
+/// keychain is asked and no tracker reached. For screens; `events` drives the real check.
+pub(crate) fn answer_check(app: &mut App, found: Result<(&str, &str), String>) {
+    let found = found.map(|(n, w)| (n.to_string(), w.to_string()));
+    let form = match &mut app.mode {
+        super::Mode::Settings(s) => &mut s.form,
+        super::Mode::Form(f) => f,
+        _ => panic!("no form open"),
+    };
+    form.checking = Some(u64::MAX);
+    app.tx.send(super::sync::Msg::Checked(u64::MAX, super::forms::Check::Account(found))).unwrap();
+    app.drain_messages();
+}
+
 /// The toast showing, if any.
 pub(crate) fn toast(app: &App) -> Option<&str> {
     app.toast.as_ref().map(|(t, _)| t.as_str())

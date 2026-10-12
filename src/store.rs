@@ -631,7 +631,7 @@ pub struct Account {
     #[serde(default)]
     pub email: String,
     /// `env:NAME` reads an environment variable; `cmd:COMMAND` runs a command (a password
-    /// manager, say) and uses its output.
+    /// manager, say) and uses its output; `keychain:NAME` reads taskman's item in the OS keychain.
     pub token: String,
 }
 
@@ -663,7 +663,9 @@ impl Account {
 /// Whether an account's `token` says where to read the token from, as it must, rather than being
 /// the token. The account form refuses anything else, but an older version saved it as typed.
 pub fn is_token_source(token: &str) -> bool {
-    token.starts_with("env:") || token.starts_with("cmd:")
+    token.starts_with("env:")
+        || token.starts_with("cmd:")
+        || crate::keychain::name_of(token).is_some()
 }
 
 /// `$NAME` or `${NAME}`, as people used to the shell type it, as `env:NAME`; anything else as it
@@ -684,13 +686,17 @@ fn is_env_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// The token `source` (`env:NAME` or `cmd:COMMAND`) gives, or why it gives none.
+/// The token `source` (`env:NAME`, `cmd:COMMAND` or `keychain:NAME`) gives, or why it gives none.
 fn resolve_token(source: &str, limit: std::time::Duration) -> Result<String, String> {
     if let Some(var) = source.strip_prefix("env:") {
-        return std::env::var(var.trim())
+        let var = var.trim();
+        return std::env::var(var)
             .ok()
             .filter(|v| !v.trim().is_empty())
-            .ok_or_else(|| format!("${} is not set in the shell taskman runs in", var.trim()));
+            .ok_or_else(|| unset(var, &std::env::var("SHELL").unwrap_or_default()));
+    }
+    if let Some(name) = crate::keychain::name_of(source) {
+        return crate::keychain::Keychain::os().read(name);
     }
     if let Some(cmd) = source.strip_prefix("cmd:") {
         let out = crate::proc::run(std::process::Command::new("sh").args(["-c", cmd]), limit).map_err(|e| {
@@ -703,13 +709,12 @@ fn resolve_token(source: &str, limit: std::time::Duration) -> Result<String, Str
             }
         })?;
         let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !out.status.success() || token.is_empty() {
-            return Err(format!(
-                "the token command failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        return Ok(token);
+        let why = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return match (out.status.success() && !token.is_empty(), why.is_empty()) {
+            (true, _) => Ok(token),
+            (false, true) => Err(format!("the token command printed no token; {SEE_GUIDE}")),
+            (false, false) => Err(format!("the token command failed: {why}; {SEE_GUIDE}")),
+        };
     }
     // Saved by an older version, whose account form took the token itself. Never repeat it.
     Err(format!(
@@ -718,15 +723,34 @@ fn resolve_token(source: &str, limit: std::time::Duration) -> Result<String, Str
     ))
 }
 
+/// Where a failed token source sends the user.
+const SEE_GUIDE: &str = "see Storing a token in taskman's guide";
+
+/// Why the variable `var` gave no token, and what to do: set it where `shell` reads it at start,
+/// then start taskman from a new terminal, which has it.
+fn unset(var: &str, shell: &str) -> String {
+    let file = match shell.rsplit('/').next() {
+        Some("zsh") => "~/.zshrc",
+        Some("bash") => "~/.bashrc",
+        _ => "your shell's startup file (~/.zshrc or ~/.bashrc)",
+    };
+    format!(
+        "{var} isn't set in the shell taskman started from: add export {var}=… to {file}, then open a new terminal and start taskman there"
+    )
+}
+
 /// What pickers show for a token saved as typed by an older version: never the token.
 const RAW_TOKEN: &str = "token saved in config (fix in Settings)";
 
 /// A token source short enough for a picker: `env:NAME` whole, `cmd:` and the command's first
-/// word (its file name, when that's a path).
+/// word (its file name, when that's a path), `keychain` for the keychain.
 pub fn short_source(token: &str) -> String {
     let token = token.trim();
     if !is_token_source(token) {
         return RAW_TOKEN.into();
+    }
+    if crate::keychain::name_of(token).is_some() {
+        return "keychain".into();
     }
     let Some(cmd) = token.strip_prefix("cmd:") else { return token.to_string() };
     let first = cmd.split_whitespace().next().unwrap_or_default();
@@ -1142,12 +1166,51 @@ mod tests {
         assert_eq!(resolve_token("cmd:echo ' tok '", secs(10)), Ok("tok".into()));
         assert_eq!(
             resolve_token("cmd:echo locked >&2; exit 1", secs(10)),
-            Err("the token command failed: locked".into())
+            Err("the token command failed: locked; see Storing a token in taskman's guide".into())
+        );
+        assert_eq!(
+            resolve_token("cmd:true", secs(10)),
+            Err("the token command printed no token; see Storing a token in taskman's guide".into())
         );
         let slow = resolve_token("cmd:sleep 10; echo tok", secs(1)).unwrap_err();
         assert!(slow.starts_with("the token command didn't finish within 1s"), "{slow}");
         let raw = resolve_token("lin_api_raw", secs(1)).unwrap_err();
         assert!(raw.contains("env:VAR or cmd:COMMAND") && !raw.contains("lin_api_raw"), "{raw}");
+    }
+
+    #[test]
+    fn an_unset_variable_says_where_to_set_it() {
+        let e = unset("JIRA_API_TOKEN", "/bin/zsh");
+        assert_eq!(
+            e,
+            "JIRA_API_TOKEN isn't set in the shell taskman started from: add export JIRA_API_TOKEN=… to ~/.zshrc, then open a new terminal and start taskman there"
+        );
+        assert!(unset("X", "/usr/bin/bash").contains("export X=… to ~/.bashrc,"));
+        assert!(unset("X", "").contains("to your shell's startup file (~/.zshrc or ~/.bashrc),"));
+        let read = resolve_token("env:TASKMAN_TEST_UNSET_TOKEN", std::time::Duration::from_secs(1));
+        assert!(read.unwrap_err().starts_with("TASKMAN_TEST_UNSET_TOKEN isn't set"));
+    }
+
+    #[test]
+    fn keychain_sources() {
+        assert!(is_token_source("keychain:jira-1"));
+        assert!(!is_token_source("keychain:"));
+        assert!(!is_token_source("keychain:two words"));
+        assert_eq!(short_source("keychain:jira-1"), "keychain");
+        // No stub yet: none is found, and no real keychain is asked.
+        let none = resolve_token("keychain:jira-1", std::time::Duration::from_secs(1)).unwrap_err();
+        assert!(none.ends_with("isn't installed"), "{none}");
+        crate::keychain::stub();
+        crate::keychain::Keychain::os().store("jira-1", "ATATT-mock").unwrap();
+        let a = Account {
+            id: "jira-1".into(),
+            provider: Provider::Jira,
+            site: String::new(),
+            email: "dana@example.com".into(),
+            token: "keychain:jira-1".into(),
+        };
+        assert_eq!(a.resolve_token(), Ok("ATATT-mock".into()));
+        assert_eq!(a.label(), "dana@example.com · keychain");
     }
 
     #[test]

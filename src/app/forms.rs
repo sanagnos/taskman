@@ -2,7 +2,7 @@
 //! submitting it, with a background check first where one is needed (a connection test, say). The
 //! forms themselves are in `add_form.rs`, `settings.rs`, `projects.rs` and `accounts.rs`.
 
-use super::accounts::{AfterAccount, account_defaults};
+use super::accounts::{AfterAccount, account_defaults, account_rows};
 use super::projects::{expand_tilde, show_project_rows, tracker_from_form, worktree_hints};
 use super::settings::prefix_hint;
 use super::sync::Msg;
@@ -31,6 +31,11 @@ pub struct Field {
     pub hidden: bool,
     /// Lines listed under the hint, each cut to fit: the Add form's open issues.
     pub list: List,
+    /// A secret being typed (a token for the keychain): drawn as dots, never as itself.
+    pub masked: bool,
+    /// Lines under the hint that link somewhere: the text before the link, and the link's text
+    /// and URL.
+    pub links: Vec<(String, String, String)>,
 }
 
 /// Lines listed under a field's hint: the Add form's open issues, which ↑/↓ move a highlight
@@ -91,6 +96,8 @@ impl Field {
             section: None,
             hidden: false,
             list: List::default(),
+            masked: false,
+            links: Vec::new(),
         }
     }
 
@@ -173,6 +180,9 @@ pub struct Form {
     /// What that check found, kept until a value changes: "Enter again to save anyway" uses it
     /// rather than checking again.
     pub(super) checked: Option<Check>,
+    /// The source of a token this form put in the keychain and cleared from its Token field, so
+    /// the form can save without it being pasted again.
+    pub(super) stored: Option<String>,
 }
 
 impl Form {
@@ -187,6 +197,7 @@ impl Form {
             save_anyway: false,
             checking: None,
             checked: None,
+            stored: None,
         }
     }
 
@@ -248,6 +259,9 @@ pub(super) enum Check {
     Project(Result<bool, String>),
     /// Who an account's token belongs to, and for Linear its workspace; or why that failed.
     Account(Result<(String, String), String>),
+    /// A token was put in the keychain, and not tested (a Jira account with no site); or why it
+    /// couldn't be, which no "save anyway" gets past.
+    Stored(Result<(), String>),
 }
 
 pub(super) fn paste_into(form: &mut Form, text: &str) {
@@ -311,8 +325,16 @@ impl App {
         {
             f.hint = prefix_hint(keys::Prefix::parse(&f.value).unwrap_or_default());
         }
-        if matches!(label, "Provider" | "Site") && matches!(form.kind, FormKind::Account { .. }) {
-            account_defaults(form, &self.config);
+        if matches!(label, "Provider" | "Site" | "Keep in") {
+            match form.kind {
+                FormKind::Account { .. } => {
+                    account_defaults(form, &self.config, self.keychain.as_ref());
+                }
+                FormKind::AccountSettings(i) => {
+                    account_rows(form, self.config.accounts.get(i), self.keychain.as_ref());
+                }
+                _ => {}
+            }
         }
         let project_form = matches!(form.kind, FormKind::Project | FormKind::ProjectSettings(_));
         let ticket_form = matches!(form.kind, FormKind::Ticket);

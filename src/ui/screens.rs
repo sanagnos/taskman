@@ -225,6 +225,110 @@ fn add_form() {
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 
+// ---- first run: a new project with Jira, to a working account ------------------------------
+
+/// A first run's app: no projects, and a keychain if `keychain`.
+fn first_run(keychain: bool) -> crate::app::App {
+    let mut app = offline(Saved::default());
+    if keychain {
+        app.keychain = Some(crate::keychain::macos_stub());
+    }
+    app
+}
+
+/// Types `text` over the value of the open form's field `label`.
+fn type_into(app: &mut crate::app::App, label: &str, text: &str) {
+    for _ in 0..20 {
+        let Mode::Settings(s) = &app.mode else { panic!("Settings closed") };
+        if s.form.fields[s.form.focus].label == label {
+            app.on_key(crate::app::test_support::ctrl('u'));
+            text.chars().for_each(|c| app.on_key(key(KeyCode::Char(c))));
+            return;
+        }
+        app.on_key(key(KeyCode::Tab));
+    }
+    panic!("no field {label} shown");
+}
+
+/// `ctrl+a P`, a folder, Jira, its site and the ticket prefix.
+fn new_jira_project(app: &mut crate::app::App) {
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(key(KeyCode::Char('P')));
+    // A folder that's there on every machine, so the project can be saved.
+    type_into(app, "Path", "/tmp");
+    type_into(app, "Tracker", "");
+    app.on_key(key(KeyCode::Right));
+    type_into(app, "Site", "acme.atlassian.net");
+    type_into(app, "Ticket prefix", "ENG");
+}
+
+#[test]
+fn first_run_1_new_project_with_jira() {
+    let mut app = first_run(true);
+    new_jira_project(&mut app);
+    assert_snapshot!(draw(&mut app, 120, 40));
+}
+
+/// Enter on the project: it needs an account, so the account form follows, on the keychain.
+#[test]
+fn first_run_2_new_account_with_a_keychain() {
+    let mut app = first_run(true);
+    new_jira_project(&mut app);
+    app.on_key(key(KeyCode::Enter));
+    type_into(&mut app, "Email", "dana@example.com");
+    type_into(&mut app, "Token", "ATATT-mock-token");
+    assert_snapshot!(draw(&mut app, 120, 40));
+}
+
+/// Where there's no keychain (WSL, a server): an empty source to fill, and the guide's ways.
+#[test]
+fn first_run_2_new_account_without_a_keychain() {
+    let mut app = first_run(false);
+    new_jira_project(&mut app);
+    app.on_key(key(KeyCode::Enter));
+    type_into(&mut app, "Email", "dana@example.com");
+    assert_snapshot!(draw(&mut app, 120, 40));
+}
+
+/// A variable that isn't set: what to add where, and the keychain instead.
+#[test]
+fn first_run_3_a_variable_that_is_not_set() {
+    let mut app = first_run(true);
+    new_jira_project(&mut app);
+    app.on_key(key(KeyCode::Enter));
+    type_into(&mut app, "Email", "dana@example.com");
+    type_into(&mut app, "Keep in", "");
+    app.on_key(key(KeyCode::Right));
+    let e = "JIRA_API_TOKEN isn't set in the shell taskman started from: add export JIRA_API_TOKEN=… to ~/.zshrc, then open a new terminal and start taskman there";
+    crate::app::test_support::answer_check(&mut app, Err(e.into()));
+    assert_snapshot!(draw(&mut app, 120, 40));
+}
+
+/// The connection works: the project is added, and the Add form opens on it.
+#[test]
+fn first_run_4_connected() {
+    let mut app = first_run(true);
+    new_jira_project(&mut app);
+    app.on_key(key(KeyCode::Enter));
+    type_into(&mut app, "Email", "dana@example.com");
+    type_into(&mut app, "Token", "ATATT-mock-token");
+    crate::app::test_support::answer_check(&mut app, Ok(("Dana Reyes", "")));
+    assert_eq!(app.config.accounts[0].token, "keychain:jira-1");
+    assert_snapshot!(draw(&mut app, 120, 40));
+}
+
+/// Deleting an account whose token is in the keychain offers to delete that too.
+#[test]
+fn delete_account_with_its_keychain_item() {
+    let mut app = acme_app();
+    app.keychain = Some(crate::keychain::macos_stub());
+    let account = serde_json::json!({ "id": "jira-1", "provider": "jira", "email": "dana@example.com",
+                                      "token": "keychain:jira-1" });
+    app.config.accounts.push(serde_json::from_value(account).unwrap());
+    app.mode = Mode::ConfirmDeleteAccount(1);
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
 /// Project acme on GitHub Issues (acme/web, prefix ENG).
 fn on_github(app: &mut crate::app::App) {
     let t = serde_json::json!({ "provider": "github", "site": "acme/web", "key": "ENG" });

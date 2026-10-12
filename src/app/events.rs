@@ -1914,7 +1914,11 @@ fn settings_form(app: &App) -> &super::Form {
 
 /// Moves to the Settings form's field `label` and types `text` over its value.
 fn fill(app: &mut App, label: &str, text: &str) {
-    while settings_form(app).fields[settings_form(app).focus].label != label {
+    for n in 0.. {
+        if settings_form(app).fields[settings_form(app).focus].label == label {
+            break;
+        }
+        assert!(n < 20, "no field {label} shown");
         app.on_key(key(KeyCode::Tab));
     }
     app.on_key(ctrl('u'));
@@ -1943,7 +1947,7 @@ fn the_account_form_never_saves_a_token_it_has_no_site_to_test() {
     app.open_settings(super::SettingsItem::NewAccount, true);
     assert_eq!(field(&app, "Provider"), "Jira");
     fill(&mut app, "Email", "dana@example.com");
-    fill(&mut app, "Token", "jira-raw-secret");
+    fill(&mut app, "Read from", "jira-raw-secret");
     submit(&mut app);
     assert_eq!(settings_form(&app).error.as_deref(), Some(RAW_TOKEN_HINT));
     submit(&mut app);
@@ -1951,7 +1955,7 @@ fn the_account_form_never_saves_a_token_it_has_no_site_to_test() {
     assert_eq!(app.config.accounts.len(), 1);
     assert!(!config_file().contains("jira-raw-secret"));
     // A source saves, and the token typed before isn't in the file.
-    fill(&mut app, "Token", "env:JIRA_API_TOKEN");
+    fill(&mut app, "Read from", "env:JIRA_API_TOKEN");
     submit(&mut app);
     assert_eq!(toast(&app), Some("Saved the Jira account (add a site to test it)"));
     let saved = config_file();
@@ -1963,7 +1967,7 @@ fn a_shell_variable_saves_as_env() {
     let mut app = acme_app();
     app.open_settings(super::SettingsItem::NewAccount, true);
     fill(&mut app, "Email", "dana@example.com");
-    fill(&mut app, "Token", " $JIRA_API_TOKEN ");
+    fill(&mut app, "Read from", " $JIRA_API_TOKEN ");
     submit(&mut app);
     assert_eq!(toast(&app), Some("Saved the Jira account (add a site to test it)"));
     let saved = store::load_config().unwrap();
@@ -1972,10 +1976,10 @@ fn a_shell_variable_saves_as_env() {
     // Anything but a plain name is refused, not run, and the form keeps it as typed.
     app.open_settings(super::SettingsItem::NewAccount, true);
     fill(&mut app, "Email", "dana@example.com");
-    fill(&mut app, "Token", "$(printf jira-raw-secret)");
+    fill(&mut app, "Read from", "$(printf jira-raw-secret)");
     submit(&mut app);
     assert_eq!(settings_form(&app).error.as_deref(), Some(RAW_TOKEN_HINT));
-    assert_eq!(field(&app, "Token"), "$(printf jira-raw-secret)");
+    assert_eq!(field(&app, "Read from"), "$(printf jira-raw-secret)");
     assert_eq!(store::load_config().unwrap().accounts.len(), 2);
 }
 
@@ -1987,10 +1991,10 @@ fn a_shell_variable_shows_as_env_in_the_form() {
     let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
     fill(&mut app, "Site", &closed.to_string());
     fill(&mut app, "Email", "dana@example.com");
-    fill(&mut app, "Token", "${JIRA_API_TOKEN}");
+    fill(&mut app, "Read from", "${JIRA_API_TOKEN}");
     submit(&mut app);
     assert!(settings_form(&app).error.is_some());
-    assert_eq!(field(&app, "Token"), "env:JIRA_API_TOKEN");
+    assert_eq!(field(&app, "Read from"), "env:JIRA_API_TOKEN");
 }
 
 #[test]
@@ -1998,7 +2002,7 @@ fn saving_anyway_never_saves_a_token() {
     let mut app = acme_app();
     app.open_settings(super::SettingsItem::Account(0), true);
     assert_eq!(field(&app, "Provider"), "Linear");
-    fill(&mut app, "Token", "lin_api_raw_secret");
+    fill(&mut app, "Read from", "lin_api_raw_secret");
     // Save anyway is for a connection that failed: Enter again still refuses, and no test ran.
     for _ in 0..2 {
         submit(&mut app);
@@ -2162,7 +2166,8 @@ fn adds_a_jira_account_and_saves_where_its_token_comes_from_not_the_token() {
     let mut app = acme_app();
     prefix(&mut app, KeyCode::Char('A'));
     assert_eq!(field(&app, "Provider"), "Jira");
-    assert_eq!(field(&app, "Token"), "env:JIRA_API_TOKEN");
+    // Nothing that reads as done already.
+    assert_eq!(field(&app, "Read from"), "");
     fill(&mut app, "Email", "");
     app.on_key(key(KeyCode::Enter));
     assert_eq!(form_error(&app).as_deref(), Some("Enter the email you sign in to Jira with"));
@@ -2171,7 +2176,7 @@ fn adds_a_jira_account_and_saves_where_its_token_comes_from_not_the_token() {
     let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
     fill(&mut app, "Site", &closed.to_string());
     fill(&mut app, "Email", "you@example.com");
-    fill(&mut app, "Token", "cmd:printf %s-%s jira mock");
+    fill(&mut app, "Read from", "cmd:printf %s-%s jira mock");
     app.on_key(key(KeyCode::Enter));
     while matches!(&app.mode, Mode::Settings(s) if s.form.checking.is_some()) {
         settle(&mut app);
@@ -2205,14 +2210,14 @@ fn adds_a_linear_account_once_its_key_is_the_workspaces() {
     app.on_key(key(KeyCode::Up));
     app.on_key(key(KeyCode::Right));
     assert_eq!(field(&app, "Provider"), "Linear");
-    assert_eq!(field(&app, "Token"), "env:LINEAR_API_KEY");
+    assert_eq!(field(&app, "Read from"), "");
     app.on_key(key(KeyCode::Enter));
     assert_eq!(
         form_error(&app).as_deref(),
         Some("Enter the Linear workspace (the part after linear.app/)")
     );
     fill(&mut app, "Site", "globex");
-    fill(&mut app, "Token", "env:TASKMAN_TEST_UNSET_KEY");
+    fill(&mut app, "Read from", "env:TASKMAN_TEST_UNSET_KEY");
 
     // The key is another workspace's: said, and not saved until a second Enter.
     app.on_key(key(KeyCode::Enter));
@@ -2227,7 +2232,7 @@ fn adds_a_linear_account_once_its_key_is_the_workspaces() {
     assert_eq!(store::load_config().map(|c| c.accounts.len()).unwrap_or(0), 0);
 
     // Fixed: checked again, and saved.
-    fill(&mut app, "Token", "env:TASKMAN_TEST_UNSET_KEY_2");
+    fill(&mut app, "Read from", "env:TASKMAN_TEST_UNSET_KEY_2");
     app.on_key(key(KeyCode::Enter));
     answer_check(&mut app, Ok(("Dana Reyes", "globex")));
     assert_eq!(toast(&app), Some("✓ Connected to Linear globex as Dana Reyes"));
@@ -2243,7 +2248,7 @@ fn adds_a_linear_account_once_its_key_is_the_workspaces() {
     app.on_key(key(KeyCode::Up));
     app.on_key(key(KeyCode::Right));
     fill(&mut app, "Site", "globex");
-    fill(&mut app, "Token", "env:TASKMAN_TEST_UNSET_KEY_2");
+    fill(&mut app, "Read from", "env:TASKMAN_TEST_UNSET_KEY_2");
     app.on_key(key(KeyCode::Enter));
     answer_check(&mut app, Ok(("Dana Reyes", "globex")));
     assert_eq!(app.config.accounts.len(), 2);
@@ -2255,22 +2260,220 @@ fn adds_a_linear_account_once_its_key_is_the_workspaces() {
 fn a_second_linear_workspace_gets_a_key_of_its_own() {
     let mut app = acme_app();
     app.config.accounts[0].token = "env:LINEAR_API_KEY".into();
+    app.keychain = Some(crate::keychain::Keychain::os());
     prefix(&mut app, KeyCode::Char('A'));
     app.on_key(key(KeyCode::Up));
     app.on_key(key(KeyCode::Right));
-    assert_eq!(field(&app, "Token"), "env:LINEAR_API_KEY_2");
+    assert_eq!(field(&app, "Provider"), "Linear");
+    // The keychain first; picking a variable suggests one of its own.
+    assert_eq!(field(&app, "Keep in"), "Keychain");
+    assert_eq!(field(&app, "Read from"), "");
+    focus(&mut app, "Keep in");
+    app.on_key(key(KeyCode::Right));
+    assert_eq!(field(&app, "Read from"), "env:LINEAR_API_KEY_2");
     fill(&mut app, "Site", "globex-eu");
-    assert_eq!(field(&app, "Token"), "env:LINEAR_API_KEY_GLOBEX_EU");
+    assert_eq!(field(&app, "Read from"), "env:LINEAR_API_KEY_GLOBEX_EU");
     // A source the user typed stays.
-    fill(&mut app, "Token", "cmd:pass show linear");
+    fill(&mut app, "Read from", "cmd:pass show linear");
     fill(&mut app, "Site", "initech");
-    assert_eq!(field(&app, "Token"), "cmd:pass show linear");
+    assert_eq!(field(&app, "Read from"), "cmd:pass show linear");
     // Back to Jira, a default token follows the provider.
-    fill(&mut app, "Token", "env:LINEAR_API_KEY");
+    fill(&mut app, "Read from", "env:LINEAR_API_KEY");
     focus(&mut app, "Provider");
     app.on_key(key(KeyCode::Left));
     assert_eq!(field(&app, "Provider"), "Jira");
-    assert_eq!(field(&app, "Token"), "env:JIRA_API_TOKEN");
+    assert_eq!(field(&app, "Read from"), "env:JIRA_API_TOKEN");
+}
+
+#[test]
+fn without_a_keychain_the_variable_is_only_suggested() {
+    let mut app = acme_app();
+    app.config.accounts[0].token = "env:LINEAR_API_KEY".into();
+    prefix(&mut app, KeyCode::Char('A'));
+    app.on_key(key(KeyCode::Up));
+    app.on_key(key(KeyCode::Right));
+    fill(&mut app, "Site", "globex");
+    let form = settings_form(&app);
+    assert!(form.field("Keep in").unwrap().hidden && form.field("Token").unwrap().hidden);
+    let read_from = form.field("Read from").unwrap();
+    assert_eq!(read_from.value, "");
+    assert!(read_from.hint.starts_with("env:LINEAR_API_KEY_GLOBEX reads"), "{}", read_from.hint);
+    // Where to get a key, and the guide's other ways.
+    let links: Vec<&str> = read_from.links.iter().map(|(_, l, _)| l.as_str()).collect();
+    assert_eq!(links, ["Settings → Security & access → Personal API keys", "Storing a token"]);
+}
+
+/// A keychain for the App: the stub in this test's scratch folder (`keychain::stub`). Returns
+/// the stub's folder, where it logs its calls.
+fn with_keychain(app: &mut App) -> std::path::PathBuf {
+    let dir = crate::keychain::stub();
+    app.keychain = Some(crate::keychain::Keychain::os());
+    dir
+}
+
+/// A site that answers nothing, so a connection test fails at once and no tracker is reached.
+fn closed_site() -> String {
+    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string()
+}
+
+#[test]
+fn saves_a_pasted_token_to_the_keychain_and_only_its_name_to_config() {
+    let mut app = acme_app();
+    let stub = with_keychain(&mut app);
+    let label = crate::keychain::Keychain::os().label();
+    prefix(&mut app, KeyCode::Char('A'));
+    let form = settings_form(&app);
+    assert_eq!(
+        form.note.as_deref(),
+        Some("taskman never saves your token in its files, only where to read it from.")
+    );
+    assert_eq!(field(&app, "Keep in"), "Keychain");
+    assert!(form.field("Read from").unwrap().hidden);
+    let token = form.field("Token").unwrap();
+    assert!(token.masked && !token.hidden);
+    assert_eq!(token.hint, format!("paste it here; taskman puts it in your {label}"));
+    assert_eq!(token.links[0].1, "id.atlassian.com → Security → API tokens");
+    fill(&mut app, "Site", &closed_site());
+    fill(&mut app, "Email", "dana@example.com");
+
+    // Not a token: refused before anything runs.
+    fill(&mut app, "Token", "two words");
+    submit(&mut app);
+    let error = form_error(&app).unwrap();
+    assert!(error.starts_with("That doesn't look like a token") && !error.contains("two"));
+    assert!(!stub.join("calls").exists());
+
+    // Saved to the keychain, read back and tested; the test fails, and the form forgets the token.
+    fill(&mut app, "Token", "ATATT-mock-1");
+    submit(&mut app);
+    let error = form_error(&app).unwrap();
+    assert!(error.ends_with(". Fix it, or press Enter again to save anyway."), "{error}");
+    assert_eq!(field(&app, "Token"), "");
+    assert!(store::load_config().unwrap().accounts.is_empty(), "saved before the second Enter");
+    let k = crate::keychain::Keychain::os();
+    assert_eq!(k.read("jira-1"), Ok("ATATT-mock-1".into()));
+    submit(&mut app);
+    let a = &store::load_config().unwrap().accounts[1];
+    assert_eq!((a.id.as_str(), a.token.as_str()), ("jira-1", "keychain:jira-1"));
+    assert!(!config_file().contains("ATATT"));
+    let calls = std::fs::read_to_string(stub.join("calls")).unwrap();
+    assert!(!calls.contains("ATATT"), "the token was an argument: {calls}");
+
+    // Its settings say where the token is; Enter saves it again without pasting it.
+    let Mode::Settings(s) = &app.mode else { panic!("Settings closed") };
+    assert_eq!(s.items[s.cursor], super::SettingsItem::Account(1));
+    let form = settings_form(&app);
+    assert_eq!(field(&app, "Keep in"), "Keychain");
+    assert_eq!(
+        form.field("Token").unwrap().hint,
+        format!("in your {label}; paste a new one to replace it")
+    );
+    app.on_key(key(KeyCode::Enter));
+    submit(&mut app);
+    assert!(form_error(&app).unwrap().ends_with("press Enter again to save anyway."));
+    // A new one replaces it, under the same name.
+    fill(&mut app, "Token", "ATATT-mock-2");
+    submit(&mut app);
+    submit(&mut app);
+    assert_eq!(k.read("jira-1"), Ok("ATATT-mock-2".into()));
+    assert_eq!(store::load_config().unwrap().accounts[1].token, "keychain:jira-1");
+    assert_eq!(app.config.accounts.len(), 2);
+}
+
+#[test]
+fn a_jira_account_with_no_site_is_saved_to_the_keychain_untested() {
+    let mut app = acme_app();
+    with_keychain(&mut app);
+    prefix(&mut app, KeyCode::Char('A'));
+    fill(&mut app, "Email", "dana@example.com");
+    submit(&mut app);
+    assert_eq!(form_error(&app).as_deref(), Some("Paste the token into the Token field"));
+    fill(&mut app, "Token", "ATATT-mock");
+    submit(&mut app);
+    assert_eq!(toast(&app), Some("Saved the Jira account (add a site to test it)"));
+    assert_eq!(store::load_config().unwrap().accounts[1].token, "keychain:jira-1");
+    assert_eq!(crate::keychain::Keychain::os().read("jira-1"), Ok("ATATT-mock".into()));
+}
+
+#[test]
+fn a_keychain_that_fails_saves_nothing() {
+    let mut app = acme_app();
+    let stub = with_keychain(&mut app);
+    std::fs::write(stub.join("fail"), "The keyring is locked").unwrap();
+    prefix(&mut app, KeyCode::Char('A'));
+    fill(&mut app, "Email", "dana@example.com");
+    fill(&mut app, "Token", "ATATT-mock");
+    // No "save anyway": Enter again tries again.
+    for _ in 0..2 {
+        submit(&mut app);
+        let error = form_error(&app).unwrap();
+        assert!(
+            error.contains("The keyring is locked")
+                && error.ends_with(". Fix it, or pick Variable or command under Keep in."),
+            "{error}"
+        );
+    }
+    assert_eq!(field(&app, "Token"), "ATATT-mock", "kept to try again");
+    assert!(store::load_config().map(|c| c.accounts.len()).unwrap_or(0) < 2);
+}
+
+#[test]
+fn an_unset_variable_says_how_to_set_it_and_offers_the_keychain() {
+    let mut app = acme_app();
+    with_keychain(&mut app);
+    prefix(&mut app, KeyCode::Char('A'));
+    fill(&mut app, "Site", &closed_site());
+    fill(&mut app, "Email", "dana@example.com");
+    focus(&mut app, "Keep in");
+    app.on_key(key(KeyCode::Right));
+    assert_eq!(field(&app, "Read from"), "env:JIRA_API_TOKEN");
+    fill(&mut app, "Read from", "env:TASKMAN_TEST_UNSET_TOKEN");
+    submit(&mut app);
+    let error = form_error(&app).unwrap();
+    assert!(
+        error.starts_with("TASKMAN_TEST_UNSET_TOKEN isn't set in the shell taskman started from: add export TASKMAN_TEST_UNSET_TOKEN=… to ")
+            && error.ends_with(
+                ". Or pick Keychain under Keep in and paste the token there. Fix it, or press Enter again to save anyway."
+            ),
+        "{error}"
+    );
+}
+
+#[test]
+fn deleting_an_account_can_delete_its_keychain_item() {
+    let mut app = acme_app();
+    with_keychain(&mut app);
+    let k = crate::keychain::Keychain::os();
+    k.store("jira-1", "ATATT-mock").unwrap();
+    let account = serde_json::json!({ "id": "jira-1", "provider": "jira", "email": "dana@example.com",
+                                      "token": "keychain:jira-1" });
+    app.config.accounts.push(serde_json::from_value(account).unwrap());
+    app.open_settings(super::SettingsItem::Account(1), false);
+    app.on_key(ctrl('d'));
+    assert!(matches!(app.mode, Mode::ConfirmDeleteAccount(1)));
+    // Enter keeps the token: Esc here, and `d` deletes both.
+    app.on_key(key(KeyCode::Esc));
+    app.on_key(ctrl('d'));
+    app.on_key(key(KeyCode::Char('d')));
+    assert_eq!(toast(&app), Some("Deleted account dana@example.com · keychain"));
+    assert_eq!(store::load_config().unwrap().accounts.len(), 1);
+    settle(&mut app);
+    assert_eq!(
+        toast(&app).map(String::from),
+        Some(format!(
+            "Deleted account dana@example.com · keychain and its token in your {}",
+            k.label()
+        ))
+    );
+    assert!(k.read("jira-1").is_err());
+    // An account without an item of its own has no `d`.
+    let account = serde_json::json!({ "id": "jira-2", "provider": "jira", "email": "dana@example.com",
+                                      "token": "env:JIRA_API_TOKEN" });
+    app.config.accounts.push(serde_json::from_value(account).unwrap());
+    app.open_settings(super::SettingsItem::Account(1), false);
+    app.on_key(ctrl('d'));
+    app.on_key(key(KeyCode::Char('d')));
+    assert!(matches!(app.mode, Mode::ConfirmDeleteAccount(1)));
 }
 
 #[test]
@@ -2284,7 +2487,7 @@ fn edits_an_account_in_place() {
     app.on_key(key(KeyCode::Up));
     app.on_key(key(KeyCode::Right));
     assert_eq!(field(&app, "Provider"), "Linear");
-    fill(&mut app, "Token", "env:TASKMAN_TEST_UNSET_KEY");
+    fill(&mut app, "Read from", "env:TASKMAN_TEST_UNSET_KEY");
     app.on_key(key(KeyCode::Enter));
     answer_check(&mut app, Ok(("Dana Reyes", "acme")));
     assert_eq!(toast(&app), Some("✓ Connected to Linear acme as Dana Reyes"));

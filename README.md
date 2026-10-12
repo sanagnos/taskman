@@ -34,7 +34,7 @@ Prebuilt binaries cover macOS (Apple Silicon and Intel) and Linux x86_64 with gl
 
 1. Run `taskman`, press `ctrl+a P` and enter the path of a folder you work in.
 2. Press `ctrl+a n` to add an agent: a session in that folder. Every command starts with the prefix, `ctrl+a`, which shows the command keys; other keys go to the session. `ctrl+a ?` explains them.
-3. For tickets, pick a tracker in the project's settings (`ctrl+a ,`): Jira, Linear, GitHub Issues (the repository's issues, through `gh`), or Local files (markdown files in the project, no account). Jira and Linear need an API token, which taskman reads from an environment variable, your keychain or a password manager and never saves: [Storing a token](docs/guide.md#storing-a-token) shows how. Then `ctrl+a n` adds a ticket by number, key or link.
+3. For tickets, pick a tracker in the project's settings (`ctrl+a ,`): Jira, Linear, GitHub Issues (the repository's issues, through `gh`), or Local files (markdown files in the project, no account). Jira and Linear need an API token: on macOS, and on Linux with a desktop keyring, paste it into the account form, which keeps it in your keychain. Elsewhere taskman reads it from an environment variable or a password manager. It never saves the token in its own files: [Storing a token](docs/guide.md#storing-a-token) has the details. Then `ctrl+a n` adds a ticket by number, key or link.
 4. `ctrl+a 1`-`9` switches tickets, and `ctrl+a ctrl+a` jumps to the next one waiting on you.
 5. `ctrl+a q`, then Enter, quits; sessions resume where they left off next time.
 

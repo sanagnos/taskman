@@ -120,7 +120,7 @@ pub(super) enum Msg {
     Closed(String),
     /// Whether a project's folder can show PRs, checked again.
     Gh(PathBuf, github::Gh),
-    /// An account's token, read from its source (`env:` or `cmd:`).
+    /// An account's token, read from its source (`env:`, `cmd:` or `keychain:`).
     Token(String, Result<String, String>),
     /// A form's check finished: the form's `checking` id and what it found.
     Checked(u64, Check),
@@ -131,6 +131,8 @@ pub(super) enum Msg {
     OpenIssues(super::add_form::Listing, Result<Vec<crate::tracker::Listed>, String>),
     /// The multiplexer taskman runs in has the same prefix (`prefix_tip`).
     PrefixTip(String),
+    /// There's an OS keychain to save tokens to.
+    Keychain(crate::keychain::Keychain),
 }
 
 /// Looks ticket `key`'s PR up: one that `closes` its issue, else on its worktree's branch, else on
@@ -261,6 +263,7 @@ impl App {
                     self.toast = Some((tip, Instant::now() + Duration::from_secs(8)));
                 }
                 Msg::Gh(repo, gh) => _ = self.github.insert(repo, gh),
+                Msg::Keychain(k) => self.keychain = Some(k),
                 Msg::Token(source, token) => {
                     self.trackers.token_read(&source, token, &self.config, &self.projects);
                     let uses = |app: &Self, t: &Ticket| {

@@ -195,6 +195,9 @@ pub struct App {
     save_errors: [Option<String>; 2],
     /// The last form check's id.
     checks: u64,
+    /// The OS keychain the account form can save a token to, once found (`Keychain::probe`); None
+    /// where there's none, as on WSL or a server, and until the check at start is done.
+    pub keychain: Option<crate::keychain::Keychain>,
 }
 
 impl App {
@@ -214,6 +217,13 @@ impl App {
         let mut app = Self::from_saved(exe, saved, config, update::Updater::new(exe));
         app.bin_dir = link_bin(exe);
         app.rebuild_clients();
+        let tx = app.tx.clone();
+        std::thread::spawn(move || {
+            let keychain = crate::keychain::Keychain::os();
+            if keychain.probe() {
+                let _ = tx.send(Msg::Keychain(keychain));
+            }
+        });
         // Checked before the first frame, so the layout doesn't jump once it's known.
         app.github = std::thread::scope(|s| {
             let handles: Vec<_> = app
@@ -277,6 +287,7 @@ impl App {
             updater,
             save_errors: Default::default(),
             checks: 0,
+            keychain: None,
         }
     }
 

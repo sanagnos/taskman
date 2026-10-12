@@ -104,6 +104,9 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
+        // `d` deletes an account's keychain item with it, when it has one of its own.
+        let delete_item = matches!(self.mode, Mode::ConfirmDeleteAccount(i)
+            if key.code == KeyCode::Char('d') && self.own_keychain_item(i).is_some());
         match &mut self.mode {
             Mode::Normal => {}
             Mode::Help(h) => {
@@ -173,6 +176,15 @@ impl App {
                     (_, None, Ok(_)) => {}
                 }
                 self.mode = Mode::Normal;
+                return;
+            }
+            Mode::ConfirmDeleteAccount(i) if delete_item => {
+                let i = *i;
+                self.delete_account(i, true);
+                self.open_settings(
+                    SettingsItem::Account(i.min(self.config.accounts.len().saturating_sub(1))),
+                    false,
+                );
                 return;
             }
             // A dialog waits for Enter (yes) or Esc (cancel), so a stray key can't answer it.
@@ -245,7 +257,7 @@ impl App {
             Mode::ConfirmDeleteAccount(i) => {
                 let i = *i;
                 if key.code == KeyCode::Enter {
-                    self.delete_account(i);
+                    self.delete_account(i, false);
                     self.open_settings(
                         SettingsItem::Account(i.min(self.config.accounts.len().saturating_sub(1))),
                         false,

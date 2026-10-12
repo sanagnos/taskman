@@ -1694,7 +1694,7 @@ mod tests {
         config.accounts[0].site = "acme".into();
         let e = err(0, &config);
         assert!(
-            e.contains("$TASKMAN_TEST_UNSET_TOKEN is not set")
+            e.contains("TASKMAN_TEST_UNSET_TOKEN isn't set")
                 && e.contains("Linear account linear-1"),
             "{e}"
         );
