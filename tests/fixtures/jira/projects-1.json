@@ -1,0 +1,30 @@
+{
+  "self": "https://example.atlassian.net/rest/api/3/project/search?startAt=0&maxResults=2&orderBy=key",
+  "nextPage": "https://example.atlassian.net/rest/api/3/project/search?startAt=2&maxResults=2&orderBy=key",
+  "maxResults": 2,
+  "startAt": 0,
+  "total": 4,
+  "isLast": false,
+  "values": [
+    {
+      "self": "https://example.atlassian.net/rest/api/3/project/10000",
+      "id": "10000",
+      "key": "ENG",
+      "name": "Engineering",
+      "projectTypeKey": "software",
+      "simplified": false,
+      "style": "classic",
+      "isPrivate": false
+    },
+    {
+      "self": "https://example.atlassian.net/rest/api/3/project/10001",
+      "id": "10001",
+      "key": "OPS",
+      "name": "Operations",
+      "projectTypeKey": "service_desk",
+      "simplified": false,
+      "style": "classic",
+      "isPrivate": false
+    }
+  ]
+}

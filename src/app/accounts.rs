@@ -1,69 +1,78 @@
-//! Accounts in Settings: the new and edit forms, testing the connection before saving, and
-//! deleting one no project uses. A project that needs an account it doesn't have waits for this
-//! form (`AfterAccount`).
+//! Accounts: the fields a new one is filled in with (in Settings' account forms, and inline in the
+//! project forms), putting a pasted token in the keychain, testing the connection before saving,
+//! and deleting one no project uses.
 
 use super::forms::Check;
 use super::sync::Msg;
 use super::{App, Field, Form, FormKind, SettingsItem};
 use crate::keychain::{self, Keychain};
-use crate::store::{self, Account, Config, Project, Provider};
+use crate::store::{self, Account, Config, Provider};
 use crate::tracker;
-
-/// What to do with a project once the account it needs is saved.
-pub enum AfterAccount {
-    Add(Box<Project>),
-    Update(usize, Box<Project>),
-}
 
 /// The Keep in choices: the OS keychain, or a source the user gives.
 const KEYCHAIN: &str = "Keychain";
 const ELSEWHERE: &str = "Variable or command";
 
-/// The note atop a new account's form.
-const NOT_SAVED: &str = "taskman never saves your token in its files, only where to read it from.";
+/// The note atop a new account's form, and under a project form's Account when it adds one.
+pub(super) const NOT_SAVED: &str =
+    "taskman never saves your token in its files, only where to read it from.";
 
 /// The guide's ways of keeping a token, for a form with no keychain or one that failed.
 const GUIDE: &str =
     concat!(env!("CARGO_PKG_REPOSITORY"), "/blob/main/docs/guide.md#storing-a-token");
 
 /// Whether the account form keeps its token in the keychain: Keep in is shown and says so.
-fn keeps_in_keychain(form: &Form) -> bool {
+pub(super) fn keeps_in_keychain(form: &Form) -> bool {
     form.field("Keep in").is_some_and(|f| !f.hidden && f.value == KEYCHAIN)
+}
+
+/// The provider an account form is for.
+pub(super) fn form_provider(form: &Form) -> Provider {
+    match form.value("Provider").as_str() {
+        "Linear" => Provider::Linear,
+        _ => Provider::Jira,
+    }
 }
 
 /// The environment variable a new account's token is suggested in. A second Linear workspace gets
 /// its own, so two workspaces don't silently share a key.
-fn default_var(form: &Form, config: &Config) -> String {
-    if form.value("Provider") != "Linear" {
-        return Provider::Jira.token_var().into();
+fn default_var(provider: Provider, site: &str, config: &Config) -> String {
+    if provider.account_spans_sites() {
+        return provider.token_var().into();
     }
-    let var = Provider::Linear.token_var();
+    let var = provider.token_var();
     let first = format!("env:{var}");
-    if !config.accounts.iter().any(|a| a.provider == Provider::Linear && a.token == first) {
+    if !config.accounts.iter().any(|a| a.provider == provider && a.token == first) {
         return var.into();
     }
-    let ws: String = form
-        .value("Site")
+    let ws: String = site
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
         .collect();
     if ws.is_empty() { format!("{var}_2") } else { format!("{var}_{ws}") }
 }
 
-/// The new account form's defaults, after a change to its provider, site or Keep in. Picking a
-/// variable or command fills in the suggested variable; one the user typed stays.
-pub(super) fn account_defaults(form: &mut Form, config: &Config, keychain: Option<&Keychain>) {
+/// A new account's defaults, after a change to its provider, site or Keep in: `site` is the Jira
+/// site or Linear workspace typed. Picking a variable or command fills in the suggested variable;
+/// one the user typed stays.
+pub(super) fn account_defaults(
+    form: &mut Form,
+    provider: Provider,
+    site: &str,
+    config: &Config,
+    keychain: Option<&Keychain>,
+) {
     let source = form.value("Read from");
     let is_default = source.is_empty()
         || source == format!("env:{}", Provider::Jira.token_var())
         || source.starts_with(&format!("env:{}", Provider::Linear.token_var()));
     // Without a keychain the field starts empty, so a value there was typed.
     let picked = form.field("Keep in").is_some_and(|f| !f.hidden && f.value == ELSEWHERE);
+    let var = default_var(provider, site, config);
     if is_default && picked {
-        form.set("Read from", format!("env:{}", default_var(form, config)));
+        form.set("Read from", format!("env:{var}"));
     }
-    let var = default_var(form, config);
-    account_rows(form, None, keychain);
+    account_rows(form, provider, None, keychain);
     if let Some(f) = form.field_mut("Read from") {
         f.hint = read_from_hint(&var);
     }
@@ -81,17 +90,17 @@ fn raw_token_hint(provider: Provider) -> String {
     )
 }
 
-/// Shows the account form's rows for its provider and Keep in, with their hints. `account` is the
-/// one being edited, if any; `keychain` the one found, which names itself in the hints.
+/// Shows an account's rows for its provider and Keep in, with their hints: in an account form, or
+/// a project form adding one. `account` is the one being edited, if any; `keychain` the one found,
+/// which names itself in the hints.
 pub(super) fn account_rows(
     form: &mut Form,
+    provider: Provider,
     account: Option<&Account>,
     keychain: Option<&Keychain>,
 ) {
-    let provider = match form.value("Provider").as_str() {
-        "Linear" => Provider::Linear,
-        _ => Provider::Jira,
-    };
+    // A project form's site field is its own, with its own hint.
+    let account_form = matches!(form.kind, FormKind::Account | FormKind::AccountSettings(_));
     let label = keychain.map_or_else(|| Keychain::os().label(), Keychain::label);
     let keychain = keeps_in_keychain(form);
     let saved_there = account.is_some_and(|a| keychain::name_of(&a.token).is_some());
@@ -102,12 +111,14 @@ pub(super) fn account_rows(
     let var = provider.token_var();
     for f in &mut form.fields {
         match f.label {
-            "Site" if provider == Provider::Linear => {
+            "Site" if account_form && provider == Provider::Linear => {
                 f.hint = "workspace: the part after linear.app/".into();
             }
-            "Site" => f.hint = "where to test the token, like your-site.atlassian.net".into(),
+            "Site" if account_form => {
+                f.hint = "where to test the token, like your-site.atlassian.net".into();
+            }
             "Email" => {
-                f.hidden = provider == Provider::Linear;
+                f.hidden = !provider.signs_in_with_email();
                 f.hint = "the email you sign in to Atlassian with".into();
             }
             "Keep in" => {
@@ -175,7 +186,7 @@ impl App {
     }
 
     /// The Keep in field: shown where there's a keychain, or the account's token is in one.
-    fn keep_in(&self, in_keychain: bool) -> Field {
+    pub(super) fn keep_in(&self, in_keychain: bool) -> Field {
         let mut f = Field::choice(
             "Keep in",
             vec![KEYCHAIN.into(), ELSEWHERE.into()],
@@ -186,35 +197,36 @@ impl App {
         f
     }
 
-    pub(super) fn new_account_form(
-        &self,
-        provider: Provider,
-        site: String,
-        then: Option<AfterAccount>,
-    ) -> Box<Form> {
-        let providers = vec!["Jira".to_string(), "Linear".to_string()];
+    /// A new account's own fields: Email, Keep in, Token and Read from, shown as its provider
+    /// and Keep in need (`account_rows`).
+    pub(super) fn new_account_fields(&self) -> Vec<Field> {
         let email = self
             .config
             .accounts
             .iter()
-            .find(|a| a.provider == Provider::Jira && !a.email.is_empty())
+            .find(|a| a.provider.signs_in_with_email() && !a.email.is_empty())
             .map(|a| a.email.clone())
             .or_else(|| std::env::var("JIRA_EMAIL").ok())
             .unwrap_or_default();
-        let mut form = Form::new(
-            FormKind::Account { then },
-            "New account",
-            vec![
-                Field::choice("Provider", providers, provider.label(), "←/→ to change"),
-                Field::text("Site", site, ""),
-                Field::text("Email", email, ""),
-                self.keep_in(false),
-                Field { masked: true, ..Field::text("Token", "", "") },
-                Field::text("Read from", "", ""),
-            ],
-        );
+        vec![
+            Field::text("Email", email, ""),
+            self.keep_in(false),
+            Field { masked: true, ..Field::text("Token", "", "") },
+            Field::text("Read from", "", ""),
+        ]
+    }
+
+    pub(super) fn new_account_form(&self, provider: Provider, site: String) -> Box<Form> {
+        let providers = vec!["Jira".to_string(), "Linear".to_string()];
+        let mut fields = vec![
+            Field::choice("Provider", providers, provider.label(), "←/→ to change"),
+            Field::text("Site", site, ""),
+        ];
+        fields.extend(self.new_account_fields());
+        let mut form = Form::new(FormKind::Account, "New account", fields);
         form.note = Some(NOT_SAVED.into());
-        account_defaults(&mut form, &self.config, self.keychain.as_ref());
+        let site = form.value("Site");
+        account_defaults(&mut form, provider, &site, &self.config, self.keychain.as_ref());
         let token = if keeps_in_keychain(&form) { "Token" } else { "Read from" };
         form.focus_on(if form.value("Site").is_empty() {
             "Site"
@@ -248,7 +260,7 @@ impl App {
             Field::text("Read from", if in_keychain { "" } else { a.token.as_str() }, ""),
         ];
         let mut form = Form::new(FormKind::AccountSettings(i), "Account", fields);
-        account_rows(&mut form, Some(a), self.keychain.as_ref());
+        account_rows(&mut form, a.provider, Some(a), self.keychain.as_ref());
         form.focus_on("Site");
         let users = self.account_users(i);
         form.note = Some(if users.is_empty() {
@@ -272,18 +284,61 @@ impl App {
     ) -> Result<(), String> {
         let provider = match existing {
             Some(i) => self.config.accounts[i].provider,
-            None if form.value("Provider") == "Linear" => Provider::Linear,
-            None => Provider::Jira,
+            None => form_provider(form),
         };
         let site = form.value("Site");
-        if provider == Provider::Linear && site.is_empty() {
-            return Err("Enter the Linear workspace (the part after linear.app/)".into());
+        let (account, write) = self.draft_account(form, provider, site, existing)?;
+        // Test the token before saving, against the account's site (a Jira account without one is
+        // saved untested); a second Enter saves anyway.
+        let test_site = (!account.site.is_empty()).then(|| account.site.clone());
+        let tested = !provider.account_spans_sites() || test_site.is_some();
+        let verdict = match form.checked.clone() {
+            Some(Check::Stored(Err(e))) => {
+                form.checked = None;
+                return Err(stored_error(&e));
+            }
+            Some(Check::Account(v)) => Some(v),
+            Some(_) => None,
+            None if tested || write.is_some() => {
+                self.check_account(form, &account, test_site, tested, write, None);
+                return Ok(());
+            }
+            None => None,
+        };
+        self.stored(form, &account, write.is_some());
+        let toast = match verdict {
+            Some(verdict) => self.account_verdict(form, &account, test_site.as_deref(), verdict)?,
+            None => {
+                // Untested, so read its token again: it may be a new one behind the same source.
+                self.trackers.forget(&account.token);
+                format!("Saved the {} account (add a site to test it)", provider.label())
+            }
+        };
+        let index = self.keep_account(account, existing);
+        self.toast(toast);
+        self.settings_show(SettingsItem::Account(index), self.account_settings_form(index), false);
+        Ok(())
+    }
+
+    /// The account a form's fields describe for `provider` and `site` (the Jira site or Linear
+    /// workspace typed), its id left empty; and the token pasted to put in the keychain first, as
+    /// its item's name and the token. `existing` is the account being edited.
+    pub(super) fn draft_account(
+        &self,
+        form: &mut Form,
+        provider: Provider,
+        site: String,
+        existing: Option<usize>,
+    ) -> Result<(Account, Option<(String, String)>), String> {
+        if !provider.account_spans_sites() && site.is_empty() {
+            return Err(provider.site_missing().into());
         }
-        let email = if provider == Provider::Jira { form.value("Email") } else { String::new() };
-        if provider == Provider::Jira && email.is_empty() {
-            return Err("Enter the email you sign in to Jira with".into());
+        let email =
+            if provider.signs_in_with_email() { form.value("Email") } else { String::new() };
+        if provider.signs_in_with_email() && email.is_empty() {
+            return Err(format!("Enter the email you sign in to {} with", provider.label()));
         }
-        // The token to put in the keychain first, if one was pasted: its keychain, item and value.
+        // The token to put in the keychain first, if one was pasted: its item and value.
         let mut write = None;
         let token = if keeps_in_keychain(form) {
             let saved = existing.and_then(|i| keychain::name_of(&self.config.accounts[i].token));
@@ -329,119 +384,114 @@ impl App {
             token
         };
         let site = provider.site_from_input(site);
-        let mut account = Account { id: String::new(), provider, site, email, token };
+        Ok((Account { id: String::new(), provider, site, email, token }, write))
+    }
 
-        // Test the token before saving, against the account's site or the waiting project's (a
-        // Jira account with neither is saved untested); a second Enter saves anyway.
-        let test_site = match (&account.site, &form.kind) {
-            (s, _) if !s.is_empty() => Some(s.clone()),
-            (
-                _,
-                FormKind::Account { then: Some(AfterAccount::Add(p) | AfterAccount::Update(_, p)) },
-            ) => p.tracker.as_ref().map(|t| t.site.clone()),
-            _ => None,
-        };
-        let tested = provider == Provider::Linear || test_site.is_some();
-        // The check puts a pasted token in the keychain, then reads the token as the clients will
-        // and tests it; the clients use what it read rather than reading it again.
-        let verdict = match form.checked.clone() {
-            Some(Check::Stored(Err(e))) => {
-                form.checked = None;
-                return Err(format!("{e}. Fix it, or pick Variable or command under Keep in."));
+    /// Checks `account` in the background for `form`: puts a pasted token (`write`) in the
+    /// keychain first, then, if `tested`, reads the token as the clients will and tests it against
+    /// `site` (Jira's; Linear's key knows its workspace), and with `project` checks that Jira
+    /// project exists too. The clients use the token it read rather than reading it again.
+    pub(super) fn check_account(
+        &mut self,
+        form: &mut Form,
+        account: &Account,
+        site: Option<String>,
+        tested: bool,
+        write: Option<(String, String)>,
+        project: Option<String>,
+    ) {
+        let (a, site) = (account.clone(), site.unwrap_or_default());
+        let k = self.keychain.clone().unwrap_or_else(Keychain::os);
+        self.start_check(form, move |tx| {
+            if let Some((name, token)) = write
+                && let Err(e) = k.store(&name, &token)
+            {
+                return Check::Stored(Err(e));
             }
-            Some(Check::Account(v)) => Some(v),
-            Some(_) => None,
-            None if tested || write.is_some() => {
-                let (a, site) = (account.clone(), test_site.clone().unwrap_or_default());
-                let k = self.keychain.clone().unwrap_or_else(Keychain::os);
-                self.start_check(form, move |tx| {
-                    if let Some((name, token)) = write
-                        && let Err(e) = k.store(&name, &token)
-                    {
-                        return Check::Stored(Err(e));
-                    }
-                    if !tested {
-                        return Check::Stored(Ok(()));
-                    }
-                    // The keychain just saved to: the one `resolve_token` reads, but taken from
-                    // here so a unit test's stub is the one asked.
-                    let token = match keychain::name_of(&a.token) {
-                        Some(name) => k.read(name),
-                        None => a.resolve_token(),
-                    };
-                    let _ = tx.send(Msg::Token(a.token.clone(), token.clone()));
-                    Check::Account(token.and_then(|tok| tracker::whoami(&a, &site, &tok)))
-                });
-                return Ok(());
+            if !tested {
+                return Check::Stored(Ok(()));
             }
-            None => None,
-        };
-        // In the keychain now: out of the form, which saves without it.
-        if write.is_some() {
+            // The keychain just saved to: the one `resolve_token` reads, but taken from here so a
+            // unit test's stub is the one asked.
+            let token = match keychain::name_of(&a.token) {
+                Some(name) => k.read(name),
+                None => a.resolve_token(),
+            };
+            let _ = tx.send(Msg::Token(a.token.clone(), token.clone()));
+            let who = token.clone().and_then(|tok| tracker::whoami(&a, &site, &tok));
+            match (project, token) {
+                (Some(key), Ok(tok)) if who.is_ok() => {
+                    let jira =
+                        crate::jira::JiraConfig::new(&store::jira_base(&site), &a.email, &tok);
+                    Check::Signed(who, jira.project_exists(&key))
+                }
+                _ => Check::Account(who),
+            }
+        });
+    }
+
+    /// After a check that got past the keychain: a token it put there is out of the form, which
+    /// saves without it.
+    pub(super) fn stored(&self, form: &mut Form, account: &Account, wrote: bool) {
+        if wrote {
             form.set("Token", "");
             form.stored = Some(account.token.clone());
         }
+    }
+
+    /// What a connection test found, as the toast once the account is saved; or the error that
+    /// sends the form back, after which Enter again saves anyway. `site` is the one it was tested
+    /// against (Jira's).
+    pub(super) fn account_verdict(
+        &mut self,
+        form: &mut Form,
+        account: &Account,
+        site: Option<&str>,
+        verdict: Result<(String, String), String>,
+    ) -> Result<String, String> {
         // A variable that isn't set: the keychain is the way that needs no restart.
         let offer = if account.token.starts_with("env:") && self.keychain.is_some() {
             " Or pick Keychain under Keep in and paste the token there."
         } else {
             ""
         };
-        let toast = match (provider, test_site, verdict) {
-            (Provider::Linear, _, Some(verdict)) => {
-                // The key must belong to the workspace entered.
-                let problem = match &verdict {
-                    Ok((_, ws)) if !ws.is_empty() && !ws.eq_ignore_ascii_case(&account.site) => {
-                        Some(format!(
-                            "This key belongs to the workspace {ws}, not {}",
-                            account.site
-                        ))
-                    }
-                    Ok(_) => None,
-                    Err(e) => Some(e.clone()),
-                };
-                match (problem, verdict) {
-                    (None, Ok((name, _))) => {
-                        format!("✓ Connected to Linear {} as {name}", account.site)
-                    }
-                    (Some(p), _) if !form.save_anyway => {
-                        form.save_anyway = true;
-                        return Err(format!(
-                            "{p}.{offer} Fix it, or press Enter again to save anyway."
-                        ));
-                    }
-                    _ => format!(
-                        "Saved the account without a working connection; check {}",
-                        store::config_path().display()
-                    ),
-                }
+        // A Linear key must belong to the workspace entered.
+        let problem = match &verdict {
+            Ok((_, ws))
+                if !account.provider.account_spans_sites()
+                    && !ws.is_empty()
+                    && !ws.eq_ignore_ascii_case(&account.site) =>
+            {
+                Some(format!("This key belongs to the workspace {ws}, not {}", account.site))
             }
-            (Provider::Jira, Some(site), Some(verdict)) => match verdict {
-                Ok((name, _)) => format!("✓ Connected to {} as {name}", store::site_host(&site)),
-                Err(e) if !form.save_anyway => {
-                    form.save_anyway = true;
-                    return Err(format!(
-                        "{e}.{offer} Fix it, or press Enter again to save anyway."
-                    ));
-                }
-                Err(_) => {
-                    format!(
-                        "Saved the account without a working connection; check {}",
-                        store::config_path().display()
-                    )
-                }
-            },
-            (Provider::Jira, _, _) => {
-                // Untested, so read its token again: it may be a new one behind the same source.
-                self.trackers.forget(&account.token);
-                "Saved the Jira account (add a site to test it)".to_string()
-            }
-            // The account form doesn't offer Local files, which needs no account; Linear always
-            // has a verdict.
-            _ => "Saved".to_string(),
+            Ok(_) => None,
+            Err(e) => Some(e.clone()),
         };
+        match (problem, verdict) {
+            (None, Ok((name, _))) => {
+                Ok(match site.filter(|_| account.provider.account_spans_sites()) {
+                    Some(site) => format!("✓ Connected to {} as {name}", store::site_host(site)),
+                    None => format!(
+                        "✓ Connected to {} {} as {name}",
+                        account.provider.label(),
+                        account.site
+                    ),
+                })
+            }
+            (Some(p), _) if !form.save_anyway => {
+                form.save_anyway = true;
+                Err(format!("{p}.{offer} Fix it, or press Enter again to save anyway."))
+            }
+            _ => Ok(format!(
+                "Saved the account without a working connection; check {}",
+                store::config_path().display()
+            )),
+        }
+    }
 
-        // Edit in place, or reuse an identical account rather than adding a duplicate.
+    /// Saves `account` as the one at `existing`, or as a new one unless an identical one is there
+    /// already; returns its index. Its id is set.
+    pub(super) fn keep_account(&mut self, mut account: Account, existing: Option<usize>) -> usize {
         let same = |a: &Account| {
             a.provider == account.provider
                 && a.email == account.email
@@ -451,18 +501,15 @@ impl App {
         let index = match existing {
             Some(i) => {
                 account.id = self.config.accounts[i].id.clone();
-                self.config.accounts[i] = account.clone();
+                self.config.accounts[i] = account;
                 self.save_config();
                 i
             }
             None => match self.config.accounts.iter().position(same) {
-                Some(i) => {
-                    account.id = self.config.accounts[i].id.clone();
-                    i
-                }
+                Some(i) => i,
                 None => {
-                    account.id = self.config.next_id(provider);
-                    self.config.accounts.push(account.clone());
+                    account.id = self.config.next_id(account.provider);
+                    self.config.accounts.push(account);
                     self.save_config();
                     self.config.accounts.len() - 1
                 }
@@ -472,35 +519,11 @@ impl App {
         for tv in &mut self.tickets {
             tv.jira.request(false);
         }
-        self.toast(toast);
-        let after = match &mut form.kind {
-            FormKind::Account { then } => then.take(),
-            _ => None,
-        };
-        let Some(after) = after else {
-            self.settings_show(
-                SettingsItem::Account(index),
-                self.account_settings_form(index),
-                false,
-            );
-            return Ok(());
-        };
-        {
-            match after {
-                AfterAccount::Add(mut project) => {
-                    if let Some(t) = &mut project.tracker {
-                        t.account = Some(account.id.clone());
-                    }
-                    self.add_project(*project);
-                }
-                AfterAccount::Update(p, mut project) => {
-                    if let Some(t) = &mut project.tracker {
-                        t.account = Some(account.id.clone());
-                    }
-                    self.update_project(p, *project);
-                }
-            }
-        }
-        Ok(())
+        index
     }
+}
+
+/// A keychain that couldn't take the token: no "save anyway" gets past it.
+pub(super) fn stored_error(e: &str) -> String {
+    format!("{e}. Fix it, or pick Variable or command under Keep in.")
 }

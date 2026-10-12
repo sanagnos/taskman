@@ -400,6 +400,29 @@ pub(crate) fn answer_check(app: &mut App, found: Result<(&str, &str), String>) {
     app.drain_messages();
 }
 
+/// Waits for the open project form's listing of what its account can see, and answers it with
+/// `got` (key and name of each) as the tracker would; the listing's own thread reaches no tracker.
+pub(crate) fn answer_choices(app: &mut App, got: Result<&[(&str, &str)], &str>) {
+    let got = got
+        .map(|l| {
+            l.iter()
+                .map(|(k, n)| crate::tracker::Choice { key: k.to_string(), name: n.to_string() })
+                .collect()
+        })
+        .map_err(String::from);
+    let mut before = Vec::new();
+    loop {
+        let msg = app.rx.recv_timeout(Duration::from_secs(10)).expect("nothing listed");
+        if let super::sync::Msg::Choices(id, _) = msg {
+            before.into_iter().for_each(|m| app.tx.send(m).unwrap());
+            app.tx.send(super::sync::Msg::Choices(id, got)).unwrap();
+            app.drain_messages();
+            return;
+        }
+        before.push(msg);
+    }
+}
+
 /// The toast showing, if any.
 pub(crate) fn toast(app: &App) -> Option<&str> {
     app.toast.as_ref().map(|(t, _)| t.as_str())

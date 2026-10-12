@@ -471,6 +471,19 @@ pub fn default_prefix(project: &str) -> String {
     prefix.to_uppercase()
 }
 
+/// The prefix a board's tickets use: the most common one, the first by name when two are as common;
+/// None for an empty board.
+pub fn prefix_in_use(files: &[File]) -> Option<String> {
+    let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for f in files {
+        if let Some((prefix, _)) = f.key.split_once('-') {
+            *counts.entry(prefix).or_default() += 1;
+        }
+    }
+    let most = counts.values().copied().max()?;
+    counts.into_iter().find(|(_, n)| *n == most).map(|(p, _)| p.to_string())
+}
+
 /// A lock on creating tickets in one board, held while the file exists. Kept in the state folder
 /// rather than the board, so it never shows in the project's git status.
 struct Lock(PathBuf);
@@ -721,6 +734,18 @@ mod tests {
         assert_eq!(category("review"), "indeterminate");
         assert_eq!(category("todo"), "new");
         assert_eq!(category("ideas"), "new");
+    }
+
+    #[test]
+    fn the_prefix_in_use_is_the_most_common() {
+        let file = |name: &str| {
+            let (key, slug) = parse_filename(name).unwrap();
+            File { key, slug, column: "todo".into(), path: PathBuf::from(name) }
+        };
+        assert_eq!(prefix_in_use(&[]), None);
+        let files = [file("wp-1-a.md"), file("OPS-2-b.md"), file("WP-3.md"), file("ENG-4-c.md")];
+        assert_eq!(prefix_in_use(&files).as_deref(), Some("WP"));
+        assert_eq!(prefix_in_use(&files[1..]).as_deref(), Some("ENG"));
     }
 
     #[test]

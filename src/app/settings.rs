@@ -92,7 +92,7 @@ impl App {
             SettingsItem::Project(p) => self.project_settings_form(p),
             SettingsItem::NewProject => self.new_project_form(),
             SettingsItem::Account(i) => self.account_settings_form(i),
-            SettingsItem::NewAccount => self.new_account_form(Provider::Jira, String::new(), None),
+            SettingsItem::NewAccount => self.new_account_form(Provider::Jira, String::new()),
         }
     }
 
@@ -105,6 +105,9 @@ impl App {
             _ => item,
         };
         self.settings_show(item, self.form_for(item), editing);
+        if editing {
+            self.project_form_opened();
+        }
     }
 
     /// Shows `form` in Settings with `item` selected in the list.
@@ -144,7 +147,10 @@ impl App {
                     s.form = form;
                 }
             }
-            KeyCode::Enter | KeyCode::Tab | KeyCode::Right | KeyCode::Char('e') => s.editing = true,
+            KeyCode::Enter | KeyCode::Tab | KeyCode::Right | KeyCode::Char('e') => {
+                s.editing = true;
+                self.project_form_opened();
+            }
             KeyCode::Char('d') if ctrl => self.delete_selected_setting(),
             _ => {}
         }

@@ -1,6 +1,6 @@
 //! Linear GraphQL client: one issue with its comments, in the same shape as the other trackers.
 
-use crate::tracker::{COMMENTS, Comment, Issue, Listed};
+use crate::tracker::{CHOICE_PAGES, COMMENTS, Choice, Comment, Issue, Listed};
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -68,6 +68,22 @@ impl LinearConfig {
         Ok((name, d["organization"]["urlKey"].as_str().unwrap_or("").to_string()))
     }
 
+    /// The workspace's teams the key can see, a page at a time, up to `CHOICE_PAGES` pages.
+    pub fn teams(&self) -> Result<Vec<Choice>, String> {
+        let mut teams = Vec::new();
+        let mut after = Value::Null;
+        for _ in 0..CHOICE_PAGES {
+            let d = self.query(TEAMS, &json!({ "after": after }))?;
+            let (got, next) = parse_teams(&d);
+            teams.extend(got);
+            match next {
+                Some(cursor) => after = Value::String(cursor),
+                None => break,
+            }
+        }
+        Ok(teams)
+    }
+
     /// The open issues of the team whose key is `prefix` (not in a completed or canceled state),
     /// the 100 most recently updated; `mine` when assigned to the key's user.
     pub fn open_issues(&self, prefix: &str) -> Result<Vec<Listed>, String> {
@@ -88,6 +104,31 @@ const OPEN: &str = r#"query Open($team: String!) {
     nodes { identifier title assignee { id } }
   }
 }"#;
+
+const TEAMS: &str = r#"query Teams($after: String) {
+  teams(first: 100, after: $after) {
+    nodes { key name }
+    pageInfo { hasNextPage endCursor }
+  }
+}"#;
+
+/// A page of teams, and the cursor of the next page if there is one.
+fn parse_teams(d: &Value) -> (Vec<Choice>, Option<String>) {
+    let teams = d["teams"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| {
+            Some(Choice {
+                key: t["key"].as_str()?.to_string(),
+                name: t["name"].as_str().unwrap_or("").to_string(),
+            })
+        })
+        .collect();
+    let page = &d["teams"]["pageInfo"];
+    let next = page["endCursor"].as_str().filter(|_| page["hasNextPage"] == true).map(String::from);
+    (teams, next)
+}
 
 fn parse_open(d: &Value) -> Vec<Listed> {
     let me = d["viewer"]["id"].as_str().unwrap_or("");
@@ -427,6 +468,24 @@ mod tests {
         assert_eq!(client(&server).open_issues("ENG").unwrap_err(), "Linear rejected the API key");
     }
 
+    #[test]
+    fn lists_the_teams_a_page_at_a_time() {
+        let server = replay::serve(vec![
+            (200, include_str!("../tests/fixtures/linear/teams-1.json")),
+            (200, include_str!("../tests/fixtures/linear/teams-2.json")),
+        ]);
+        let choices = client(&server).choices().unwrap().unwrap();
+        assert_eq!(
+            choices.iter().map(|c| (c.key.as_str(), c.name.as_str())).collect::<Vec<_>>(),
+            [("ENG", "Engineering"), ("OPS", "Operations"), ("WEB", "Website")]
+        );
+        let vars: Vec<Value> =
+            server.requests().iter().map(|r| r.json()["variables"].clone()).collect();
+        assert_eq!(vars, [json!({ "after": null }), json!({ "after": "cursor-teams-1" })]);
+        let server = replay::serve(vec![(401, "")]);
+        assert_eq!(client(&server).choices().unwrap().unwrap_err(), "Linear rejected the API key");
+    }
+
     // Properties of the Markdown cleanup, over generated text.
 
     /// A word: letters and digits, so it can't read as Markdown.
@@ -482,7 +541,8 @@ mod tests {
         )) {
             let v = Value::Object(v.into_iter().map(|(k, v)| (k.to_string(), v)).collect());
             parse_issue(&v, markdown_to_text);
-            parse_open(&json!({ "viewer": v.clone(), "issues": { "nodes": [v] } }));
+            parse_open(&json!({ "viewer": v.clone(), "issues": { "nodes": [v.clone()] } }));
+            parse_teams(&json!({ "teams": { "nodes": [v.clone()], "pageInfo": v } }));
         }
     }
 }

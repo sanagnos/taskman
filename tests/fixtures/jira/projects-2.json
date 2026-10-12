@@ -1,0 +1,29 @@
+{
+  "self": "https://example.atlassian.net/rest/api/3/project/search?startAt=2&maxResults=2&orderBy=key",
+  "maxResults": 2,
+  "startAt": 2,
+  "total": 4,
+  "isLast": true,
+  "values": [
+    {
+      "self": "https://example.atlassian.net/rest/api/3/project/10002",
+      "id": "10002",
+      "key": "WEB",
+      "name": "Website",
+      "projectTypeKey": "software",
+      "simplified": true,
+      "style": "next-gen",
+      "isPrivate": false
+    },
+    {
+      "self": "https://example.atlassian.net/rest/api/3/project/10003",
+      "id": "10003",
+      "key": "Not a key",
+      "name": "Imported",
+      "projectTypeKey": "business",
+      "simplified": false,
+      "style": "classic",
+      "isPrivate": true
+    }
+  ]
+}

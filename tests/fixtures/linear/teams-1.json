@@ -1,0 +1,11 @@
+{
+  "data": {
+    "teams": {
+      "nodes": [
+        { "key": "WEB", "name": "Website" },
+        { "key": "ENG", "name": "Engineering" }
+      ],
+      "pageInfo": { "hasNextPage": true, "endCursor": "cursor-teams-1" }
+    }
+  }
+}

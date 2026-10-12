@@ -127,6 +127,9 @@ pub(super) enum Msg {
     /// Text went to the clipboard, or no command could take it; with what the toast calls it.
     Copied(String, selection::Copied, Option<String>),
     Toast(String),
+    /// What a project form's account can see to pick the ticket prefix from: the listing's id
+    /// (`Choices`), and the list.
+    Choices(u64, Result<Vec<crate::tracker::Choice>, String>),
     /// A project's open issues, for the Add form: the request that listed them, and the list.
     OpenIssues(super::add_form::Listing, Result<Vec<crate::tracker::Listed>, String>),
     /// The multiplexer taskman runs in has the same prefix (`prefix_tip`).
@@ -281,6 +284,7 @@ impl App {
                     }
                 }
                 Msg::OpenIssues(listing, res) => self.open_issues_listed(listing, res),
+                Msg::Choices(id, got) => self.choices_listed(id, got),
                 Msg::Checked(id, check) => {
                     let form = match &mut self.mode {
                         Mode::Form(f) => f,

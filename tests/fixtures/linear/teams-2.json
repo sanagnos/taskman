@@ -1,0 +1,8 @@
+{
+  "data": {
+    "teams": {
+      "nodes": [{ "key": "OPS", "name": "Operations" }],
+      "pageInfo": { "hasNextPage": false, "endCursor": "cursor-teams-2" }
+    }
+  }
+}

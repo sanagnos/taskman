@@ -149,6 +149,18 @@ impl Client {
         self.board().is_none()
     }
 
+    /// What the account can pick the project's ticket prefix from (`Provider::lists_choices`):
+    /// Jira's projects or Linear's teams it can see, sorted by key. None for the others, which
+    /// have nothing to look up.
+    pub fn choices(&self) -> Option<Result<Vec<Choice>, String>> {
+        let choices = match self {
+            Client::Jira(c) => c.projects(),
+            Client::Linear(c) => c.teams(),
+            Client::Local(_) | Client::Github(_) => return None,
+        };
+        Some(choices.map(tidy_choices))
+    }
+
     /// Whether the project `prefix` names exists there (`Provider::checks_prefix`); Err when that
     /// couldn't be told (offline, say).
     pub fn project_exists(&self, prefix: &str) -> Result<bool, String> {
@@ -157,6 +169,47 @@ impl Client {
             Client::Linear(_) | Client::Local(_) | Client::Github(_) => Ok(true),
         }
     }
+}
+
+/// What a project's ticket prefix can be: a Jira project or Linear team the account can see, with
+/// its key (the prefix) and its name, as the project form lists them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Choice {
+    pub key: String,
+    pub name: String,
+}
+
+/// Pages a listing of choices may take before taskman stops asking: a thousand projects or more,
+/// and the key can still be typed.
+pub const CHOICE_PAGES: usize = 10;
+
+/// The choices `input` picks, for the project form: those whose key starts with it, or whose name
+/// has every word typed, ignoring case. Empty input lists them all; the order is kept.
+pub fn choosing<'a>(choices: &'a [Choice], input: &str) -> Vec<&'a Choice> {
+    let s = input.trim().to_lowercase();
+    let words: Vec<&str> = s.split_whitespace().collect();
+    choices
+        .iter()
+        .filter(|c| {
+            let name = c.name.to_lowercase();
+            c.key.to_lowercase().starts_with(&s) || words.iter().all(|w| name.contains(w))
+        })
+        .collect()
+}
+
+/// Keys that read as a ticket prefix, each once, sorted: one the tracker wrote some other way
+/// can't be a prefix, and is left out.
+pub(crate) fn tidy_choices(mut choices: Vec<Choice>) -> Vec<Choice> {
+    choices.retain(|c| is_prefix(&c.key));
+    choices.sort_by(|a, b| a.key.cmp(&b.key));
+    choices.dedup_by(|a, b| a.key == b.key);
+    choices
+}
+
+/// Whether `s` reads as a ticket prefix: letters, digits or `_`, starting with a letter.
+pub fn is_prefix(s: &str) -> bool {
+    s.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// An open issue, as the Add form lists it.
@@ -471,6 +524,51 @@ impl Provider {
         }
     }
 
+    /// The project form's field for the ticket prefix: the Jira project or Linear team it's the
+    /// key of, picked from those the account can see (`lists_choices`), or typed for the others.
+    pub fn prefix_field(self) -> &'static str {
+        match self {
+            Provider::Jira => "Project",
+            Provider::Linear => "Team",
+            Provider::Local | Provider::Github => "Ticket prefix",
+        }
+    }
+
+    /// Whether the project form lists what the account can see to pick the prefix from
+    /// (`Client::choices`), once it can sign in.
+    pub fn lists_choices(self) -> bool {
+        match self {
+            Provider::Jira | Provider::Linear => true,
+            Provider::Local | Provider::Github => false,
+        }
+    }
+
+    /// The project form's field for the site, if it's typed: Jira's site, Linear's workspace.
+    pub fn site_field(self) -> Option<&'static str> {
+        match self {
+            Provider::Jira => Some("Site"),
+            Provider::Linear => Some("Workspace"),
+            Provider::Local | Provider::Github => None,
+        }
+    }
+
+    /// What to type in the site field when it's empty.
+    pub fn site_missing(self) -> &'static str {
+        match self {
+            Provider::Jira => "Enter the Jira site, like your-site.atlassian.net",
+            Provider::Linear => "Enter the Linear workspace (the part after linear.app/)",
+            Provider::Local | Provider::Github => "",
+        }
+    }
+
+    /// Whether an account signs in with an email as well as its token: Jira's API tokens do.
+    pub fn signs_in_with_email(self) -> bool {
+        match self {
+            Provider::Jira => true,
+            Provider::Linear | Provider::Local | Provider::Github => false,
+        }
+    }
+
     /// Whether the project form checks that the ticket prefix names a project there.
     pub fn checks_prefix(self) -> bool {
         match self {
@@ -510,7 +608,7 @@ impl Provider {
     pub fn site_hint(self) -> &'static str {
         match self {
             Provider::Jira => "your Jira site, like your-site.atlassian.net",
-            Provider::Linear => "the workspace: the part after linear.app/",
+            Provider::Linear => "the part after linear.app/ in its address",
             Provider::Local | Provider::Github => "",
         }
     }
@@ -616,6 +714,18 @@ impl Tracker {
             .then(|| local::board(repo, self.folder.as_deref().unwrap_or(local::FOLDER)))
     }
 
+    /// A ticket prefix to suggest for a project in the folder `repo` before one is typed: the one
+    /// a Local files board's tickets use already, or one from the GitHub repository's name. None
+    /// where there's nothing to go by, or the form lists them instead (`Provider::lists_choices`).
+    pub fn suggested_prefix(&self, repo: &Path) -> Option<String> {
+        match self.provider {
+            Provider::Local => local::prefix_in_use(&local::files(&self.board(repo)?)),
+            Provider::Github => crate::github::default_repo(repo)
+                .and_then(|r| r.name.rsplit('/').next().map(local::default_prefix)),
+            Provider::Jira | Provider::Linear => None,
+        }
+    }
+
     /// Whether a key names the same issue in both: the same Jira site, Linear workspace or GitHub
     /// repository. Never
     /// Local files, whose boards are each their project's own.
@@ -697,8 +807,59 @@ mod tests {
         assert!(t("local", "").lists_open());
     }
 
+    fn choice(key: &str, name: &str) -> Choice {
+        Choice { key: key.into(), name: name.into() }
+    }
+
+    #[test]
+    fn chooses_by_the_start_of_a_key_or_words_of_a_name() {
+        let choices = [
+            choice("ENG", "Engineering"),
+            choice("MOB", "Mobile apps"),
+            choice("OPS", "Operations"),
+            choice("WEB", "Website and apps"),
+        ];
+        let keys = |input: &str| {
+            choosing(&choices, input).iter().map(|c| c.key.as_str()).collect::<Vec<_>>()
+        };
+        assert_eq!(keys(""), ["ENG", "MOB", "OPS", "WEB"]);
+        assert_eq!(keys("o"), ["MOB", "OPS"]);
+        assert_eq!(keys("eng"), ["ENG"]);
+        assert_eq!(keys(" Apps "), ["MOB", "WEB"]);
+        assert_eq!(keys("apps web"), ["WEB"]);
+        assert!(keys("nothing").is_empty());
+        // Sorted by key, each key once, and only keys that are prefixes.
+        let tidy = tidy_choices(vec![
+            choice("WEB", "Website"),
+            choice("ENG", "Engineering"),
+            choice("ENG", "Engineering again"),
+            choice("1ST", "Starts with a digit"),
+            choice("A B", "Has a space"),
+            choice("", "No key"),
+        ]);
+        assert_eq!(tidy, [choice("ENG", "Engineering"), choice("WEB", "Website")]);
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(200))]
+
+        #[test]
+        fn choosing_takes_any_input_and_keeps_the_order(
+            input in "\\PC{0,8}",
+            names in prop::collection::vec(("[A-Z]{1,4}", "\\PC{0,12}"), 0..6),
+        ) {
+            let choices = tidy_choices(names.iter().map(|(k, n)| choice(k, n)).collect());
+            prop_assert!(choices.windows(2).all(|w| w[0].key < w[1].key));
+            prop_assert!(choices.iter().all(|c| is_prefix(&c.key)));
+            let found = choosing(&choices, &input);
+            let at: Vec<usize> =
+                found.iter().map(|f| choices.iter().position(|c| c == *f).unwrap()).collect();
+            prop_assert!(at.windows(2).all(|w| w[0] < w[1]));
+            // A whole key typed finds it.
+            for c in &choices {
+                prop_assert!(choosing(&choices, &c.key.to_lowercase()).contains(&c));
+            }
+        }
 
         #[test]
         fn matching_takes_any_input_and_keeps_the_order(

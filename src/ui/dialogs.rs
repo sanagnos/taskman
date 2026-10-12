@@ -634,7 +634,12 @@ fn draw_settings(f: &mut Frame, app: &App) {
     let Mode::Settings(s) = &app.mode else { return };
     let deletable =
         matches!(s.items[s.cursor], SettingsItem::Project(_) | SettingsItem::Account(_));
+    let picking = s.form.fields[s.form.focus].list.picks > 0;
     let keys = match (s.editing, deletable) {
+        (true, true) if picking => {
+            "↑/↓ pick · Enter save · Tab next field · ctrl+d delete · Esc back to list"
+        }
+        (true, false) if picking => "↑/↓ pick · Enter save · Tab next field · Esc back to list",
         (true, true) => {
             "Enter save · Tab next field · ←/→ choice · ctrl+d delete · Esc back to list"
         }

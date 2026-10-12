@@ -1,6 +1,6 @@
 //! Jira Cloud REST client: one issue with its comments, rendered to plain text.
 
-use crate::tracker::{COMMENTS, Comment, Issue, Listed};
+use crate::tracker::{CHOICE_PAGES, COMMENTS, Choice, Comment, Issue, Listed};
 use crate::util::parse_ts;
 use base64::Engine;
 use serde_json::Value;
@@ -52,6 +52,27 @@ impl JiraConfig {
             Err(ureq::Error::StatusCode(404)) => Ok(false),
             Err(e) => Err(describe(e, "")),
         }
+    }
+
+    /// The projects the account can see, a page at a time, up to `CHOICE_PAGES` pages.
+    pub fn projects(&self) -> Result<Vec<Choice>, String> {
+        let mut projects = Vec::new();
+        for _ in 0..CHOICE_PAGES {
+            let at = projects.len().to_string();
+            let page = self
+                .get_with(
+                    "/rest/api/3/project/search",
+                    &[("startAt", &at), ("maxResults", "100"), ("orderBy", "key")],
+                )
+                .map_err(|e| describe(e, ""))?;
+            let (got, last) = parse_projects(&page);
+            let none = got.is_empty();
+            projects.extend(got);
+            if last || none {
+                break;
+            }
+        }
+        Ok(projects)
     }
 
     /// The open issues of the project whose key is `prefix` (status not in the Done category),
@@ -151,6 +172,28 @@ fn parse_issue(v: &Value) -> Issue {
         branch: String::new(),
         prs: Vec::new(),
     }
+}
+
+/// A page of `project/search`: its projects, and whether it's the last page.
+fn parse_projects(page: &Value) -> (Vec<Choice>, bool) {
+    let projects: Vec<Choice> = page["values"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| {
+            Some(Choice {
+                key: p["key"].as_str()?.to_string(),
+                name: p["name"].as_str().unwrap_or("").to_string(),
+            })
+        })
+        .collect();
+    // An older Jira says nothing of the last page: a page short of full is it.
+    let last = page["isLast"].as_bool().unwrap_or_else(|| {
+        let total = page["total"].as_u64().unwrap_or(0);
+        let at = page["startAt"].as_u64().unwrap_or(0);
+        at + projects.len() as u64 >= total
+    });
+    (projects, last)
 }
 
 /// A search's issues as the Add form lists them; `me` is the account's id.
@@ -425,6 +468,50 @@ mod tests {
     }
 
     #[test]
+    fn lists_the_projects_a_page_at_a_time() {
+        let server = replay::serve(vec![
+            (200, include_str!("../tests/fixtures/jira/projects-1.json")),
+            (200, include_str!("../tests/fixtures/jira/projects-2.json")),
+        ]);
+        let choices = client(&server).choices().unwrap().unwrap();
+        // Sorted by key, and a key that can't be a prefix is left out.
+        assert_eq!(
+            choices.iter().map(|c| (c.key.as_str(), c.name.as_str())).collect::<Vec<_>>(),
+            [("ENG", "Engineering"), ("OPS", "Operations"), ("WEB", "Website")]
+        );
+        let lines: Vec<String> = server.requests().into_iter().map(|r| r.line).collect();
+        assert_eq!(
+            lines,
+            [
+                "GET /rest/api/3/project/search?startAt=0&maxResults=100&orderBy=key HTTP/1.1",
+                "GET /rest/api/3/project/search?startAt=2&maxResults=100&orderBy=key HTTP/1.1"
+            ]
+        );
+        // What went wrong is said as for an issue.
+        let server = replay::serve(vec![(401, "")]);
+        assert_eq!(
+            client(&server).choices().unwrap().unwrap_err(),
+            "Jira rejected the credentials (check the email and API token)"
+        );
+        // An account that sees no project: one empty page, and no more asked.
+        let server = replay::serve(vec![(200, r#"{"values":[],"isLast":false}"#)]);
+        assert_eq!(client(&server).choices(), Some(Ok(vec![])));
+        assert_eq!(server.requests().len(), 1);
+    }
+
+    #[test]
+    fn a_page_without_is_last_is_the_last_when_it_reaches_the_total() {
+        let page = |at: u64, n: usize, total: u64| {
+            let values: Vec<Value> =
+                (0..n).map(|i| json!({ "key": format!("P{i}"), "name": "x" })).collect();
+            parse_projects(&json!({ "startAt": at, "total": total, "values": values })).1
+        };
+        assert!(!page(0, 50, 120));
+        assert!(page(100, 20, 120));
+        assert!(page(0, 0, 0));
+    }
+
+    #[test]
     fn checks_projects_and_credentials() {
         let server = replay::serve(vec![
             (200, r#"{"key":"ENG","name":"Engineering"}"#),
@@ -619,6 +706,8 @@ mod tests {
             parse_issue(&v);
             parse_comments(&v);
             parse_open(&v, "000000:0000-ana");
+            parse_projects(&v);
+            parse_projects(&json!({ "values": [v.clone(), { "key": v }], "total": 1 }));
         }
     }
 }

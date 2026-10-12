@@ -225,7 +225,7 @@ fn add_form() {
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 
-// ---- first run: a new project with Jira, to a working account ------------------------------
+// ---- first run: a new project with Jira, signed in, to its Jira project ---------------------
 
 /// A first run's app: no projects, and a keychain if `keychain`.
 fn first_run(keychain: bool) -> crate::app::App {
@@ -250,7 +250,7 @@ fn type_into(app: &mut crate::app::App, label: &str, text: &str) {
     panic!("no field {label} shown");
 }
 
-/// `ctrl+a P`, a folder, Jira, its site and the ticket prefix.
+/// `ctrl+a P`, a folder, Jira, its site and the new account's email.
 fn new_jira_project(app: &mut crate::app::App) {
     app.on_key(crate::app::test_support::ctrl('a'));
     app.on_key(key(KeyCode::Char('P')));
@@ -260,9 +260,21 @@ fn new_jira_project(app: &mut crate::app::App) {
     type_into(app, "Tracker", "");
     app.on_key(key(KeyCode::Right));
     type_into(app, "Site", "acme.atlassian.net");
-    type_into(app, "Ticket prefix", "ENG");
+    type_into(app, "Email", "dana@example.com");
 }
 
+/// The projects a mock account sees, more than the list shows at once.
+const PROJECTS: [(&str, &str); 7] = [
+    ("DATA", "Data platform"),
+    ("ENG", "Engineering"),
+    ("MOB", "Mobile apps"),
+    ("OPS", "Operations"),
+    ("QA", "Quality"),
+    ("SEC", "Security"),
+    ("WEB", "Website"),
+];
+
+/// Jira picked: its site, then a new account's fields in the same form, the token to paste last.
 #[test]
 fn first_run_1_new_project_with_jira() {
     let mut app = first_run(true);
@@ -270,51 +282,82 @@ fn first_run_1_new_project_with_jira() {
     assert_snapshot!(draw(&mut app, 120, 40));
 }
 
-/// Enter on the project: it needs an account, so the account form follows, on the keychain.
+/// The token pasted and Tab: taskman signs in and lists the Jira projects.
 #[test]
-fn first_run_2_new_account_with_a_keychain() {
+fn first_run_2_listing_the_projects() {
     let mut app = first_run(true);
     new_jira_project(&mut app);
-    app.on_key(key(KeyCode::Enter));
-    type_into(&mut app, "Email", "dana@example.com");
     type_into(&mut app, "Token", "ATATT-mock-token");
+    app.on_key(key(KeyCode::Tab));
     assert_snapshot!(draw(&mut app, 120, 40));
 }
 
 /// Where there's no keychain (WSL, a server): an empty source to fill, and the guide's ways.
 #[test]
-fn first_run_2_new_account_without_a_keychain() {
+fn first_run_2_without_a_keychain() {
     let mut app = first_run(false);
     new_jira_project(&mut app);
-    app.on_key(key(KeyCode::Enter));
-    type_into(&mut app, "Email", "dana@example.com");
+    app.on_key(key(KeyCode::Tab));
+    assert_snapshot!(draw(&mut app, 120, 40));
+}
+
+/// The projects listed: ↓ picks one; typing narrows them.
+#[test]
+fn first_run_3_projects_listed() {
+    let mut app = first_run(true);
+    new_jira_project(&mut app);
+    type_into(&mut app, "Token", "ATATT-mock-token");
+    app.on_key(key(KeyCode::Tab));
+    crate::app::test_support::answer_choices(&mut app, Ok(&PROJECTS));
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Down));
+    assert_snapshot!(draw(&mut app, 120, 40));
+}
+
+/// The list couldn't load: why, and the key can still be typed.
+#[test]
+fn first_run_3_projects_not_listed() {
+    let mut app = first_run(true);
+    new_jira_project(&mut app);
+    type_into(&mut app, "Token", "ATATT-mock-token");
+    app.on_key(key(KeyCode::Tab));
+    let e = "Jira rejected the credentials (check the email and API token)";
+    crate::app::test_support::answer_choices(&mut app, Err(e));
     assert_snapshot!(draw(&mut app, 120, 40));
 }
 
 /// A variable that isn't set: what to add where, and the keychain instead.
 #[test]
-fn first_run_3_a_variable_that_is_not_set() {
+fn first_run_4_a_variable_that_is_not_set() {
     let mut app = first_run(true);
     new_jira_project(&mut app);
-    app.on_key(key(KeyCode::Enter));
-    type_into(&mut app, "Email", "dana@example.com");
     type_into(&mut app, "Keep in", "");
     app.on_key(key(KeyCode::Right));
+    type_into(&mut app, "Project", "");
+    // Listed: the sign-in is read when focus leaves it, and the account is checked on Enter.
+    crate::app::test_support::answer_choices(&mut app, Ok(&PROJECTS));
+    type_into(&mut app, "Project", "ENG");
+    app.on_key(key(KeyCode::Enter));
     let e = "JIRA_API_TOKEN isn't set in the shell taskman started from: add export JIRA_API_TOKEN=… to ~/.zshrc, then open a new terminal and start taskman there";
     crate::app::test_support::answer_check(&mut app, Err(e.into()));
     assert_snapshot!(draw(&mut app, 120, 40));
 }
 
-/// The connection works: the project is added, and the Add form opens on it.
+/// A project picked and the connection works: the account and project are saved, and the Add form
+/// opens on it.
 #[test]
-fn first_run_4_connected() {
+fn first_run_5_connected() {
     let mut app = first_run(true);
     new_jira_project(&mut app);
-    app.on_key(key(KeyCode::Enter));
-    type_into(&mut app, "Email", "dana@example.com");
     type_into(&mut app, "Token", "ATATT-mock-token");
+    app.on_key(key(KeyCode::Tab));
+    crate::app::test_support::answer_choices(&mut app, Ok(&PROJECTS));
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Enter));
     crate::app::test_support::answer_check(&mut app, Ok(("Dana Reyes", "")));
     assert_eq!(app.config.accounts[0].token, "keychain:jira-1");
+    assert_eq!(app.projects[0].tracker.as_ref().map(|t| t.key.as_str()), Some("ENG"));
     assert_snapshot!(draw(&mut app, 120, 40));
 }
 
