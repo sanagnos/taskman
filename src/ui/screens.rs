@@ -254,8 +254,9 @@ fn type_into(app: &mut crate::app::App, label: &str, text: &str) {
 fn new_jira_project(app: &mut crate::app::App) {
     app.on_key(crate::app::test_support::ctrl('a'));
     app.on_key(key(KeyCode::Char('P')));
-    // A folder that's there on every machine, so the project can be saved.
-    type_into(app, "Path", "/tmp");
+    // A folder that's there on every machine, so the project can be saved, and isn't a link to
+    // another: the project is drawn where its path leads, and macOS's /tmp leads to /private/tmp.
+    type_into(app, "Path", "/usr");
     type_into(app, "Tracker", "");
     app.on_key(key(KeyCode::Right));
     type_into(app, "Site", "acme.atlassian.net");
