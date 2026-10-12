@@ -152,7 +152,6 @@ impl App {
                     "Ticket",
                     "a ticket's session, or an agent with no ticket",
                 ),
-                Field::text("Ticket", "", ""),
                 Field::choice(
                     "CLI",
                     Cli::ALL.iter().map(|c| c.label().to_string()).collect(),
@@ -161,6 +160,9 @@ impl App {
                 ),
                 Field::choice("Worktree", vec![], "", ""),
                 Field::choice("Base", vec![], "", ""),
+                // Last, with its open issues under it: a long list has nothing below it to get
+                // past.
+                Field::text("Ticket", "", ""),
             ],
         );
         form.focus_on("Ticket");
@@ -545,24 +547,31 @@ impl App {
             f.choices = kinds;
         }
         // Agents run in the main checkout, so the Worktree and Base rows are the agent's role
-        // instead.
+        // instead; the Ticket or Name field stays last.
         let agent = form.value("Type") == "Agent";
         if agent != form.field("Role").is_some() {
+            let focused = form.fields[form.focus].label;
             form.fields.retain(|f| !matches!(f.label, "Role" | "Worktree" | "Base"));
+            let at = form.fields.iter().position(|f| matches!(f.label, "Ticket" | "Name"));
+            let at = at.unwrap_or(form.fields.len());
             if agent {
                 let role = Field::text(
                     "Role",
                     "",
                     "optional: a standing instruction for its brief, e.g. review PRs",
                 );
-                form.fields.push(Field { prose: true, ..role });
+                form.fields.insert(at, Field { prose: true, ..role });
             } else {
-                form.fields.extend([
-                    Field::choice("Worktree", vec![], "", ""),
-                    Field::choice("Base", vec![], "", ""),
-                ]);
+                form.fields.splice(
+                    at..at,
+                    [
+                        Field::choice("Worktree", vec![], "", ""),
+                        Field::choice("Base", vec![], "", ""),
+                    ],
+                );
             }
             form.focus = form.focus.min(form.fields.len() - 1);
+            form.focus_on(focused);
         }
         let p = self.projects.iter().position(|p| p.name == form.value("Project"));
         // The ticket's key, or the agent's name: one field, relabelled with the type.
@@ -690,24 +699,24 @@ mod tests {
             panic!("no form")
         };
         let labels = |f: &Form| f.fields.iter().map(|x| x.label).collect::<Vec<_>>();
-        assert_eq!(labels(&form), ["Project", "Type", "Ticket", "CLI", "Worktree", "Base"]);
+        assert_eq!(labels(&form), ["Project", "Type", "CLI", "Worktree", "Base", "Ticket"]);
         assert_eq!(form.fields[form.focus].label, "Ticket");
-        // An agent: the ticket field becomes its name, keeping what was typed, and Worktree and
-        // Base give way to its role.
+        // An agent: the ticket field becomes its name, keeping what was typed and staying last,
+        // and Worktree and Base give way to its role.
         form.set("Ticket", "reviewer");
         form.set("Type", "Agent");
         app.update_ticket_hint(&mut form);
-        assert_eq!(labels(&form), ["Project", "Type", "Name", "CLI", "Role"]);
+        assert_eq!(labels(&form), ["Project", "Type", "CLI", "Role", "Name"]);
         assert_eq!(form.value("Name"), "reviewer");
         form.set("Type", "Ticket");
         app.update_ticket_hint(&mut form);
-        assert_eq!(labels(&form), ["Project", "Type", "Ticket", "CLI", "Worktree", "Base"]);
+        assert_eq!(labels(&form), ["Project", "Type", "CLI", "Worktree", "Base", "Ticket"]);
         assert_eq!(form.field("CLI").unwrap().hint, "the coding CLI the session runs");
         // A project without a tracker has agents only.
         form.set("Project", "notes");
         app.update_ticket_hint(&mut form);
         assert_eq!(form.value("Type"), "Agent");
-        assert_eq!(labels(&form), ["Project", "Type", "Name", "CLI", "Role"]);
+        assert_eq!(labels(&form), ["Project", "Type", "CLI", "Role", "Name"]);
     }
 
     #[test]

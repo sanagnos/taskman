@@ -309,11 +309,23 @@ impl App {
             // Enter again while the check runs would start a second one.
             KeyCode::Enter if form.checking.is_some() => return,
             // ↑/↓ pick from the focused field's list, if it has one, and past its ends move between
-            // fields, as they do otherwise. Tab always moves.
+            // fields, as they do otherwise, but never round from the last to the first. Tab
+            // always moves.
             KeyCode::Down | KeyCode::Up if form.fields[form.focus].list.picks > 0 => {
                 let down = key.code == KeyCode::Down;
-                if !form.fields[form.focus].list.step(down) {
-                    form.focus = form.next_focus(if down { 1 } else { -1 });
+                let step = if down { 1 } else { -1 };
+                let next = form.next_focus(step);
+                // Past the list's ends to the field beside it, unless that would wrap round the
+                // form: ↓ at the bottom of the last field's list stays on its last entry.
+                let wraps = if down { next <= form.focus } else { next >= form.focus };
+                let list = &mut form.fields[form.focus].list;
+                let at = list.at;
+                if !list.step(down) {
+                    if wraps {
+                        list.at = at;
+                    } else {
+                        form.focus = next;
+                    }
                 }
             }
             KeyCode::Tab | KeyCode::Down => form.focus = form.next_focus(1),

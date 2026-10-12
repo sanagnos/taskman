@@ -1601,14 +1601,17 @@ fn the_add_form_adds_an_agent() {
     let mut app = acme_app();
     prefix(&mut app, KeyCode::Char('n'));
     assert_eq!(field(&app, "Project"), "acme");
-    app.on_key(key(KeyCode::Up));
+    focus(&mut app, "Type");
     app.on_key(key(KeyCode::Right));
     assert_eq!(field(&app, "Type"), "Agent");
+    // Its role, then its name, last as the ticket is.
     app.on_key(key(KeyCode::Down));
-    type_text(&mut app, "Docs Writer");
-    app.on_key(key(KeyCode::Tab));
-    app.on_key(key(KeyCode::Tab));
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(focused(&app), "Role");
     type_text(&mut app, "Keep the guide current");
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(focused(&app), "Name");
+    type_text(&mut app, "Docs Writer");
     app.on_key(key(KeyCode::Enter));
     assert!(matches!(app.mode, Mode::Normal), "{:?}", toast(&app));
     assert_eq!(selected(&app), "acme-docs-writer");
@@ -2866,15 +2869,19 @@ fn arrows_past_a_list_leave_the_field_and_pick_nothing() {
     let mut app = adding_in_acme(eight());
     assert_eq!(focused(&app), "Ticket");
     type_text(&mut app, "task");
-    // ↑ on the first issue goes back to what's typed; ↑ again to the field above.
+    // ↑ on the first issue goes back to what's typed; ↑ again to the field above, Base, and on
+    // up through the fields, the typed text kept.
     app.on_key(key(KeyCode::Down));
     app.on_key(key(KeyCode::Up));
     assert_eq!((focused(&app), open_list(&app).at), ("Ticket", None));
     app.on_key(key(KeyCode::Up));
-    assert_eq!(focused(&app), "Type");
+    assert_eq!(focused(&app), "Base");
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(focused(&app), "Worktree");
     assert_eq!(field(&app, "Ticket"), "task");
-    // ↓ comes back to the field, then into the list; past its last issue, to the field below,
-    // the highlight dropped.
+    // ↓ comes back down to the field, then into the list; Ticket is last, so ↓ at its last
+    // issue stays there rather than wrapping round to the top.
+    app.on_key(key(KeyCode::Down));
     app.on_key(key(KeyCode::Down));
     assert_eq!(focused(&app), "Ticket");
     for _ in 0..8 {
@@ -2882,14 +2889,13 @@ fn arrows_past_a_list_leave_the_field_and_pick_nothing() {
     }
     assert_eq!((focused(&app), open_list(&app).at), ("Ticket", Some(7)));
     app.on_key(key(KeyCode::Down));
-    assert_eq!(focused(&app), "CLI");
-    assert_eq!((field(&app, "Ticket").as_str(), open_list(&app).at), ("task", None));
+    assert_eq!((focused(&app), open_list(&app).at), ("Ticket", Some(7)));
     // Tab leaves a highlighted list too, and keeps the issue picked, as before.
-    focus(&mut app, "Ticket");
+    app.on_key(ctrl('u'));
     app.on_key(key(KeyCode::Down));
     app.on_key(key(KeyCode::Down));
     app.on_key(key(KeyCode::Tab));
-    assert_eq!(focused(&app), "CLI");
+    assert_eq!(focused(&app), "Project");
     app.on_key(key(KeyCode::Enter));
     assert!(open_in_acme(&app, "ENG-2"), "{:?}", toast(&app));
 }
@@ -2910,12 +2916,12 @@ fn arrows_past_the_project_list_leave_the_field() {
     assert_eq!((focused(&app), at(&app)), ("Team", None));
     app.on_key(key(KeyCode::Up));
     assert_eq!(focused(&app), "Account");
-    // ↓ past the bottom: the field below (the first, here), and nothing picked.
+    // Team is the form's last field: ↓ at the bottom of its list stays there, nothing taken.
     focus(&mut app, "Team");
     type_text(&mut app, "o");
     app.on_key(key(KeyCode::Down));
     app.on_key(key(KeyCode::Down));
-    assert_eq!(focused(&app), "Path");
+    assert_eq!((focused(&app), at(&app)), ("Team", Some(0)));
     assert_eq!(field(&app, "Team"), "o");
     // Tab out of a highlighted list takes the one highlighted.
     focus(&mut app, "Team");
@@ -2946,19 +2952,19 @@ fn typing_drops_the_highlight_and_arrows_elsewhere_move_between_fields() {
     app.on_key(ctrl('u'));
     type_text(&mut app, "nothing like it");
     assert_eq!(listed(&app), ["No open issue's title has those words"]);
-    app.on_key(key(KeyCode::Down));
-    assert_eq!(focused(&app), "CLI");
     app.on_key(key(KeyCode::Up));
+    assert_eq!(focused(&app), "Base");
+    app.on_key(key(KeyCode::Down));
     assert_eq!(focused(&app), "Ticket");
     app.on_key(ctrl('u'));
     assert_eq!(open_list(&app).picks, 8);
     // Away from the Ticket field, they move between fields though the list shows.
-    app.on_key(key(KeyCode::Tab));
-    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::BackTab));
+    app.on_key(key(KeyCode::Up));
     assert_eq!(focused(&app), "Worktree");
     assert_eq!(open_list(&app).at, None);
-    app.on_key(key(KeyCode::Up));
-    app.on_key(key(KeyCode::Up));
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Down));
     assert_eq!(focused(&app), "Ticket");
     assert_eq!(open_list(&app).at, None);
 }
