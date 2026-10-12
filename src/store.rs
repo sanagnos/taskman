@@ -690,10 +690,10 @@ fn is_env_name(name: &str) -> bool {
 fn resolve_token(source: &str, limit: std::time::Duration) -> Result<String, String> {
     if let Some(var) = source.strip_prefix("env:") {
         let var = var.trim();
-        return std::env::var(var)
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .ok_or_else(|| unset(var, &std::env::var("SHELL").unwrap_or_default()));
+        return std::env::var(var).ok().filter(|v| !v.trim().is_empty()).ok_or_else(|| {
+            let shell = std::env::var("SHELL").unwrap_or_default();
+            unset(var, &shell, cfg!(target_os = "macos"))
+        });
     }
     if let Some(name) = crate::keychain::name_of(source) {
         return crate::keychain::Keychain::os().read(name);
@@ -727,12 +727,14 @@ fn resolve_token(source: &str, limit: std::time::Duration) -> Result<String, Str
 const SEE_GUIDE: &str = "see Storing a token in taskman's guide";
 
 /// Why the variable `var` gave no token, and what to do: set it where `shell` reads it at start,
-/// then start taskman from a new terminal, which has it.
-fn unset(var: &str, shell: &str) -> String {
+/// then start taskman from a new terminal, which has it. On macOS (`mac`), Terminal starts bash as
+/// a login shell, which reads ~/.bash_profile and not ~/.bashrc.
+fn unset(var: &str, shell: &str, mac: bool) -> String {
+    let bash = if mac { "~/.bash_profile" } else { "~/.bashrc" };
     let file = match shell.rsplit('/').next() {
-        Some("zsh") => "~/.zshrc",
-        Some("bash") => "~/.bashrc",
-        _ => "your shell's startup file (~/.zshrc or ~/.bashrc)",
+        Some("zsh") => "~/.zshrc".to_string(),
+        Some("bash") => bash.to_string(),
+        _ => format!("your shell's startup file (~/.zshrc for zsh, {bash} for bash)"),
     };
     format!(
         "{var} isn't set in the shell taskman started from: add export {var}=… to {file}, then open a new terminal and start taskman there"
@@ -1180,13 +1182,19 @@ mod tests {
 
     #[test]
     fn an_unset_variable_says_where_to_set_it() {
-        let e = unset("JIRA_API_TOKEN", "/bin/zsh");
+        let e = unset("JIRA_API_TOKEN", "/bin/zsh", false);
         assert_eq!(
             e,
             "JIRA_API_TOKEN isn't set in the shell taskman started from: add export JIRA_API_TOKEN=… to ~/.zshrc, then open a new terminal and start taskman there"
         );
-        assert!(unset("X", "/usr/bin/bash").contains("export X=… to ~/.bashrc,"));
-        assert!(unset("X", "").contains("to your shell's startup file (~/.zshrc or ~/.bashrc),"));
+        assert_eq!(unset("JIRA_API_TOKEN", "/bin/zsh", true), e);
+        // Terminal on macOS starts bash as a login shell, which skips ~/.bashrc.
+        assert!(unset("X", "/bin/bash", true).contains("export X=… to ~/.bash_profile,"));
+        assert!(unset("X", "/usr/bin/bash", false).contains("export X=… to ~/.bashrc,"));
+        let other = "to your shell's startup file (~/.zshrc for zsh, ~/.bash_profile for bash),";
+        assert!(unset("X", "/usr/local/bin/fish", true).contains(other));
+        let other = "to your shell's startup file (~/.zshrc for zsh, ~/.bashrc for bash),";
+        assert!(unset("X", "", false).contains(other));
         let read = resolve_token("env:TASKMAN_TEST_UNSET_TOKEN", std::time::Duration::from_secs(1));
         assert!(read.unwrap_err().starts_with("TASKMAN_TEST_UNSET_TOKEN isn't set"));
     }
