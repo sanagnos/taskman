@@ -176,9 +176,12 @@ fn picked(form: &Form, field: &Field) -> Option<String> {
     }
 }
 
-/// Puts the choice the prefix field at `i` picks into it, as its value: when focus leaves it, and
-/// before the form is saved.
-fn take_pick(form: &mut Form, i: usize) {
+/// Puts the choice the prefix field at `i` picks into it, as its value, before the form is saved;
+/// with `highlighted`, only one highlighted, as focus leaves it: leaving picks nothing by itself.
+fn take_pick(form: &mut Form, i: usize, highlighted: bool) {
+    if highlighted && form.fields[i].list.at.is_none() {
+        return;
+    }
     if let Some(key) = picked(form, &form.fields[i]) {
         let f = &mut form.fields[i];
         f.value = key;
@@ -218,14 +221,14 @@ fn choice_rows(form: &mut Form, signs_in: bool) {
             format!("This account can't see any {what}: type its key ({example})")
         }
         Some(Some(Ok(all))) => {
-            // A key that's listed shows them all, from it: ↓ goes on to the next.
-            let exact = all.iter().position(|c| c.key == typed);
-            let found = tracker::choosing(all, if exact.is_some() { "" } else { &typed });
+            // A key that's listed shows them all, to pick another from.
+            let exact = all.iter().any(|c| c.key == typed);
+            let found = tracker::choosing(all, if exact { "" } else { &typed });
             shown = found.iter().map(|c| c.key.clone()).collect();
             if focused && !found.is_empty() {
                 let key_w = found.iter().map(|c| c.key.chars().count()).max().unwrap_or(0);
                 list.picks = found.len();
-                list.at = list.at.or(exact).filter(|&a| a < found.len());
+                list.at = list.at.filter(|&a| a < found.len());
                 list.scroll(CHOICES_SHOWN);
                 let window = &found[list.top..(list.top + CHOICES_SHOWN).min(found.len())];
                 list.lines = window
@@ -471,7 +474,7 @@ impl App {
         // Leaving the prefix field takes what it picks.
         let prefix = tracker_from_form(form).map(|t| t.provider.prefix_field());
         if before != form.focus && form.fields.get(before).map(|f| f.label) == prefix {
-            take_pick(form, before);
+            take_pick(form, before, true);
         }
         if matches!(label, "Path" | "Tracker" | "Site" | "Workspace") {
             self.refresh_accounts(form, None);
@@ -733,7 +736,7 @@ impl App {
         if let Some(p) = tracker_from_form(form).map(|t| t.provider)
             && let Some(i) = form.fields.iter().position(|f| f.label == p.prefix_field())
         {
-            take_pick(form, i);
+            take_pick(form, i, false);
         }
         let mut tracker = tracker_from_form(form);
         if let Some(t) = &mut tracker
@@ -1040,7 +1043,7 @@ mod tests {
                 .iter()
                 .map(|c| c.key.clone())
                 .collect();
-            take_pick(form, 0);
+            take_pick(form, 0, false);
             form.fields[0].value.clone()
         };
         assert_eq!(pick(&mut form, "", Some(2)), "WEB");

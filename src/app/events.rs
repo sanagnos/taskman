@@ -2840,9 +2840,10 @@ fn arrows_move_a_highlight_through_the_open_issues_and_scroll_past_five() {
     let mid = "↑ 1 more · ↓ 2 more; type to narrow";
     assert_eq!(listed(&app), window(2, mid).collect::<Vec<_>>());
     assert_eq!(open_list(&app).highlighted(), Some(4));
-    for _ in 0..5 {
+    for _ in 0..2 {
         app.on_key(key(KeyCode::Down));
     }
+    // The last; ↓ past it leaves the field (`arrows_past_a_list_leave_the_field_and_pick_nothing`).
     assert_eq!(open_list(&app).at, Some(7));
     assert_eq!(listed(&app), window(4, "↑ 3 more; type to narrow").collect::<Vec<_>>());
     // ↑ moves back up; the window moves only once the highlight leaves it.
@@ -2858,10 +2859,71 @@ fn arrows_move_a_highlight_through_the_open_issues_and_scroll_past_five() {
     app.on_key(key(KeyCode::Enter));
     assert!(matches!(app.mode, Mode::Normal), "{:?}", toast(&app));
     assert!(open_in_acme(&app, "ENG-3"));
-    // The first ↑ highlights the last.
+}
+
+#[test]
+fn arrows_past_a_list_leave_the_field_and_pick_nothing() {
     let mut app = adding_in_acme(eight());
+    assert_eq!(focused(&app), "Ticket");
+    type_text(&mut app, "task");
+    // ↑ on the first issue goes back to what's typed; ↑ again to the field above.
+    app.on_key(key(KeyCode::Down));
     app.on_key(key(KeyCode::Up));
-    assert_eq!(open_list(&app).at, Some(7));
+    assert_eq!((focused(&app), open_list(&app).at), ("Ticket", None));
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(focused(&app), "Type");
+    assert_eq!(field(&app, "Ticket"), "task");
+    // ↓ comes back to the field, then into the list; past its last issue, to the field below,
+    // the highlight dropped.
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(focused(&app), "Ticket");
+    for _ in 0..8 {
+        app.on_key(key(KeyCode::Down));
+    }
+    assert_eq!((focused(&app), open_list(&app).at), ("Ticket", Some(7)));
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(focused(&app), "CLI");
+    assert_eq!((field(&app, "Ticket").as_str(), open_list(&app).at), ("task", None));
+    // Tab leaves a highlighted list too, and keeps the issue picked, as before.
+    focus(&mut app, "Ticket");
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(focused(&app), "CLI");
+    app.on_key(key(KeyCode::Enter));
+    assert!(open_in_acme(&app, "ENG-2"), "{:?}", toast(&app));
+}
+
+#[test]
+fn arrows_past_the_project_list_leave_the_field() {
+    let mut app = acme_app();
+    new_project(&mut app, "Linear");
+    fill(&mut app, "Workspace", "acme");
+    app.on_key(key(KeyCode::Tab));
+    answer_choices(&mut app, Ok(&ENG_OPS));
+    focus(&mut app, "Team");
+    let at = |app: &App| settings_form(app).field("Team").unwrap().list.at;
+    let focused = |app: &App| settings_form(app).fields[settings_form(app).focus].label;
+    // ↑ out of the top: back to what's typed, then the field above.
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Up));
+    assert_eq!((focused(&app), at(&app)), ("Team", None));
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(focused(&app), "Account");
+    // ↓ past the bottom: the field below (the first, here), and nothing picked.
+    focus(&mut app, "Team");
+    type_text(&mut app, "o");
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(focused(&app), "Path");
+    assert_eq!(field(&app, "Team"), "o");
+    // Tab out of a highlighted list takes the one highlighted.
+    focus(&mut app, "Team");
+    app.on_key(ctrl('u'));
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!((focused(&app), field(&app, "Team").as_str()), ("Path", "OPS"));
 }
 
 #[test]

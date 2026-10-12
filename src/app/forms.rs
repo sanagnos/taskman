@@ -59,15 +59,23 @@ impl List {
         self.at.and_then(|a| a.checked_sub(self.top))
     }
 
-    /// Moves the highlight; the first press of ↓ highlights the first issue, of ↑ the last.
-    fn step(&mut self, down: bool) {
+    /// Moves the highlight as a search box's dropdown does: ↓ from what's typed goes into the
+    /// list, ↑ from its first entry back to what's typed. False when the key goes past it instead
+    /// (↑ with nothing highlighted, ↓ on the last entry), and focus leaves the field; the highlight
+    /// is dropped then, so leaving picks nothing.
+    fn step(&mut self, down: bool) -> bool {
         let last = self.picks.saturating_sub(1);
-        self.at = Some(match (self.at, down) {
-            (None, true) => 0,
-            (None, false) => last,
-            (Some(a), true) => (a + 1).min(last),
-            (Some(a), false) => a.saturating_sub(1),
-        });
+        self.at = match (self.at, down) {
+            (None, true) => Some(0),
+            (Some(a), true) if a < last => Some(a + 1),
+            (Some(a), false) if a > 0 => Some(a - 1),
+            (Some(0), false) => None,
+            (None, false) | (Some(_), _) => {
+                self.at = None;
+                return false;
+            }
+        };
+        true
     }
 
     /// Scrolls the window of `shown` issues to keep the highlight in it.
@@ -300,10 +308,13 @@ impl App {
             }
             // Enter again while the check runs would start a second one.
             KeyCode::Enter if form.checking.is_some() => return,
-            // ↑/↓ pick from the focused field's list, if it has one; otherwise they move between
-            // fields.
+            // ↑/↓ pick from the focused field's list, if it has one, and past its ends move between
+            // fields, as they do otherwise. Tab always moves.
             KeyCode::Down | KeyCode::Up if form.fields[form.focus].list.picks > 0 => {
-                form.fields[form.focus].list.step(key.code == KeyCode::Down);
+                let down = key.code == KeyCode::Down;
+                if !form.fields[form.focus].list.step(down) {
+                    form.focus = form.next_focus(if down { 1 } else { -1 });
+                }
             }
             KeyCode::Tab | KeyCode::Down => form.focus = form.next_focus(1),
             KeyCode::BackTab | KeyCode::Up => form.focus = form.next_focus(-1),
