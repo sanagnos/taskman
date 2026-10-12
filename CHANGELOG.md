@@ -4,6 +4,7 @@ What changed in each release; a release's notes on GitHub are its section here. 
 
 ## Unreleased
 
+- The account form shows the page that makes a token as its full address, on a line of its own, so terminals that don't open links can still open or copy it. Linear's now includes the workspace typed, which the page needs.
 - A token variable that isn't set now names `~/.bash_profile` for bash on macOS, the file Terminal's bash reads, instead of `~/.bashrc`. The guide says how to find your shell's startup file.
 
 ## 0.1.1 - 2026-10-12

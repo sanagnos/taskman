@@ -366,7 +366,8 @@ impl App {
                 FormKind::AccountSettings(i) => {
                     let account = self.config.accounts.get(i);
                     let provider = account.map_or(Provider::Jira, |a| a.provider);
-                    account_rows(form, provider, account, self.keychain.as_ref());
+                    let site = form.value("Site");
+                    account_rows(form, provider, &site, account, self.keychain.as_ref());
                 }
                 _ => {}
             }

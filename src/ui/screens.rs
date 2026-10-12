@@ -282,6 +282,21 @@ fn first_run_1_new_project_with_jira() {
     assert_snapshot!(draw(&mut app, 120, 40));
 }
 
+/// At 80 columns the token page's URL wraps, whole, on lines of its own: never cut with `…`.
+#[test]
+fn first_run_1_at_80_columns() {
+    let mut app = first_run(true);
+    new_jira_project(&mut app);
+    let screen = draw(&mut app, 80, 40);
+    let lines: Vec<&str> = screen.lines().collect();
+    let first = lines.iter().position(|l| l.contains("https://")).expect("no URL drawn");
+    let url: String =
+        lines[first..first + 2].iter().map(|l| l.rsplit('│').nth(1).unwrap().trim()).collect();
+    assert_eq!(url, "https://id.atlassian.com/manage-profile/security/api-tokens");
+    assert!(lines[first - 1].contains("Get a token:"), "{screen}");
+    assert_snapshot!(screen);
+}
+
 /// The token pasted and Tab: taskman signs in and lists the Jira projects.
 #[test]
 fn first_run_2_listing_the_projects() {

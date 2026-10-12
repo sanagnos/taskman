@@ -72,7 +72,7 @@ pub(super) fn account_defaults(
     if is_default && picked {
         form.set("Read from", format!("env:{var}"));
     }
-    account_rows(form, provider, None, keychain);
+    account_rows(form, provider, site, None, keychain);
     if let Some(f) = form.field_mut("Read from") {
         f.hint = read_from_hint(&var);
     }
@@ -91,11 +91,12 @@ fn raw_token_hint(provider: Provider) -> String {
 }
 
 /// Shows an account's rows for its provider and Keep in, with their hints: in an account form, or
-/// a project form adding one. `account` is the one being edited, if any; `keychain` the one found,
-/// which names itself in the hints.
+/// a project form adding one. `site` is the Jira site or Linear workspace typed; `account` the one
+/// being edited, if any; `keychain` the one found, which names itself in the hints.
 pub(super) fn account_rows(
     form: &mut Form,
     provider: Provider,
+    site: &str,
     account: Option<&Account>,
     keychain: Option<&Keychain>,
 ) {
@@ -104,9 +105,8 @@ pub(super) fn account_rows(
     let label = keychain.map_or_else(|| Keychain::os().label(), Keychain::label);
     let keychain = keeps_in_keychain(form);
     let saved_there = account.is_some_and(|a| keychain::name_of(&a.token).is_some());
-    let page = provider
-        .token_page()
-        .map(|(way, url)| ("Get a token: ".to_string(), way.to_string(), url.to_string()));
+    // The URL shown whole, for terminals that don't open links but spot URLs (see `form_lines`).
+    let page = provider.token_page(site).map(|url| ("Get a token:".to_string(), url.clone(), url));
     let guide = ("Other ways: ".to_string(), "Storing a token".to_string(), GUIDE.to_string());
     let var = provider.token_var();
     for f in &mut form.fields {
@@ -260,7 +260,8 @@ impl App {
             Field::text("Read from", if in_keychain { "" } else { a.token.as_str() }, ""),
         ];
         let mut form = Form::new(FormKind::AccountSettings(i), "Account", fields);
-        account_rows(&mut form, a.provider, Some(a), self.keychain.as_ref());
+        let site = form.value("Site");
+        account_rows(&mut form, a.provider, &site, Some(a), self.keychain.as_ref());
         form.focus_on("Site");
         let users = self.account_users(i);
         form.note = Some(if users.is_empty() {

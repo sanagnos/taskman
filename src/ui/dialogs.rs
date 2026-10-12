@@ -541,7 +541,20 @@ fn form_lines(
                 .map(|l| Line::from(Span::styled(format!("{:label_w$}{l}", ""), dim()))),
         );
         for (before, label, url) in &field.links {
-            for l in wrap_prose(&format!("{before}{label}"), hint_room) {
+            // A URL shown as itself starts a line of its own, so it wraps as late as it can, and
+            // what leads to it goes on the line above.
+            let shown = if label == url {
+                text.extend(
+                    wrap_prose(before, hint_room)
+                        .into_iter()
+                        .filter(|l| !l.is_empty())
+                        .map(|l| Line::from(Span::styled(format!("{:label_w$}{l}", ""), dim()))),
+                );
+                label.clone()
+            } else {
+                format!("{before}{label}")
+            };
+            for l in wrap_prose(&shown, hint_room) {
                 linked.push((text.len(), url.clone()));
                 text.push(Line::from(vec![
                     Span::raw(format!("{:label_w$}", "")),

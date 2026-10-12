@@ -2303,7 +2303,7 @@ fn without_a_keychain_the_variable_is_only_suggested() {
     assert!(read_from.hint.starts_with("env:LINEAR_API_KEY_GLOBEX reads"), "{}", read_from.hint);
     // Where to get a key, and the guide's other ways.
     let links: Vec<&str> = read_from.links.iter().map(|(_, l, _)| l.as_str()).collect();
-    assert_eq!(links, ["Settings → Security & access → Personal API keys", "Storing a token"]);
+    assert_eq!(links, ["https://linear.app/globex/settings/account/security", "Storing a token"]);
 }
 
 /// A keychain for the App: the stub in this test's scratch folder (`keychain::stub`). Returns
@@ -2335,7 +2335,7 @@ fn saves_a_pasted_token_to_the_keychain_and_only_its_name_to_config() {
     let token = form.field("Token").unwrap();
     assert!(token.masked && !token.hidden);
     assert_eq!(token.hint, format!("paste it here; taskman puts it in your {label}"));
-    assert_eq!(token.links[0].1, "id.atlassian.com → Security → API tokens");
+    assert_eq!(token.links[0].1, "https://id.atlassian.com/manage-profile/security/api-tokens");
     fill(&mut app, "Site", &closed_site());
     fill(&mut app, "Email", "dana@example.com");
 
@@ -3271,6 +3271,27 @@ fn a_key_none_of_the_listed_is_saved_on_a_second_enter() {
     );
     app.on_key(key(KeyCode::Enter));
     assert_eq!(saved_tracker().key, "QA");
+}
+
+#[test]
+fn the_linear_token_page_follows_the_workspace_typed() {
+    let page = |app: &App| settings_form(app).field("Read from").unwrap().links[0].2.clone();
+    // In a project form, from its Workspace.
+    let mut app = acme_app();
+    new_project(&mut app, "Linear");
+    assert_eq!(page(&app), "https://linear.app/<workspace>/settings/account/security");
+    fill(&mut app, "Workspace", "globex");
+    assert_eq!(page(&app), "https://linear.app/globex/settings/account/security");
+    app.on_key(key(KeyCode::Backspace));
+    assert_eq!(page(&app), "https://linear.app/globe/settings/account/security");
+    // In an account form, from its Site.
+    let mut app = acme_app();
+    prefix(&mut app, KeyCode::Char('A'));
+    app.on_key(key(KeyCode::Up));
+    app.on_key(key(KeyCode::Right));
+    assert_eq!(page(&app), "https://linear.app/<workspace>/settings/account/security");
+    fill(&mut app, "Site", "globex");
+    assert_eq!(page(&app), "https://linear.app/globex/settings/account/security");
 }
 
 #[test]

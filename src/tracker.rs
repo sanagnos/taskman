@@ -622,17 +622,22 @@ impl Provider {
         }
     }
 
-    /// Where to make a token: the way there in the tracker's menus, and the page.
-    pub fn token_page(self) -> Option<(&'static str, &'static str)> {
+    /// The page that makes a token. Linear's is in the workspace, `site` as typed: until there's
+    /// one, `<workspace>` stands in for it.
+    pub fn token_page(self, site: &str) -> Option<String> {
         match self {
-            Provider::Jira => Some((
-                "id.atlassian.com → Security → API tokens",
-                "https://id.atlassian.com/manage-profile/security/api-tokens",
-            )),
-            Provider::Linear => Some((
-                "Settings → Security & access → Personal API keys",
-                "https://linear.app/settings/account/security",
-            )),
+            Provider::Jira => {
+                Some("https://id.atlassian.com/manage-profile/security/api-tokens".into())
+            }
+            Provider::Linear => {
+                // Typed by the user, but kept to a slug's characters all the same.
+                let ws: String = site
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+                    .collect();
+                let ws = if ws.is_empty() { "<workspace>" } else { &ws };
+                Some(format!("https://linear.app/{ws}/settings/account/security"))
+            }
             Provider::Local | Provider::Github => None,
         }
     }
@@ -766,6 +771,24 @@ mod tests {
         for bad in ["ENG-", "-12", "1ENG-2", "ENG-1x", "ENG 1-2", "ENG-1; rm", "#12", ""] {
             assert!(!well_formed(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn token_pages_are_full_urls_and_linears_is_in_the_workspace() {
+        let jira = "https://id.atlassian.com/manage-profile/security/api-tokens";
+        assert_eq!(Provider::Jira.token_page("").as_deref(), Some(jira));
+        assert_eq!(Provider::Jira.token_page("acme.atlassian.net").as_deref(), Some(jira));
+        let linear = |ws| Provider::Linear.token_page(ws).unwrap();
+        assert_eq!(linear("acme"), "https://linear.app/acme/settings/account/security");
+        assert_eq!(linear(""), "https://linear.app/<workspace>/settings/account/security");
+        // Only a slug's characters reach the URL.
+        assert_eq!(
+            linear(" acme-2_x/?#\u{1b}"),
+            "https://linear.app/acme-2_x/settings/account/security"
+        );
+        assert_eq!(linear("/ ?"), "https://linear.app/<workspace>/settings/account/security");
+        assert_eq!(Provider::Github.token_page("acme"), None);
+        assert_eq!(Provider::Local.token_page("acme"), None);
     }
 
     #[test]
