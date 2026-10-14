@@ -38,7 +38,14 @@ pub enum Pane {
     Gh,
 }
 
-/// A selection made by dragging over one pane.
+/// What a double or triple click selects, once the pane's cells are at hand (the next frame).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Grab {
+    Word,
+    Line,
+}
+
+/// A selection made by dragging over one pane, or by a double or triple click.
 pub struct Selection {
     pub pane: Pane,
     /// The pane's content rectangle.
@@ -51,6 +58,10 @@ pub struct Selection {
     /// The button was released: copy on the next frame, once the pane has been drawn.
     pub released: bool,
     pub copied: bool,
+    /// Set by a double or triple click: the word or line under `anchor` is picked on the next
+    /// frame, which sets `picked`.
+    pub grab: Option<Grab>,
+    pub picked: bool,
     /// The Claude pane's content while the selection is shown.
     pub snapshot: Option<Snapshot>,
     /// When the pane last scrolled because the pointer was held past its edge.
@@ -73,6 +84,8 @@ impl Selection {
             pointer,
             released: false,
             copied: false,
+            grab: None,
+            picked: false,
             snapshot,
             scrolled_at: None,
         }
@@ -85,7 +98,70 @@ impl Selection {
 
     /// More than the cell under a click: worth a highlight, a badge and a copy.
     pub fn dragged(&self) -> bool {
-        self.anchor != self.head
+        self.anchor != self.head || self.picked
+    }
+}
+
+/// A character that ends a word, besides whitespace: quotes, brackets, parentheses and a few
+/// separators, as terminals count them when copying.
+fn is_delimiter(symbol: &str) -> bool {
+    symbol.chars().all(|c| c.is_whitespace() || "\"'`()[]{}<>,;|".contains(c))
+}
+
+/// Sentence punctuation, left off a word's end.
+fn is_trailing(symbol: &str) -> bool {
+    matches!(symbol, "." | "," | ":" | ";" | "!" | "?")
+}
+
+/// The columns, both included, of the word at `col` in a row's cells: a run with no whitespace
+/// or delimiter, without the punctuation that ends a sentence. `None` on a blank, a delimiter
+/// or that punctuation. A cell is its symbol; "" is the cell a wide character covers, which goes
+/// with the character before it.
+pub fn word_at(cells: &[String], col: u16) -> Option<(u16, u16)> {
+    let in_word = |i: usize| cells[i].is_empty() || !is_delimiter(&cells[i]);
+    let mut at = usize::from(col);
+    if at >= cells.len() {
+        return None;
+    }
+    while at > 0 && cells[at].is_empty() {
+        at -= 1;
+    }
+    if !in_word(at) {
+        return None;
+    }
+    let (mut start, mut end) = (at, at);
+    while start > 0 && in_word(start - 1) {
+        start -= 1;
+    }
+    while end + 1 < cells.len() && in_word(end + 1) {
+        end += 1;
+    }
+    while end > start && is_trailing(&cells[end]) {
+        end -= 1;
+    }
+    if end < at || is_trailing(&cells[end]) {
+        return None;
+    }
+    Some((u16::try_from(start).ok()?, u16::try_from(end).ok()?))
+}
+
+/// The columns of a row's text, from its first to its last visible character, or `None` when the
+/// row is blank.
+pub fn line_at(cells: &[String]) -> Option<(u16, u16)> {
+    let visible = |i: &usize| !cells[*i].trim().is_empty();
+    let start = (0..cells.len()).find(visible)?;
+    let mut end = (0..cells.len()).rfind(visible)?;
+    while cells.get(end + 1).is_some_and(String::is_empty) {
+        end += 1; // the cells a wide character covers
+    }
+    Some((u16::try_from(start).ok()?, u16::try_from(end).ok()?))
+}
+
+/// The cells of the row `grab` is made on, widened to the word or line `col` is in.
+pub fn grab_span(cells: &[String], grab: Grab, col: u16) -> Option<(u16, u16)> {
+    match grab {
+        Grab::Word => word_at(cells, col),
+        Grab::Line => line_at(cells).filter(|_| !cells.is_empty()),
     }
 }
 
@@ -266,6 +342,26 @@ impl Snapshot {
                 .map(|r| row_cells(&self.screen, r, cols)),
         );
         View { rows: view }
+    }
+
+    /// The symbols of the cells of content row `row`, if the pane shows it.
+    pub fn row_symbols(&self, row: usize) -> Option<Vec<String>> {
+        let view = self.view();
+        let cells = view.rows.get(row.checked_sub(self.top)?)?;
+        Some(
+            cells
+                .iter()
+                .map(|c| {
+                    if c.is_wide_continuation() {
+                        String::new()
+                    } else if c.has_contents() {
+                        c.contents().to_string()
+                    } else {
+                        " ".to_string()
+                    }
+                })
+                .collect(),
+        )
     }
 
     /// The text from `start` to `end` (inclusive). Rows the terminal wrapped are joined, wide
@@ -471,6 +567,26 @@ impl Panel {
         let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
         p.render(buf.area, &mut buf);
         Self { rect, buf, breaks: wrap_breaks(lines, width) }
+    }
+
+    /// The symbols of the cells of row `row`, "" for those a wide character covers.
+    pub fn row_symbols(&self, row: usize) -> Option<Vec<String>> {
+        let area = self.buf.area;
+        let y = u16::try_from(row).ok().filter(|&y| y < area.bottom())?;
+        let mut covered = 0;
+        Some(
+            (0..area.width)
+                .map(|x| {
+                    let symbol = self.buf.cell((x, y)).map_or(" ", |c| c.symbol());
+                    if covered > 0 {
+                        covered -= 1;
+                        return String::new();
+                    }
+                    covered = symbol.width().saturating_sub(1);
+                    symbol.to_string()
+                })
+                .collect(),
+        )
     }
 
     pub fn text(&self, start: Point, end: Point) -> String {
@@ -1089,5 +1205,106 @@ mod tests {
             toast(&Copied::Osc52, "hi"),
             "Sent 2 characters to the terminal's clipboard (OSC 52)"
         );
+    }
+
+    fn cells(text: &str) -> Vec<String> {
+        text.chars()
+            .flat_map(|c| {
+                let wide = unicode_width::UnicodeWidthChar::width(c) == Some(2);
+                std::iter::once(c.to_string()).chain(wide.then(String::new))
+            })
+            .collect()
+    }
+
+    /// The word at the first `^` of `text`, as text.
+    fn word(text: &str) -> Option<String> {
+        let (before, after) = text.split_once('^')?;
+        let row = cells(&format!("{before}{after}"));
+        let col = u16::try_from(cells(before).len()).unwrap();
+        let (from, to) = word_at(&row, col)?;
+        Some(row[usize::from(from)..=usize::from(to)].concat())
+    }
+
+    #[test]
+    fn a_word_is_what_terminals_copy() {
+        assert_eq!(word("see E^NG-52 now").as_deref(), Some("ENG-52"));
+        assert_eq!(word("at src/app/mouse.rs:2^96 in").as_deref(), Some("src/app/mouse.rs:296"));
+        assert_eq!(word("cd ^~/taskman-ENG-52").as_deref(), Some("~/taskman-ENG-52"));
+        assert_eq!(word("mail you@exa^mple.com").as_deref(), Some("you@example.com"));
+        assert_eq!(
+            word("open https://example.com/a?b=1&c^#d now").as_deref(),
+            Some("https://example.com/a?b=1&c#d")
+        );
+        // The first and last cells of the row.
+        assert_eq!(word("^abc").as_deref(), Some("abc"));
+        assert_eq!(word("abc^"), None);
+    }
+
+    #[test]
+    fn delimiters_and_sentence_punctuation_end_a_word() {
+        assert_eq!(word("say (ENG^-52), then").as_deref(), Some("ENG-52"));
+        assert_eq!(word("\"a^b\" 'c' `d`").as_deref(), Some("ab"));
+        assert_eq!(word("a|^b;c <d>").as_deref(), Some("b"));
+        assert_eq!(word("done in ENG^-52.").as_deref(), Some("ENG-52"));
+        assert_eq!(word("rea^lly?!").as_deref(), Some("really"));
+        assert_eq!(word("v1.2.^3: next").as_deref(), Some("v1.2.3"));
+        assert_eq!(word("e.^g. x").as_deref(), Some("e.g"));
+        // Clicking on the punctuation itself, a delimiter or a blank selects nothing.
+        assert_eq!(word("done.^ ok"), None);
+        assert_eq!(word("done^. ok").as_deref(), None);
+        assert_eq!(word("wait ^... ok"), None);
+        assert_eq!(word("^(a)"), None);
+        assert_eq!(word("a ^ b"), None);
+        assert_eq!(word("a|b^;c"), None);
+    }
+
+    #[test]
+    fn a_wide_character_counts_as_one() {
+        assert_eq!(word("日本^語 text").as_deref(), Some("日本語"));
+        assert_eq!(word("x 日^本語.").as_deref(), Some("日本語"));
+        let row = cells("a 日本 b");
+        // The cell a wide character covers selects it.
+        assert_eq!(word_at(&row, 4), Some((2, 5)));
+        assert_eq!(word_at(&row, 3), Some((2, 5)));
+    }
+
+    #[test]
+    fn blank_and_out_of_range_cells_select_nothing() {
+        let row = cells("ab  cd");
+        assert_eq!(word_at(&row, 2), None);
+        assert_eq!(word_at(&row, 3), None);
+        assert_eq!(word_at(&row, 40), None);
+        assert_eq!(word_at(&[], 0), None);
+    }
+
+    #[test]
+    fn a_line_is_its_text_trimmed() {
+        assert_eq!(line_at(&cells("  > run it  ")), Some((2, 9)));
+        assert_eq!(line_at(&cells("   ")), None);
+        assert_eq!(line_at(&[]), None);
+        assert_eq!(line_at(&cells("ab 日本")), Some((0, 6)));
+        assert_eq!(grab_span(&cells("a b"), Grab::Line, 1), Some((0, 2)));
+        assert_eq!(grab_span(&cells("a b"), Grab::Word, 0), Some((0, 0)));
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn a_word_has_no_whitespace_and_holds_the_clicked_cell(
+            text in "[a-zA-Z0-9 .,:;!?/_~@#()\\[\\]<>|'\"-]{0,40}日{0,2}[a-z .]{0,5}",
+            col in 0u16..60,
+        ) {
+            let row = cells(&text);
+            if let Some((from, to)) = word_at(&row, col) {
+                proptest::prop_assert!(from <= to && usize::from(to) < row.len());
+                let word = row[usize::from(from)..=usize::from(to)].concat();
+                proptest::prop_assert!(!word.is_empty());
+                proptest::prop_assert!(!word.chars().any(char::is_whitespace), "{word:?}");
+                // The clicked cell, or the wide character it covers, is inside.
+                proptest::prop_assert!(from <= col && col <= to, "{from} {col} {to} {text:?}");
+                proptest::prop_assert!(!is_trailing(&row[usize::from(to)]));
+            }
+        }
     }
 }

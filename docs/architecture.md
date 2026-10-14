@@ -34,13 +34,13 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 | `src/app/sessions.rs` | starting sessions under their owner lock (which fails closed: no lock, no session) and only once the last CLI is gone, their names, handing them to another terminal and back |
 | `src/app/launch.rs` | how a session's CLI starts (`Launch`, `App::launch`): arguments, environment, the ticket's and agent's briefs |
 | `src/app/input.rs` | keys: the modes, the prefix commands, paste, the links list, the session's history in `$EDITOR` |
-| `src/app/mouse.rs` | the wheel, drag-selecting text in a pane, copying it |
+| `src/app/mouse.rs` | the wheel, drag-selecting text in a pane (double and triple clicks pick a word or line), copying it |
 | `src/app/forms.rs` | `Field` and `Form` (fields reached by label, never by index), a field's `List` (the Add form's open issues, ↑/↓ moving a highlight), masked fields and linked hint lines, form keys, submitting with a background `Check` |
 | `src/app/add_form.rs` | the Add form: ticket or agent, CLI, worktree and base; the open issues it lists (`OpenIssues`), each list matched to its request (`Listing`) so a late one is dropped, and the one picked with ↑/↓; `parse_key` |
 | `src/app/settings.rs`, `projects.rs`, `accounts.rs` | the Settings popover and its General form; the project forms, which sign in first (a new account's fields inline) and then list what the account can see to pick the prefix from (`Choices`, `Msg::Choices`), and saving a project with its new account; an account's fields and the account forms (Keep in: the keychain or a source), saving a pasted token to the keychain, testing a connection (`draft_account`, `check_account`, `account_verdict`, `keep_account`, shared with the project forms), deleting an account and its keychain item |
 | `src/app/tickets.rs` | adding, closing and renaming tickets and agents; stacking (`base_named`, `stack_of`, `pr_target`) |
 | `src/app/inbox.rs` | the TUI's side of `taskman add` and `taskman close`: taking requests, the agent approval dialog, the replies |
-| `src/selection.rs` | selecting text with the mouse: what keys do while text is selected, the frozen screen, reading the text back (joining wrapped lines), copying it to the clipboard |
+| `src/selection.rs` | selecting text with the mouse: what keys do while text is selected, what a word is, the frozen screen, reading the text back (joining wrapped lines), copying it to the clipboard |
 | `src/links.rs` | links in a session: the OSC 8 links vt100 keeps per cell (our fork, `[patch.crates-io]`) written back out around the cells drawn (`mark`) and sent once per run of cells (`Runs`, the terminal's writer), the `prefix l` list (`list`), the http(s)-only rule (`openable`) |
 | `src/keys.rs` | crossterm key events back to terminal bytes; `normalize` folds Shift+letter; the prefix key (`Prefix`, `prefix()`) |
 | `src/ui.rs` | drawing: the layout (`layout`, `Areas`), `draw`, which calls each part of the screen in turn, NO_COLOR's `drop_colours`, and what the parts share (`dim`, `spinner`, the state badges, a card's PR summary) |

@@ -4,13 +4,16 @@
 
 use super::sync::Msg;
 use super::{AgentState, App, Hit, Mode};
-use crate::selection::{self, Pane, Selection, Snapshot};
+use crate::selection::{self, Grab, Pane, Selection, Snapshot};
 use crate::ui::SIDEBAR_STEP;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
+
+/// How soon a click on the same cell counts with the one before it as a double or triple click.
+const MULTI_CLICK: Duration = Duration::from_millis(400);
 
 /// How often a pane scrolls while the button is held past its edge.
 const AUTO_SCROLL_EVERY: Duration = Duration::from_millis(50);
@@ -104,6 +107,7 @@ impl App {
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.selection = None;
+                let clicks = self.click_count(pos);
                 match self.sidebar_hits.iter().find(|(r, _)| r.contains(pos)) {
                     Some(&(_, Hit::Ticket(i))) => self.select(i),
                     Some(&(_, Hit::Project(p))) => self.toggle_project(p),
@@ -116,13 +120,22 @@ impl App {
                                 None => self.panel_scroll(pane),
                             };
                             let at = selection::point_at(rect, top, pos);
-                            self.selection = Some(Selection::new(pane, rect, at, pos, snapshot));
+                            let mut sel = Selection::new(pane, rect, at, pos, snapshot);
+                            sel.grab = match clicks {
+                                2 => Some(Grab::Word),
+                                3 => Some(Grab::Line),
+                                _ => None,
+                            };
+                            self.selection = Some(sel);
                         }
                     }
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                let Some(sel) = self.selection.as_ref().filter(|s| !s.released) else { return };
+                let Some(sel) = self.selection.as_ref().filter(|s| !s.released && s.grab.is_none())
+                else {
+                    return;
+                };
                 let top = self.view_top(sel);
                 if let Some(sel) = self.selection.as_mut() {
                     sel.pointer = pos;
@@ -131,7 +144,9 @@ impl App {
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 if let Some(sel) = self.selection.as_mut() {
-                    if sel.dragged() {
+                    if sel.grab.is_some() {
+                        // Picked on the next frame.
+                    } else if sel.dragged() {
                         sel.released = true;
                     } else {
                         self.selection = None; // a plain click selects nothing
@@ -139,6 +154,46 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// How many clicks in a row this one is: those within `MULTI_CLICK` on the same cell, up to
+    /// three, then it starts over.
+    fn click_count(&mut self, pos: Position) -> u8 {
+        let now = Instant::now();
+        let n = match self.last_click {
+            Some((at, when, n))
+                if at == pos && now.duration_since(when) <= MULTI_CLICK && n < 3 =>
+            {
+                n + 1
+            }
+            _ => 1,
+        };
+        self.last_click = Some((pos, now, n));
+        n
+    }
+
+    /// Widens a double or triple click to its word or line, now the pane has been drawn; a blank
+    /// cell selects nothing. The selection then goes on as a dragged one released.
+    fn pick_grab(&mut self) {
+        let Some(sel) = self.selection.as_ref().filter(|s| !s.picked) else { return };
+        let Some(grab) = sel.grab else { return };
+        let row = sel.anchor.row;
+        let cells = match &sel.snapshot {
+            Some(s) => s.row_symbols(row),
+            None => {
+                self.panel.as_ref().filter(|p| p.rect == sel.rect).and_then(|p| p.row_symbols(row))
+            }
+        };
+        let span = cells.and_then(|c| selection::grab_span(&c, grab, sel.anchor.col));
+        match (span, self.selection.as_mut()) {
+            (Some((from, to)), Some(sel)) => {
+                sel.anchor.col = from;
+                sel.head = selection::Point { row, col: to };
+                sel.picked = true;
+                sel.released = true;
+            }
+            _ => self.selection = None,
         }
     }
 
@@ -225,14 +280,16 @@ impl App {
 
     /// Highlights the selection in the frame just drawn; once the mouse is released, copies it.
     pub fn apply_selection(&mut self, buf: &mut Buffer) {
-        let Some(sel) = self.selection.as_ref() else {
+        if self.selection.is_none() {
             self.panel = None;
             return;
-        };
+        }
         if !matches!(self.mode, Mode::Normal) {
             self.selection = None;
             return;
         }
+        self.pick_grab();
+        let Some(sel) = self.selection.as_ref() else { return };
         let (start, end) = sel.span();
         if let Some((from, to)) = selection::on_screen(sel.rect, self.view_top(sel), start, end) {
             selection::highlight(buf, sel.rect, from, to);

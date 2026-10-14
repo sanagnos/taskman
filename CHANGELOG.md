@@ -4,6 +4,8 @@ What changed in each release; a release's notes on GitHub are its section here. 
 
 ## Unreleased
 
+- Double-click a word to select and copy it (a key, path, URL or id), or triple-click a line, in any pane. It behaves like a dragged selection: it stays until a click, a key or Esc, and `ctrl+c` copies it again.
+
 ## 0.1.3 - 2026-10-14
 
 - Updated rustls, the TLS library taskman uses for HTTPS, to 0.23.46 for its security advisories (RUSTSEC-2026-0346 to 0349).

@@ -198,6 +198,105 @@ fn a_selection_is_copied_once_the_mouse_is_released() {
     assert_eq!(sent(&to_session), "");
 }
 
+/// Clicks the Claude pane's top row at `col`, `n` times in a row.
+fn click_top_row(app: &mut App, col: u16, n: usize) {
+    let c = app.areas.claude;
+    for _ in 0..n {
+        mouse(app, MouseEventKind::Down(MouseButton::Left), c.x + col, c.y);
+        mouse(app, MouseEventKind::Up(MouseButton::Left), c.x + col, c.y);
+    }
+}
+
+#[test]
+fn a_double_click_selects_and_copies_a_word() {
+    let (mut app, to_session) = at_eng_52();
+    click_top_row(&mut app, 3, 2); // "Welcome"
+    draw(&mut app, 80, 24);
+    settle(&mut app);
+    assert_eq!(decoded(&app.clipboard_out), ["Welcome"]);
+    assert!(toast(&app).is_some_and(|t| t.contains("7 characters")), "{:?}", toast(&app));
+    assert!(app.selection.as_ref().is_some_and(|s| s.dragged()), "it stays highlighted");
+    assert_eq!(sent(&to_session), "");
+    // ctrl+c copies it again and clears it.
+    app.on_key(ctrl('c'));
+    settle(&mut app);
+    assert_eq!(decoded(&app.clipboard_out), ["Welcome", "Welcome"]);
+    assert!(app.selection.is_none());
+}
+
+#[test]
+fn a_triple_click_selects_the_line() {
+    let (mut app, _sent) = at_eng_52();
+    click_top_row(&mut app, 3, 3);
+    draw(&mut app, 80, 24);
+    settle(&mut app);
+    assert_eq!(decoded(&app.clipboard_out), ["✻ Welcome to Claude Code"]);
+}
+
+#[test]
+fn a_fourth_click_starts_over() {
+    let (mut app, _sent) = at_eng_52();
+    click_top_row(&mut app, 3, 4);
+    draw(&mut app, 80, 24);
+    assert!(app.selection.is_none());
+    assert!(app.clipboard_out.is_empty());
+}
+
+#[test]
+fn slow_clicks_and_clicks_elsewhere_do_not_count_together() {
+    let (mut app, _sent) = at_eng_52();
+    click_top_row(&mut app, 3, 1);
+    // The first click was long ago.
+    let (at, when, n) = app.last_click.unwrap();
+    app.last_click =
+        Some((at, when.checked_sub(std::time::Duration::from_millis(600)).unwrap(), n));
+    click_top_row(&mut app, 3, 1);
+    draw(&mut app, 80, 24);
+    assert!(app.selection.is_none());
+    assert!(app.clipboard_out.is_empty());
+
+    // A click on another cell starts over, and its own second click selects.
+    click_top_row(&mut app, 12, 1);
+    click_top_row(&mut app, 3, 1);
+    draw(&mut app, 80, 24);
+    assert!(app.selection.is_none());
+    click_top_row(&mut app, 3, 1);
+    draw(&mut app, 80, 24);
+    settle(&mut app);
+    assert_eq!(decoded(&app.clipboard_out), ["Welcome"]);
+}
+
+#[test]
+fn a_double_click_on_a_blank_cell_selects_nothing() {
+    let (mut app, _sent) = at_eng_52();
+    let c = app.areas.claude;
+    for _ in 0..2 {
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), c.x + 60, c.y + 1);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), c.x + 60, c.y + 1);
+    }
+    draw(&mut app, 80, 24);
+    assert!(app.selection.is_none());
+    assert!(app.clipboard_out.is_empty());
+}
+
+#[test]
+fn a_double_click_selects_in_a_panel() {
+    let (mut app, _sent) = at_eng_52();
+    draw(&mut app, 200, 50);
+    let r = app.areas.jira.unwrap();
+    // The panel's border and a column of padding come first; the first row is its title or text.
+    let (x, y) = (r.x + 3, r.y + 1);
+    for _ in 0..2 {
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x, y);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x, y);
+    }
+    draw(&mut app, 200, 50);
+    settle(&mut app);
+    let copied = decoded(&app.clipboard_out);
+    assert_eq!(copied.len(), 1, "{copied:?}");
+    assert!(!copied[0].is_empty() && !copied[0].contains(char::is_whitespace), "{copied:?}");
+}
+
 #[test]
 fn ctrl_c_copies_a_selection_without_interrupting() {
     let (mut app, to_session) = at_eng_52();

@@ -23,7 +23,7 @@ use crate::ui::{self, Areas};
 use crate::{add, github, hook, links, resume, update, worktree};
 use launch::link_bin;
 use poll::take_leftover_status;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
@@ -147,6 +147,8 @@ pub struct App {
     clipboard: Arc<dyn Fn(&str) -> selection::Copied + Send + Sync>,
     /// A drag-selection of rendered text in the Claude, Jira or GitHub pane.
     pub selection: Option<Selection>,
+    /// The last left click: where, when, and how many in a row (see `mouse::click_count`).
+    pub(crate) last_click: Option<(Position, Instant, u8)>,
     /// The panel holding the selection, rendered whole; set as the panel is drawn.
     pub panel: Option<Panel>,
     settings_json: String,
@@ -264,6 +266,7 @@ impl App {
             clipboard_out: Vec::new(),
             clipboard: Arc::new(selection::copy),
             selection: None,
+            last_click: None,
             panel: None,
             settings_json: hook::settings_json(exe),
             codex_config: hook::codex_config(exe),
