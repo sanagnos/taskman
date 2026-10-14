@@ -4,6 +4,8 @@ Ideas discussed but not built yet, with the reasoning behind them, and what hasn
 
 ## Ideas
 
+- **Sleep by memory use:** sleeping is by time and an optional count of sessions. Reading the CLIs' resident memory (and the machine's free memory) could pick sessions by what they cost, or sleep earlier when memory is short; it needs a per-platform read and a rule for "short".
+
 - **GitHub behind an interface,** as the trackers are (`tracker::Client`, tested against recorded responses in `tests/fixtures/`): the `gh` lookups (PR, checks, reviews) behind one interface with a fixture-backed implementation, so the PR fetching and refresh logic get unit tests, and the demo can run on recorded data with no special mode.
 - **Colours in the screen snapshots**: `src/ui/screens.rs` compares the text drawn, not its colours or styles, so a badge drawn in the wrong colour, or a selected card without its background, passes. The `TestBackend` keeps each cell's style; checking the cells that carry meaning would catch those.
 - **Open file links in `$EDITOR`**: Codex and Claude link file paths (`file://`, editor URIs); `ctrl+a l` lists and copies them but only http(s) opens. Opening a path inside the session's folder in `$EDITOR`, through the same hand-off as `ctrl+a v`, would make them useful.

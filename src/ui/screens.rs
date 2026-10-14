@@ -217,6 +217,30 @@ fn settings() {
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 
+/// Settings → General, with the sleep settings: an hour and no limit, the defaults.
+#[test]
+fn settings_general() {
+    let mut app = acme_app();
+    app.open_settings(SettingsItem::General, false);
+    assert_snapshot!(draw(&mut app, 100, 30));
+}
+
+/// Sleeping sessions are a quiet glyph; one that finished a turn nobody has looked at keeps
+/// saying so.
+#[test]
+fn sleeping_sessions_in_the_sidebar() {
+    use crate::app::AgentState::{Done, Idle};
+    let mut app = acme_app();
+    for (key, state, seen) in
+        [("ENG-53", Idle, true), ("ENG-61", Done, false), ("ENG-70", Done, true)]
+    {
+        let tv = app.tickets.iter_mut().find(|tv| tv.t.key == key).unwrap();
+        tv.session = None;
+        (tv.status.state, tv.status.seen, tv.asleep) = (state, seen, true);
+    }
+    assert_snapshot!(draw(&mut app, 160, 40));
+}
+
 #[test]
 fn add_form() {
     let mut app = acme_app();

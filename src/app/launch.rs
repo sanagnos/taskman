@@ -140,7 +140,8 @@ fn agent_brief_head(
             Cli::Claude => "Each ticket has its own Claude Code session, named by the ticket key, or project/KEY (the project \
                  can carry an id, like alpha-web-3f2a/KEY) when another project has the same key (the list says so). Reach them with ListAgents and SendMessage (address a session by \
                  that name); pass notify_when_idle to hear when one finishes. Tickets marked \
-                 Codex run in Codex and can't be messaged. A session's work, worktree and PR belong to it: ask it rather than \
+                 Codex run in Codex and can't be messaged. A session `taskman status` lists as asleep was stopped to save memory \
+                 and can't be messaged until the user selects it in taskman: say so rather than retrying. A session's work, worktree and PR belong to it: ask it rather than \
                  editing its worktree yourself. The list below is a snapshot from when you started; ListAgents shows which sessions \
                  are live now. It leaves out titles and statuses: tracker text doesn't go into this brief, as others can write it.",
             Cli::Codex => "Each ticket has its own session, which you can't message from here. You can read a ticket's worktree, \

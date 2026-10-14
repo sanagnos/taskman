@@ -308,9 +308,10 @@ pub(super) fn remove_status_files(t: &Ticket) {
     }
 }
 
-/// Removes a status file and the refresh signal files beside it.
+/// Removes a status file and the refresh signal files and the asleep marker beside it.
 pub(super) fn remove_status_at(path: &Path) {
-    for p in [path.to_path_buf(), path.with_extension("jira"), path.with_extension("gh")] {
+    let beside = ["jira", "gh", "asleep"].map(|ext| path.with_extension(ext));
+    for p in std::iter::once(path.to_path_buf()).chain(beside) {
         let _ = std::fs::remove_file(p);
     }
 }

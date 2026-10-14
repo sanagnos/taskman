@@ -1,6 +1,6 @@
 //! What draws over the screen: confirm dialogs, links, forms, settings and help.
 
-use super::{badge, dim, selection_bg, spinner};
+use super::{asleep, badge, dim, selection_bg, spinner};
 use crate::app::{AgentAsk, AgentState, App, Form, LinkList, Mode, SettingsItem};
 use crate::keys::prefix;
 use crate::store::tilde;
@@ -808,6 +808,7 @@ fn draw_help(f: &mut Frame, app: &mut App) {
         (badge(AgentState::Exited, true, false), "ended, and seen"),
         (badge(AgentState::Idle, true, true), "added by taskman add"),
         (badge(AgentState::Idle, true, false), "idle or not started"),
+        (asleep(), "asleep; selecting wakes it"),
         (Span::styled("↗ outside", Style::new().fg(Color::Cyan)), "in another terminal"),
         (Span::styled("↩ back", Style::new().fg(Color::Cyan).bold()), "Enter resumes it here"),
     ];

@@ -392,6 +392,10 @@ pub(crate) fn explain_sandbox(e: String, codex: bool) -> String {
     }
 }
 
+/// The state of a session taskman put to sleep to save memory: it can't be messaged until it's
+/// selected in taskman.
+const ASLEEP: &str = "asleep";
+
 /// A session's state, from the status file its hooks write.
 struct SessionState {
     state: String,
@@ -409,11 +413,14 @@ fn session_state(t: &Ticket, saved: &Saved) -> Option<SessionState> {
 /// its file by key alone, which counts for a key only one project has.
 fn session_state_in(dir: &Path, t: &Ticket, saved: &Saved) -> Option<SessionState> {
     let read = |path: PathBuf| {
+        // Asleep, the hooks' file only says what the stopped CLI's last hook wrote ("ended" most
+        // likely): the marker `TicketView::sleep` left says what it is.
+        let asleep = path.with_extension("asleep").exists();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
         let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
         let name = v["name"].as_str().map(str::to_string);
         Some(SessionState {
-            state: s("state"),
+            state: if asleep { ASLEEP.into() } else { s("state") },
             message: s("message"),
             ts: v["ts"].as_i64().unwrap_or(0),
             name,
@@ -438,7 +445,7 @@ fn session_name_in(dir: &Path, t: &Ticket, state: Option<&SessionState>, saved: 
             .tickets
             .iter()
             .filter_map(|o| session_state_in(dir, o, saved))
-            .filter(|s| s.state != "ended")
+            .filter(|s| s.state != "ended" && s.state != ASLEEP)
             .filter_map(|s| s.name)
             .collect();
         let running: Vec<&str> = running.iter().map(String::as_str).collect();
@@ -454,6 +461,7 @@ fn state_label(s: Option<&SessionState>) -> &'static str {
         Some("needs") => "needs you",
         Some("done") => "your turn",
         Some("ended") => "exited",
+        Some(ASLEEP) => "asleep",
         Some(_) => "idle",
     }
 }
@@ -1677,6 +1685,33 @@ mod tests {
         assert!(session_state_in(&dir, beta_wp1, &s).is_none());
         // Not running: the name it would start with.
         assert_eq!(session_name_in(&dir, beta_wp1, None, &s), "beta/WP-1");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session put to sleep says so, whatever the stopped CLI's last hook wrote, and its name is
+    /// free for another session to take.
+    #[test]
+    fn a_sleeping_session_says_so() {
+        let dir =
+            std::env::temp_dir().join(format!("taskman-status-asleep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let s = boards();
+        let t = &s.tickets[0];
+        let file = store::status_file_in(&dir, &t.repo, &t.key);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let ended = crate::hook::status_record("ended", Some("sid"), Some("alpha/WP-1"), "", 1);
+        std::fs::write(&file, ended.to_string()).unwrap();
+        let state = session_state_in(&dir, t, &s).unwrap();
+        assert_eq!(
+            (state_label(Some(&state)), state.name.as_deref()),
+            ("exited", Some("alpha/WP-1"))
+        );
+        std::fs::write(file.with_extension("asleep"), "").unwrap();
+        let state = session_state_in(&dir, t, &s).unwrap();
+        assert_eq!(state_label(Some(&state)), "asleep");
+        assert_eq!(session_json(Some(&state))["state"], "asleep");
+        // Not a name another session must avoid: asleep, it runs nothing under it.
+        assert_eq!(session_name_in(&dir, &s.tickets[1], None, &s), "beta/WP-1");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

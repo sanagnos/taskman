@@ -2,6 +2,7 @@
 //! move through it, and the General form (the prefix key, updates). Also the tip, once, when tmux
 //! or GNU screen has taskman's prefix too.
 
+use super::sleep::{after_choices, after_label, cap_choices, cap_label};
 use super::sync::Msg;
 use super::{App, Field, Form, FormKind, Mode};
 use crate::keys;
@@ -187,6 +188,18 @@ impl App {
                 prefix_hint(prefix),
             ),
             Field::choice("Updates", vec![AUTO_INSTALL.into(), NOTIFY_ONLY.into()], value, hint),
+            Field::choice(
+                "Sleep idle sessions after",
+                after_choices(self.config.sleep_after).into_iter().map(after_label).collect(),
+                after_label(self.config.sleep_after),
+                "unselected this long, a session is stopped to free memory and resumes when selected; never one working or needing you",
+            ),
+            Field::choice(
+                "Keep awake at most",
+                cap_choices(self.config.max_awake).into_iter().map(cap_label).collect(),
+                cap_label(self.config.max_awake),
+                "past it, the idle sessions unselected longest sleep, whatever the time",
+            ),
         ];
         let mut form = Form::new(FormKind::General, "General", fields);
         form.note = Some(self.updater.describe());
@@ -195,6 +208,17 @@ impl App {
 
     pub(super) fn submit_general(&mut self, form: &Form) -> Result<(), String> {
         self.config.auto_update = form.value("Updates") == AUTO_INSTALL;
+        let pick = |label| form.value(label);
+        let after = after_choices(self.config.sleep_after);
+        if let Some(a) =
+            after.into_iter().find(|a| after_label(*a) == pick("Sleep idle sessions after"))
+        {
+            self.config.sleep_after = a;
+        }
+        let caps = cap_choices(self.config.max_awake);
+        if let Some(c) = caps.into_iter().find(|c| cap_label(*c) == pick("Keep awake at most")) {
+            self.config.max_awake = c;
+        }
         let prefix = keys::Prefix::parse(&form.value("Prefix key")).unwrap_or_default();
         let changed = prefix != self.config.prefix;
         self.config.prefix = prefix;

@@ -211,6 +211,11 @@ impl Session {
         }
     }
 
+    /// The CLI's process id, None for a fake or once reaped.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.as_ref().and_then(|c| c.process_id())
+    }
+
     /// Whether the CLI's process has ended; its output may still be on its way.
     pub fn ended(&mut self) -> bool {
         self.exited() || self.child.as_mut().is_none_or(|c| matches!(c.try_wait(), Ok(Some(_))))

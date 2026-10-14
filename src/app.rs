@@ -6,6 +6,7 @@
 //! - `poll`: each session's state, from its hooks' status file and from its screen
 //! - `sync`: background fetches and worktree creation, and the messages they send back (`Msg`)
 //! - `sessions`: starting sessions, their names, handing them to another terminal and back
+//! - `sleep`: putting sessions nobody has looked at for a while to sleep, and waking them
 //! - `launch`: how a session's CLI starts: its arguments, environment and brief
 //! - `input`: keys, the prefix commands, paste; `mouse`: the wheel, selecting, the clipboard
 //! - `forms`: fields and form keys; the forms are `add_form`, `settings`, `projects`, `accounts`
@@ -44,6 +45,7 @@ mod poll;
 mod projects;
 mod sessions;
 mod settings;
+mod sleep;
 mod sync;
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -476,6 +478,7 @@ impl App {
             self.dirty.store(true, Ordering::Relaxed);
         }
         self.ensure_selected_session();
+        self.sleep_tick(Instant::now());
         for tv in &self.tickets {
             if let Some(s) = &tv.session {
                 self.clipboard_out.extend(s.take_clipboard());

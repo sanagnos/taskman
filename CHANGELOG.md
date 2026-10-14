@@ -5,6 +5,7 @@ What changed in each release; a release's notes on GitHub are its section here. 
 ## Unreleased
 
 - Double-click a word to select and copy it (a key, path, URL or id), or triple-click a line, in any pane. It behaves like a dragged selection: it stays until a click, a key or Esc, and `ctrl+c` copies it again.
+- Sessions you haven't looked at for an hour now go to sleep to free their memory (a Claude Code session with its servers is a few hundred MB, and many open tickets could exhaust a small machine, WSL's by default). A sleeping session shows `☾` in the sidebar and wakes, on the same conversation, when you select it. Only idle sessions and ones waiting on your turn sleep, never the one in front, a project agent, one that's working or needs you, or one with a background task running (a dev server, a watcher). Settings → General sets the time (15 minutes to never) and an optional limit on how many sessions stay awake. `taskman status` says a session is asleep, since it can't be messaged until you select it.
 
 ## 0.1.3 - 2026-10-14
 

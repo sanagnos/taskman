@@ -136,6 +136,9 @@ pub(super) enum Msg {
     PrefixTip(String),
     /// There's an OS keychain to save tokens to.
     Keychain(crate::keychain::Keychain),
+    /// A session's process tree was looked at (`App::scan`): its ticket, the start it belongs to,
+    /// why, and the pids under its CLI.
+    Scanned(Id, String, super::sleep::Scan, Result<std::collections::HashSet<u32>, String>),
 }
 
 /// Looks ticket `key`'s PR up: one that `closes` its issue, else on its worktree's branch, else on
@@ -267,6 +270,7 @@ impl App {
                 }
                 Msg::Gh(repo, gh) => _ = self.github.insert(repo, gh),
                 Msg::Keychain(k) => self.keychain = Some(k),
+                Msg::Scanned(id, launch, kind, found) => self.scanned(&id, &launch, kind, found),
                 Msg::Token(source, token) => {
                     self.trackers.token_read(&source, token, &self.config, &self.projects);
                     let uses = |app: &Self, t: &Ticket| {

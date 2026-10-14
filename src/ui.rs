@@ -181,6 +181,8 @@ pub fn drop_colours(buf: &mut Buffer) {
 fn state_badge(tv: &TicketView) -> Span<'static> {
     let outside = || Span::styled("↗ outside", Style::new().fg(Color::Cyan));
     match tv.away {
+        // A finished turn you haven't looked at is still news, asleep or not.
+        None if tv.asleep && !(tv.status.state == AgentState::Done && !tv.status.seen) => asleep(),
         None => badge(tv.status.state, tv.status.seen, tv.new),
         Some(Away::Leaving(_)) => Span::styled(format!("{} handing off", spinner()), dim()),
         Some(Away::HandedOff) => outside(),
@@ -193,6 +195,11 @@ fn state_badge(tv: &TicketView) -> Span<'static> {
             }
         },
     }
+}
+
+/// A session stopped to save memory (`TicketView::sleep`), a quiet state: a glyph only.
+fn asleep() -> Span<'static> {
+    Span::styled("☾", dim())
 }
 
 /// Every symbol differs, not just its colour, so the collapsed sidebar, which shows the symbol

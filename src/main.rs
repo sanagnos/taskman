@@ -15,6 +15,7 @@ mod linear;
 mod links;
 mod local;
 mod proc;
+mod proctree;
 #[cfg(test)]
 mod replay;
 mod resume;

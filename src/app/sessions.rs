@@ -30,16 +30,15 @@ impl App {
     pub(super) fn ensure_selected_session(&mut self) {
         let area = self.areas.claude;
         let Some(tv) = self.tickets.get(self.sel) else { return };
-        if tv.session.is_none()
-            && tv.status.state == AgentState::NotStarted
-            && !tv.waiting()
-            && area.width > 0
-        {
+        // Selecting a sleeping session starts it again, on the same conversation.
+        if tv.dormant() && !tv.waiting() && area.width > 0 {
             self.start_session(self.sel);
         }
         // An agent can only message sessions that are running: once a project's Claude agent runs,
         // start its Claude ticket sessions too, one per tick. Codex sessions can't be messaged. A
-        // ticket that's away won't start, and finding it every tick would hold up the rest.
+        // ticket that's away won't start, and finding it every tick would hold up the rest. One
+        // asleep stays asleep: waking it would undo the memory it was put to sleep to save, and
+        // the agent is told it can't be messaged (`taskman status` says "asleep").
         if area.width > 0
             && let Some(i) = (0..self.tickets.len()).find(|&i| {
                 let tv = &self.tickets[i];
@@ -47,6 +46,7 @@ impl App {
                     && tv.t.cli == Cli::Claude
                     && tv.session.is_none()
                     && tv.status.state == AgentState::NotStarted
+                    && !tv.asleep
                     && !tv.waiting()
                     && tv.away.is_none()
                     && self.tickets.iter().any(|a| {
@@ -85,6 +85,8 @@ impl App {
         if self.tickets[i].reaping() {
             return;
         }
+        // Starting wakes it, or it runs elsewhere now: either way it isn't asleep.
+        self.tickets[i].rouse();
         // A restart keeps the pane's claim: taking it again would find it held, by taskman itself.
         let path = resume::owner_file(&self.tickets[i].t.repo, &self.tickets[i].t.key);
         let taken = match self.tickets[i].hold.take() {
@@ -137,6 +139,7 @@ impl App {
                 tv.hold = Some(hold);
                 tv.name = Some(name);
                 tv.launch = Some(launch);
+                tv.watch = super::sleep::Watch::new(Instant::now());
                 tv.status.started();
             }
             Err(e) => {

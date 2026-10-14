@@ -793,11 +793,34 @@ pub struct Config {
     /// The key before every taskman command.
     #[serde(default)]
     pub prefix: crate::keys::Prefix,
+    /// Seconds a session goes unselected before it's put to sleep (stopped, to free its memory);
+    /// None never. Missing means `SLEEP_AFTER`.
+    #[serde(default = "sleep_after")]
+    pub sleep_after: Option<u64>,
+    /// The most sessions to keep awake: past it, the least recently selected idle ones sleep
+    /// whatever the time. None for no limit.
+    #[serde(default)]
+    pub max_awake: Option<usize>,
+}
+
+/// How long a session goes unselected before it sleeps, unless the config says otherwise: long
+/// enough that a ticket put down for a meeting or a review is still running when you're back,
+/// short enough that an afternoon's tickets don't all stay in memory the next day.
+pub const SLEEP_AFTER: u64 = 3600;
+
+fn sleep_after() -> Option<u64> {
+    Some(SLEEP_AFTER)
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { accounts: Vec::new(), auto_update: true, prefix: crate::keys::Prefix::default() }
+        Self {
+            accounts: Vec::new(),
+            auto_update: true,
+            prefix: crate::keys::Prefix::default(),
+            sleep_after: sleep_after(),
+            max_awake: None,
+        }
     }
 }
 
@@ -1287,6 +1310,17 @@ mod tests {
         assert!(Config::default().auto_update);
         let off: Config = serde_json::from_str(r#"{"accounts":[],"auto_update":false}"#).unwrap();
         assert!(!off.auto_update);
+    }
+
+    #[test]
+    fn sleep_settings_default_to_an_hour_and_no_limit() {
+        let old: Config = serde_json::from_str(r#"{"accounts":[]}"#).unwrap();
+        assert_eq!((old.sleep_after, old.max_awake), (Some(SLEEP_AFTER), None));
+        let set: Config =
+            serde_json::from_str(r#"{"accounts":[],"sleep_after":null,"max_awake":4}"#).unwrap();
+        assert_eq!((set.sleep_after, set.max_awake), (None, Some(4)));
+        let saved = serde_json::to_string(&Config::default()).unwrap();
+        assert!(saved.contains(r#""sleep_after":3600"#), "{saved}");
     }
 
     #[test]

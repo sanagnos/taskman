@@ -2,12 +2,13 @@
 //! tracker and PR panels, and which of their comments are new.
 
 use super::poll::StatusRecord;
+use super::sleep::Watch;
 use super::sync::STALE;
 use super::{AgentState, Remote, Status};
 use crate::github::{self, Pr};
 use crate::resume;
 use crate::session::{Reaper, Session};
-use crate::store::{Ticket, UiPrefs};
+use crate::store::{self, Ticket, UiPrefs};
 use crate::tracker::Issue;
 use crate::worktree;
 use std::path::PathBuf;
@@ -74,6 +75,11 @@ pub struct TicketView {
     pub away: Option<Away>,
     /// Another session's conversation id its hooks reported and it wasn't given, once told.
     pub(super) switched: Option<String>,
+    /// Stopped to save memory (`sleep`), its state as it was; selecting it starts it again. Not
+    /// saved: after a restart nothing runs until selected anyway.
+    pub asleep: bool,
+    /// What `sleep` looks at: when it was last selected and what runs under its CLI.
+    pub(super) watch: Watch,
 }
 
 /// What adding a ticket or agent found: it was already open, or is new; its index either way.
@@ -108,6 +114,8 @@ impl TicketView {
             lock_error: None,
             away: None,
             switched: None,
+            asleep: false,
+            watch: Watch::new(Instant::now()),
         }
     }
 
@@ -121,9 +129,35 @@ impl TicketView {
     /// (`Session::stop`), kept as `reaper` while it runs. A session only starts once the last
     /// one's CLI is gone (`start_session`), so there's at most one to keep.
     pub(super) fn stop_session(&mut self) {
+        self.rouse();
         if let Some(reaper) = self.session.take().and_then(Session::stop) {
             self.reaper = Some(reaper);
         }
+    }
+
+    /// Puts its session to sleep: stopped as a restart stops it, but its state stays as it was
+    /// and `taskman status` says it's asleep, until it starts again. The marker is written first,
+    /// so an agent never reads the state the stopped CLI's SessionEnd hook leaves.
+    pub(super) fn sleep(&mut self) {
+        let marker = asleep_marker(&self.t);
+        if let Some(dir) = marker.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&marker, b"");
+        self.stop_session();
+        self.asleep = true;
+    }
+
+    /// No longer asleep: it started again, was handed off or stopped some other way.
+    pub(super) fn rouse(&mut self) {
+        if std::mem::take(&mut self.asleep) {
+            let _ = std::fs::remove_file(asleep_marker(&self.t));
+        }
+    }
+
+    /// Whether its session is down and the user hasn't asked for that: not started yet or asleep.
+    pub(super) fn dormant(&self) -> bool {
+        self.session.is_none() && (self.status.state == AgentState::NotStarted || self.asleep)
     }
 
     /// Whether its last session's CLI is still on its way out: hung up, but not reaped yet.
@@ -136,12 +170,12 @@ impl TicketView {
         self.reaper.take().filter(|r| !r.done())
     }
 
-    /// Handed off (`ctrl+a t`): lets its claim go once its CLI is gone, not before, so `taskman
-    /// resume` can't start a second copy on the conversation the pane's CLI is still ending. The
-    /// owner file says `handed-off` already, which held reads as `Owner::Stopping`. From
-    /// `handed_off` and then from every poll, until it's let go.
+    /// Handed off (`ctrl+a t`) or asleep: lets its claim go once its CLI is gone, not before, so
+    /// `taskman resume` can't start a second copy on the conversation the pane's CLI is still
+    /// ending. A hand-off's owner file says `handed-off` already, which held reads as
+    /// `Owner::Stopping`. From `handed_off` and then from every poll, until it's let go.
     pub(super) fn release_handed_off(&mut self) {
-        if self.away == Some(Away::HandedOff) && !self.reaping() {
+        if (self.away == Some(Away::HandedOff) || self.asleep) && !self.reaping() {
             self.hold = None;
         }
     }
@@ -354,6 +388,12 @@ fn strip_folder<'a>(title: &'a str, dir: &str) -> &'a str {
         return "";
     }
     title.strip_suffix(&format!(" | {dir}")).unwrap_or(title)
+}
+
+/// The file beside a ticket's status file that says its session is asleep, which `taskman status`
+/// reads: the hooks' file can't, as the stopped CLI's SessionEnd hook writes "ended" into it.
+pub(crate) fn asleep_marker(t: &Ticket) -> PathBuf {
+    store::status_file(&t.repo, &t.key).with_extension("asleep")
 }
 
 /// Whether closing `tv` may remove its worktree: one taskman created, never the main checkout.

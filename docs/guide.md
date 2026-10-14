@@ -91,7 +91,7 @@ The prefix is `ctrl+a` (`ctrl+a a` sends a literal one). Use tmux or screen with
 
 ## Set up
 
-Everything is set up in **Settings** (`ctrl+a ,`): the prefix key, updates, projects and accounts are listed on the left, the selected one's settings on the right. ↑/↓ choose, Enter edits, Enter again saves, `ctrl+d` deletes, Esc goes back. `ctrl+a P` and `ctrl+a A` open it on a new project or a new account.
+Everything is set up in **Settings** (`ctrl+a ,`): the prefix key, updates, sleeping, projects and accounts are listed on the left, the selected one's settings on the right. ↑/↓ choose, Enter edits, Enter again saves, `ctrl+d` deletes, Esc goes back. `ctrl+a P` and `ctrl+a A` open it on a new project or a new account.
 
 A **project** is one folder: usually a repository's main checkout, but any folder works. Adding one takes only its path. Without a tracker it has agents only; pick Jira or Linear under **Tracker** to add tickets, and the form asks, in this order, for the site, the account to sign in with, then the project or team its tickets are in. Local files asks only for its folder and prefix (see [Local files](#local-files-tickets-without-an-account)), and GitHub Issues only for the prefix (see [GitHub Issues](#github-issues-the-repositorys-own-issues)). The project's page also says whether its tickets get a PR panel and which GitHub repo it reads (`acme/web`), and if not, why: `gh` missing or logged out, no GitHub remote, or not a git repository. The repo is the one `gh` picks from the git remotes; in a fork with `origin` and `upstream` that is `upstream` unless you run `gh repo set-default` in the repo. Deleting a project closes its tickets; the folder, worktrees and branches stay.
 
@@ -170,6 +170,12 @@ The tracker panel shows for tickets in a project with a tracker, and the GitHub 
 ### Sidebar
 
 The sidebar lists each project's agents and tickets, each with its session's state beside its name; a folded project's header shows `●` when one of its tickets needs you. A list longer than the screen scrolls: selecting a card out of view, by key, number or click, scrolls just enough to show it, and the mouse wheel over the sidebar scrolls the list without moving the selection; selecting the selected card again (its number, or a click on what shows of it) brings it back into view. The top and bottom rows then say what's hidden past them (`↑ 3 more`, `↓ 5 more`), with `●` when a hidden ticket needs you.
+
+### Sleeping sessions
+
+Each session is a full Claude Code or Codex process, a few hundred MB with its servers, so many open tickets can use up a small machine's memory (WSL gets only part of it by default). A session you haven't selected for an hour is put to sleep: stopped, shown as `☾` in the sidebar, and started again on the same conversation when you select it, as after a restart. Only a session that is idle or waiting for your turn sleeps; never the one in front of you, a project agent, one that is working or needs you, one handed to another terminal (`↗ outside`), or one with a background task running, such as a dev server or a watcher (taskman looks at the processes under the CLI). A task started in the first half minute after the session starts is taken as the CLI's own. A turn you haven't looked at stays marked `● your turn` while the session sleeps.
+
+**Sleep idle sessions after** in Settings → General sets the time: 15 minutes, 30 minutes, 1 hour (the default), 2 hours, 4 hours or never. **Keep awake at most** optionally limits the sessions running at once, 2 to 20: past it, the idle ones you selected longest ago sleep, whatever the time. A sleeping session can't be messaged: while a project agent runs, taskman starts its tickets' sessions so they can be messaged, but not sleeping ones, and `taskman status` lists them as asleep so the agent can say so. `ctrl+a t` and `taskman resume` continue a sleeping session in another terminal.
 
 ### Copying text
 
