@@ -2,7 +2,7 @@
 
 Everything beyond the [README](../README.md)'s quick start: setting projects and accounts up, the keys, worktrees and stacked tickets, agents, the `taskman` commands, Local files, Codex and how it all works. Why things are built the way they are is in [design.md](design.md).
 
-- [Install](#install): [platforms](#platforms), [updates](#updates), [by hand](#from-a-release-by-hand), [from source](#from-source)
+- [Install](#install): [platforms](#platforms), [updates](#updates), [by hand](#from-a-release-by-hand), [from source](#from-source), [uninstall](#uninstall)
 - [First run](#first-run) and [Set up](#set-up): projects, trackers and accounts
 - [Use](#use): keys, [the prefix](#another-prefix), [panels](#panels), [copying](#copying-text), [links](#links)
 - [Continuing a session in another terminal](#continuing-a-session-in-another-terminal-taskman-resume)
@@ -69,6 +69,19 @@ cargo install --locked --git https://github.com/sanagnos/taskman
 ```
 
 Run the same command again to update. Or build from a clone: `cargo install --locked --path .`. taskman isn't on crates.io yet: it builds with a fork of `vt100` that keeps links, which a published crate can't depend on.
+
+### Uninstall
+
+While taskman runs, `taskman close --merged` closes every merged ticket and removes the worktrees taskman created for them where nothing would be lost. Then quit taskman (`ctrl+a q`, then Enter) so its sessions stop, and remove what it keeps:
+
+- **The program:** `rm ~/.local/bin/taskman` for the install script's copy (or wherever `TASKMAN_BIN_DIR` put it; `command -v taskman` says where), or `cargo uninstall taskman-app` for a cargo install.
+- **Accounts and settings:** `rm -r ~/.config/taskman` (`$XDG_CONFIG_HOME/taskman` if that's set), or the file `TASKMAN_CONFIG` names.
+- **Projects, tickets and session state:** `rm -r ~/.local/state/taskman` (`$XDG_STATE_HOME/taskman` if that's set).
+- **Tokens in the keychain,** saved through the account form: on macOS, `while security delete-generic-password -s taskman >/dev/null 2>&1; do :; done` deletes them one by one until none is left; on Linux, `secret-tool clear service taskman`.
+- **Lines you added yourself** to your shell's startup file: an `export …_TOKEN=` or `export …_API_KEY=` line, and the PATH line the install script suggested (it never writes one).
+- **Worktrees inside the repository:** when a project put them in the repository's folder, taskman added a `# taskman worktrees` line and the folder under it to `.git/info/exclude`; delete both if you like.
+
+What stays, because it's yours: your repositories and branches, the worktrees taskman didn't remove (`git worktree remove <path>` from the repository, once you've kept what you need from them), and the sessions' conversations in `~/.claude` and `~/.codex`, which belong to Claude Code and Codex.
 
 ## First run
 
