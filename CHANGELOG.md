@@ -4,6 +4,8 @@ What changed in each release; a release's notes on GitHub are its section here. 
 
 ## Unreleased
 
+- Updated rustls, the TLS library taskman uses for HTTPS, to 0.23.46 for its security advisories (RUSTSEC-2026-0346 to 0349).
+
 ## 0.1.2 - 2026-10-12
 
 - The account form shows the page that makes a token as its full address, on a line of its own, so terminals that don't open links can still open or copy it. Linear's now includes the workspace typed, which the page needs.
