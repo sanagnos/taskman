@@ -3,6 +3,7 @@ compile_error!("taskman needs macOS or Linux (use WSL on Windows)");
 
 mod add;
 mod app;
+mod background;
 mod cli;
 mod close;
 mod github;

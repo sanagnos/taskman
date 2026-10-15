@@ -320,6 +320,9 @@ impl App {
             }
             // Running in another terminal, or on its way there.
             _ if tv.away.is_some() => {}
+            _ if key.code == KeyCode::Enter && tv.background.is_some() => {
+                self.stop_background_copy();
+            }
             _ if key.code == KeyCode::Enter => self.restart_session(),
             _ => {}
         }

@@ -372,6 +372,10 @@ A project whose work is tracked in its GitHub repository's issues can use them a
 - **The PR panel** shows the pull request GitHub links as closing the issue ("Fixes #12" in its description, or linked in the issue's sidebar) when there is an open or merged one, and otherwise finds it by branch and key as for other trackers.
 - **Several GitHub accounts:** `gh` uses its active account for the issue's host. If the panel says `gh` can't see the repository, switch with `gh auth switch`, or give the token access to private repositories with `gh auth refresh -s repo`.
 
+## A session that won't resume
+
+If the pane says a session didn't resume and shows "That session is running in the background", Claude Code is running that conversation as one of its own background sessions (`claude --bg`). Press Enter to run `claude stop` on it and resume it in the pane. If that fails, run the `claude stop <id>` command Claude names yourself, then press Enter.
+
 ## Codex sessions
 
 A ticket or agent can run in OpenAI's Codex CLI instead of Claude Code: in the Add form (`ctrl+a n`), set CLI to Codex. Codex sessions get the same status in the sidebar, the same panels and resume after a restart. What they can't do is messaging: agents only message Claude sessions, so no agent can reach a Codex session, and a Codex agent can't message the tickets.

@@ -5,6 +5,7 @@ use super::launch::session_exists;
 use super::poll::remove_status_at;
 use super::sync::Msg;
 use super::{AgentState, App, Away, Id, Mode};
+use crate::background;
 use crate::resume;
 use crate::session::Session;
 use crate::store::{self, Cli, Ticket};
@@ -178,6 +179,47 @@ impl App {
         if let Some(tv) = self.tickets.get_mut(self.sel) {
             tv.stop_session();
             tv.status.state = AgentState::NotStarted;
+        }
+    }
+
+    /// Enter on a session that ended because Claude runs its conversation in the background:
+    /// stops that copy, off the UI thread. `background_stopped` resumes it here.
+    pub(super) fn stop_background_copy(&mut self) {
+        let Some(tv) = self.tickets.get_mut(self.sel) else { return };
+        let (Some(b), Some(launch)) = (&mut tv.background, tv.launch.clone()) else { return };
+        if b.stopping {
+            return;
+        }
+        b.stopping = true;
+        b.error = None;
+        let (id, job) = ((tv.t.repo.clone(), tv.t.key.clone()), b.id.clone());
+        let (stop, tx) = (self.stop_background.clone(), self.tx.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::BackgroundStopped(id, launch, stop(&job)));
+        });
+    }
+
+    /// `claude stop` finished. A session that started again meanwhile isn't the one it was for.
+    pub(super) fn background_stopped(&mut self, id: &Id, launch: &str, res: Result<(), String>) {
+        let Some(i) = self.tickets.iter().position(|tv| tv.t.is(&id.0, &id.1)) else { return };
+        let tv = &mut self.tickets[i];
+        if tv.launch.as_deref() != Some(launch) {
+            return;
+        }
+        let Some(b) = &mut tv.background else { return };
+        b.stopping = false;
+        match res {
+            // Resumes as Enter does on any ended session: the next tick starts it.
+            Ok(()) => {
+                tv.stop_session();
+                tv.status.state = AgentState::NotStarted;
+            }
+            Err(e) => {
+                b.error = Some(format!(
+                    "{e}. Run `{}` yourself, then press Enter.",
+                    background::by_hand(&b.id)
+                ));
+            }
         }
     }
 

@@ -17,6 +17,7 @@
 //!
 //! Tokens and tracker clients are `tracker::Clients`; drawing is `ui.rs`.
 
+use crate::background;
 use crate::selection::{self, Panel, Selection};
 use crate::store::{self, Config, Project, Saved, Ticket, UiPrefs};
 use crate::tracker::{self, Access};
@@ -58,7 +59,10 @@ pub use launch::{NESTED_ENV, launch_id};
 pub use poll::{AgentState, Status};
 pub use settings::{Settings, SettingsItem};
 pub use sync::Remote;
-pub use ticket::{Away, TicketView};
+pub use ticket::{Away, Blocked, TicketView};
+
+/// Stops a Claude background session by its id.
+type Stopper = dyn Fn(&str) -> Result<(), String> + Send + Sync;
 
 /// How often the status files are read and the inbox is checked.
 const STATUS_EVERY: Duration = Duration::from_millis(300);
@@ -147,6 +151,9 @@ pub struct App {
     /// Puts text on the clipboard (`selection::copy`, run on a thread); tests swap it so they
     /// never touch the user's clipboard.
     clipboard: Arc<dyn Fn(&str) -> selection::Copied + Send + Sync>,
+    /// Stops a Claude background session by its id (`background::stop`, run on a thread); tests
+    /// swap it so they never touch the user's real ones.
+    stop_background: Arc<Stopper>,
     /// A drag-selection of rendered text in the Claude, Jira or GitHub pane.
     pub selection: Option<Selection>,
     /// The last left click: where, when, and how many in a row (see `mouse::click_count`).
@@ -267,6 +274,7 @@ impl App {
             bell: false,
             clipboard_out: Vec::new(),
             clipboard: Arc::new(selection::copy),
+            stop_background: Arc::new(background::stop),
             selection: None,
             last_click: None,
             panel: None,

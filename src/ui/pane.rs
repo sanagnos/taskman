@@ -238,6 +238,43 @@ pub(super) fn draw_claude(f: &mut Frame, app: &App, area: Rect) {
             ];
             f.render_widget(Paragraph::new(text).alignment(Alignment::Center), area);
         }
+        _ if tv.background.is_some() => {
+            let Some(b) = &tv.background else { return };
+            let mut text = vec![
+                Line::from(""),
+                Line::from(
+                    format!(
+                        "The {} session for {} didn't resume.",
+                        tv.t.cli.label(),
+                        tv.t.display()
+                    )
+                    .bold(),
+                ),
+                Line::from(""),
+            ];
+            text.extend(
+                b.message
+                    .lines()
+                    .map(|l| Line::from(Span::styled(l.to_string(), Style::new().fg(Color::Red)))),
+            );
+            text.push(Line::from(""));
+            if b.stopping {
+                text.push(Line::from(format!("{} Stopping it in the background…", spinner())));
+            } else {
+                text.push(Line::from(format!(
+                    "Press Enter to stop it there and resume it here, or {} x to close the ticket.",
+                    prefix()
+                )));
+            }
+            if let Some(e) = &b.error {
+                text.push(Line::from(""));
+                text.push(Line::from(Span::styled(e.clone(), Style::new().fg(Color::Red))));
+            }
+            f.render_widget(
+                Paragraph::new(text).alignment(Alignment::Center).wrap(Wrap { trim: true }),
+                area,
+            );
+        }
         _ => {
             let text = vec![
                 Line::from(""),

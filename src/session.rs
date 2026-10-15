@@ -197,6 +197,16 @@ impl Session {
         found
     }
 
+    /// The screen's text as at the bottom, however far the view is scrolled back.
+    pub fn screen_text(&self) -> String {
+        let mut p = lock(&self.parser);
+        let back = p.screen().scrollback();
+        p.screen_mut().set_scrollback(0);
+        let text = p.screen().contents();
+        p.screen_mut().set_scrollback(back);
+        text
+    }
+
     pub fn exited(&self) -> bool {
         self.exited.load(Ordering::Relaxed)
     }
@@ -486,6 +496,11 @@ pub mod fake {
                 size: (rows, cols),
             };
             (session, sent)
+        }
+
+        /// The CLI ended, as the reader noticing its output closed would say.
+        pub fn end(&self) {
+            self.exited.store(true, std::sync::atomic::Ordering::Relaxed);
         }
 
         /// Shows `bytes` as if the CLI had written them.

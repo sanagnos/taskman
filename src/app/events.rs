@@ -5,8 +5,8 @@
 
 use super::sessions::HAND_OFF_WAIT;
 use super::test_support::{
-    acme_app, ago, answer_choices, attach, attach_slow, ctrl, draw, key, lay_out, long_sidebar,
-    offline, reaped, sent, settle, toast,
+    acme_app, ago, answer_choices, attach, attach_ended, attach_slow, ctrl, draw, key, lay_out,
+    long_sidebar, offline, reaped, sent, settle, toast,
 };
 use super::{AgentState, App, Away, Hit, Mode, sync::Msg};
 use crate::store::{self, Saved};
@@ -3712,4 +3712,67 @@ mod sleeping {
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.config.sleep_after, Some(5));
     }
+}
+
+// ---- a conversation Claude runs in the background -------------------------------------------
+
+const BACKGROUND: &str = "That session is running in the background (a1b2c3d4). Run `claude attach a1b2c3d4` to open it, or `claude stop a1b2c3d4` first to resume it here.";
+
+fn ended_with(app: &mut App, screen: &str) -> usize {
+    attach_ended(app, "ENG-52", screen);
+    app.sel
+}
+
+#[test]
+fn enter_stops_the_background_copy_and_resumes() {
+    let (mut app, _) = at_eng_52();
+    let stopped = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = stopped.clone();
+    app.stop_background = std::sync::Arc::new(move |id| {
+        log.lock().unwrap().push(id.to_string());
+        Ok(())
+    });
+    let i = ended_with(&mut app, BACKGROUND);
+    let tv = &app.tickets[i];
+    assert_eq!(tv.status.state, AgentState::Exited);
+    assert_eq!(tv.background.as_ref().map(|b| b.id.as_str()), Some("a1b2c3d4"));
+    assert!(draw(&mut app, 100, 24).contains("running in the background (a1b2c3d4)"));
+
+    app.on_key(key(KeyCode::Enter));
+    assert!(app.tickets[i].background.as_ref().unwrap().stopping);
+    // Asked once: another Enter while it runs does nothing more.
+    app.on_key(key(KeyCode::Enter));
+    settle(&mut app);
+    assert_eq!(*stopped.lock().unwrap(), ["a1b2c3d4"]);
+    let tv = &app.tickets[i];
+    assert!(tv.background.is_none() && tv.session.is_none(), "stopped, ready to resume");
+    assert_eq!(tv.status.state, AgentState::NotStarted);
+}
+
+#[test]
+fn a_failed_stop_says_so_and_gives_the_command() {
+    let (mut app, _) = at_eng_52();
+    app.stop_background = std::sync::Arc::new(|_| Err("no such job".into()));
+    let i = ended_with(&mut app, BACKGROUND);
+    app.on_key(key(KeyCode::Enter));
+    settle(&mut app);
+    let b = app.tickets[i].background.as_ref().expect("still offered");
+    assert!(!b.stopping);
+    assert_eq!(
+        b.error.as_deref(),
+        Some("no such job. Run `claude stop a1b2c3d4` yourself, then press Enter.")
+    );
+    assert_eq!(app.tickets[i].status.state, AgentState::Exited, "not resumed");
+    assert!(draw(&mut app, 100, 24).contains("claude stop a1b2c3d4"));
+}
+
+#[test]
+fn other_endings_offer_no_stop() {
+    let (mut app, _) = at_eng_52();
+    let i = ended_with(&mut app, "Goodbye");
+    assert!(app.tickets[i].background.is_none());
+    // Only an id-shaped token is taken from the screen.
+    let (mut app, _) = at_eng_52();
+    let i = ended_with(&mut app, "running in the background (a; rm -rf ~)");
+    assert!(app.tickets[i].background.is_none());
 }

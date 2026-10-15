@@ -5,7 +5,7 @@
 //! Most are 80 by 24, where the sidebar folds and the panels hide; the panels and the agents' board
 //! need a wider screen, 160 by 40.
 
-use crate::app::test_support::{acme_app, attach, draw, key, long_sidebar, offline};
+use crate::app::test_support::{acme_app, attach, attach_ended, draw, key, long_sidebar, offline};
 use crate::app::{AgentAsk, Mode, SettingsItem};
 use crate::store::Saved;
 use crate::worktree::RemoveCheck;
@@ -86,6 +86,17 @@ fn agents_board() {
 fn ended_session() {
     let mut app = acme_app();
     select(&mut app, "ENG-70");
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
+/// A resume refused because Claude runs the conversation in the background.
+#[test]
+fn session_running_in_claudes_background() {
+    let mut app = acme_app();
+    select(&mut app, "ENG-70");
+    draw(&mut app, 80, 24);
+    let said = "That session is running in the background (a1b2c3d4). Run `claude attach a1b2c3d4` to open it, or `claude stop a1b2c3d4` first to resume it here.";
+    attach_ended(&mut app, "ENG-70", said);
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 

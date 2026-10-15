@@ -56,6 +56,7 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 | File | What it holds |
 |---|---|
 | `src/session.rs` | one `claude` process in a pseudo-terminal (portable-pty) with a vt100 screen; answers terminal queries; stopping one (`stop`, or dropping it) hangs its CLI up and reaps it on a thread, whose `Reaper` is kept by whatever must wait for the CLI to be gone (`stop_all` at quit waits for them all); for tests, `Session::fake`, with no process, recording what it's sent, and `fake_slow`, whose CLI stays until the test lets it go |
+| `src/background.rs` | a conversation Claude runs as a background session: `job_id` takes the id from the message an ended resume leaves on the screen (only an id-shaped token), `stop` runs `claude stop <id>` through `proc::run`; `TicketView::background` holds it for the ended pane, and `Msg::BackgroundStopped` resumes |
 | `src/session_ids.rs` | one conversation per session: `claim` refuses a session id another ticket or agent already holds (hooks, leftover status files, `--resume`); the toast and `session-conflicts.log` when Claude Code switches a session onto another's (see "One conversation per session" in design.md) |
 
 ### Trackers, GitHub and worktrees

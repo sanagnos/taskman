@@ -39,6 +39,7 @@ pub(crate) fn offline(saved: Saved) -> App {
         crate::update::Updater::disabled(),
     );
     app.clipboard = Arc::new(|_| crate::selection::Copied::Osc52);
+    app.stop_background = Arc::new(|_| Err("no claude in tests".into()));
     app
 }
 
@@ -328,6 +329,15 @@ pub(crate) fn attach(app: &mut App, key: &str, screen: &str) -> Sent {
     let tv = app.tickets.iter_mut().find(|tv| tv.t.key == key).unwrap();
     tv.session = Some(session);
     sent
+}
+
+/// Gives ticket `key` a session that printed `screen` and ended, and lets the poll notice.
+pub(crate) fn attach_ended(app: &mut App, key: &str, screen: &str) {
+    attach(app, key, screen);
+    let tv = app.tickets.iter_mut().find(|tv| tv.t.key == key).unwrap();
+    tv.session.as_ref().unwrap().end();
+    tv.launch = Some("launch-1".into());
+    app.poll_status();
 }
 
 /// As `attach`, with a CLI that goes on after the session is stopped until the `Release` is

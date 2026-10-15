@@ -3,7 +3,8 @@
 //! files tickets are reread on the same poll, as their files change.
 
 use super::sessions::HAND_OFF_WAIT;
-use super::{App, Away};
+use super::{App, Away, Blocked};
+use crate::background;
 use crate::session::Session;
 use crate::session_ids::{self, Claim};
 use crate::store::{self, Cli, Ticket};
@@ -401,6 +402,24 @@ impl App {
             // Ended in the pane: `taskman resume` may take it now.
             if tv.session.as_ref().is_some_and(|s| s.exited()) {
                 tv.hold = None;
+                // Not from the state change: a hook may have marked it ended already. Once per
+                // ending: the screen only changes with a new session.
+                if tv.background.is_none() && !tv.screen_read {
+                    tv.screen_read = true;
+                    tv.background = tv
+                        .session
+                        .as_ref()
+                        .filter(|_| tv.t.cli == Cli::Claude)
+                        .map(|s| s.screen_text())
+                        .and_then(|screen| {
+                            Some(Blocked {
+                                id: background::job_id(&screen)?,
+                                message: background::message(&screen),
+                                stopping: false,
+                                error: None,
+                            })
+                        });
+                }
             }
         }
         for i in handed_off {

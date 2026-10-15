@@ -139,6 +139,9 @@ pub(super) enum Msg {
     /// A session's process tree was looked at (`App::scan`): its ticket, the start it belongs to,
     /// why, and the pids under its CLI.
     Scanned(Id, String, super::sleep::Scan, Result<std::collections::HashSet<u32>, String>),
+    /// `claude stop` finished for a session blocked by a background copy: its ticket, the start
+    /// it belongs to and the outcome.
+    BackgroundStopped(Id, String, Result<(), String>),
 }
 
 /// Looks ticket `key`'s PR up: one that `closes` its issue, else on its worktree's branch, else on
@@ -271,6 +274,9 @@ impl App {
                 Msg::Gh(repo, gh) => _ = self.github.insert(repo, gh),
                 Msg::Keychain(k) => self.keychain = Some(k),
                 Msg::Scanned(id, launch, kind, found) => self.scanned(&id, &launch, kind, found),
+                Msg::BackgroundStopped(id, launch, res) => {
+                    self.background_stopped(&id, &launch, res);
+                }
                 Msg::Token(source, token) => {
                     self.trackers.token_read(&source, token, &self.config, &self.projects);
                     let uses = |app: &Self, t: &Ticket| {

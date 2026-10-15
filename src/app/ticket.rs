@@ -73,6 +73,11 @@ pub struct TicketView {
     /// (`start_session`), as "<file>: <error>". Enter tries again.
     pub lock_error: Option<String>,
     pub away: Option<Away>,
+    /// Its resume was refused because Claude runs the conversation in the background; Enter
+    /// stops that copy and resumes here.
+    pub background: Option<Blocked>,
+    /// The ended session's screen was looked at for `background`.
+    pub(super) screen_read: bool,
     /// Another session's conversation id its hooks reported and it wasn't given, once told.
     pub(super) switched: Option<String>,
     /// Stopped to save memory (`sleep`), its state as it was; selecting it starts it again. Not
@@ -80,6 +85,18 @@ pub struct TicketView {
     pub asleep: bool,
     /// What `sleep` looks at: when it was last selected and what runs under its CLI.
     pub(super) watch: Watch,
+}
+
+/// A session that ended because its conversation runs as a Claude background session.
+pub struct Blocked {
+    /// The job's id, as `background::job_id` took it from the screen.
+    pub id: String,
+    /// What Claude said, for the pane (untrusted: print it as it is, cleaned).
+    pub message: String,
+    /// `claude stop` is running.
+    pub stopping: bool,
+    /// Why it failed the last time.
+    pub error: Option<String>,
 }
 
 /// What adding a ticket or agent found: it was already open, or is new; its index either way.
@@ -113,6 +130,8 @@ impl TicketView {
             launch: None,
             lock_error: None,
             away: None,
+            background: None,
+            screen_read: false,
             switched: None,
             asleep: false,
             watch: Watch::new(Instant::now()),
@@ -130,6 +149,8 @@ impl TicketView {
     /// one's CLI is gone (`start_session`), so there's at most one to keep.
     pub(super) fn stop_session(&mut self) {
         self.rouse();
+        self.background = None;
+        self.screen_read = false;
         if let Some(reaper) = self.session.take().and_then(Session::stop) {
             self.reaper = Some(reaper);
         }
