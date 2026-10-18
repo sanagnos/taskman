@@ -92,6 +92,7 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 | `src/ui/screens.rs`, `src/ui/snapshots/` | tests: the main screens, dialogs and forms drawn from `acme_app` at 80x24 (160x40 for the panels and the board), compared with `insta` snapshots |
 | `src/replay.rs` | tests only: a local HTTP server answering with recorded responses (`tests/fixtures/`), so the Jira and Linear clients are tested without reaching a tracker |
 | `tests/hangup.rs` | the binary in a pty, its terminal closed while idle (a clean quit, as `prefix q`) and mid-input (the watchdog): taskman and its session must end |
+| `tests/resize.rs` | the binary in a pty, resized: the next key arrives on its own (a byte echoed by the stub session, a lone prefix key opening the menu), and taskman uses little processor time while nothing is typed |
 | `tests/links.rs` | a session's links reach the outer terminal as OSC 8, and `prefix l` opens one through a stub `$BROWSER` |
 | `tests/close.rs` | `taskman close` against the binary in a pty, with real git worktrees and an origin |
 | `tests/ownership.rs` | one copy of a session: `prefix R` restarts it under the same claim, killing `taskman resume` leaves it claimed by its CLI, and a lock that can't be taken stops the session starting until Enter once it can |

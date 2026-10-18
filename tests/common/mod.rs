@@ -341,6 +341,20 @@ impl Tui {
         t.c_lflag & libc::ICANON != 0 && t.c_lflag & libc::ECHO != 0
     }
 
+    /// Resizes the terminal, as dragging a window's edge does: taskman gets a SIGWINCH.
+    pub fn resize(&self, rows: u16, cols: u16) {
+        self.term
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .parser
+            .screen_mut()
+            .set_size(rows, cols);
+        let size = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
+        // SAFETY: TIOCSWINSZ reads one winsize, from `size`, which outlives the call.
+        let r = unsafe { libc::ioctl(self.writer.as_raw_fd(), libc::TIOCSWINSZ, &size) };
+        assert_eq!(r, 0, "TIOCSWINSZ: {}", std::io::Error::last_os_error());
+    }
+
     // Mouse reports in SGR encoding, as taskman turns on; `col` and `row` count from 0.
 
     pub fn press(&mut self, col: u16, row: u16) {

@@ -39,9 +39,10 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::EnterAlternateScreen;
-use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
-use std::io::Write;
+use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM, SIGWINCH};
+use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
+use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -114,10 +115,18 @@ impl Signals {
 /// spins. So `run` waits for input here and hands it to crossterm only while the terminal is there.
 /// crossterm can still spin when the terminal goes while it's part-way through a key, mouse report
 /// or paste, since it reads on until the sequence ends: `watchdog` ends taskman then.
+///
+/// crossterm 0.29 also loses input that comes with a resize: when a SIGWINCH and input are ready
+/// at once, it reports the resize and drops the input, and as it waits for new input (edge
+/// triggered) it won't read that input until more comes. So `wait` wakes on a SIGWINCH too, for
+/// `run` to read each resize before input can arrive with it.
 struct Tty {
     fd: RawFd,
     /// The file `fd` belongs to when it isn't stdin: `/dev/tty`, or the watchdog's copy.
     _file: Option<std::fs::File>,
+    /// Readable after a SIGWINCH. The watchdog's copy has none: it only looks for the terminal
+    /// going.
+    resized: Option<UnixStream>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -131,11 +140,16 @@ impl Tty {
     /// The file crossterm picks: stdin if it's a terminal, else `/dev/tty`.
     fn open() -> std::io::Result<Self> {
         // SAFETY: isatty only looks at a descriptor number; it reads or writes no memory.
-        if unsafe { libc::isatty(libc::STDIN_FILENO) } == 1 {
-            return Ok(Self { fd: libc::STDIN_FILENO, _file: None });
-        }
-        let f = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty")?;
-        Ok(Self { fd: f.as_raw_fd(), _file: Some(f) })
+        let (fd, file) = if unsafe { libc::isatty(libc::STDIN_FILENO) } == 1 {
+            (libc::STDIN_FILENO, None)
+        } else {
+            let f = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty")?;
+            (f.as_raw_fd(), Some(f))
+        };
+        let (resized, wake) = UnixStream::pair()?;
+        resized.set_nonblocking(true)?;
+        signal_hook::low_level::pipe::register(SIGWINCH, wake)?;
+        Ok(Self { fd, _file: file, resized: Some(resized) })
     }
 
     fn try_clone(&self) -> std::io::Result<Self> {
@@ -143,28 +157,57 @@ impl Tty {
         // clone.
         let f =
             std::fs::File::from(unsafe { BorrowedFd::borrow_raw(self.fd) }.try_clone_to_owned()?);
-        Ok(Self { fd: f.as_raw_fd(), _file: Some(f) })
+        Ok(Self { fd: f.as_raw_fd(), _file: Some(f), resized: None })
     }
 
-    /// Waits up to `timeout` for input. Through `filedescriptor::poll`, which uses select on
-    /// macOS, where poll doesn't work on terminals.
+    /// Waits up to `timeout` for input or a resize, which crossterm reads. Through
+    /// `filedescriptor::poll`, which uses select on macOS, where poll doesn't work on terminals.
     fn wait(&self, timeout: Duration) -> Input {
-        let mut fds = [libc::pollfd { fd: self.fd, events: libc::POLLIN, revents: 0 }];
-        match filedescriptor::poll(&mut fds, Some(timeout)) {
+        self.poll(timeout, false)
+    }
+
+    /// As `wait`, for input crossterm won't read until more comes (see `Tty`): that input keeps
+    /// the terminal readable, so only a resize or the terminal going ends the wait early. Ready
+    /// while the input is still there, for `run` to try crossterm again.
+    fn wait_held(&self, timeout: Duration) -> Input {
+        self.poll(timeout, true)
+    }
+
+    fn poll(&self, timeout: Duration, held: bool) -> Input {
+        // Without POLLIN, poll still reports a hangup, and select (macOS) an exception.
+        let events = if held { 0 } else { libc::POLLIN };
+        let resized = self.resized.as_ref().map_or(-1, AsRawFd::as_raw_fd);
+        let mut fds = [
+            libc::pollfd { fd: self.fd, events, revents: 0 },
+            libc::pollfd { fd: resized, events: libc::POLLIN, revents: 0 },
+        ];
+        let fds = &mut fds[..if self.resized.is_some() { 2 } else { 1 }];
+        match filedescriptor::poll(fds, Some(timeout)) {
             // An error is a signal arriving; the caller checks for those.
-            Ok(0) | Err(_) => return Input::Idle,
-            Ok(_) => {}
+            Ok(0) | Err(_) if !held => return Input::Idle,
+            _ => {}
         }
         if fds[0].revents & (libc::POLLHUP | libc::POLLNVAL) != 0 {
             return Input::Gone;
         }
+        if let Some(r) = &self.resized
+            && fds[1].revents & libc::POLLIN != 0
+        {
+            // Writes collate, so one read usually takes them all.
+            let mut buf = [0u8; 64];
+            while matches!((&*r).read(&mut buf), Ok(n) if n > 0) {}
+            return Input::Ready;
+        }
         // Readable with nothing to read is the end of file; select on macOS reports no hangup.
         let mut n: libc::c_int = 0;
         // SAFETY: FIONREAD writes one c_int, into `n`, which outlives the call.
-        if unsafe { libc::ioctl(self.fd, libc::FIONREAD, &mut n) } != 0 || n == 0 {
-            return Input::Gone;
+        let read = unsafe { libc::ioctl(self.fd, libc::FIONREAD, &mut n) } == 0;
+        match (read && n > 0, held) {
+            (true, _) => Input::Ready,
+            (false, false) => Input::Gone,
+            // Not known to be readable, so not the end of file: the next `wait` tells.
+            (false, true) => Input::Idle,
         }
-        Input::Ready
     }
 }
 
@@ -465,14 +508,22 @@ fn run(
         Instant::now().checked_sub(Duration::from_secs(1)).unwrap_or_else(Instant::now);
     // Keys typed during the keyboard query wait in crossterm's queue, not on the terminal.
     let mut input = true;
+    // Passes in a row that found input and read nothing from crossterm.
+    let mut misses = 0u8;
     let mut last_size = ratatui::layout::Size::default();
     let no_color = no_color();
     loop {
         let size = terminal.size()?;
         app.tick(ratatui::layout::Rect::new(0, 0, size.width, size.height));
-        // crossterm reports resizes only along with input now, so they are noticed here.
+        // crossterm's resize events are dropped (`read_input`), so resizes are noticed here.
         if size != std::mem::replace(&mut last_size, size) {
             app.dirty.store(true, Ordering::Relaxed);
+            // Read the resize before drawing at the new size, or a key typed after the redraw
+            // could come with it (see `Tty`). Only while the terminal is there, as below.
+            if tty.wait(Duration::ZERO) == Input::Gone {
+                return Ok(());
+            }
+            read_input(app)?;
         }
 
         // Redraw on output, input, or at 10fps for spinners and clocks.
@@ -496,26 +547,16 @@ fn run(
             let _ = out.flush();
         }
 
-        match tty.wait(Duration::from_millis(16)) {
+        // Input crossterm read nothing from twice is held (see `Tty`): waiting on it would spin.
+        let wait = if misses >= 2 { Tty::wait_held } else { Tty::wait };
+        match wait(tty, Duration::from_millis(16)) {
             // The terminal is gone, as with SIGHUP: stop the sessions and end.
             Input::Gone => return Ok(()),
             Input::Ready => input = true,
-            Input::Idle => {}
+            Input::Idle => misses = 0,
         }
-        if std::mem::take(&mut input) && event::poll(Duration::ZERO)? {
-            loop {
-                match event::read()? {
-                    Event::Key(k) => app.on_key(keys::normalize(k)),
-                    Event::Paste(s) => app.on_paste(&s),
-                    Event::Mouse(m) => app.on_mouse(m),
-                    Event::Resize(..) => {}
-                    _ => {}
-                }
-                if !event::poll(Duration::ZERO)? {
-                    break;
-                }
-            }
-            app.dirty.store(true, Ordering::Relaxed);
+        if std::mem::take(&mut input) {
+            misses = if read_input(app)? { 0 } else { misses.saturating_add(1) };
         }
         if let Some(path) = app.edit.take() {
             if let Err(e) = edit(terminal, &path, enhanced) {
@@ -528,6 +569,27 @@ fn run(
             return Ok(());
         }
     }
+}
+
+/// Hands what crossterm has read to the app. Whether there was anything.
+fn read_input(app: &mut app::App) -> std::io::Result<bool> {
+    if !event::poll(Duration::ZERO)? {
+        return Ok(false);
+    }
+    loop {
+        match event::read()? {
+            Event::Key(k) => app.on_key(keys::normalize(k)),
+            Event::Paste(s) => app.on_paste(&s),
+            Event::Mouse(m) => app.on_mouse(m),
+            Event::Resize(..) => {}
+            _ => {}
+        }
+        if !event::poll(Duration::ZERO)? {
+            break;
+        }
+    }
+    app.dirty.store(true, Ordering::Relaxed);
+    Ok(true)
 }
 
 /// Whether NO_COLOR asks for no colours: set and not empty, as no-color.org says.
@@ -605,8 +667,8 @@ mod tests {
         assert!(gone.for_at_least(true, at(7), grace));
     }
 
-    #[test]
-    fn tty_wait_sees_the_terminal_close() {
+    /// A pty's master and slave sides.
+    fn pty() -> (OwnedFd, OwnedFd) {
         let (mut master, mut slave) = (-1, -1);
         // SAFETY: openpty writes two descriptors into `master` and `slave`; the null name, termios
         // and window size are optional.
@@ -629,7 +691,13 @@ mod tests {
             // SAFETY: sets a flag on descriptors this test owns; it reads or writes no memory.
             unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
         }
-        let tty = Tty { fd: slave.as_raw_fd(), _file: None };
+        (master, slave)
+    }
+
+    #[test]
+    fn tty_wait_sees_the_terminal_close() {
+        let (master, slave) = pty();
+        let tty = Tty { fd: slave.as_raw_fd(), _file: None, resized: None };
         let wait = Duration::from_millis(200);
 
         assert_eq!(tty.wait(wait), Input::Idle);
@@ -649,5 +717,35 @@ mod tests {
             assert!(Instant::now() < until, "the terminal closed but its input didn't say so");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn tty_wait_wakes_on_a_resize() {
+        let (_master, slave) = pty();
+        let (resized, mut wake) = UnixStream::pair().unwrap();
+        resized.set_nonblocking(true).unwrap();
+        let tty = Tty { fd: slave.as_raw_fd(), _file: None, resized: Some(resized) };
+        let wait = Duration::from_millis(200);
+
+        assert_eq!(tty.wait(wait), Input::Idle);
+        // Two signals before the wait: one wake.
+        wake.write_all(b"\0\0").unwrap();
+        assert_eq!(tty.wait(wait), Input::Ready);
+        assert_eq!(tty.wait(Duration::ZERO), Input::Idle);
+    }
+
+    #[test]
+    fn tty_wait_held_waits_out_input_crossterm_left() {
+        let (master, slave) = pty();
+        let tty = Tty { fd: slave.as_raw_fd(), _file: None, resized: None };
+        let wait = Duration::from_millis(100);
+
+        assert_eq!(tty.wait_held(Duration::ZERO), Input::Idle);
+        std::fs::File::from(master.try_clone().unwrap()).write_all(b"x\n").unwrap();
+        assert_eq!(tty.wait(wait), Input::Ready);
+        // The input stays, so `wait` would return at once: `wait_held` waits the time out first.
+        let start = Instant::now();
+        assert_eq!(tty.wait_held(wait), Input::Ready);
+        assert!(start.elapsed() >= wait, "returned after {:?}", start.elapsed());
     }
 }
