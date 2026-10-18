@@ -385,7 +385,7 @@ pub(crate) fn explain_sandbox(e: String, codex: bool) -> String {
     let cut_off = e.contains("request failed: io:") || e.contains("error connecting to");
     if codex && cut_off {
         format!(
-            "{e}. Codex's sandbox blocks network access: run taskman status outside it (approve it when asked, and allow it from then on)."
+            "{e}. Codex's sandbox blocks network access: run the command outside it (approve it when asked, and allow it from then on)."
         )
     } else {
         e
@@ -1843,7 +1843,7 @@ mod tests {
         );
         assert!(
             explain_sandbox("error connecting to api.github.com".into(), true)
-                .contains("run taskman status outside it")
+                .contains("run the command outside it")
         );
         assert_eq!(explain_sandbox(cut.into(), false), cut);
         assert_eq!(

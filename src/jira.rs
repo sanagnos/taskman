@@ -1,9 +1,9 @@
 //! Jira Cloud REST client: one issue with its comments, rendered to plain text.
 
-use crate::tracker::{CHOICE_PAGES, COMMENTS, Choice, Comment, Issue, Listed};
+use crate::tracker::{self, CHOICE_PAGES, COMMENTS, Choice, Comment, Created, Issue, Listed};
 use crate::util::parse_ts;
 use base64::Engine;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::time::Duration;
 
 #[derive(Clone)]
@@ -98,6 +98,61 @@ impl JiraConfig {
         Ok(parse_open(&v, me["accountId"].as_str().unwrap_or("")))
     }
 
+    /// `create`'s POST, answered whatever its status, as Jira says in the body why it refused.
+    fn post(&self, path: &str, body: &Value) -> Result<(u16, Value), ureq::Error> {
+        if cfg!(test) && !self.base.starts_with("http://127.0.0.1:") {
+            return Err(ureq::Error::ConnectionFailed);
+        }
+        let mut resp = self
+            .agent
+            .post(&format!("{}{path}", self.base))
+            .config()
+            .http_status_as_error(false)
+            .build()
+            .header("Authorization", &format!("Basic {}", self.auth))
+            .header("Accept", "application/json")
+            .send_json(body)?;
+        let status = resp.status().as_u16();
+        Ok((status, resp.body_mut().read_json().unwrap_or(Value::Null)))
+    }
+
+    /// Creates a ticket in the project whose key is `prefix`: a Task, or the project's first
+    /// standard issue type when it has no Task. Refused, with Jira's reasons, when the project
+    /// requires fields taskman doesn't fill.
+    pub fn create(&self, prefix: &str, title: &str, description: &str) -> Result<Created, String> {
+        let project = prefix.to_uppercase();
+        let v = self.get(&format!("/rest/api/3/project/{project}")).map_err(|e| match e {
+            ureq::Error::StatusCode(404) => {
+                format!("Jira has no project {project}, or this account can't see it")
+            }
+            e => describe(e, ""),
+        })?;
+        let Some((type_id, type_name)) = issue_type(&v) else {
+            return Err(format!("Jira project {project} has no issue type a ticket can be"));
+        };
+        let mut fields = json!({
+            "project": { "key": project },
+            "issuetype": { "id": type_id },
+            "summary": title,
+        });
+        if !description.trim().is_empty() {
+            fields["description"] = text_to_adf(description);
+        }
+        let place = format!("project {project} in Jira");
+        let (status, v) =
+            self.post("/rest/api/3/issue", &json!({ "fields": fields })).map_err(|e| {
+                let sent = !tracker::unsent(&e);
+                let e = describe(e, "");
+                if sent { tracker::maybe_created(&e, &place) } else { e }
+            })?;
+        match status {
+            200..=299 => parse_created(&v, &self.base, &place),
+            401 | 403 => Err(describe(ureq::Error::StatusCode(status), "")),
+            400..=499 => Err(refusal(&v, &project, &type_name, status)),
+            _ => Err(tracker::maybe_created(&format!("Jira answered HTTP {status}"), &place)),
+        }
+    }
+
     /// Checks the credentials; returns the account's display name.
     pub fn whoami(&self) -> Result<String, String> {
         let v = self.get("/rest/api/3/myself").map_err(|e| describe(e, ""))?;
@@ -172,6 +227,78 @@ fn parse_issue(v: &Value) -> Issue {
         branch: String::new(),
         prs: Vec::new(),
     }
+}
+
+/// The issue type a new ticket gets from a project's `issueTypes`: Task, else the first standard
+/// type (not a sub-task, nor above a story like an epic). Its id and name.
+fn issue_type(project: &Value) -> Option<(String, String)> {
+    let types: Vec<&Value> = project["issueTypes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|t| t["subtask"] != true && t["id"].is_string())
+        .collect();
+    let standard = |t: &&&Value| t["hierarchyLevel"].as_i64().unwrap_or(0) == 0;
+    let task = |t: &&&Value| t["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case("task"));
+    let t = types.iter().find(task).or_else(|| types.iter().find(standard))?;
+    Some((t["id"].as_str()?.to_string(), t["name"].as_str().unwrap_or("ticket").to_string()))
+}
+
+/// The ticket `create` made, from Jira's answer: its key, linked on the site at `base`.
+fn parse_created(v: &Value, base: &str, place: &str) -> Result<Created, String> {
+    let key = v["key"].as_str();
+    Created::read(key, &format!("{base}/browse/{}", key.unwrap_or("")), place)
+}
+
+/// Why Jira refused a new ticket, from its `errorMessages` and per-field `errors`.
+fn refusal(v: &Value, project: &str, type_name: &str, status: u16) -> String {
+    let mut reasons: Vec<String> = v["errorMessages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m.as_str())
+        .map(String::from)
+        .collect();
+    if let Some(errors) = v["errors"].as_object() {
+        reasons.extend(errors.iter().map(|(field, m)| match m.as_str() {
+            Some(m) => m.to_string(),
+            None => format!("{field}: {m}"),
+        }));
+    }
+    let reasons = reasons.iter().map(|r| r.trim().trim_end_matches('.')).collect::<Vec<_>>();
+    let reasons = if reasons.is_empty() { format!("HTTP {status}") } else { reasons.join("; ") };
+    if reasons.to_lowercase().contains("required") {
+        format!(
+            "Jira project {project} requires fields taskman doesn't fill to create a {type_name} ({reasons}); create the ticket in Jira and add it with taskman add KEY"
+        )
+    } else {
+        format!("Jira refused the new {type_name}: {reasons}")
+    }
+}
+
+/// Text, Markdown as it's written, in Atlassian Document Format: a paragraph per block of lines,
+/// its lines kept apart.
+fn text_to_adf(text: &str) -> Value {
+    let mut paragraphs = Vec::new();
+    let mut lines: Vec<&str> = Vec::new();
+    for line in text.lines().chain([""]) {
+        if !line.trim().is_empty() {
+            lines.push(line.trim_end());
+            continue;
+        }
+        if lines.is_empty() {
+            continue;
+        }
+        let mut content = Vec::new();
+        for (i, l) in lines.drain(..).enumerate() {
+            if i > 0 {
+                content.push(json!({ "type": "hardBreak" }));
+            }
+            content.push(json!({ "type": "text", "text": l }));
+        }
+        paragraphs.push(json!({ "type": "paragraph", "content": content }));
+    }
+    json!({ "type": "doc", "version": 1, "content": paragraphs })
 }
 
 /// A page of `project/search`: its projects, and whether it's the last page.
@@ -468,6 +595,97 @@ mod tests {
     }
 
     #[test]
+    fn creates_a_task_in_the_prefixs_project() {
+        let server = replay::serve(vec![
+            (200, include_str!("../tests/fixtures/jira/project.json")),
+            (201, include_str!("../tests/fixtures/jira/created.json")),
+        ]);
+        let made =
+            client(&server).create("eng", "Fix the signup form", "Steps:\none\n\ntwo").unwrap();
+        assert_eq!(made.key, "ENG-53");
+        assert_eq!(made.at, format!("{}/browse/ENG-53", server.url));
+        let requests = server.requests();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests[0].line.starts_with("GET /rest/api/3/project/ENG "),
+            "{}",
+            requests[0].line
+        );
+        assert!(requests[1].line.starts_with("POST /rest/api/3/issue "), "{}", requests[1].line);
+        let fields = &requests[1].json()["fields"];
+        assert_eq!(fields["project"], json!({ "key": "ENG" }));
+        // Task, though the project lists an epic and a bug before it.
+        assert_eq!(fields["issuetype"], json!({ "id": "10001" }));
+        assert_eq!(fields["summary"], "Fix the signup form");
+        assert_eq!(adf_to_text(&fields["description"]), "Steps:\none\n\ntwo");
+        // No description, no field.
+        let server = replay::serve(vec![
+            (200, include_str!("../tests/fixtures/jira/project.json")),
+            (201, include_str!("../tests/fixtures/jira/created.json")),
+        ]);
+        client(&server).create("ENG", "Fix it", " ").unwrap();
+        assert!(server.requests()[1].json()["fields"].get("description").is_none());
+    }
+
+    #[test]
+    fn picks_a_standard_issue_type_when_there_is_no_task() {
+        let types = |ts: Value| issue_type(&json!({ "issueTypes": ts }));
+        let story = json!({ "id": "7", "name": "Story", "subtask": false, "hierarchyLevel": 0 });
+        let epic = json!({ "id": "8", "name": "Epic", "subtask": false, "hierarchyLevel": 1 });
+        let sub = json!({ "id": "9", "name": "Sub-task", "subtask": true, "hierarchyLevel": -1 });
+        assert_eq!(types(json!([epic, sub, story])), Some(("7".into(), "Story".into())));
+        assert_eq!(
+            types(json!([epic, { "id": "3", "name": "task" }])),
+            Some(("3".into(), "task".into()))
+        );
+        assert_eq!(types(json!([sub])), None);
+        assert_eq!(types(json!([])), None);
+    }
+
+    #[test]
+    fn says_why_it_couldnt_create_and_whether_the_ticket_may_exist() {
+        let project = include_str!("../tests/fixtures/jira/project.json");
+        let create = |replies: Vec<(u16, &'static str)>| {
+            let server = replay::serve(replies);
+            client(&server).create("ENG", "Fix the signup form", "").unwrap_err().message
+        };
+        let e = create(vec![
+            (200, project),
+            (400, include_str!("../tests/fixtures/jira/create-needs-fields.json")),
+        ]);
+        assert_eq!(
+            e,
+            "Jira project ENG requires fields taskman doesn't fill to create a Task (Team is required; Sprint is required); create the ticket in Jira and add it with taskman add KEY"
+        );
+        let e = create(vec![
+            (200, project),
+            (400, r#"{"errorMessages":["Summary is too long."],"errors":{}}"#),
+        ]);
+        assert_eq!(e, "Jira refused the new Task: Summary is too long");
+        assert_eq!(
+            create(vec![(404, include_str!("../tests/fixtures/jira/not-found.json"))]),
+            "Jira has no project ENG, or this account can't see it"
+        );
+        assert_eq!(
+            create(vec![(200, project), (401, "")]),
+            "Jira rejected the credentials (check the email and API token)"
+        );
+        // The tracker failing, or an answer without a key, may still have made it.
+        for reply in [(502, ""), (201, "{}"), (201, "<html>")] {
+            let e = create(vec![(200, project), reply]);
+            assert!(e.contains("may have been created anyway: look in project ENG in Jira"), "{e}");
+        }
+        // Never asked twice.
+        let server = replay::serve(vec![
+            (200, project),
+            (502, ""),
+            (201, include_str!("../tests/fixtures/jira/created.json")),
+        ]);
+        assert!(client(&server).create("ENG", "Fix it", "").is_err());
+        assert_eq!(server.requests().len(), 2);
+    }
+
+    #[test]
     fn lists_the_projects_a_page_at_a_time() {
         let server = replay::serve(vec![
             (200, include_str!("../tests/fixtures/jira/projects-1.json")),
@@ -708,6 +926,28 @@ mod tests {
             parse_open(&v, "000000:0000-ana");
             parse_projects(&v);
             parse_projects(&json!({ "values": [v.clone(), { "key": v }], "total": 1 }));
+            issue_type(&v);
+            issue_type(&json!({ "issueTypes": [v.clone()] }));
+            refusal(&v, "ENG", "Task", 400);
+            refusal(&json!({ "errorMessages": [v.clone()], "errors": { "x": v.clone() } }), "ENG", "Task", 400);
+        }
+
+        #[test]
+        fn a_created_ticket_has_a_key(v in any_json()) {
+            if let Ok(made) = parse_created(&v, "https://example.atlassian.net", "ENG") {
+                prop_assert!(crate::tracker::is_prefix(made.key.split('-').next().unwrap()));
+            }
+            let key = json!({ "key": "ENG-53", "id": v });
+            prop_assert_eq!(parse_created(&key, "", "ENG").unwrap().key, "ENG-53");
+        }
+
+        #[test]
+        fn descriptions_keep_every_word(lines in prop::collection::vec("[ a-z*#`]{0,12}", 0..8)) {
+            let text = lines.join("\n");
+            let out = adf_to_text(&text_to_adf(&text));
+            for w in text.split_whitespace() {
+                prop_assert!(out.contains(w), "{w:?} missing from {out:?}");
+            }
         }
     }
 }

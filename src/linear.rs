@@ -1,6 +1,6 @@
 //! Linear GraphQL client: one issue with its comments, in the same shape as the other trackers.
 
-use crate::tracker::{CHOICE_PAGES, COMMENTS, Choice, Comment, Issue, Listed};
+use crate::tracker::{self, CHOICE_PAGES, COMMENTS, Choice, Comment, Created, Issue, Listed};
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -30,30 +30,26 @@ impl LinearConfig {
     }
 
     fn query(&self, query: &str, variables: &Value) -> Result<Value, String> {
+        let (status, v) =
+            self.send(query, variables).map_err(|e| format!("Linear request failed: {e}"))?;
+        answer(status, &v)
+    }
+
+    /// Posts a query; its status and body.
+    fn send(&self, query: &str, variables: &Value) -> Result<(u16, Value), ureq::Error> {
         // A safety net: unit tests reach only `replay`'s server, even through an App's background
         // fetch.
         if cfg!(test) && !self.endpoint.starts_with("http://127.0.0.1:") {
-            return Err("unit tests don't reach Linear".into());
+            return Err(ureq::Error::ConnectionFailed);
         }
         let mut resp = self
             .agent
             .post(&self.endpoint)
             // Personal API keys go in as-is; only OAuth tokens take "Bearer".
             .header("Authorization", &self.key)
-            .send_json(json!({ "query": query, "variables": variables }))
-            .map_err(|e| format!("Linear request failed: {e}"))?;
+            .send_json(json!({ "query": query, "variables": variables }))?;
         let status = resp.status().as_u16();
-        let v: Value = resp.body_mut().read_json().unwrap_or(Value::Null);
-        if status == 401 || status == 403 || errors_mention(&v, "authentication") {
-            return Err("Linear rejected the API key".into());
-        }
-        if let Some(msg) = v["errors"][0]["message"].as_str() {
-            return Err(msg.to_string());
-        }
-        if status >= 400 {
-            return Err(format!("Linear request failed: HTTP {status}"));
-        }
-        Ok(v["data"].clone())
+        Ok((status, resp.body_mut().read_json().unwrap_or(Value::Null)))
     }
 
     /// Checks the key; returns the user's name and the workspace it belongs to (its URL key).
@@ -91,6 +87,45 @@ impl LinearConfig {
         let d = self.query(OPEN, &json!({ "team": team }))?;
         Ok(parse_open(&d))
     }
+
+    /// Creates an issue in the team whose key is `prefix`, in the state the team starts issues in.
+    pub fn create(&self, prefix: &str, title: &str, description: &str) -> Result<Created, String> {
+        let team = prefix.trim().to_uppercase();
+        let d = self.query(TEAM, &json!({ "team": team }))?;
+        let Some(id) = d["teams"]["nodes"][0]["id"].as_str() else {
+            return Err(format!("Linear has no team {team}, or this API key can't see it"));
+        };
+        let mut input = json!({ "teamId": id, "title": title });
+        if !description.trim().is_empty() {
+            input["description"] = description.into();
+        }
+        let place = format!("team {team} in Linear");
+        let maybe = |e: &str| tracker::maybe_created(e, &place);
+        let (status, v) = self.send(CREATE, &json!({ "input": input })).map_err(|e| {
+            let e2 = format!("Linear request failed: {e}");
+            if tracker::unsent(&e) { e2 } else { maybe(&e2) }
+        })?;
+        // A server failing is the one answer that doesn't say the issue wasn't made.
+        if status >= 500 {
+            return Err(maybe(&format!("Linear answered HTTP {status}")));
+        }
+        let d = answer(status, &v)?;
+        parse_created(&d, &place)
+    }
+}
+
+/// What Linear's answer to a query holds, or why it failed.
+fn answer(status: u16, v: &Value) -> Result<Value, String> {
+    if status == 401 || status == 403 || errors_mention(v, "authentication") {
+        return Err("Linear rejected the API key".into());
+    }
+    if let Some(msg) = v["errors"][0]["message"].as_str() {
+        return Err(msg.to_string());
+    }
+    if status >= 400 {
+        return Err(format!("Linear request failed: HTTP {status}"));
+    }
+    Ok(v["data"].clone())
 }
 
 /// Linear orders by `updatedAt` newest first.
@@ -111,6 +146,23 @@ const TEAMS: &str = r#"query Teams($after: String) {
     pageInfo { hasNextPage endCursor }
   }
 }"#;
+
+const TEAM: &str = r#"query Team($team: String!) {
+  teams(filter: { key: { eq: $team } }) { nodes { id } }
+}"#;
+
+const CREATE: &str = r#"mutation Create($input: IssueCreateInput!) {
+  issueCreate(input: $input) { success issue { identifier url } }
+}"#;
+
+/// The issue `CREATE` made, from its answer; `place` is where it was made.
+fn parse_created(d: &Value, place: &str) -> Result<Created, String> {
+    let issue = &d["issueCreate"]["issue"];
+    if d["issueCreate"]["success"] == false && issue.is_null() {
+        return Err("Linear didn't create the issue".into());
+    }
+    Created::read(issue["identifier"].as_str(), issue["url"].as_str().unwrap_or(""), place)
+}
 
 /// A page of teams, and the cursor of the next page if there is one.
 fn parse_teams(d: &Value) -> (Vec<Choice>, Option<String>) {
@@ -435,6 +487,58 @@ mod tests {
     }
 
     #[test]
+    fn creates_an_issue_in_the_prefixs_team() {
+        let server = replay::serve(vec![
+            (200, include_str!("../tests/fixtures/linear/team.json")),
+            (200, include_str!("../tests/fixtures/linear/created.json")),
+        ]);
+        let made = client(&server).create("eng", "Fix the signup form", "See **this**").unwrap();
+        assert_eq!(
+            (made.key.as_str(), made.at.as_str()),
+            ("ENG-53", "https://linear.app/acme/issue/ENG-53/fix-the-signup-form")
+        );
+        let requests = server.requests();
+        assert_eq!(requests[0].json()["variables"], json!({ "team": "ENG" }));
+        // No state: the team's default applies. The description goes as Markdown.
+        assert_eq!(
+            requests[1].json()["variables"],
+            json!({ "input": {
+                "teamId": "6b1f0c2e-team-eng",
+                "title": "Fix the signup form",
+                "description": "See **this**",
+            } })
+        );
+        assert!(requests[1].json()["query"].as_str().unwrap().contains("issueCreate"));
+    }
+
+    #[test]
+    fn says_why_it_couldnt_create_and_whether_the_issue_may_exist() {
+        let team = include_str!("../tests/fixtures/linear/team.json");
+        let create = |replies: Vec<(u16, &'static str)>| {
+            let server = replay::serve(replies);
+            let e = client(&server).create("ENG", "Fix it", "").unwrap_err().message;
+            (e, server.requests().len())
+        };
+        assert_eq!(
+            create(vec![(200, include_str!("../tests/fixtures/linear/no-team.json"))]),
+            ("Linear has no team ENG, or this API key can't see it".into(), 1)
+        );
+        assert_eq!(
+            create(vec![(200, team), (400, r#"{"errors":[{"message":"title too long"}]}"#)]),
+            ("title too long".into(), 2)
+        );
+        assert_eq!(
+            create(vec![(200, team), (200, r#"{"data":{"issueCreate":{"success":false}}}"#)]).0,
+            "Linear didn't create the issue"
+        );
+        for reply in [(503, ""), (200, r#"{"data":{"issueCreate":{"success":true,"issue":{}}}}"#)] {
+            let (e, asked) = create(vec![(200, team), reply, (200, team)]);
+            assert!(e.contains("may have been created anyway: look in team ENG in Linear"), "{e}");
+            assert_eq!(asked, 2);
+        }
+    }
+
+    #[test]
     fn checks_the_key() {
         let server = replay::serve(vec![(
             200,
@@ -542,7 +646,18 @@ mod tests {
             let v = Value::Object(v.into_iter().map(|(k, v)| (k.to_string(), v)).collect());
             parse_issue(&v, markdown_to_text);
             parse_open(&json!({ "viewer": v.clone(), "issues": { "nodes": [v.clone()] } }));
-            parse_teams(&json!({ "teams": { "nodes": [v.clone()], "pageInfo": v } }));
+            parse_teams(&json!({ "teams": { "nodes": [v.clone()], "pageInfo": v.clone() } }));
+            parse_created(&json!({ "issueCreate": { "success": v.clone(), "issue": v.clone() } }), "ENG")
+                .ok();
+        }
+
+        #[test]
+        fn a_created_issue_has_a_key(identifier in "\\PC{0,12}", url in "\\PC{0,20}") {
+            let d = json!({ "issueCreate": { "success": true, "issue": { "identifier": identifier, "url": url } } });
+            match parse_created(&d, "ENG") {
+                Ok(made) => prop_assert_eq!((made.key, made.at), (identifier, url)),
+                Err(e) => prop_assert!(e.contains("may have been created anyway"), "{}", e),
+            }
         }
     }
 }

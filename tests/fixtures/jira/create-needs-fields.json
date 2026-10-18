@@ -1,0 +1,7 @@
+{
+  "errorMessages": [],
+  "errors": {
+    "customfield_10020": "Sprint is required.",
+    "customfield_10001": "Team is required."
+  }
+}

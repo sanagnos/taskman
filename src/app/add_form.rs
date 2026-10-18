@@ -75,7 +75,7 @@ fn local_ticket(board: &Path, prefix: &str, input: &str) -> Result<String, Strin
         None => Err("Enter a ticket number or key, or a title for a new ticket".into()),
         Some(LocalInput::Key(key)) => local::find(board, &key).map(|f| f.key),
         Some(LocalInput::Title) => {
-            local::create(board, prefix, input).map(|f| f.key).map_err(|e| e.message)
+            local::create(board, prefix, input, "").map(|f| f.key).map_err(|e| e.message)
         }
     }
 }

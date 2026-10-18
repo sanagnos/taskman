@@ -398,9 +398,14 @@ pub fn read_no_follow(path: &Path) -> std::io::Result<String> {
     Ok(s)
 }
 
-/// Writes a new ticket titled `title` into the board's `todo/` (else its first column) and returns
-/// its file. A lock in the state folder keeps two at once from taking the same number.
-pub fn create(board: &Path, prefix: &str, title: &str) -> Result<File, WriteError> {
+/// Writes a new ticket titled `title`, with `description` under it, into the board's `todo/` (else
+/// its first column) and returns its file. A lock in the state folder keeps two at once from taking the same number.
+pub fn create(
+    board: &Path,
+    prefix: &str,
+    title: &str,
+    description: &str,
+) -> Result<File, WriteError> {
     let title = title.trim();
     if title.is_empty() {
         return Err("give the new ticket a title".into());
@@ -429,9 +434,17 @@ pub fn create(board: &Path, prefix: &str, title: &str) -> Result<File, WriteErro
         .write(true)
         .create_new(true)
         .open(&path)
-        .and_then(|mut f| f.write_all(format!("# {title}\n").as_bytes()));
+        .and_then(|mut f| f.write_all(ticket_text(title, description).as_bytes()));
     write.map_err(|e| WriteError::io(&format!("couldn't write {}", rel(board, &path)), &e))?;
     Ok(File { key, slug, column: col.name.clone(), path })
+}
+
+/// A new ticket file's text: its title as the heading, then the description if there is one.
+fn ticket_text(title: &str, description: &str) -> String {
+    match description.trim() {
+        "" => format!("# {title}\n"),
+        d => format!("# {title}\n\n{d}\n"),
+    }
 }
 
 /// Moves ticket `key` to `column`. Returns the file where it is now and the column it left.
@@ -819,7 +832,7 @@ mod tests {
         // Nor are columns made through it.
         assert!(ensure_columns(&linked).unwrap_err().to_string().contains("is a link"));
         assert!(!elsewhere.join("backlog").exists());
-        assert!(create(&linked, "WP", "x").is_err());
+        assert!(create(&linked, "WP", "x", "").is_err());
 
         // A linked column in a real board is left out too.
         let real = board(&project, "board");
@@ -839,11 +852,11 @@ mod tests {
         assert!(ensure_columns(&board).unwrap());
         assert!(!ensure_columns(&board).unwrap());
         assert_eq!(columns(&board).iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), COLUMNS);
-        let a = create(&board, "WP", "Fix login").unwrap();
+        let a = create(&board, "WP", "Fix login", "").unwrap();
         assert_eq!((a.key.as_str(), a.column.as_str()), ("WP-1", "todo"));
         assert_eq!(rel(&board, &a.path), "workplan/todo/WP-1-fix-login.md");
         std::fs::rename(&a.path, board.join("done/WP-1-fix-login.md")).unwrap();
-        let b = create(&board, "WP", "Add export").unwrap();
+        let b = create(&board, "WP", "Add export", "  Export to CSV.\n").unwrap();
         assert_eq!(b.key, "WP-2");
         let (moved, from) = move_to(&board, "wp-2", "Review").unwrap();
         assert_eq!((moved.column.as_str(), from.as_str()), ("review", "todo"));
@@ -852,6 +865,7 @@ mod tests {
             (issue.summary.as_str(), issue.status.as_str(), f.path),
             ("Add export", "review", board.join("review/WP-2-add-export.md"))
         );
+        assert_eq!(issue.description, "Export to CSV.");
         let e = move_to(&board, "WP-2", "nowhere").unwrap_err();
         assert!(
             e.message.contains("its columns are backlog, todo, doing, review, done") && !e.denied

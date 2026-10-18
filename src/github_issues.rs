@@ -4,7 +4,7 @@
 //! worktree's remotes would pick.
 
 use crate::github;
-use crate::tracker::{COMMENTS, Comment, Issue, LinkedPr, Listed};
+use crate::tracker::{self, COMMENTS, Comment, Created, Issue, LinkedPr, Listed};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -173,20 +173,52 @@ impl GithubConfig {
             args.extend(["-F".into(), format!("{k}={v}")]);
         }
         args.extend(["-f".into(), format!("query={query}")]);
-        let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        let out = match &self.runner {
-            // A safety net: unit tests never run gh, even through an App's background fetch.
-            Runner::Gh(_) if cfg!(test) => Err("unit tests don't run gh".into()),
-            Runner::Gh(dir) => github::gh(dir, &args),
-            #[cfg(test)]
-            Runner::Replay(r) => r.lock().unwrap().reply(&args),
-        };
-        let out = out.map_err(|e| self.explain(&e))?;
+        let out = self.gh(&args).map_err(|e| self.explain(&e))?;
         let v: Value = serde_json::from_str(&out).map_err(|e| format!("gh api: {e}"))?;
         if let Some(msg) = v["errors"][0]["message"].as_str() {
             return Err(self.explain(msg));
         }
         Ok(v["data"].clone())
+    }
+
+    fn gh(&self, args: &[String]) -> Result<String, String> {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        match &self.runner {
+            // A safety net: unit tests never run gh, even through an App's background fetch.
+            Runner::Gh(_) if cfg!(test) => Err("unit tests don't run gh".into()),
+            Runner::Gh(dir) => github::gh(dir, &args),
+            #[cfg(test)]
+            Runner::Replay(r) => r.lock().unwrap().reply(&args),
+        }
+    }
+
+    /// Opens an issue in the repository, keyed with `prefix`. The REST call, as GraphQL's needs
+    /// the repository's id first.
+    pub fn create(&self, prefix: &str, title: &str, description: &str) -> Result<Created, String> {
+        let mut args: Vec<String> = vec!["api".into(), "--hostname".into(), self.repo.host.clone()];
+        args.extend(["-X".into(), "POST".into()]);
+        args.push(format!("repos/{}/{}/issues", self.repo.owner, self.repo.name));
+        // -f passes text as it is, a leading @ included.
+        args.extend(["-f".into(), format!("title={title}")]);
+        if !description.trim().is_empty() {
+            args.extend(["-f".into(), format!("body={description}")]);
+        }
+        let place = format!("{}'s issues", self.repo.spec());
+        let out = self.gh(&args).map_err(|e| {
+            // gh says `HTTP 4xx` when GitHub refused it, and `error connecting` when it never got
+            // there; anything else (a timeout, say) may have opened the issue.
+            let lower = e.to_lowercase();
+            let refused = lower.contains("http 4") || lower.contains("error connecting");
+            let unrun = e == github::Gh::Missing.why()
+                || e == github::Gh::LoggedOut.why()
+                || e.starts_with("could not run gh");
+            if refused || unrun {
+                self.explain(&e)
+            } else {
+                tracker::maybe_created(&self.explain(&e), &place)
+            }
+        })?;
+        parse_created(&out, prefix, &place)
     }
 
     /// What a failed call means and what to do about it. gh's active account is the one used, and
@@ -305,6 +337,13 @@ fn parse_issue(i: &Value, text: fn(&str) -> String) -> Issue {
         branch: String::new(),
         prs,
     }
+}
+
+/// The issue `create` opened, from GitHub's answer; `place` is where it was opened.
+fn parse_created(out: &str, prefix: &str, place: &str) -> Result<Created, String> {
+    let v: Value = serde_json::from_str(out).unwrap_or(Value::Null);
+    let key = v["number"].as_u64().map(|n| format!("{}-{n}", prefix.to_uppercase()));
+    Created::read(key.as_deref(), v["html_url"].as_str().unwrap_or(""), place)
 }
 
 fn parse_open(d: &Value, prefix: &str) -> Result<Vec<Listed>, String> {
@@ -524,6 +563,64 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn opens_an_issue_in_the_saved_repository() {
+        let (cfg, rec) = replay(
+            "git.acme.example/acme/web",
+            vec![Ok(include_str!("../tests/fixtures/github/created.json"))],
+        );
+        let made = Client::Github(cfg).create("web", "@Fix the signup form", "Steps").unwrap();
+        assert_eq!(
+            (made.key.as_str(), made.at.as_str()),
+            ("WEB-16", "https://github.com/acme/web/issues/16")
+        );
+        let calls = &rec.lock().unwrap().calls;
+        assert_eq!(
+            calls[0],
+            [
+                "api",
+                "--hostname",
+                "git.acme.example",
+                "-X",
+                "POST",
+                "repos/acme/web/issues",
+                "-f",
+                "title=@Fix the signup form",
+                "-f",
+                "body=Steps"
+            ]
+        );
+    }
+
+    #[test]
+    fn says_why_it_couldnt_open_an_issue_and_whether_it_may_exist() {
+        let create = |reply: Result<&str, &str>| {
+            let (cfg, rec) = replay("acme/web", vec![reply, reply]);
+            let e = Client::Github(cfg).create("WEB", "Fix it", "").unwrap_err().message;
+            assert_eq!(rec.lock().unwrap().calls.len(), 1, "asked again");
+            e
+        };
+        let maybe = "may have been created anyway: look in acme/web's issues";
+        assert_eq!(
+            create(Err("Issues are disabled for this repo (HTTP 410)")),
+            "Issues are disabled for this repo (HTTP 410)"
+        );
+        assert_eq!(
+            create(Err("HTTP 401: Bad credentials (https://api.github.com/repos/acme/web/issues)")),
+            "github.com rejected gh's login; run gh auth login -h github.com, or gh auth switch"
+        );
+        assert!(!create(Err("error connecting to github.com")).contains(maybe));
+        assert_eq!(create(Err(github::Gh::Missing.why())), github::Gh::Missing.why());
+        for e in [
+            create(Err("gh api --hostname: timed out after 30s; the next refresh tries again")),
+            create(Err("HTTP 502: Bad Gateway")),
+            create(Ok("{}")),
+            create(Ok("not json")),
+        ] {
+            assert!(e.contains(maybe), "{e}");
+        }
+    }
+
+    #[test]
     fn lists_open_issues_mine_first() {
         let (cfg, rec) = replay(
             "git.acme.example/acme/web",
@@ -595,7 +692,17 @@ pub(crate) mod tests {
             let v = serde_json::to_value(v).unwrap();
             let issue = parse_issue(&v, |s| s.to_string());
             prop_assert!(!issue.status.is_empty());
-            let _ = parse_open(&serde_json::json!({ "repository": { "issues": { "nodes": [v] } } }), "WEB");
+            let _ = parse_open(&serde_json::json!({ "repository": { "issues": { "nodes": [v.clone()] } } }), "WEB");
+            if let Ok(made) = parse_created(&v.to_string(), "web", "acme/web") {
+                prop_assert!(made.key.starts_with("WEB-"));
+            }
+        }
+
+        #[test]
+        fn a_created_issue_is_keyed_by_its_number(n in 1u64..1_000_000, url in "\\PC{0,30}") {
+            let out = serde_json::json!({ "number": n, "html_url": url }).to_string();
+            let made = parse_created(&out, "web", "acme/web").unwrap();
+            prop_assert_eq!((made.key, made.at), (format!("WEB-{n}"), url));
         }
     }
 }

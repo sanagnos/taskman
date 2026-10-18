@@ -1,0 +1,8 @@
+{
+  "id": 2000016,
+  "number": 16,
+  "title": "Fix the signup form",
+  "state": "open",
+  "html_url": "https://github.com/acme/web/issues/16",
+  "user": { "login": "ana-example" }
+}

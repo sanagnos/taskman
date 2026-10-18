@@ -1,0 +1,11 @@
+{
+  "id": "10000",
+  "key": "ENG",
+  "name": "Engineering",
+  "issueTypes": [
+    { "id": "10002", "name": "Epic", "subtask": false, "hierarchyLevel": 1 },
+    { "id": "10003", "name": "Subtask", "subtask": true, "hierarchyLevel": -1 },
+    { "id": "10004", "name": "Bug", "subtask": false, "hierarchyLevel": 0 },
+    { "id": "10001", "name": "Task", "subtask": false, "hierarchyLevel": 0 }
+  ]
+}

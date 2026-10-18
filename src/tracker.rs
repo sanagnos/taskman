@@ -7,7 +7,6 @@ use crate::jira::{self, JiraConfig};
 use crate::linear::{self, LinearConfig};
 use crate::local;
 use crate::store::{self, Account, Config, Project, Provider, Tracker};
-use crate::untrusted;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -283,6 +282,99 @@ impl Client {
         mine_first(&mut issues);
         Ok(issues)
     }
+
+    /// Creates a ticket for `taskman add --new`: in Linear's team and Jira's project whose key is
+    /// `prefix`, the GitHub repository, or the board's todo column. `description` is Markdown,
+    /// empty for none. A failed create is never tried again, and one that may have reached the
+    /// tracker says so: a command run again after it could otherwise make the ticket twice.
+    pub fn create(
+        &self,
+        prefix: &str,
+        title: &str,
+        description: &str,
+    ) -> Result<Created, local::WriteError> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err("give the new ticket a title".into());
+        }
+        if !is_prefix(prefix) {
+            return Err(format!(
+                "the project has no ticket prefix; set one in its settings in taskman ({} ,)",
+                crate::keys::prefix()
+            )
+            .into());
+        }
+        let created = match self {
+            Client::Jira(c) => c.create(prefix, title, description),
+            Client::Linear(c) => c.create(prefix, title, description),
+            Client::Github(c) => c.create(prefix, title, description),
+            Client::Local(board) => {
+                return local::create(board, prefix, title, description)
+                    .map(|f| Created { key: f.key, at: store::tilde(&f.path) });
+            }
+        };
+        created.map_err(local::WriteError::from)
+    }
+}
+
+/// A ticket `Client::create` made: its key, and where it is (its link, or its file on a board).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Created {
+    pub key: String,
+    pub at: String,
+}
+
+impl Created {
+    /// From the key and link a tracker answered with, which must read as a key. `place` names
+    /// where the ticket was made, for when they don't.
+    pub(crate) fn read(key: Option<&str>, at: &str, place: &str) -> Result<Created, String> {
+        match key {
+            Some(key) if well_formed(key) => Ok(Created { key: key.into(), at: at.into() }),
+            _ => Err(maybe_created(
+                &format!("the answer gave no ticket key taskman can read ({key:?})"),
+                place,
+            )),
+        }
+    }
+}
+
+/// Whether a request that failed with `e` never reached the server, so it can't have done
+/// anything there: the name didn't resolve, or the connection wasn't made. A connection that
+/// broke later may have carried it.
+pub(crate) fn unsent(e: &ureq::Error) -> bool {
+    use std::io::ErrorKind;
+    use ureq::Timeout;
+    if let ureq::Error::Io(io) = e {
+        return matches!(
+            io.kind(),
+            ErrorKind::ConnectionRefused
+                | ErrorKind::PermissionDenied
+                | ErrorKind::NetworkUnreachable
+                | ErrorKind::HostUnreachable
+                | ErrorKind::AddrNotAvailable
+                | ErrorKind::NetworkDown
+        );
+    }
+    matches!(
+        e,
+        ureq::Error::HostNotFound
+            | ureq::Error::ConnectionFailed
+            | ureq::Error::BadUri(_)
+            | ureq::Error::Http(_)
+            | ureq::Error::InvalidProxyUrl
+            | ureq::Error::ConnectProxyFailed(_)
+            | ureq::Error::RequireHttpsOnly(_)
+            | ureq::Error::Timeout(Timeout::Resolve | Timeout::Connect)
+    )
+}
+
+/// A create that failed after it may have reached the tracker (it timed out, the connection
+/// dropped, the tracker failed or answered with something unreadable): it may have made the
+/// ticket, so it must not simply be run again. `place` is where to look, like `ENG in Jira`.
+pub(crate) fn maybe_created(e: &str, place: &str) -> String {
+    format!(
+        "{e}. The ticket may have been created anyway: look in {place} before running this again, and add it with taskman add KEY if it's there"
+    )
 }
 
 /// Checks an account's `token`: who it belongs to, and for Linear its workspace. Jira tests it
@@ -744,30 +836,48 @@ impl Tracker {
                 Provider::Linear | Provider::Github => self.site.eq_ignore_ascii_case(&other.site),
             }
     }
-
-    /// What a project agent creates this tracker's tickets with, and the place to check those
-    /// tools are signed in to, while `taskman add --new` creates only Local files tickets. None for
-    /// Local files.
-    pub fn ticket_tools(&self) -> Option<(&'static str, String)> {
-        let site = untrusted::line(&self.site);
-        match self.provider {
-            Provider::Jira => Some((
-                "a Jira plugin or MCP server",
-                format!("the Jira site {}", store::site_host(&site)),
-            )),
-            Provider::Linear => {
-                Some(("a Linear plugin or MCP server", format!("the Linear workspace {site}")))
-            }
-            Provider::Github => Some(("`gh issue create`", format!("the repository {site}"))),
-            Provider::Local => None,
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn creates_only_with_a_title_and_prefix() {
+        let board = Client::Local(store::state_dir().join("no-board"));
+        let e = |prefix, title| board.create(prefix, title, "").unwrap_err().message;
+        assert_eq!(e("ENG", "  "), "give the new ticket a title");
+        assert!(e("", "Fix it").starts_with("the project has no ticket prefix"));
+        assert!(e("e-1", "Fix it").starts_with("the project has no ticket prefix"));
+    }
+
+    #[test]
+    fn tells_requests_that_never_left_from_those_that_may_have_arrived() {
+        use std::io::{Error, ErrorKind};
+        for e in [
+            ureq::Error::HostNotFound,
+            ureq::Error::ConnectionFailed,
+            ureq::Error::Timeout(ureq::Timeout::Connect),
+            ureq::Error::Io(Error::from(ErrorKind::ConnectionRefused)),
+            ureq::Error::Io(Error::from(ErrorKind::PermissionDenied)),
+        ] {
+            assert!(unsent(&e), "{e}");
+        }
+        for e in [
+            ureq::Error::Timeout(ureq::Timeout::Global),
+            ureq::Error::Timeout(ureq::Timeout::RecvResponse),
+            ureq::Error::Io(Error::from(ErrorKind::ConnectionReset)),
+            ureq::Error::Io(Error::from(ErrorKind::UnexpectedEof)),
+            ureq::Error::StatusCode(502),
+        ] {
+            assert!(!unsent(&e), "{e}");
+        }
+        assert!(Created::read(Some("ENG-53"), "", "ENG").is_ok());
+        for key in [None, Some(""), Some("ENG"), Some("ENG-5x"), Some("../ENG-5")] {
+            assert!(Created::read(key, "", "x").unwrap_err().contains("may have been created"));
+        }
+    }
 
     fn listed(key: &str, title: &str, mine: bool) -> Listed {
         Listed { key: key.into(), title: title.into(), mine }

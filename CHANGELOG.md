@@ -4,7 +4,8 @@ What changed in each release; a release's notes on GitHub are its section here. 
 
 ## Unreleased
 
-- In a project with a tracker, a project agent now hands work that changes code or files to a ticket session: it creates a ticket, adds it with `taskman add` and briefs its session, unless you ask it to make the change itself or its role says it may. On Linear, Jira and GitHub Issues it creates the ticket with its own tracker tools (a plugin or MCP server, or `gh`), after checking they work on the project's workspace, site or repository, or asks you for the key.
+- In a project with a tracker, a project agent now hands work that changes code or files to a ticket session: it creates a ticket, adds it with `taskman add` and briefs its session, unless you ask it to make the change itself or its role says it may. It creates the ticket with `taskman add --new`, which now works on every tracker.
+- `taskman add --new "Title"` creates the ticket in Linear, Jira and GitHub Issues too, with the project's account, then adds it: in Linear's team or Jira's project the ticket prefix names (Jira: as a Task; a project that requires other fields is refused with Jira's reasons), or in the project's GitHub repository. `--description TEXT` gives it a description, on Local files too. A create that may have reached the tracker but failed says the ticket may exist, so look before running it again.
 
 ## 0.1.8 - 2026-10-18
 

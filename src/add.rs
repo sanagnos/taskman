@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 const USAGE: &str = "Usage: taskman add KEY... [options]
-       taskman add --new TITLE [options]
+       taskman add --new TITLE [--description TEXT] [options]
        taskman add --agent NAME [--role TEXT] [options]
 
 Adds tickets to taskman as the Add form does, with the project's worktree settings, without
@@ -23,8 +23,13 @@ role, waits for the user to approve it in taskman; its session then starts at on
 that asked can message it.
 
   KEY             a ticket number (52), key (ENG-52) or link; several at once
-  --new TITLE     with a Local files tracker: create a ticket titled TITLE in the board's todo
-                  column (in the project folder, never a worktree's copy) and add it; repeatable
+  --new TITLE     create a ticket titled TITLE with the project's account, then add it: in
+                  Linear's team or Jira's project the prefix names (Jira: a Task), the GitHub
+                  repository, or a Local files board's todo column (in the project folder, never
+                  a worktree's copy); repeatable. A failed create isn't retried: check the
+                  tracker before running it again
+  --description TEXT
+                  with one --new: the new ticket's description (Markdown)
   --agent NAME    a project agent instead of a ticket
   --role TEXT     with --agent: a standing instruction added to the agent's startup brief, such
                   as \"Test PRs against their tickets\". Not a first message: the agent waits until
@@ -381,6 +386,8 @@ fn add(args: &[String]) -> Result<bool, String> {
     };
 
     let mut items = Vec::new();
+    // Tickets `--new` created, which must not be lost if the request then can't be sent.
+    let mut created: Vec<String> = Vec::new();
     if let Some(name) = &a.agent {
         let name = store::slug(name);
         if name.is_empty() {
@@ -400,21 +407,27 @@ fn add(args: &[String]) -> Result<bool, String> {
         let client = Client::for_project(&store::load_config()?, project);
         let mut warned = false;
         if !a.new.is_empty() {
-            let tracker = project.tracker.as_ref();
-            let Some(board) = tracker.and_then(|t| t.board(&project.repo)) else {
-                return Err(format!(
-                    "--new creates a ticket file, which needs a Local files tracker; {} uses another tracker: create the ticket there and add its key",
-                    project.name
-                ));
+            let c = match &client {
+                Ok(Some(c)) => c,
+                Ok(None) => {
+                    return Err(format!("{} has no tracker to create tickets in", project.name));
+                }
+                Err(e) => return Err(format!("couldn't create the ticket: {e}")),
             };
-            let prefix = tracker.map(|t| t.key.clone()).unwrap_or_default();
+            let prefix = project.tracker.as_ref().map(|t| t.key.clone()).unwrap_or_default();
+            let description = a.description.as_deref().unwrap_or("");
             for title in &a.new {
-                match local::create(&board, &prefix, title) {
-                    Ok(f) => {
-                        println!("Created {}", store::tilde(&f.path));
-                        items.push(Item::Ticket { key: f.key, title: title.clone() });
+                match c.create(&prefix, title, description) {
+                    // The key was checked as one; the link is the tracker's.
+                    Ok(made) => {
+                        println!("Created {}: {}", made.key, untrusted::clean(&made.at));
+                        created.push(made.key.clone());
+                        items.push(Item::Ticket { key: made.key, title: title.trim().into() });
                     }
-                    Err(e) => show(Line::err(local::sandbox_hint(e, codex))),
+                    Err(e) => show(Line::err(status::explain_sandbox(
+                        local::sandbox_hint(e, codex),
+                        codex,
+                    ))),
                 }
             }
         }
@@ -477,10 +490,24 @@ fn add(args: &[String]) -> Result<bool, String> {
         reply_by: 0,
         close: None,
     };
-    for line in submit(req, WAIT, codex)? {
+    let lines = submit(req, WAIT, codex).map_err(|e| not_added(e, &created))?;
+    for line in lines {
         show(line);
     }
     Ok(all_ok)
+}
+
+/// Why the request couldn't be sent, with the tickets `--new` created for it: they're in the
+/// tracker but not in taskman, and are added by key, not created again.
+fn not_added(e: String, created: &[String]) -> String {
+    if created.is_empty() {
+        return e;
+    }
+    format!(
+        "{e}\nCreated but not added: {}. Add them with taskman add {} rather than creating them again",
+        created.join(", "),
+        created.join(" ")
+    )
 }
 
 /// Leaves `req` in the inbox and returns the TUI's reply, waiting up to `wait` for it; without a
@@ -513,8 +540,10 @@ struct Args {
     worktree: Option<bool>,
     /// `--on`: the ticket to stack on, as typed.
     on: Option<String>,
-    /// `--new`: titles of Local files tickets to create.
+    /// `--new`: titles of tickets to create.
     new: Vec<String>,
+    /// `--description`: the one new ticket's description.
+    description: Option<String>,
 }
 
 fn parse_args(args: &[String]) -> Result<Args, String> {
@@ -542,12 +571,20 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             "--project" => a.project = Some(value()?),
             "--on" => a.on = Some(value()?),
             "--new" => a.new.push(value()?.trim().to_string()),
+            "--description" => a.description = Some(value()?),
             s if s.starts_with('-') => return Err(format!("unknown option {s}\n\n{USAGE}")),
             s => a.inputs.push(s.to_string()),
         }
     }
     if a.agent.is_some() && !(a.inputs.is_empty() && a.new.is_empty()) {
         return Err("--agent adds one agent; add tickets with another taskman add".into());
+    }
+    if a.description.is_some() && a.new.len() != 1 {
+        return Err(if a.new.is_empty() {
+            "--description goes with --new: taskman add --new TITLE --description TEXT".into()
+        } else {
+            "--description is for one new ticket; create the others with another taskman add".into()
+        });
     }
     if a.role.is_some() && a.agent.is_none() {
         return Err("--role is for agents: taskman add --agent NAME --role TEXT".into());
@@ -719,6 +756,20 @@ mod tests {
         assert_eq!((on.on.as_deref(), on.worktree), (Some("52"), Some(true)));
         assert!(args("53 --on 52 --no-worktree").unwrap_err().contains("drop --no-worktree"));
         assert!(args("--agent reviewer --on 52").unwrap_err().contains("drop --on"));
+        // --description goes with one --new.
+        let a = args("--new Fix --description Steps").unwrap();
+        assert_eq!((a.new, a.description.as_deref()), (vec!["Fix".to_string()], Some("Steps")));
+        assert!(args("52 --description Steps").unwrap_err().contains("goes with --new"));
+        assert!(args("--new A --new B --description C").unwrap_err().contains("one new ticket"));
+    }
+
+    #[test]
+    fn names_the_tickets_it_created_but_couldnt_add() {
+        assert_eq!(not_added("couldn't write".into(), &[]), "couldn't write");
+        assert_eq!(
+            not_added("couldn't write".into(), &["ENG-53".into(), "ENG-54".into()]),
+            "couldn't write\nCreated but not added: ENG-53, ENG-54. Add them with taskman add ENG-53 ENG-54 rather than creating them again"
+        );
     }
 
     #[test]
