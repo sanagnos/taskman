@@ -303,6 +303,39 @@ fn settings_saves_the_general_form() {
     assert!(matches!(app.mode, Mode::Normal));
 }
 
+/// The terminal said white; Settings → General → Theme says dark instead, drawn so at once, saved,
+/// and told to the sessions running.
+#[test]
+fn settings_theme_overrides_the_terminal() {
+    use crate::theme::{Probe, Setting};
+    let mut app = acme_app();
+    lay_out(&mut app, 160, 40);
+    attach(&mut app, "ENG-52", "");
+    app.set_probe(Probe { fg: Some([0; 3]), bg: Some([255; 3]), colorfgbg: None });
+    assert!(app.theme.light);
+    let told = |app: &App| {
+        let tv = app.tickets.iter().find(|tv| tv.t.key == "ENG-52").unwrap();
+        tv.session.as_ref().unwrap().parser.lock().unwrap().callbacks().colours.bg
+    };
+    assert_eq!(told(&app), [255; 3]);
+
+    app.open_settings(crate::app::SettingsItem::General, false);
+    app.on_key(key(KeyCode::Enter));
+    for _ in 0..4 {
+        app.on_key(key(KeyCode::Down));
+    }
+    assert_eq!(field(&app, "Theme"), "Follow the terminal");
+    app.on_key(key(KeyCode::Right));
+    app.on_key(key(KeyCode::Right));
+    assert_eq!(field(&app, "Theme"), "Dark");
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(toast(&app), Some("Saved"));
+    assert!(!app.theme.light);
+    assert_eq!(told(&app), [0x1e; 3]);
+    assert_eq!(app.config.theme, Setting::Dark);
+    assert_eq!(store::load_config().unwrap().theme, Setting::Dark);
+}
+
 #[test]
 fn settings_moves_through_its_list() {
     let mut app = acme_app();

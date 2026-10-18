@@ -126,10 +126,16 @@ fn spinner() -> &'static str {
 }
 
 fn dim() -> Style {
-    Style::new().fg(Color::DarkGray)
+    Style::new().fg(crate::theme::current().hint)
+}
+
+/// Yellow text, or a dark amber where yellow wouldn't read (`Theme::yellow`).
+fn yellow() -> Color {
+    crate::theme::current().yellow
 }
 
 pub fn draw(f: &mut Frame, app: &mut App) {
+    crate::theme::set_current(app.theme);
     // From the frame's own size: see `App::lay_out`.
     app.lay_out(f.area());
     let a = app.areas;
@@ -207,7 +213,7 @@ fn asleep() -> Span<'static> {
 /// alone, still tells the states apart.
 fn badge(state: AgentState, seen: bool, new: bool) -> Span<'static> {
     match state {
-        AgentState::Needs => Span::styled("▲ needs you", Style::new().fg(Color::Yellow).bold()),
+        AgentState::Needs => Span::styled("▲ needs you", Style::new().fg(yellow()).bold()),
         AgentState::Done if !seen => {
             Span::styled("● your turn", Style::new().fg(Color::Green).bold())
         }
@@ -226,13 +232,9 @@ fn badge(state: AgentState, seen: bool, new: bool) -> Span<'static> {
     }
 }
 
-/// A faint background for the selected card: dark unless the terminal says its background is light.
+/// A faint background for the selected card, the footer and a focused field (`Theme::selection`).
 fn selection_bg() -> Color {
-    let light = std::env::var("COLORFGBG")
-        .ok()
-        .and_then(|v| v.rsplit(';').next().and_then(|b| b.parse::<u8>().ok()))
-        .is_some_and(|bg| bg == 7 || bg == 15);
-    if light { Color::Indexed(254) } else { Color::Indexed(236) }
+    crate::theme::current().selection
 }
 
 /// The PR's summary in a line; `target` is `App::pr_target`, shown after the number so it's the
@@ -243,7 +245,7 @@ fn pr_spans(app: &App, tv: &TicketView) -> Vec<Span<'static>> {
     }
     let target = app.pr_target(tv);
     let target = target.map(|(label, merged)| match merged {
-        true => Span::styled(format!(" →{label} merged"), Style::new().fg(Color::Yellow).bold()),
+        true => Span::styled(format!(" →{label} merged"), Style::new().fg(yellow()).bold()),
         false => Span::styled(format!(" →{label}"), dim()),
     });
     match (&tv.pr.data, &tv.pr.error) {
@@ -264,7 +266,7 @@ fn pr_spans(app: &App, tv: &TicketView) -> Vec<Span<'static>> {
             }
             for (state, sym, color) in [
                 (CheckState::Fail, "✗", Color::Red),
-                (CheckState::Pending, "◷", Color::Yellow),
+                (CheckState::Pending, "◷", yellow()),
                 (CheckState::Pass, "✓", Color::Green),
             ] {
                 let n = pr.count(state);

@@ -22,7 +22,7 @@ use crate::selection::{self, Panel, Selection};
 use crate::store::{self, Config, Project, Saved, Ticket, UiPrefs};
 use crate::tracker::{self, Access};
 use crate::ui::{self, Areas};
-use crate::{add, github, hook, links, resume, update, worktree};
+use crate::{add, github, hook, links, resume, theme, update, worktree};
 use launch::link_bin;
 use poll::take_leftover_status;
 use ratatui::layout::{Position, Rect};
@@ -220,6 +220,10 @@ pub struct App {
     /// The OS keychain the account form can save a token to, once found (`Keychain::probe`); None
     /// where there's none, as on WSL or a server, and until the check at start is done.
     pub keychain: Option<crate::keychain::Keychain>,
+    /// What the terminal said about its colours at start (`theme::ask`), and the theme drawn
+    /// with: from that and `config.theme` (`apply_theme`).
+    pub probe: theme::Probe,
+    pub theme: theme::Theme,
 }
 
 impl App {
@@ -266,6 +270,7 @@ impl App {
         let (tx, rx) = mpsc::channel();
         let tickets: Vec<TicketView> = saved.tickets.into_iter().map(TicketView::new).collect();
         let sel = saved.selected.min(tickets.len().saturating_sub(1));
+        let theme = theme::Theme::new(config.theme, &theme::Probe::default());
         Self {
             tickets,
             sel,
@@ -314,6 +319,8 @@ impl App {
             save_errors: Default::default(),
             checks: 0,
             keychain: None,
+            probe: theme::Probe::default(),
+            theme,
         }
     }
 

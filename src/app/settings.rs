@@ -5,8 +5,8 @@
 use super::sleep::{after_choices, after_label, cap_choices, cap_label};
 use super::sync::Msg;
 use super::{App, Field, Form, FormKind, Mode};
-use crate::keys;
 use crate::store::Provider;
+use crate::{keys, theme};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Duration;
 
@@ -53,6 +53,14 @@ pub(super) fn prefix_hint(p: keys::Prefix) -> String {
 
 const AUTO_INSTALL: &str = "Install automatically";
 const NOTIFY_ONLY: &str = "Only notify";
+
+fn theme_label(t: theme::Setting) -> &'static str {
+    match t {
+        theme::Setting::Auto => "Follow the terminal",
+        theme::Setting::Light => "Light",
+        theme::Setting::Dark => "Dark",
+    }
+}
 
 impl App {
     /// Asks, once, whether the tmux or GNU screen taskman runs in has its prefix too; tmux off the
@@ -176,6 +184,22 @@ impl App {
         }
     }
 
+    /// Takes what the terminal said about its colours, at start.
+    pub fn set_probe(&mut self, probe: theme::Probe) {
+        self.probe = probe;
+        self.apply_theme();
+    }
+
+    /// The theme from the setting and the terminal, drawn from the next frame on; running
+    /// sessions are told its colours when they next ask.
+    fn apply_theme(&mut self) {
+        self.theme = theme::Theme::new(self.config.theme, &self.probe);
+        for s in self.tickets.iter().filter_map(|tv| tv.session.as_ref()) {
+            s.parser.lock().unwrap_or_else(|e| e.into_inner()).callbacks_mut().colours =
+                self.theme.colours;
+        }
+    }
+
     fn general_form(&self) -> Box<Form> {
         let value = if self.config.auto_update { AUTO_INSTALL } else { NOTIFY_ONLY };
         let hint = "checks at start and every hour; an update applies when taskman restarts";
@@ -200,6 +224,12 @@ impl App {
                 cap_label(self.config.max_awake),
                 "past it, the idle sessions unselected longest sleep, whatever the time",
             ),
+            Field::choice(
+                "Theme",
+                theme::Setting::ALL.iter().map(|t| theme_label(*t).to_string()).collect(),
+                theme_label(self.config.theme),
+                self.probe.describe(),
+            ),
         ];
         let mut form = Form::new(FormKind::General, "General", fields);
         form.note = Some(self.updater.describe());
@@ -218,6 +248,11 @@ impl App {
         let caps = cap_choices(self.config.max_awake);
         if let Some(c) = caps.into_iter().find(|c| cap_label(*c) == pick("Keep awake at most")) {
             self.config.max_awake = c;
+        }
+        if let Some(t) = theme::Setting::ALL.into_iter().find(|t| theme_label(*t) == pick("Theme"))
+        {
+            self.config.theme = t;
+            self.apply_theme();
         }
         let prefix = keys::Prefix::parse(&form.value("Prefix key")).unwrap_or_default();
         let changed = prefix != self.config.prefix;

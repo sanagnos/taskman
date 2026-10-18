@@ -1,7 +1,7 @@
 //! The session's pane: its header, the embedded terminal or what stands in for it, the footer
 //! and the prefix menu over it.
 
-use super::{dim, selection_bg, spinner};
+use super::{dim, selection_bg, spinner, yellow};
 use crate::app::{AgentState, App, Away, Mode, TicketView};
 use crate::keys::prefix;
 use crate::store::{Cli, tilde};
@@ -331,7 +331,7 @@ pub(super) fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     } else if let Some(hint) = app.reorder_hint() {
         Line::from(Span::styled(format!(" {hint}"), Style::new().fg(Color::Cyan)))
     } else if let Some((msg, _)) = &app.toast {
-        Line::from(Span::styled(format!(" {msg}"), Style::new().fg(Color::Yellow)))
+        Line::from(Span::styled(format!(" {msg}"), Style::new().fg(yellow())))
     } else {
         let key = Style::new().bold();
         let p = prefix().short();
@@ -356,7 +356,7 @@ pub(super) fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             v.push(Span::raw(
                 " ".repeat((area.width as usize).saturating_sub(used + right.chars().count())),
             ));
-            v.push(Span::styled(right, Style::new().fg(Color::Yellow).bold()));
+            v.push(Span::styled(right, Style::new().fg(yellow()).bold()));
         }
         Line::from(v)
     };
@@ -424,7 +424,7 @@ pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
                 v.push(Span::raw(" ".repeat(INDENT)));
                 used = INDENT;
             }
-            v.push(Span::styled(format!("{k} "), Style::new().fg(Color::Yellow).bold()));
+            v.push(Span::styled(format!("{k} "), Style::new().fg(yellow()).bold()));
             v.push(Span::raw(format!("{what}   ")));
             used += w + 3;
         }
@@ -432,11 +432,11 @@ pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
     }
     lines.push(Line::from(vec![
         Span::styled(format!(" {:<9}", ""), Style::new()),
-        Span::styled("? ", Style::new().fg(Color::Yellow).bold()),
+        Span::styled("? ", Style::new().fg(yellow()).bold()),
         Span::raw("help   "),
-        Span::styled("q ", Style::new().fg(Color::Yellow).bold()),
+        Span::styled("q ", Style::new().fg(yellow()).bold()),
         Span::raw("quit   "),
-        Span::styled("Esc ", Style::new().fg(Color::Yellow).bold()),
+        Span::styled("Esc ", Style::new().fg(yellow()).bold()),
         Span::raw("cancel"),
     ]));
     let w = lines.iter().map(|l| l.width() as u16).max().unwrap_or(40) + 2;
@@ -452,7 +452,7 @@ pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
     let block = Block::new()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(Color::Yellow));
+        .border_style(Style::new().fg(yellow()));
     f.render_widget(Paragraph::new(lines).block(block), r);
 }
 

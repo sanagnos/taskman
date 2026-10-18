@@ -1,6 +1,6 @@
 //! The right column: the tracker and GitHub panels beside a ticket, the board beside an agent.
 
-use super::{dim, pr_spans, spinner, state_badge};
+use super::{dim, pr_spans, spinner, state_badge, yellow};
 use crate::app::{AgentState, App, Remote};
 use crate::github::{CheckState, Pr};
 use crate::keys::prefix;
@@ -69,13 +69,13 @@ fn count(n: usize, one: &str, many: &str) -> String {
 }
 
 fn new_tag(is_new: bool) -> Vec<Span<'static>> {
-    if is_new { vec![Span::styled("● ", Style::new().fg(Color::Yellow).bold())] } else { vec![] }
+    if is_new { vec![Span::styled("● ", Style::new().fg(yellow()).bold())] } else { vec![] }
 }
 
 fn section(title: &str, total: usize, new: usize) -> Line<'static> {
     let mut v = vec![Span::styled(format!("── {title} ({total})"), Style::new().bold())];
     if new > 0 {
-        v.push(Span::styled(format!(" · {new} new"), Style::new().fg(Color::Yellow).bold()));
+        v.push(Span::styled(format!(" · {new} new"), Style::new().fg(yellow()).bold()));
     }
     v.push(Span::styled(" ──", Style::new().bold()));
     Line::from(v)
@@ -88,7 +88,7 @@ fn store_site(site: &str) -> String {
 fn status_color(category: &str) -> Color {
     match category {
         "done" => Color::Green,
-        "indeterminate" => Color::Yellow,
+        "indeterminate" => yellow(),
         _ => Color::Blue,
     }
 }
@@ -328,7 +328,7 @@ pub(super) fn draw_board(f: &mut Frame, app: &mut App, area: Rect) {
         }
         let new = tv.new_count();
         if new > 0 {
-            head.push(Span::styled(format!("  {new} new"), Style::new().fg(Color::Yellow).bold()));
+            head.push(Span::styled(format!("  {new} new"), Style::new().fg(yellow()).bold()));
         }
         lines.push(head);
         // The key opens the issue.
@@ -341,7 +341,7 @@ pub(super) fn draw_board(f: &mut Frame, app: &mut App, area: Rect) {
         if tv.status.state == AgentState::Needs && !tv.status.message.is_empty() {
             lines.push(Line::from(vec![
                 indent(),
-                Span::styled(truncate(&tv.status.message, w), Style::new().fg(Color::Yellow)),
+                Span::styled(truncate(&tv.status.message, w), Style::new().fg(yellow())),
             ]));
         }
         if let Some(b) = &tv.t.branch {
@@ -368,7 +368,7 @@ pub(super) fn draw_board(f: &mut Frame, app: &mut App, area: Rect) {
                 checks.push(Span::raw("   "));
             }
             for c in pr.checks.iter().filter(|c| c.state == CheckState::Pending).take(2) {
-                checks.push(Span::styled("◷ ", Style::new().fg(Color::Yellow)));
+                checks.push(Span::styled("◷ ", Style::new().fg(yellow())));
                 runs.push((checks.len(), &c.url));
                 checks.push(Span::raw(untrusted::line(&c.name)));
                 checks.push(Span::raw("   "));
@@ -410,7 +410,7 @@ pub(super) fn draw_board(f: &mut Frame, app: &mut App, area: Rect) {
             let lead = format!("{} · {}: ", untrusted::line(&author), ago_str(&when));
             let mut row = vec![indent()];
             if is_new {
-                row.push(Span::styled("● ", Style::new().fg(Color::Yellow).bold()));
+                row.push(Span::styled("● ", Style::new().fg(yellow()).bold()));
             }
             row.push(Span::styled(lead.clone(), Style::new().fg(Color::Cyan)));
             row.push(Span::raw(truncate(
@@ -483,7 +483,7 @@ fn pr_lines(pr: &Pr, is_new: impl Fn(&str) -> bool) -> Linked {
             status.push(Span::styled("✎ changes requested", Style::new().fg(Color::Red)));
         }
         "REVIEW_REQUIRED" => {
-            status.push(Span::styled("◌ review required", Style::new().fg(Color::Yellow)));
+            status.push(Span::styled("◌ review required", Style::new().fg(yellow())));
         }
         _ => {}
     }
@@ -504,7 +504,7 @@ fn pr_lines(pr: &Pr, is_new: impl Fn(&str) -> bool) -> Linked {
         Span::styled("── Checks ", Style::new().bold()),
         Span::styled(format!("✓{pass} "), Style::new().fg(Color::Green)),
         Span::styled(format!("✗{fail} "), Style::new().fg(Color::Red)),
-        Span::styled(format!("◷{pend} "), Style::new().fg(Color::Yellow)),
+        Span::styled(format!("◷{pend} "), Style::new().fg(yellow())),
         Span::styled("──", Style::new().bold()),
     ]));
     if pr.checks.is_empty() {
@@ -514,7 +514,7 @@ fn pr_lines(pr: &Pr, is_new: impl Fn(&str) -> bool) -> Linked {
         check_line(&mut lines, "✗", Color::Red, c, true);
     }
     for c in pr.checks.iter().filter(|c| c.state == CheckState::Pending) {
-        check_line(&mut lines, "◷", Color::Yellow, c, false);
+        check_line(&mut lines, "◷", yellow(), c, false);
     }
     let passed: Vec<_> = pr.checks.iter().filter(|c| c.state == CheckState::Pass).collect();
     if passed.len() <= 6 {
@@ -673,7 +673,7 @@ pub(super) fn draw_gh(f: &mut Frame, app: &mut App, area: Rect) {
         let pr = tv.pr.data.as_ref().and_then(Option::as_ref);
         let text = crate::stack::hint(base, pr, state, &app.default_branch(&tv.t.repo))?;
         let style =
-            if state == crate::stack::State::Open { dim() } else { Style::new().fg(Color::Yellow) };
+            if state == crate::stack::State::Open { dim() } else { Style::new().fg(yellow()) };
         Some(Line::from(Span::styled(format!("↳ {text}"), style)))
     });
     let Some(tv) = app.tickets.get_mut(app.sel) else { return };

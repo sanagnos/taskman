@@ -14,6 +14,8 @@ pub struct Callbacks {
     replies: Vec<u8>,
     pub title: String,
     pub clipboard: Vec<String>,
+    /// What a colour query is answered with: the terminal's own, as `theme` found them.
+    pub colours: crate::theme::Colours,
 }
 
 impl vt100::Callbacks for Callbacks {
@@ -49,13 +51,12 @@ impl vt100::Callbacks for Callbacks {
     }
 
     fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
-        // Foreground/background colour queries: answer as a dark theme.
-        if params.len() >= 2 && params[1] == b"?" {
-            match params[0] {
-                b"10" => self.replies.extend_from_slice(b"\x1b]10;rgb:d0d0/d0d0/d0d0\x1b\\"),
-                b"11" => self.replies.extend_from_slice(b"\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\"),
-                _ => {}
-            }
+        // Foreground and background colour queries.
+        if params.len() >= 2
+            && params[1] == b"?"
+            && let Some(reply) = self.colours.answer(params[0])
+        {
+            self.replies.extend(reply);
         }
     }
 }
@@ -80,6 +81,7 @@ impl Session {
         rows: u16,
         cols: u16,
         dirty: Arc<AtomicBool>,
+        colours: crate::theme::Colours,
     ) -> anyhow::Result<Self> {
         let (rows, cols) = (rows.max(2), cols.max(10));
         let pair =
@@ -93,7 +95,7 @@ impl Session {
             rows,
             cols,
             SCROLLBACK,
-            Callbacks::default(),
+            Callbacks { colours, ..Callbacks::default() },
         )));
         let exited = Arc::new(AtomicBool::new(false));
         let last_output = Arc::new(AtomicU64::new(now_ms()));

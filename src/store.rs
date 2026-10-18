@@ -870,6 +870,9 @@ pub struct Config {
     /// whatever the time. None for no limit.
     #[serde(default)]
     pub max_awake: Option<usize>,
+    /// Light or dark, or `auto` to ask the terminal.
+    #[serde(default)]
+    pub theme: crate::theme::Setting,
     #[serde(flatten)]
     pub extra: Extra,
 }
@@ -892,6 +895,7 @@ impl Default for Config {
             prefix: crate::keys::Prefix::default(),
             sleep_after: sleep_after(),
             max_awake: None,
+            theme: crate::theme::Setting::Auto,
             extra: Extra::new(),
         }
     }
@@ -1082,7 +1086,7 @@ mod tests {
       "format": 1,
       "accounts": [{"id": "linear-1", "provider": "linear", "site": "acme", "token": "env:ACME_LINEAR_TOKEN", "scopes": ["read"]}],
       "sleep_after": null,
-      "theme": "light"
+      "bell": "off"
     }"#;
 
     #[test]

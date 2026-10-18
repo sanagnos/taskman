@@ -1,6 +1,6 @@
 //! The sidebar: the projects, their cards, and the list's scrolling.
 
-use super::{dim, pr_spans, selection_bg, state_badge};
+use super::{dim, pr_spans, selection_bg, state_badge, yellow};
 use crate::app::{App, Hit, Mode, Piece, TicketView};
 use crate::keys::prefix;
 use crate::untrusted;
@@ -265,7 +265,7 @@ fn sidebar_rows(
         if waiting {
             let used = 2 + proj.name.chars().count().min(room) + count.chars().count();
             header.push(Span::raw(" ".repeat(w.saturating_sub(used + 2).max(1))));
-            header.push(Span::styled("●", Style::new().fg(Color::Yellow).bold()));
+            header.push(Span::styled("●", Style::new().fg(yellow()).bold()));
         }
         rows.push(SidebarRow {
             line: Line::from(header),
@@ -348,7 +348,7 @@ fn sidebar_rows(
                     if new > 0 {
                         let tag = format!("{new} new · ");
                         room = room.saturating_sub(tag.chars().count());
-                        row.push(Span::styled(tag, Style::new().fg(Color::Yellow).bold()));
+                        row.push(Span::styled(tag, Style::new().fg(yellow()).bold()));
                     }
                     row.push(Span::styled(truncate(&untrusted::line(title), room), title_style));
                     lines.push(Line::from(row));
@@ -359,7 +359,7 @@ fn sidebar_rows(
                     if title.is_none() && new > 0 {
                         pr.push(Span::styled(
                             format!("{new} new · "),
-                            Style::new().fg(Color::Yellow).bold(),
+                            Style::new().fg(yellow()).bold(),
                         ));
                     }
                     pr.extend(pr_spans(app, tv));
@@ -441,7 +441,7 @@ fn more_line(arrow: &str, entries: usize, attention: bool, w: usize) -> Line<'st
     let mut spans = vec![Span::styled(text, dim())];
     if attention {
         spans.push(Span::raw(" ".repeat(w.saturating_sub(used + 2).max(1))));
-        spans.push(Span::styled("●", Style::new().fg(Color::Yellow).bold()));
+        spans.push(Span::styled("●", Style::new().fg(yellow()).bold()));
     }
     Line::from(spans)
 }

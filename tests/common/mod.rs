@@ -96,6 +96,18 @@ pub fn answer_queries(master: &mut std::fs::File, out: &[u8]) {
     }
 }
 
+/// As `answer_queries`, from a terminal with black text on white, which also says so when asked
+/// (OSC 10 and 11), before the device attributes as a terminal does.
+pub fn answer_as_light(master: &mut std::fs::File, out: &[u8]) {
+    if contains(out, b"\x1b]10;?") {
+        let _ = master.write_all(b"\x1b]10;rgb:0000/0000/0000\x07");
+    }
+    if contains(out, b"\x1b]11;?") {
+        let _ = master.write_all(b"\x1b]11;rgb:ffff/ffff/ffff\x07");
+    }
+    answer_queries(master, out);
+}
+
 /// A stub CLI for sessions: writes its pid to `pid_file` and sleeps.
 pub fn stub_cli(dir: &Path, pid_file: &Path) -> PathBuf {
     let stub = dir.join("claude");
@@ -225,6 +237,22 @@ impl Tui {
         limit: Duration,
         on_timeout: impl FnOnce() + Send + 'static,
     ) -> Self {
+        Self::launch(name, dir, cmd, limit, on_timeout, answer_queries)
+    }
+
+    /// As `start`, in a terminal with a white background (`answer_as_light`).
+    pub fn start_light(name: &'static str, dir: &Path, cmd: Command, limit: Duration) -> Self {
+        Self::launch(name, dir, cmd, limit, || {}, answer_as_light)
+    }
+
+    fn launch(
+        name: &'static str,
+        dir: &Path,
+        cmd: Command,
+        limit: Duration,
+        on_timeout: impl FnOnce() + Send + 'static,
+        answer: fn(&mut std::fs::File, &[u8]),
+    ) -> Self {
         let (child, master) = spawn_in_pty(cmd);
         let pid = child.id().cast_signed();
         let d = dir.to_path_buf();
@@ -247,7 +275,7 @@ impl Tui {
                     match std::io::Read::read(&mut master, &mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
-                            answer_queries(&mut master, &buf[..n]);
+                            answer(&mut master, &buf[..n]);
                             let mut t = term.lock().unwrap_or_else(|e| e.into_inner());
                             t.raw.extend_from_slice(&buf[..n]);
                             t.parser.process(&buf[..n]);
@@ -474,6 +502,8 @@ pub fn project(dir: &Path, keys: &[&str]) -> PathBuf {
 /// - `stream` prints `tick 0001`, `tick 0002`... every 20ms
 /// - `panic` prints `$TASKMAN_TEST_PANIC`, which makes a debug build's reader panic
 /// - `styled` prints `bold red` in bold red and `underlined on green` underlined on green
+/// - `colour` asks the terminal for its background (OSC 11) and prints `colour ` and the reply,
+///   without its escapes
 /// - anything else is answered with `got: <line>`
 pub fn stub_session(dir: &Path) -> PathBuf {
     let text = r#"#!/bin/sh
@@ -503,6 +533,12 @@ while :; do
       echo $! > "$f.stream.pid";;
     panic) printf '%s\n' "$TASKMAN_TEST_PANIC";;
     styled) printf '\033[1;31mbold red\033[0m \033[4;42munderlined on green\033[0m\n';;
+    colour)
+      stty -icanon -echo min 0 time 20
+      printf '\033]11;?\007'
+      reply=$(dd bs=64 count=1 2>/dev/null | tr -d '\033\007')
+      stty icanon echo
+      echo "colour $reply";;
     *) echo "got: $line";;
   esac
 done

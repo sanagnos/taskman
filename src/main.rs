@@ -26,6 +26,7 @@ mod session_ids;
 mod stack;
 mod status;
 mod store;
+mod theme;
 mod tracker;
 mod ui;
 mod untrusted;
@@ -394,6 +395,8 @@ fn main() -> anyhow::Result<()> {
     crossterm::style::force_color_output(true);
     // Raw mode first: the keyboard query reads the terminal's answer.
     crossterm::terminal::enable_raw_mode()?;
+    // Before crossterm reads the terminal, which would take the colour replies for keys.
+    app.set_probe(theme::ask(tty.fd));
     let enhanced = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
     ENHANCED.store(enhanced, Ordering::Relaxed);
     let result = take_terminal(enhanced).map_err(anyhow::Error::from).and_then(|()| {

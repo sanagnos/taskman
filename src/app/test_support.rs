@@ -378,6 +378,39 @@ pub(crate) fn draw(app: &mut App, w: u16, h: u16) -> String {
         .collect()
 }
 
+/// As `draw`, followed by the screen's colours: a letter a cell for each pair of foreground and
+/// background (`.` for the terminal's own), and what each letter is.
+pub(crate) fn draw_colours(app: &mut App, w: u16, h: u16) -> String {
+    let text = draw(app, w, h);
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|f| ui::draw(f, app)).unwrap();
+    let buf = term.backend().buffer();
+    let letter = |i: usize| char::from(b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"[i]);
+    let mut pairs = Vec::new();
+    let mut map = String::new();
+    for y in 0..h {
+        map.push('"');
+        for x in 0..w {
+            let cell = &buf[(x, y)];
+            let pair = (cell.fg, cell.bg);
+            if pair == (ratatui::style::Color::Reset, ratatui::style::Color::Reset) {
+                map.push('.');
+                continue;
+            }
+            let i = pairs.iter().position(|p| *p == pair).unwrap_or_else(|| {
+                pairs.push(pair);
+                pairs.len() - 1
+            });
+            map.push(letter(i));
+        }
+        map.push_str("\"\n");
+    }
+    for (i, (fg, bg)) in pairs.iter().enumerate() {
+        map.push_str(&format!("{}: {fg:?} on {bg:?}\n", letter(i)));
+    }
+    format!("{text}\n{map}")
+}
+
 fn without_links(s: &str) -> String {
     let mut out = String::new();
     let mut rest = s;

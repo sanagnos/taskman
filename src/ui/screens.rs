@@ -5,7 +5,9 @@
 //! Most are 80 by 24, where the sidebar folds and the panels hide; the panels and the agents' board
 //! need a wider screen, 160 by 40.
 
-use crate::app::test_support::{acme_app, attach, attach_ended, draw, key, long_sidebar, offline};
+use crate::app::test_support::{
+    acme_app, attach, attach_ended, draw, draw_colours, key, long_sidebar, offline,
+};
 use crate::app::{AgentAsk, Mode, SettingsItem};
 use crate::store::Saved;
 use crate::worktree::RemoveCheck;
@@ -46,6 +48,20 @@ fn ticket_on_a_small_screen() {
     draw(&mut app, 80, 24);
     attach(&mut app, "ENG-52", SESSION);
     assert_snapshot!(draw(&mut app, 80, 24));
+}
+
+/// On a white terminal: a light selection and footer, hints grey enough to read on white, and the
+/// toast amber rather than yellow. Its colours follow the screen.
+#[test]
+fn ticket_on_a_light_terminal() {
+    use crate::theme::{Probe, Setting, Theme};
+    let mut app = acme_app();
+    let probe = Probe { fg: Some([0; 3]), bg: Some([255; 3]), colorfgbg: None };
+    app.theme = Theme::new(Setting::Auto, &probe);
+    draw(&mut app, 100, 30);
+    attach(&mut app, "ENG-52", SESSION);
+    app.toast("Copied 12 characters");
+    assert_snapshot!(draw_colours(&mut app, 100, 30));
 }
 
 /// Its review threads too, as the tracker panel is off.
