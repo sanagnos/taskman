@@ -6,7 +6,7 @@ use super::forms::paste_into;
 use super::sync::Msg;
 use super::ticket::merged_head;
 use super::tickets::{Closed, left_open};
-use super::{ASK_ARMS, AgentState, App, Away, HelpView, LinkList, Mode, SettingsItem};
+use super::{ASK_ARMS, AgentState, App, Away, FormKind, HelpView, LinkList, Mode, SettingsItem};
 use crate::selection;
 use crate::store::{self, UiPrefs};
 use crate::ui;
@@ -529,6 +529,9 @@ impl App {
 
     pub fn on_paste(&mut self, text: &str) {
         match &mut self.mode {
+            Mode::Form(form) if matches!(form.kind, FormKind::Ticket) => {
+                self.paste_into_add_form(text);
+            }
             Mode::Form(form) => paste_into(form, text),
             Mode::Settings(s) if s.editing => paste_into(&mut s.form, text),
             Mode::Normal if !self.prefix => {

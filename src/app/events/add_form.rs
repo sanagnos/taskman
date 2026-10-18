@@ -536,3 +536,59 @@ fn an_empty_start_takes_the_keys_bare_and_after_the_prefix() {
         assert!(matches!(app.mode, Mode::Form(_)));
     }
 }
+
+// ---- Typing on Type ------------------------------------------------------------------------
+
+#[test]
+fn a_number_typed_on_type_fills_the_ticket() {
+    let mut app = acme_app();
+    prefix(&mut app, KeyCode::Char('n'));
+    assert_eq!(focused(&app), "Type");
+    type_text(&mut app, "52");
+    assert_eq!(focused(&app), "Ticket");
+    assert_eq!(field(&app, "Type"), "Ticket");
+    assert_eq!(field(&app, "Ticket"), "52");
+    app.on_key(key(KeyCode::Enter));
+    assert!(matches!(app.mode, Mode::Normal));
+    assert_eq!(toast(&app), Some("ENG-52 is already open; switched to it"));
+}
+
+#[test]
+fn a_name_typed_on_type_fills_the_agents_name() {
+    let mut saved = crate::app::test_support::acme();
+    saved.projects.retain(|p| p.tracker.is_none());
+    saved.tickets.clear();
+    let mut app = offline(saved);
+    prefix(&mut app, KeyCode::Char('n'));
+    assert_eq!(focused(&app), "Type");
+    type_text(&mut app, "lead");
+    assert_eq!(focused(&app), "Name");
+    assert_eq!(field(&app, "Type"), "Agent");
+    assert_eq!(field(&app, "Name"), "lead");
+    app.on_key(key(KeyCode::Enter));
+    assert!(matches!(app.mode, Mode::Normal), "{:?}", toast(&app));
+    assert_eq!(selected(&app), "notes-lead");
+}
+
+#[test]
+fn a_key_or_link_for_the_name_switches_to_a_ticket_and_another_key_stays_a_name() {
+    let mut app = acme_app();
+    prefix(&mut app, KeyCode::Char('n'));
+    type_text(&mut app, "phase-2");
+    assert_eq!((focused(&app), field(&app, "Type").as_str()), ("Name", "Agent"));
+    app.on_key(ctrl('u'));
+    // The project's prefix makes it a ticket, as the key is typed.
+    type_text(&mut app, "eng-7");
+    assert_eq!((focused(&app), field(&app, "Type").as_str()), ("Ticket", "Ticket"));
+    assert_eq!(field(&app, "Ticket"), "eng-7");
+    // A paste on Type lands in the field too.
+    app.on_key(key(KeyCode::Esc));
+    prefix(&mut app, KeyCode::Char('n'));
+    app.on_paste("https://linear.app/acme/issue/ENG-7/fix-it");
+    assert_eq!((focused(&app), field(&app, "Type").as_str()), ("Ticket", "Ticket"));
+    assert_eq!(field(&app, "Ticket"), "https://linear.app/acme/issue/ENG-7/fix-it");
+    app.on_key(key(KeyCode::Esc));
+    prefix(&mut app, KeyCode::Char('n'));
+    app.on_paste("reviewer");
+    assert_eq!((focused(&app), field(&app, "Name").as_str()), ("Name", "reviewer"));
+}

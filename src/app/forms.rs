@@ -3,6 +3,7 @@
 //! forms themselves are in `add_form.rs`, `settings.rs`, `projects.rs` and `accounts.rs`.
 
 use super::accounts::{account_defaults, account_rows, form_provider};
+use super::add_form;
 use super::projects::Choices;
 use super::settings::prefix_hint;
 use super::sync::Msg;
@@ -300,7 +301,9 @@ impl App {
         let before = form.focus;
         let is_choice = !form.fields[form.focus].choices.is_empty();
         let is_text = form.fields[form.focus].is_text();
+        let ticket_form = matches!(form.kind, FormKind::Ticket);
         let values: Vec<String> = form.fields.iter().map(|f| f.value.clone()).collect();
+        let name = form.field("Name").map(|f| f.value.clone());
         match key.code {
             KeyCode::Esc => {
                 self.mode = Mode::Normal;
@@ -335,6 +338,11 @@ impl App {
                 form.fields[form.focus].cycle(1);
             }
             KeyCode::Right if is_choice => form.fields[form.focus].cycle(1),
+            // What's typed on the Add form's choices (it opens on Type) is the ticket or the name.
+            KeyCode::Char(c) if !ctrl && !is_text && ticket_form => {
+                add_form::focus_text(form);
+                form.fields[form.focus].value.push(c);
+            }
             KeyCode::Backspace if is_text => {
                 form.fields[form.focus].value.pop();
             }
@@ -373,7 +381,7 @@ impl App {
             }
         }
         let project_form = matches!(form.kind, FormKind::Project | FormKind::ProjectSettings(_));
-        let ticket_form = matches!(form.kind, FormKind::Ticket);
+        let typed = form.field("Name").map(|f| &f.value) != name.as_ref();
         if ticket_form
             && matches!(label, "Project" | "Type" | "CLI" | "Ticket" | "Name" | "Worktree" | "Base")
         {
@@ -382,6 +390,9 @@ impl App {
                 && let Some(p) = self.projects.iter().position(|p| p.name == f.value("Project"))
             {
                 self.list_open_issues(p);
+            }
+            if typed {
+                self.name_typed(&mut f);
             }
             self.update_ticket_hint(&mut f);
             self.update_worktree_field(&mut f, label == "Project");

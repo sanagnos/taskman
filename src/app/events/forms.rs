@@ -15,6 +15,44 @@ fn the_add_form_opens_on_type_set_to_agent() {
 }
 
 #[test]
+fn typing_on_the_add_forms_choices_goes_to_its_text_field_and_arrows_still_choose() {
+    let mut app = acme_app();
+    prefix(&mut app, KeyCode::Char('n'));
+    // ←/→ and space on Type still change the choice.
+    app.on_key(key(KeyCode::Left));
+    assert_eq!(field(&app, "Type"), "Ticket");
+    app.on_key(key(KeyCode::Right));
+    assert_eq!(field(&app, "Type"), "Agent");
+    app.on_key(key(KeyCode::Char(' ')));
+    assert_eq!(field(&app, "Type"), "Ticket");
+    assert_eq!(focused(&app), "Type");
+    // On any other choice too: CLI.
+    focus(&mut app, "CLI");
+    type_text(&mut app, "61");
+    assert_eq!((focused(&app), field(&app, "Ticket").as_str()), ("Ticket", "61"));
+    assert_eq!(field(&app, "CLI"), "Claude");
+    // A number made it a ticket; choosing Agent again sticks, keeping what was typed.
+    focus(&mut app, "Type");
+    app.on_key(key(KeyCode::Right));
+    assert_eq!((field(&app, "Type").as_str(), field(&app, "Name").as_str()), ("Agent", "61"));
+}
+
+#[test]
+fn typing_on_a_choice_elsewhere_changes_nothing() {
+    let mut app = acme_app();
+    app.open_settings(crate::app::SettingsItem::General, false);
+    app.on_key(key(KeyCode::Enter));
+    app.on_key(key(KeyCode::Down));
+    let form = settings_form(&app);
+    let values: Vec<String> = form.fields.iter().map(|f| f.value.clone()).collect();
+    assert_eq!(form.fields[form.focus].label, "Updates");
+    type_text(&mut app, "52");
+    let form = settings_form(&app);
+    assert_eq!(form.fields[form.focus].label, "Updates");
+    assert!(form.fields.iter().map(|f| &f.value).eq(values.iter()));
+}
+
+#[test]
 fn the_add_form_adds_an_agent() {
     let mut app = acme_app();
     prefix(&mut app, KeyCode::Char('n'));

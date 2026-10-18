@@ -123,6 +123,32 @@ pub fn parse_key(input: &str) -> Option<String> {
     Some(key.to_uppercase())
 }
 
+/// Whether what's typed as an agent's name names a ticket of the project whose prefix is
+/// `prefix` instead: a number (`52`, `#52`), a link, or a key with the project's prefix (any key
+/// when it has none). Another key stays a name: `phase-2` reads as a key, and is a fair name.
+fn names_ticket(prefix: &str, input: &str) -> bool {
+    let input = input.trim();
+    let number = input.strip_prefix('#').unwrap_or(input);
+    if !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    if input.contains("://") {
+        return true;
+    }
+    parse_key(input).is_some_and(|key| {
+        prefix.is_empty()
+            || key.split_once('-').is_some_and(|(p, _)| p.eq_ignore_ascii_case(prefix))
+    })
+}
+
+/// Moves the Add form's focus to its text field, the Ticket or Name: what's typed or pasted on
+/// one of its choices is meant for it, and a choice would drop it.
+pub(super) fn focus_text(form: &mut Form) {
+    if let Some(i) = form.fields.iter().position(|f| matches!(f.label, "Ticket" | "Name")) {
+        form.focus = i;
+    }
+}
+
 fn is_key(s: &str) -> bool {
     let Some((proj, num)) = s.split_once('-') else { return false };
     !proj.is_empty()
@@ -512,6 +538,34 @@ impl App {
         };
     }
 
+    /// After typing or pasting into an agent's Name: a name that names one of the project's
+    /// tickets switches Type to Ticket, keeping what was typed. Only then, not on every change:
+    /// ←/→ back to Agent would otherwise be undone at once.
+    pub(super) fn name_typed(&self, form: &mut Form) {
+        let project = self.projects.iter().find(|p| p.name == form.value("Project"));
+        let Some(tracker) = project.and_then(|p| p.tracker.as_ref()) else { return };
+        if form.value("Type") == "Agent" && names_ticket(&tracker.key, &form.value("Name")) {
+            form.set("Type", "Ticket");
+        }
+    }
+
+    /// A paste into the Add form, which lands in its text field wherever the focus is.
+    pub(super) fn paste_into_add_form(&mut self, text: &str) {
+        let Mode::Form(form) = &mut self.mode else { return };
+        let mut f = std::mem::replace(form, Box::new(Form::new(FormKind::Ticket, "", vec![])));
+        if !f.fields[f.focus].is_text() {
+            focus_text(&mut f);
+        }
+        let name = f.field("Name").map(|n| n.value.clone());
+        super::forms::paste_into(&mut f, text);
+        if f.field("Name").map(|n| &n.value) != name.as_ref() {
+            self.name_typed(&mut f);
+        }
+        self.update_ticket_hint(&mut f);
+        self.update_worktree_field(&mut f, false);
+        self.mode = Mode::Form(f);
+    }
+
     pub(super) fn update_ticket_hint(&self, form: &mut Form) {
         let codex = Cli::from_label(&form.value("CLI")) == Cli::Codex;
         if let Some(f) = form.field_mut("CLI") {
@@ -675,6 +729,18 @@ mod tests {
     use super::*;
     use crate::app::test_support::offline;
     use crate::store::Saved;
+
+    #[test]
+    fn a_number_link_or_the_projects_key_names_a_ticket_and_other_text_an_agent() {
+        for input in ["52", "#52", " 52 ", "eng-52", "ENG-52", "https://example.com/t/12"] {
+            assert!(names_ticket("ENG", input), "{input}");
+        }
+        for input in ["", "#", "lead", "oss-planner", "phase-2", "web-12", "52a"] {
+            assert!(!names_ticket("ENG", input), "{input}");
+        }
+        // With no prefix, any key could be the project's.
+        assert!(names_ticket("", "web-12"));
+    }
 
     #[test]
     fn add_form_rows_follow_its_type() {
