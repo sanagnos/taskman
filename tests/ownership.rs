@@ -159,6 +159,12 @@ fn killing_resume_leaves_the_session_to_its_cli() {
         "the session didn't start"
     );
     let cli = session(&dir).unwrap();
+    // `taskman resume` names the CLI in the owner file once it has started it, which may be after
+    // the CLI wrote its pid: killed before, it would leave its own pid there.
+    let owner = owner_file(&dir).expect("no owner file");
+    let named = wait_for(Duration::from_secs(10), None, || {
+        std::fs::read_to_string(&owner).is_ok_and(|r| r == format!("outside {cli}"))
+    });
 
     watchdog.step("killing taskman resume");
     first.kill().unwrap();
@@ -178,6 +184,8 @@ fn killing_resume_leaves_the_session_to_its_cli() {
 
     watchdog.step("resuming it once the CLI ends");
     kill(Some(cli));
+    // A killed process lets go of the claim as it ends, a moment after the signal.
+    let freed = wait_for(Duration::from_secs(10), None, || !locked(&owner));
     let mut third = resume().stderr(Stdio::null()).spawn().unwrap();
     let resumed =
         wait_for(Duration::from_secs(10), None, || session(&dir).is_some_and(|p| p != cli));
@@ -187,13 +195,14 @@ fn killing_resume_leaves_the_session_to_its_cli() {
     drop(watchdog);
     let _ = std::fs::remove_dir_all(&dir);
 
+    assert!(named, "taskman resume didn't name its CLI in the owner file");
     assert_eq!(started_again, None, "a second copy started while the first CLI ran");
     assert_eq!(second.status.code(), Some(1), "{refused}");
     assert!(
         refused.contains(&format!("already running in another terminal (pid {cli})")),
         "{refused}"
     );
-    assert!(resumed, "the session stayed claimed after its CLI ended");
+    assert!(freed && resumed, "the session stayed claimed after its CLI ended");
 }
 
 /// The owner lock fails closed: while its file can't be made (here a plain file sits where the
