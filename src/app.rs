@@ -135,6 +135,8 @@ pub struct App {
     pub tickets: Vec<TicketView>,
     pub sel: usize,
     pub prefs: UiPrefs,
+    /// The fields at the top of tickets.json this build doesn't know, saved back as they were.
+    unknown: store::Extra,
     pub prefix: bool,
     pub mode: Mode,
     pub projects: Vec<Project>,
@@ -268,6 +270,7 @@ impl App {
             tickets,
             sel,
             prefs: saved.ui,
+            unknown: saved.extra,
             prefix: false,
             mode: Mode::Normal,
             projects: saved.projects,
@@ -330,6 +333,8 @@ impl App {
             tickets: self.tickets.iter().map(|tv| tv.t.clone()).collect(),
             selected: self.sel,
             ui: self.prefs.clone(),
+            format: store::Format,
+            extra: self.unknown.clone(),
         };
         let path = store::state_dir().join("tickets.json");
         let res = store::save(&saved);

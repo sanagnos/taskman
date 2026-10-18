@@ -141,6 +141,7 @@ pub(crate) mod tests {
             key: prefix.into(),
             folder: None,
             account: None,
+            extra: Default::default(),
         });
         Project {
             name: name.into(),
@@ -149,6 +150,7 @@ pub(crate) mod tests {
             collapsed: false,
             closed_agents: vec![],
             worktrees: Default::default(),
+            extra: Default::default(),
         }
     }
 
@@ -167,6 +169,7 @@ pub(crate) mod tests {
             created_worktree: false,
             base: None,
             pending_worktree: None,
+            extra: Default::default(),
         }
     }
 

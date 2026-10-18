@@ -2,6 +2,21 @@ use super::*;
 
 // ---- accounts in Settings ------------------------------------------------------------------
 
+/// An account saved over keeps the fields a newer taskman wrote in it, though the form rebuilds it.
+#[test]
+fn saving_an_account_keeps_fields_this_build_doesnt_know() {
+    let mut app = acme_app();
+    app.config.accounts[0].extra =
+        serde_json::from_value(serde_json::json!({ "scopes": ["read"] })).unwrap();
+    let account = app.config.accounts[0].clone();
+    app.keep_account(store::Account { extra: store::Extra::new(), ..account }, Some(0));
+    let config: serde_json::Value = serde_json::from_str(&config_file()).unwrap();
+    assert_eq!(
+        (&config["format"], &config["accounts"][0]["scopes"]),
+        (&1.into(), &["read"].into())
+    );
+}
+
 #[test]
 fn adds_a_jira_account_and_saves_where_its_token_comes_from_not_the_token() {
     let mut app = acme_app();

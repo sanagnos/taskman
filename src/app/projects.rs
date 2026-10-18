@@ -148,6 +148,7 @@ pub(super) fn tracker_from_form(form: &Form) -> Option<Tracker> {
         folder,
         key: form.value(provider.prefix_field()).to_uppercase(),
         account: None,
+        extra: Default::default(),
     })
 }
 
@@ -338,6 +339,7 @@ fn worktree_prefs_from_form(form: &Form) -> Result<WorktreePrefs, String> {
         create: (!create).then_some(false),
         branch: (branch != worktree::TRACKER).then_some(branch),
         inside: form.value("Folder") == INSIDE,
+        extra: Default::default(),
     })
 }
 
@@ -601,8 +603,14 @@ impl App {
         let k = self.keychain.clone().unwrap_or_else(Keychain::os);
         std::thread::spawn(move || {
             let SignIn { provider, site, email, source, .. } = asked;
-            let a =
-                Account { id: String::new(), provider, site: site.clone(), email, token: source };
+            let a = Account {
+                id: String::new(),
+                provider,
+                site: site.clone(),
+                email,
+                token: source,
+                extra: Default::default(),
+            };
             let token = match known {
                 Some(token) => Ok(token),
                 // The keychain the form saves to: a unit test's stub.
@@ -611,7 +619,14 @@ impl App {
                     None => a.resolve_token(),
                 },
             };
-            let t = Tracker { provider, site, folder: None, key: String::new(), account: None };
+            let t = Tracker {
+                provider,
+                site,
+                folder: None,
+                key: String::new(),
+                account: None,
+                extra: Default::default(),
+            };
             let got = token.and_then(|token| {
                 Client::new(&t, Path::new(""), Some((&a, &token)))
                     .and_then(|c| c.choices())
@@ -729,7 +744,10 @@ impl App {
         };
 
         let worktrees = match existing {
-            Some(_) => worktree_prefs_from_form(form)?,
+            Some(p) => WorktreePrefs {
+                extra: self.projects[p].worktrees.extra.clone(),
+                ..worktree_prefs_from_form(form)?
+            },
             None => WorktreePrefs::default(),
         };
 
@@ -739,6 +757,13 @@ impl App {
             take_pick(form, i, false);
         }
         let mut tracker = tracker_from_form(form);
+        // What a newer taskman saved about the tracker stays while it's the same kind.
+        if let Some(t) = &mut tracker
+            && let Some(old) = existing.and_then(|p| self.projects[p].tracker.as_ref())
+            && old.provider == t.provider
+        {
+            t.extra = old.extra.clone();
+        }
         if let Some(t) = &mut tracker
             && t.provider.has_board()
         {
@@ -797,8 +822,15 @@ impl App {
         let collapsed = existing.is_some_and(|p| self.projects[p].collapsed);
         let closed_agents =
             existing.map(|p| self.projects[p].closed_agents.clone()).unwrap_or_default();
-        let project =
-            Project { name, repo, tracker: tracker.clone(), collapsed, closed_agents, worktrees };
+        let project = Project {
+            name,
+            repo,
+            tracker: tracker.clone(),
+            collapsed,
+            closed_agents,
+            worktrees,
+            extra: existing.map(|p| self.projects[p].extra.clone()).unwrap_or_default(),
+        };
         if let Some(board) = tracker.as_ref().and_then(|t| t.board(&project.repo)) {
             local::ensure_columns(&board)
                 .map_err(|e| format!("Couldn't create {}: {e}", store::tilde(&board)))?;
@@ -1059,6 +1091,7 @@ mod tests {
             folder: None,
             key: key.into(),
             account: None,
+            extra: Default::default(),
         };
         assert_eq!(unlisted(&form, &t("ENG")), None);
         assert_eq!(unlisted(&form, &t("")), None);

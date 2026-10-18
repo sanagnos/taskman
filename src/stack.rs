@@ -39,7 +39,7 @@ const UPDATE: &str = "pull with rebase in case GitHub rebased the branch, and if
 
 /// One sentence for the GitHub panel and `taskman status`; `default` is the default branch.
 pub fn hint(base: &Base, pr: Option<&Pr>, state: State, default: &str) -> Option<String> {
-    let Base { key, branch } = base;
+    let Base { key, branch, .. } = base;
     Some(match (state, pr) {
         (State::Done, _) => return None,
         (State::Open, None) => format!("Stacked on {key}: open the PR against {branch}"),
@@ -60,7 +60,7 @@ pub fn hint(base: &Base, pr: Option<&Pr>, state: State, default: &str) -> Option
 
 /// What a stacked ticket's brief adds. `base_pr` is the base's open PR, when known.
 pub fn brief(base: &Base, base_pr: Option<u64>, merged: bool, default: &str) -> String {
-    let Base { key, branch } = base;
+    let Base { key, branch, .. } = base;
     if merged {
         return format!(
             " This ticket was stacked on {key} (branch {branch}), which has merged, so its PR targets {default} now (retarget \
@@ -101,7 +101,8 @@ mod tests {
 
     #[test]
     fn follows_the_base_and_the_prs_target() {
-        let base = Base { key: "ENG-51".into(), branch: "eng-51".into() };
+        let base =
+            Base { key: "ENG-51".into(), branch: "eng-51".into(), extra: Default::default() };
         let on_base = pr("OPEN", "eng-51");
         let on_main = pr("OPEN", "main");
         // The base ticket is open in taskman, so its PR says whether it merged.
@@ -121,7 +122,8 @@ mod tests {
 
     #[test]
     fn says_what_to_do() {
-        let base = Base { key: "ENG-51".into(), branch: "eng-51".into() };
+        let base =
+            Base { key: "ENG-51".into(), branch: "eng-51".into(), extra: Default::default() };
         let h = |pr: Option<&Pr>, s| hint(&base, pr, s, "main");
         assert_eq!(h(None, State::Open).unwrap(), "Stacked on ENG-51: open the PR against eng-51");
         assert_eq!(
@@ -147,7 +149,11 @@ mod tests {
 
     #[test]
     fn briefs_the_session() {
-        let base = Base { key: "ENG-51".into(), branch: "you/eng-51-login".into() };
+        let base = Base {
+            key: "ENG-51".into(),
+            branch: "you/eng-51-login".into(),
+            extra: Default::default(),
+        };
         let open = brief(&base, Some(14), false, "main");
         assert!(
             open.starts_with(" This ticket stacks on ENG-51 (branch you/eng-51-login, PR #14)"),

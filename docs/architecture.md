@@ -138,7 +138,7 @@ What must stay true whatever changes. Each has a section in [design.md](design.m
 - **Tracker and PR text is untrusted.** It's printed through `untrusted` and never goes into a brief, since anyone who can write a comment could write instructions.
 - **Tokens are never stored.** Accounts say where a token comes from (`env:VAR`, `cmd:COMMAND` or `keychain:NAME`); it's read in the background when needed. A token pasted into the account form lives in the form only until it's in the keychain.
 - **Nothing slow runs on the UI thread.** Network calls and token commands run on threads; git, gh and token commands go through `proc::run`, with a time limit and no terminal.
-- **Saved state is never replaced by less.** Only a missing file reads as empty; a file this build can't read stops the TUI rather than being overwritten. New fields get `#[serde(default)]`.
+- **Saved state is never replaced by less.** Only a missing file reads as empty; a file this build can't read, or of a newer `store::FORMAT`, stops the TUI rather than being overwritten. New fields get `#[serde(default)]`; fields a build doesn't know are kept in each struct's `extra` and written back, and code that rebuilds a saved struct carries its `extra` over.
 - **Sessions change the TUI's state only through the inbox.** `taskman add` and `taskman close` leave requests for the running TUI instead of editing `tickets.json`; a changed request gets a new `add::INBOX_FORMAT`.
 - **Provider differences live in `tracker.rs`,** as methods on `Provider` or `Tracker`, not as matches on the provider elsewhere.
 

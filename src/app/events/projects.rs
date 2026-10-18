@@ -286,3 +286,32 @@ fn a_projects_settings_list_its_teams_and_change_the_prefix() {
     let t = saved().projects[0].tracker.clone().unwrap();
     assert_eq!((t.key.as_str(), t.account.as_deref()), ("OPS", Some("linear-1")));
 }
+
+/// Fields a newer taskman wrote survive a project saved from its settings, which rebuilds the
+/// project, and the save that writes the rest of tickets.json with it.
+#[test]
+fn saving_a_project_keeps_fields_this_build_doesnt_know() {
+    use serde_json::{Value, json};
+    let unknown = |v: Value| -> store::Extra { serde_json::from_value(v).unwrap() };
+    let mut app = acme_app();
+    app.unknown = unknown(json!({ "layout": { "sidebar": 30 } }));
+    let acme = &mut app.projects[0];
+    acme.extra = unknown(json!({ "colour": "teal" }));
+    acme.worktrees.extra = unknown(json!({ "sparse": ["src"] }));
+    acme.tracker.as_mut().unwrap().extra = unknown(json!({ "team_id": "t-1" }));
+    app.tickets[2].t.extra = unknown(json!({ "priority": 2 }));
+    app.prefs.extra = unknown(json!({ "theme": "light" }));
+    app.open_settings(super::super::SettingsItem::Project(0), true);
+    answer_choices(&mut app, Ok(&[("ENG", "Engineering")]));
+    submit(&mut app);
+    assert_eq!(toast(&app), Some("Saved acme"));
+    let file = std::fs::read_to_string(store::state_dir().join("tickets.json")).unwrap();
+    let saved: Value = serde_json::from_str(&file).unwrap();
+    assert_eq!(saved["format"], 1);
+    assert_eq!(saved["layout"], json!({ "sidebar": 30 }));
+    let acme = &saved["projects"][0];
+    assert_eq!((&acme["colour"], &acme["tracker"]["team_id"]), (&json!("teal"), &json!("t-1")));
+    assert_eq!(acme["worktrees"], json!({ "sparse": ["src"] }));
+    assert_eq!(saved["tickets"][2]["priority"], 2);
+    assert_eq!(saved["ui"]["theme"], "light");
+}

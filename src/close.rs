@@ -405,10 +405,12 @@ mod tests {
                 folder: None,
                 key: prefix.into(),
                 account: None,
+                extra: Default::default(),
             }),
             collapsed: false,
             closed_agents: vec![],
             worktrees: Default::default(),
+            extra: Default::default(),
         }
     }
 
@@ -427,6 +429,7 @@ mod tests {
             created_worktree: false,
             base: None,
             pending_worktree: None,
+            extra: Default::default(),
         }
     }
 

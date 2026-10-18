@@ -97,7 +97,13 @@ impl App {
                     && !tv.waiting()
                     && Some(tv.t.key.as_str()) != except
             })
-            .filter_map(|tv| Some(Base { key: tv.t.key.clone(), branch: tv.t.branch.clone()? }))
+            .filter_map(|tv| {
+                Some(Base {
+                    key: tv.t.key.clone(),
+                    branch: tv.t.branch.clone()?,
+                    extra: Default::default(),
+                })
+            })
             .collect()
     }
 
@@ -173,9 +179,11 @@ impl App {
             created_worktree: false,
             base: None,
             pending_worktree: None,
+            extra: Default::default(),
         });
         if create {
-            tv.t.pending_worktree = Some(store::PendingWorktree { base, error: None });
+            tv.t.pending_worktree =
+                Some(store::PendingWorktree { base, error: None, extra: Default::default() });
         }
         // Closed a moment ago, its CLI may still be stopping: the new session waits for it.
         tv.reaper = self.take_reaper(&tv.t.repo, &tv.t.key);
@@ -279,6 +287,7 @@ impl App {
             created_worktree: false,
             base: None,
             pending_worktree: None,
+            extra: Default::default(),
         };
         self.prefs.codex_explained |= cli == Cli::Codex;
         let mut tv = TicketView::new(t);
@@ -403,6 +412,7 @@ impl App {
                 session_id,
                 cli: tv.t.cli,
                 role: tv.t.role.clone(),
+                extra: Default::default(),
             });
         }
         if i < self.sel {

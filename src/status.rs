@@ -2004,7 +2004,11 @@ mod tests {
         assert!(report(Ok(issue(0)), Err(github::NO_REMOTE.into())).ok());
 
         // A stacked ticket says what it stacks on, under where it works.
-        let base = store::Base { key: "ENG-51".into(), branch: "eng-51".into() };
+        let base = store::Base {
+            key: "ENG-51".into(),
+            branch: "eng-51".into(),
+            extra: Default::default(),
+        };
         let stacked = Report {
             stack: Some((base, "Stacked on ENG-51: open the PR against eng-51".into())),
             ..report(Ok(issue(0)), Err(github::NO_REMOTE.into()))

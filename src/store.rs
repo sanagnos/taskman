@@ -33,6 +33,7 @@ pub struct Tracker {
     /// The account this project uses (`Account::id`). None picks one by site, or the provider's
     /// only account.
     pub account: Option<String>,
+    pub extra: Extra,
 }
 
 /// A tracker as tickets.json holds it. Builds before `folder` kept a Local files board's folder in
@@ -48,6 +49,8 @@ struct SavedTracker {
     key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     account: Option<String>,
+    #[serde(flatten)]
+    extra: Extra,
 }
 
 impl From<SavedTracker> for Tracker {
@@ -56,7 +59,8 @@ impl From<SavedTracker> for Tracker {
             Provider::Local => (String::new(), s.folder.or(Some(s.site))),
             _ => (s.site, s.folder),
         };
-        Tracker { provider: s.provider, site, folder, key: s.key, account: s.account }
+        let (key, account, extra) = (s.key, s.account, s.extra);
+        Tracker { provider: s.provider, site, folder, key, account, extra }
     }
 }
 
@@ -72,7 +76,8 @@ impl From<Tracker> for SavedTracker {
             (Provider::Local, Some(folder)) => folder.clone(),
             _ => t.site,
         };
-        SavedTracker { provider: t.provider, site, folder, key: t.key, account: t.account }
+        let (key, account, extra) = (t.key, t.account, t.extra);
+        SavedTracker { provider: t.provider, site, folder, key, account, extra }
     }
 }
 
@@ -91,6 +96,8 @@ pub struct Project {
     pub closed_agents: Vec<ClosedAgent>,
     #[serde(default, skip_serializing_if = "WorktreePrefs::is_default")]
     pub worktrees: WorktreePrefs,
+    #[serde(flatten)]
+    pub extra: Extra,
 }
 
 impl Project {
@@ -118,6 +125,8 @@ pub struct WorktreePrefs {
     /// Inside the main checkout, in `.claude/worktrees/`, like `claude --worktree`; else beside it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub inside: bool,
+    #[serde(flatten)]
+    pub extra: Extra,
 }
 
 impl WorktreePrefs {
@@ -149,6 +158,8 @@ pub struct ClosedAgent {
     pub cli: Cli,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    #[serde(flatten)]
+    pub extra: Extra,
 }
 
 /// The coding CLI a session runs.
@@ -220,6 +231,8 @@ pub struct Ticket {
     /// it's made or the user chooses the main checkout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_worktree: Option<PendingWorktree>,
+    #[serde(flatten)]
+    pub extra: Extra,
 }
 
 /// A ticket's worktree still to make: the base it starts from, and why the last try failed.
@@ -229,6 +242,8 @@ pub struct PendingWorktree {
     pub base: Option<Base>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(flatten)]
+    pub extra: Extra,
 }
 
 /// A stacked ticket's base. The branch is kept as well as the key: the base ticket is often
@@ -237,6 +252,8 @@ pub struct PendingWorktree {
 pub struct Base {
     pub key: String,
     pub branch: String,
+    #[serde(flatten)]
+    pub extra: Extra,
 }
 
 impl Ticket {
@@ -348,6 +365,8 @@ pub struct UiPrefs {
     /// The tip that tmux or screen uses the same prefix has been shown, once.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub prefix_tip_shown: bool,
+    #[serde(flatten)]
+    pub extra: Extra,
 }
 
 impl Default for UiPrefs {
@@ -359,12 +378,43 @@ impl Default for UiPrefs {
             show_gh: true,
             codex_explained: false,
             prefix_tip_shown: false,
+            extra: Extra::new(),
         }
     }
 }
 
+/// The format of tickets.json and config.json this build writes, and the newest it reads: a file
+/// of a newer format is refused (`read_json`) rather than misread, and one with none is format 1.
+/// A new field doesn't raise it, since builds that don't know a field keep it (`Extra`); a change
+/// older builds would misread does, and is a breaking release.
+pub const FORMAT: u64 = 1;
+
+/// A saved file's `format`, written as this build's `FORMAT` whatever the file said: `read_json`
+/// has refused a newer one, and an older one was read into this build's shape.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Format;
+
+impl Serialize for Format {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_u64(FORMAT)
+    }
+}
+
+impl<'de> Deserialize<'de> for Format {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        u64::deserialize(d).map(|_| Format)
+    }
+}
+
+/// The fields of a saved struct this build doesn't know, kept as they were read and written back,
+/// so a field a newer taskman added survives a save by this one. Every struct in tickets.json and
+/// config.json has one; code that rebuilds a saved struct carries it over.
+pub type Extra = serde_json::Map<String, serde_json::Value>;
+
 #[derive(Serialize, Deserialize, Default, Debug)]
 pub struct Saved {
+    #[serde(default)]
+    pub format: Format,
     #[serde(default)]
     pub projects: Vec<Project>,
     #[serde(default)]
@@ -373,6 +423,8 @@ pub struct Saved {
     pub selected: usize,
     #[serde(default)]
     pub ui: UiPrefs,
+    #[serde(flatten)]
+    pub extra: Extra,
 }
 
 pub fn state_dir() -> PathBuf {
@@ -481,16 +533,29 @@ pub fn load() -> Result<Saved, String> {
 
 /// Reads a saved file, or the default when there is none yet. Any other failure is an error and
 /// the file is left as it is: the first save would replace whatever couldn't be read, which may
-/// be every project and account, or state a newer taskman wrote.
+/// be every project and account, or state a newer taskman wrote. A file of a newer `FORMAT` is
+/// refused before anything else in it is read.
 pub fn read_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> Result<T, String> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(T::default()),
         Err(e) => return Err(format!("couldn't read {}: {e}", tilde(path))),
     };
+    let left = "It was left as it is. If a newer taskman wrote it, run that one (taskman update installs the latest)";
+    let format = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.get("format")?.as_u64());
+    if let Some(n) = format
+        && n > FORMAT
+    {
+        return Err(format!(
+            "couldn't read {}: it's in format {n}, and this taskman reads format {FORMAT} and older\n{left}.",
+            tilde(path)
+        ));
+    }
     serde_json::from_str(&text).map_err(|e| {
         format!(
-            "couldn't read {}: {e}\nIt was left as it is. If a newer taskman wrote it, run that one (taskman update installs the latest); otherwise fix the file, or move it aside to start without it.",
+            "couldn't read {}: {e}\n{left}; otherwise fix the file, or move it aside to start without it.",
             tilde(path)
         )
     })
@@ -633,6 +698,8 @@ pub struct Account {
     /// `env:NAME` reads an environment variable; `cmd:COMMAND` runs a command (a password
     /// manager, say) and uses its output; `keychain:NAME` reads taskman's item in the OS keychain.
     pub token: String,
+    #[serde(flatten)]
+    pub extra: Extra,
 }
 
 impl Account {
@@ -786,6 +853,8 @@ pub fn account_labels(accounts: &[&Account]) -> Vec<String> {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Config {
     #[serde(default)]
+    pub format: Format,
+    #[serde(default)]
     pub accounts: Vec<Account>,
     /// Install new releases in the background; off only says one is out.
     #[serde(default = "yes")]
@@ -801,6 +870,8 @@ pub struct Config {
     /// whatever the time. None for no limit.
     #[serde(default)]
     pub max_awake: Option<usize>,
+    #[serde(flatten)]
+    pub extra: Extra,
 }
 
 /// How long a session goes unselected before it sleeps, unless the config says otherwise: long
@@ -815,11 +886,13 @@ fn sleep_after() -> Option<u64> {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            format: Format,
             accounts: Vec::new(),
             auto_update: true,
             prefix: crate::keys::Prefix::default(),
             sleep_after: sleep_after(),
             max_awake: None,
+            extra: Extra::new(),
         }
     }
 }
@@ -956,6 +1029,80 @@ mod tests {
         let config = r#"{"accounts":[{"id":"x-1","provider":"youtrack","token":"env:X"}]}"#;
         let (res, kept) = read::<Config>("newer-config", config);
         assert!(res.is_err() && kept);
+    }
+
+    #[test]
+    fn refuses_a_newer_format_and_leaves_the_file() {
+        // Read first, whatever else in the file this build can't read either.
+        let newer = r#"{"format": 2, "projects": [{"name": "acme", "repo": "/src/acme", "tracker": {"provider": "youtrack", "site": "acme"}}]}"#;
+        let (res, kept) = read::<Saved>("format", newer);
+        let e = res.unwrap_err();
+        assert!(
+            e.contains("format 2") && e.contains("newer taskman wrote it, run that one"),
+            "{e}"
+        );
+        assert!(kept);
+        let (res, kept) = read::<Config>("format-config", r#"{"accounts": [], "format": 3}"#);
+        assert!(res.unwrap_err().contains("format 3") && kept);
+        let (res, kept) = read::<Saved>("format-text", r#"{"format": "2"}"#);
+        assert!(res.unwrap_err().contains("invalid type") && kept);
+    }
+
+    #[test]
+    fn a_file_without_a_format_is_format_1() {
+        for (name, json) in [("format-none", "{}"), ("format-1", r#"{"format": 1}"#)] {
+            let (saved, _) = read::<Saved>(name, json);
+            let saved = saved.unwrap();
+            assert!(saved.extra.is_empty(), "{:?}", saved.extra);
+            assert_eq!(serde_json::to_value(&saved).unwrap()["format"], 1);
+            let (config, _) = read::<Config>(&format!("{name}-config"), json);
+            assert_eq!(serde_json::to_value(config.unwrap()).unwrap()["format"], 1);
+        }
+    }
+
+    /// tickets.json and config.json with a field this build doesn't know in each struct, as a
+    /// newer patch release might write them.
+    const UNKNOWN_FIELDS: &str = r#"{
+      "format": 1,
+      "layout": {"sidebar": 30},
+      "projects": [{
+        "name": "acme", "repo": "/src/acme", "colour": "teal",
+        "tracker": {"provider": "linear", "site": "acme", "key": "ENG", "team_id": "t-1"},
+        "closed_agents": [{"name": "lead", "session_id": "sid-1", "pinned": true}],
+        "worktrees": {"inside": true, "sparse": ["src"]}
+      }],
+      "tickets": [{
+        "key": "ENG-52", "repo": "/src/acme", "cwd": "/src/acme-ENG-52", "priority": 2,
+        "base": {"key": "ENG-51", "branch": "eng-51", "merged_at": null},
+        "pending_worktree": {"error": "fetch failed", "attempts": 3}
+      }],
+      "ui": {"show_gh": false, "theme": "light"}
+    }"#;
+    const UNKNOWN_CONFIG: &str = r#"{
+      "format": 1,
+      "accounts": [{"id": "linear-1", "provider": "linear", "site": "acme", "token": "env:ACME_LINEAR_TOKEN", "scopes": ["read"]}],
+      "sleep_after": null,
+      "theme": "light"
+    }"#;
+
+    #[test]
+    fn keeps_fields_it_doesnt_know_through_a_load_and_a_save() {
+        std::fs::create_dir_all(state_dir()).unwrap();
+        std::fs::write(state_dir().join("tickets.json"), UNKNOWN_FIELDS).unwrap();
+        std::fs::write(config_path(), UNKNOWN_CONFIG).unwrap();
+        save(&load().unwrap()).unwrap();
+        save_config(&load_config().unwrap()).unwrap();
+        for (file, before) in [("tickets.json", UNKNOWN_FIELDS), ("config.json", UNKNOWN_CONFIG)] {
+            let after = std::fs::read_to_string(state_dir().join(file)).unwrap();
+            let after: Value = serde_json::from_str(&after).unwrap();
+            assert_kept(&serde_json::from_str(before).unwrap(), &after, file);
+        }
+        // Still read for what they are: the ones this build knows aren't taken as unknown.
+        let saved = load().unwrap();
+        assert_eq!(saved.projects[0].tracker.as_ref().unwrap().key, "ENG");
+        assert!(saved.projects[0].worktrees.inside && !saved.ui.show_gh);
+        assert_eq!(saved.tickets[0].base.as_ref().unwrap().branch, "eng-51");
+        assert_eq!(load_config().unwrap().sleep_after, None);
     }
 
     #[test]
@@ -1143,6 +1290,102 @@ mod tests {
         }
     }
 
+    /// Unknown fields, whatever their names and values, survive a load and a save in every struct
+    /// of tickets.json and config.json.
+    mod unknown_fields {
+        use super::{Config, Extra, Saved, assert_kept};
+        use proptest::prelude::*;
+        use serde_json::{Value, json};
+
+        fn value() -> impl Strategy<Value = Value> {
+            let leaf = prop_oneof![
+                Just(Value::Null),
+                any::<bool>().prop_map(Value::from),
+                any::<i64>().prop_map(Value::from),
+                any::<u64>().prop_map(Value::from),
+                any::<f64>()
+                    .prop_filter("JSON has no NaN", |f| f.is_finite())
+                    .prop_map(Value::from),
+                ".{0,12}".prop_map(Value::from),
+            ];
+            leaf.prop_recursive(3, 16, 4, |inner| {
+                prop_oneof![
+                    prop::collection::vec(inner.clone(), 0..4).prop_map(Value::from),
+                    prop::collection::btree_map(".{0,8}", inner, 0..4)
+                        .prop_map(|m| Value::Object(m.into_iter().collect())),
+                ]
+            })
+        }
+
+        /// Fields no build has, so none is read as a known one.
+        fn fields() -> impl Strategy<Value = Extra> {
+            prop::collection::btree_map("new_.{0,10}", value(), 0..3)
+                .prop_map(|m| m.into_iter().collect())
+        }
+
+        fn add(to: &mut Value, fields: Extra) {
+            to.as_object_mut().unwrap().extend(fields);
+        }
+
+        /// Loads `before` as the TUI does, saves it again and checks nothing in it was lost.
+        fn round_trip<T: serde::de::DeserializeOwned + serde::Serialize>(before: &Value) {
+            let loaded: T = serde_json::from_str(&before.to_string()).unwrap();
+            let after: Value =
+                serde_json::from_slice(&serde_json::to_vec_pretty(&loaded).unwrap()).unwrap();
+            assert_kept(before, &after, "");
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(64))]
+
+            #[test]
+            fn in_tickets_json(
+                top in fields(), project in fields(), tracker in fields(), closed in fields(),
+                worktrees in fields(), ticket in fields(), base in fields(), pending in fields(),
+                ui in fields(),
+            ) {
+                let mut saved = json!({
+                    "projects": [{
+                        "name": "acme", "repo": "/src/acme",
+                        "tracker": {"provider": "jira", "site": "https://example.atlassian.net", "key": "ENG"},
+                        "closed_agents": [{"name": "lead", "session_id": "sid-1"}],
+                        "worktrees": {"branch": "{tracker}"},
+                    }],
+                    "tickets": [{
+                        "key": "ENG-52", "repo": "/src/acme", "cwd": "/src/acme",
+                        "base": {"key": "ENG-51", "branch": "eng-51"},
+                        "pending_worktree": {"error": "fetch failed"},
+                    }],
+                    "ui": {},
+                });
+                add(&mut saved, top);
+                let p = &mut saved["projects"][0];
+                add(p, project);
+                add(&mut p["tracker"], tracker);
+                add(&mut p["closed_agents"][0], closed);
+                add(&mut p["worktrees"], worktrees);
+                let t = &mut saved["tickets"][0];
+                add(t, ticket);
+                add(&mut t["base"], base);
+                add(&mut t["pending_worktree"], pending);
+                add(&mut saved["ui"], ui);
+                round_trip::<Saved>(&saved);
+            }
+
+            #[test]
+            fn in_config_json(top in fields(), account in fields()) {
+                let mut config = json!({
+                    "accounts": [{"id": "jira-1", "provider": "jira", "site": "https://example.atlassian.net",
+                                  "email": "dev@example.com", "token": "env:JIRA_API_TOKEN"}],
+                    "sleep_after": null,
+                });
+                add(&mut config, top);
+                add(&mut config["accounts"][0], account);
+                round_trip::<Config>(&config);
+            }
+        }
+    }
+
     mod shell_variables {
         use super::env_source_from_shell;
         use proptest::prelude::*;
@@ -1239,6 +1482,7 @@ mod tests {
             site: String::new(),
             email: "dana@example.com".into(),
             token: "keychain:jira-1".into(),
+            extra: Default::default(),
         };
         assert_eq!(a.resolve_token(), Ok("ATATT-mock".into()));
         assert_eq!(a.label(), "dana@example.com · keychain");
@@ -1253,6 +1497,7 @@ mod tests {
             collapsed: false,
             closed_agents: Vec::new(),
             worktrees,
+            extra: Default::default(),
         };
         let reload = |p: Project| {
             let saved = Saved { projects: vec![p], ..Default::default() };
@@ -1278,6 +1523,7 @@ mod tests {
             site: site.into(),
             email: String::new(),
             token: "env:X".into(),
+            extra: Default::default(),
         };
         let mut c = Config {
             accounts: vec![
@@ -1292,6 +1538,7 @@ mod tests {
             key: String::new(),
             folder: None,
             account: account.map(Into::into),
+            extra: Default::default(),
         };
         // sole Jira account, any site
         assert_eq!(c.account_for(&t(Provider::Jira, "b.atlassian.net", None)), Some(0));
@@ -1349,7 +1596,11 @@ mod tests {
         assert_eq!(back.base, None);
         assert!(!serde_json::to_string(&back).unwrap().contains("base"));
         let stacked = Ticket {
-            base: Some(Base { key: "ENG-51".into(), branch: "eng-51-login".into() }),
+            base: Some(Base {
+                key: "ENG-51".into(),
+                branch: "eng-51-login".into(),
+                extra: Default::default(),
+            }),
             ..back
         };
         let back: Ticket = serde_json::from_str(&serde_json::to_string(&stacked).unwrap()).unwrap();
@@ -1502,6 +1753,7 @@ mod tests {
             site: "example.atlassian.net".into(),
             email: "you@example.com".into(),
             token: token.into(),
+            extra: Default::default(),
         }
     }
 
@@ -1526,6 +1778,7 @@ mod tests {
             site: "acme".into(),
             email: String::new(),
             token: "env:LINEAR_API_KEY_ACME".into(),
+            extra: Default::default(),
         };
         assert_eq!(linear.label(), "acme · env:LINEAR_API_KEY_ACME");
     }

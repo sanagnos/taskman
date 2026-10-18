@@ -385,7 +385,10 @@ impl App {
             token
         };
         let site = provider.site_from_input(site);
-        Ok((Account { id: String::new(), provider, site, email, token }, write))
+        Ok((
+            Account { id: String::new(), provider, site, email, token, extra: Default::default() },
+            write,
+        ))
     }
 
     /// Checks `account` in the background for `form`: puts a pasted token (`write`) in the
@@ -501,7 +504,9 @@ impl App {
         };
         let index = match existing {
             Some(i) => {
-                account.id = self.config.accounts[i].id.clone();
+                let old = &mut self.config.accounts[i];
+                account.id = old.id.clone();
+                account.extra = std::mem::take(&mut old.extra);
                 self.config.accounts[i] = account;
                 self.save_config();
                 i
