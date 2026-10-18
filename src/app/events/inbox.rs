@@ -1,0 +1,146 @@
+use super::*;
+
+// ---- agents asked for by `taskman add` -----------------------------------------------------
+
+fn agent_request(role: &str) -> add::Request {
+    serde_json::from_value(serde_json::json!({
+        "repo": "/src/acme", "from": "✦ lead", "reply_by": 0,
+        "items": [{ "kind": "agent", "name": "tester", "role": role }],
+    }))
+    .unwrap()
+}
+
+fn ask(app: &mut App, req: add::Request) {
+    app.asking.push_back(req);
+    app.ask_next();
+    let Mode::ConfirmAgent(ask) = &mut app.mode else { panic!("no dialog") };
+    // As if it had been open a while.
+    ask.shown = ago(crate::app::ASK_ARMS.as_secs_f32()).unwrap();
+}
+
+#[test]
+fn an_agent_waits_for_the_users_approval() {
+    let mut app = acme_app();
+    app.asking.push_back(agent_request("Run the tests"));
+    // Not while a prefix command is under way.
+    app.on_key(ctrl('a'));
+    app.ask_next();
+    assert!(matches!(app.mode, Mode::Normal));
+    app.on_key(key(KeyCode::Esc));
+    app.ask_next();
+    assert!(matches!(app.mode, Mode::ConfirmAgent(_)));
+    // An Enter typed for the session just as the dialog opens doesn't answer it.
+    app.on_key(key(KeyCode::Enter));
+    assert!(matches!(app.mode, Mode::ConfirmAgent(_)));
+    let Mode::ConfirmAgent(ask) = &mut app.mode else { unreachable!() };
+    ask.shown = ago(crate::app::ASK_ARMS.as_secs_f32()).unwrap();
+    app.on_key(key(KeyCode::Char('y')));
+    assert!(matches!(app.mode, Mode::ConfirmAgent(_)), "only Enter and Esc answer it");
+    app.on_key(key(KeyCode::Enter));
+    assert!(matches!(app.mode, Mode::Normal));
+    let tv = &app.tickets[index(&app, "acme-tester")];
+    assert_eq!(tv.t.role.as_deref(), Some("Run the tests"));
+    assert!(tv.start, "its session starts without being selected");
+    assert!(saved().tickets.iter().any(|t| t.key == "acme-tester"));
+}
+
+#[test]
+fn a_declined_agent_is_not_added() {
+    let mut app = acme_app();
+    ask(&mut app, agent_request("Run the tests"));
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(toast(&app), Some("Declined ✦ tester from ✦ lead"));
+    assert!(!app.tickets.iter().any(|tv| tv.t.key == "acme-tester"));
+}
+
+#[test]
+fn a_new_role_for_an_open_agent_waits_for_approval_too() {
+    let mut app = acme_app();
+    ask(&mut app, agent_request("Run the tests"));
+    app.on_key(key(KeyCode::Enter));
+    ask(&mut app, agent_request("Review the PRs"));
+    let Mode::ConfirmAgent(asked) = &app.mode else { panic!("no dialog") };
+    assert!(asked.open);
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(toast(&app), Some("✦ tester's new role applies when its session next starts"));
+    assert_eq!(app.tickets[index(&app, "acme-tester")].t.role.as_deref(), Some("Review the PRs"));
+}
+
+// ---- `taskman add` through the inbox -------------------------------------------------------
+
+#[test]
+fn takes_tickets_from_the_inbox_and_replies() {
+    let mut app = acme_app();
+    let reply_by = crate::util::now() + 60;
+    request(
+        "0001",
+        &serde_json::json!({
+            "repo": "/src/acme", "from": "✦ lead", "worktree": false, "reply_by": reply_by,
+            "items": [{ "kind": "ticket", "key": "ENG-90", "title": "Export to CSV" }, { "kind": "ticket", "key": "ENG-52" }],
+        }),
+    );
+    app.take_inbox();
+    assert!(app.tickets.iter().any(|tv| tv.t.key == "ENG-90" && tv.new));
+    assert_eq!(selected(&app), "ENG-52", "an added ticket doesn't take the pane");
+    let lines = reply("0001");
+    assert!(lines.iter().all(|l| l.ok), "{lines:?}");
+    assert!(lines[1].text.contains("already open"), "{lines:?}");
+    assert!(toast(&app).is_some_and(|t| t.contains("ENG-90")), "{:?}", toast(&app));
+    assert!(saved().tickets.iter().any(|t| t.key == "ENG-90"));
+}
+
+#[test]
+fn an_agent_from_the_inbox_waits_for_the_dialog() {
+    let mut app = acme_app();
+    request(
+        "0002",
+        &serde_json::json!({
+            "repo": "/src/acme", "from": "✦ lead", "reply_by": crate::util::now() + 60,
+            "items": [{ "kind": "agent", "name": "tester", "role": "Run the tests" }],
+        }),
+    );
+    app.take_inbox();
+    assert!(reply("0002").iter().all(|l| l.ok));
+    assert!(
+        !app.tickets.iter().any(|tv| tv.t.key == "acme-tester"),
+        "added before the user approved"
+    );
+    app.ask_next();
+    assert!(matches!(app.mode, Mode::ConfirmAgent(_)));
+}
+
+/// `taskman close` always names tickets or asks for the merged ones; a request with neither,
+/// which anything able to write the inbox could leave, would otherwise close every ticket.
+#[test]
+fn a_close_request_naming_nothing_closes_nothing() {
+    let mut app = acme_app();
+    let before: Vec<String> = app.tickets.iter().map(|tv| tv.t.key.clone()).collect();
+    request(
+        "0004",
+        &serde_json::json!({
+            "repo": "/src/acme", "reply_by": crate::util::now() + 60, "items": [], "close": {},
+        }),
+    );
+    app.take_inbox();
+    app.close_next();
+    let lines = reply("0004");
+    assert!(!lines[0].ok && lines[0].text.starts_with("nothing to close"), "{lines:?}");
+    let after: Vec<String> = app.tickets.iter().map(|tv| tv.t.key.clone()).collect();
+    assert_eq!(after, before);
+    assert!(app.closing.is_empty() && app.removing.is_empty());
+}
+
+#[test]
+fn a_request_for_a_project_that_is_gone_says_so() {
+    let mut app = acme_app();
+    request(
+        "0003",
+        &serde_json::json!({
+            "repo": "/src/gone", "reply_by": crate::util::now() + 60,
+            "items": [{ "kind": "ticket", "key": "ENG-90" }],
+        }),
+    );
+    app.take_inbox();
+    let lines = reply("0003");
+    assert!(!lines[0].ok && lines[0].text.contains("no longer in taskman"), "{lines:?}");
+}

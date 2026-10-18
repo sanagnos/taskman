@@ -7,7 +7,7 @@
 //! have.
 
 use crate::app::parse_key;
-use crate::github::{self, CheckState, Lookup, Pr, Worktrees};
+use crate::github::{self, CheckState, Lookup, Pr, Worktree, Worktrees};
 use crate::store::{self, Config, Project, Provider, Saved, Ticket};
 use crate::tracker::{Client, Issue, Text};
 use crate::{cli, local, stack, untrusted, util, worktree};
@@ -170,7 +170,7 @@ impl Here {
 
     /// The repository's main checkout, resolved.
     pub fn repo(&self) -> Option<PathBuf> {
-        self.worktrees.first().map(|(p, _)| real(p))
+        self.worktrees.first().map(|w| real(&w.path))
     }
 }
 
@@ -236,7 +236,7 @@ fn target(
 /// so a worktree nested inside another folder beats it. The main checkout is the project's, not a
 /// ticket's.
 fn ticket_here<'a>(saved: &'a Saved, here: &Here) -> Option<&'a Ticket> {
-    let main = here.worktrees.first().map(|(p, _)| real(p));
+    let main = here.worktrees.first().map(|w| real(&w.path));
     let mut best: Option<(usize, &Ticket)> = None;
     for t in saved.tickets.iter().filter(|t| t.agent.is_none()) {
         let repo = real(&t.repo);
@@ -698,12 +698,12 @@ fn session_line(s: Option<&SessionState>) -> String {
 fn worktree_of(
     ticket: Option<&Ticket>,
     repo: &Path,
-    worktrees: &[(PathBuf, Option<String>)],
+    worktrees: &[Worktree],
     key: &str,
 ) -> (Option<PathBuf>, Option<String>) {
     if let Some(t) = ticket.filter(|t| t.created_worktree && t.cwd != repo) {
-        let listed = worktrees.iter().find(|(p, _)| worktree::same_path(p, &t.cwd));
-        let branch = listed.and_then(|(_, b)| b.clone()).or_else(|| t.branch.clone());
+        let listed = worktrees.iter().find(|w| worktree::same_path(&w.path, &t.cwd));
+        let branch = listed.and_then(|w| w.branch.clone()).or_else(|| t.branch.clone());
         return (Some(t.cwd.clone()), branch);
     }
     if let Some((path, branch)) = github::pick_worktree(worktrees, key) {
@@ -1336,7 +1336,11 @@ mod tests {
             dir: dir.into(),
             worktrees: worktrees
                 .iter()
-                .map(|(p, b)| (PathBuf::from(p), Some(b.to_string())))
+                .map(|(p, b)| Worktree {
+                    path: p.into(),
+                    branch: Some(b.to_string()),
+                    locked: None,
+                })
                 .collect(),
         }
     }
@@ -1406,10 +1410,12 @@ mod tests {
     #[test]
     fn names_the_worktree_taskman_created_over_a_workflows() {
         let repo = web_repo();
+        let wt =
+            |p: &Path, b: &str| Worktree { path: p.into(), branch: Some(b.into()), locked: None };
         let list: Worktrees = vec![
-            (repo.clone(), Some("main".into())),
-            ("/src/acme-web-ENG-52".into(), Some("eng-52-login".into())),
-            ("/src/wf/ENG-52".into(), Some("change/ENG-52".into())),
+            wt(&repo, "main"),
+            wt(Path::new("/src/acme-web-ENG-52"), "eng-52-login"),
+            wt(Path::new("/src/wf/ENG-52"), "change/ENG-52"),
         ];
         let ticket = |cwd: &str, created: bool| -> Ticket {
             serde_json::from_value(json!({

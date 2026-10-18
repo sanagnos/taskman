@@ -6,6 +6,7 @@ What changed in each release; a release's notes on GitHub are its section here. 
 
 - In a project with a tracker, a project agent now hands work that changes code or files to a ticket session: it creates a ticket, adds it with `taskman add` and briefs its session, unless you ask it to make the change itself or its role says it may. It creates the ticket with `taskman add --new`, which now works on every tracker.
 - `taskman add --new "Title"` creates the ticket in Linear, Jira and GitHub Issues too, with the project's account, then adds it: in Linear's team or Jira's project the ticket prefix names (Jira: as a Task; a project that requires other fields is refused with Jira's reasons), or in the project's GitHub repository. `--description TEXT` gives it a description, on Local files too. A create that may have reached the tracker but failed says the ticket may exist, so look before running it again.
+- A worktree whose `git worktree add` was stopped partway (it ran past the 5-minute limit, or was killed) is removed and made again instead of used: it had every file staged for deletion, which a session's next commit could delete. With worktrees inside the repository, the `.git/info/exclude` line is now appended, so the file's other rules stay even when it isn't UTF-8.
 
 ## 0.1.8 - 2026-10-18
 
