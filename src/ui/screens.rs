@@ -536,3 +536,28 @@ fn a_frame_smaller_than_the_layout_does_not_panic() {
     let size = crate::session::lock(&s.parser).screen().size();
     assert_eq!(size, (claude.height, claude.width));
 }
+
+#[test]
+fn jump_box_narrowing_the_sidebar() {
+    let mut app = acme_app();
+    draw(&mut app, 120, 30);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char('/')));
+    for c in "sign".chars() {
+        app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char(c)));
+    }
+    app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Down));
+    assert_snapshot!(draw(&mut app, 120, 30));
+}
+
+#[test]
+fn jump_box_without_a_match() {
+    let mut app = acme_app();
+    draw(&mut app, 120, 30);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char('/')));
+    for c in "zzz".chars() {
+        app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char(c)));
+    }
+    assert_snapshot!(draw(&mut app, 120, 30));
+}

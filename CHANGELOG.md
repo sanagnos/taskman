@@ -5,6 +5,8 @@ What changed in each release; a release's notes on GitHub are its section here. 
 ## Unreleased
 
 - The Add form (`ctrl+a n`) now opens on Type, set to Agent, so ←/→ switches to Ticket right away. The open issues are still fetched when it opens, ready under the Ticket field.
+- `ctrl+a /` jumps to a ticket, agent or project by typing: the sidebar narrows to the cards whose key (or number), title, agent name or project name contain what you type, ↑/↓ move among them, Enter selects one and Esc leaves the selection as it was.
+- A ticket's title in the sidebar is cleaned of control characters, as the panels' already were.
 
 ## 0.1.5 - 2026-10-15
 

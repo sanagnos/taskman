@@ -214,6 +214,10 @@ impl App {
                 self.links_key(key);
                 return;
             }
+            Mode::Jump(_) => {
+                self.jump_key(key);
+                return;
+            }
             Mode::OfferTmux(_) if !matches!(key.code, KeyCode::Enter | KeyCode::Esc) => return,
             Mode::OfferTmux(_) => {
                 let Mode::OfferTmux(id) = std::mem::replace(&mut self.mode, Mode::Normal) else {
@@ -384,6 +388,7 @@ impl App {
                 let p = self.tickets.get(self.sel).and_then(|tv| self.project_of(&tv.t));
                 self.open_ticket_form(p);
             }
+            KeyCode::Char('/') => self.open_jump(),
             KeyCode::Char('P') => self.open_settings(SettingsItem::NewProject, true),
             KeyCode::Char(',') => {
                 self.check_github(self.projects.iter().map(|p| p.repo.clone()).collect());

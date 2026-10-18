@@ -1,9 +1,10 @@
 //! The sidebar: the projects, their cards, and the list's scrolling.
 
 use super::{dim, pr_spans, selection_bg, state_badge};
-use crate::app::{App, Hit, TicketView};
+use crate::app::{App, Hit, Mode, TicketView};
 use crate::keys::prefix;
-use crate::util::{fit_label, truncate};
+use crate::untrusted;
+use crate::util::{fit_label, truncate, truncate_start};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
@@ -55,22 +56,14 @@ pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
     app.sidebar_hits.clear();
     let collapsed = app.prefs.sidebar_collapsed || app.areas.sidebar_folded;
 
-    // The name, then the version in grey (a terminal can't do a smaller font); the version is
-    // dropped when the collapsed sidebar has no room for it.
-    let version = format!(" v{}", env!("CARGO_PKG_VERSION"));
-    let mut title = vec![Span::styled(" taskman", Style::new().bold())];
-    if inner.width as usize >= 8 + version.chars().count() {
-        title.push(Span::styled(version, dim()));
-    }
-    f.render_widget(Paragraph::new(Line::from(title)), Rect { height: 1, ..inner });
-    // A new release, on the line under the title.
-    if let Some(n) = app.updater.notice(app.config.auto_update)
-        && inner.height > 1
-    {
-        let room = (inner.width as usize).saturating_sub(1);
-        let text = truncate(&crate::update::notice_text(&n, room), room);
-        let line = Line::from(Span::styled(format!(" {text}"), Style::new().fg(Color::Cyan)));
-        f.render_widget(Paragraph::new(line), Rect { y: inner.y + 1, height: 1, ..inner });
+    // The jump box takes the title's rows.
+    let mut narrowed = None;
+    if let Mode::Jump(j) = &app.mode {
+        let cards = app.jump_matches(&j.query);
+        narrowed = Some(Narrowed { focus: cards.get(j.at).copied(), cards });
+        draw_jump_box(f, &j.query, inner);
+    } else {
+        draw_title(f, app, inner);
     }
 
     // The list starts under the title and its notice, and keeps the sidebar's last row blank.
@@ -81,14 +74,14 @@ pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
         height: inner.height.saturating_sub(3),
     };
     let w = inner.width as usize;
-    let rows = sidebar_rows(app, w, collapsed);
+    let rows = sidebar_rows(app, w, collapsed, narrowed.as_ref());
     let view_h = view.height as usize;
-    let sel = app.sel;
+    let sel = narrowed.as_ref().map_or(Some(app.sel), |n| n.focus);
     let scroll = &mut app.sidebar_scroll;
-    if scroll.shown != Some((sel, collapsed)) || scroll.asked {
-        scroll.shown = Some((sel, collapsed));
+    if scroll.shown != sel.map(|sel| (sel, collapsed)) || scroll.asked {
+        scroll.shown = sel.map(|sel| (sel, collapsed));
         scroll.asked = false;
-        let is_card = |r: &SidebarRow| r.hit == Some(Hit::Ticket(sel));
+        let is_card = |r: &SidebarRow| sel.is_some() && r.hit == sel.map(Hit::Ticket);
         if let Some(start) = rows.iter().position(is_card) {
             let end = start + rows[start..].iter().take_while(|r| is_card(r)).count();
             // Its project's header comes along only when the card is the project's first, right
@@ -150,10 +143,60 @@ pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// The name, then the version in grey (a terminal can't do a smaller font); the version is
+/// dropped when the collapsed sidebar has no room for it. A new release is on the line under it.
+fn draw_title(f: &mut Frame, app: &App, inner: Rect) {
+    let version = format!(" v{}", env!("CARGO_PKG_VERSION"));
+    let mut title = vec![Span::styled(" taskman", Style::new().bold())];
+    if inner.width as usize >= 8 + version.chars().count() {
+        title.push(Span::styled(version, dim()));
+    }
+    f.render_widget(Paragraph::new(Line::from(title)), Rect { height: 1, ..inner });
+    if let Some(n) = app.updater.notice(app.config.auto_update)
+        && inner.height > 1
+    {
+        let room = (inner.width as usize).saturating_sub(1);
+        let text = truncate(&crate::update::notice_text(&n, room), room);
+        let line = Line::from(Span::styled(format!(" {text}"), Style::new().fg(Color::Cyan)));
+        f.render_widget(Paragraph::new(line), Rect { y: inner.y + 1, height: 1, ..inner });
+    }
+}
+
+/// The jump box: what's typed on the title's row, with the cursor after it, and the keys under it.
+fn draw_jump_box(f: &mut Frame, query: &str, inner: Rect) {
+    let room = (inner.width as usize).saturating_sub(4);
+    let shown = truncate_start(&untrusted::line(query), room);
+    let line = Line::from(vec![
+        Span::styled(" / ", Style::new().fg(Color::Cyan).bold()),
+        Span::raw(shown.clone()),
+    ]);
+    f.render_widget(Paragraph::new(line), Rect { height: 1, ..inner });
+    f.set_cursor_position((inner.x + 3 + shown.width() as u16, inner.y));
+    if inner.height > 1 {
+        let hint = truncate(" ↑/↓ · Enter go · Esc", inner.width as usize);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(hint, dim()))),
+            Rect { y: inner.y + 1, height: 1, ..inner },
+        );
+    }
+}
+
+/// The sidebar while the jump box is open: only these cards, folded projects open, and the
+/// highlighted one in place of the selection.
+struct Narrowed {
+    cards: Vec<usize>,
+    focus: Option<usize>,
+}
+
 /// The sidebar's list: each project's header, then its cards, with the rows between them, as
 /// `draw_sidebar` lays them out `w` wide. Trailing blank rows are dropped, so the list ends on
 /// its last card.
-fn sidebar_rows(app: &App, w: usize, collapsed: bool) -> Vec<SidebarRow> {
+fn sidebar_rows(
+    app: &App,
+    w: usize,
+    collapsed: bool,
+    narrowed: Option<&Narrowed>,
+) -> Vec<SidebarRow> {
     let plain = |line: Line<'static>| SidebarRow {
         line,
         hit: None,
@@ -165,11 +208,18 @@ fn sidebar_rows(app: &App, w: usize, collapsed: bool) -> Vec<SidebarRow> {
     let visible = app.ordered(true);
     let mut rows: Vec<SidebarRow> = Vec::new();
     for (p, proj) in app.projects.iter().enumerate() {
-        let members = app.members(p);
+        let mut members = app.members(p);
+        if let Some(n) = narrowed {
+            members.retain(|i| n.cards.contains(i));
+            if members.is_empty() {
+                continue;
+            }
+        }
+        let folded = proj.collapsed && narrowed.is_none();
         // Group header: ▾ name   (folded: ▸ name (3) ……… ●)
-        let arrow = if proj.collapsed { "▸ " } else { "▾ " };
-        let count = if proj.collapsed { format!(" ({})", members.len()) } else { String::new() };
-        let waiting = proj.collapsed && members.iter().any(|&i| app.tickets[i].needs_attention());
+        let arrow = if folded { "▸ " } else { "▾ " };
+        let count = if folded { format!(" ({})", members.len()) } else { String::new() };
+        let waiting = folded && members.iter().any(|&i| app.tickets[i].needs_attention());
         // The ● ends one column from the edge, where the cards' badges end.
         let room = w.saturating_sub(2 + count.chars().count() + if waiting { 3 } else { 0 });
         let mut header = vec![
@@ -186,10 +236,10 @@ fn sidebar_rows(app: &App, w: usize, collapsed: bool) -> Vec<SidebarRow> {
             line: Line::from(header),
             hit: Some(Hit::Project(p)),
             selected: false,
-            entry: proj.collapsed,
+            entry: folded,
             attention: waiting,
         });
-        if proj.collapsed {
+        if folded {
             rows.push(blank());
             continue;
         }
@@ -212,7 +262,7 @@ fn sidebar_rows(app: &App, w: usize, collapsed: bool) -> Vec<SidebarRow> {
 
         for &i in &members {
             let tv = &app.tickets[i];
-            let selected = i == app.sel;
+            let selected = Some(i) == narrowed.map_or(Some(app.sel), |n| n.focus);
             let agent = tv.t.agent.is_some();
             let title = if collapsed { None } else { tv.title() };
             // ┃ joins across lines, so the selected card reads as one block.
@@ -223,8 +273,9 @@ fn sidebar_rows(app: &App, w: usize, collapsed: bool) -> Vec<SidebarRow> {
             };
             let key_style =
                 if selected { Style::new().fg(Color::Cyan).bold() } else { Style::new().bold() };
+            // The digits switch among the cards as they're ordered, not among these.
             let num = match visible.iter().position(|&v| v == i) {
-                Some(n) if n < 9 => format!("{} ", n + 1),
+                Some(n) if n < 9 && narrowed.is_none() => format!("{} ", n + 1),
                 _ => "  ".into(),
             };
             let mut lines: Vec<Line> = Vec::new();
@@ -263,7 +314,7 @@ fn sidebar_rows(app: &App, w: usize, collapsed: bool) -> Vec<SidebarRow> {
                         room = room.saturating_sub(tag.chars().count());
                         row.push(Span::styled(tag, Style::new().fg(Color::Yellow).bold()));
                     }
-                    row.push(Span::styled(truncate(title, room), title_style));
+                    row.push(Span::styled(truncate(&untrusted::line(title), room), title_style));
                     lines.push(Line::from(row));
                 }
                 // Agents have no PR line: a name, and a title when Claude has set one.
@@ -294,6 +345,9 @@ fn sidebar_rows(app: &App, w: usize, collapsed: bool) -> Vec<SidebarRow> {
         if collapsed {
             rows.push(blank());
         }
+    }
+    if rows.is_empty() && narrowed.is_some() {
+        rows.push(plain(Line::from(Span::styled("   No matches", dim()))));
     }
     while rows.last().is_some_and(|r| r.hit.is_none() && r.line.spans.is_empty()) {
         rows.pop();

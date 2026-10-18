@@ -139,6 +139,7 @@ The Add form opens on Type, set to Agent; ←/→ switches it to Ticket. The Tic
 |---|---|
 | `ctrl+a 1-9`, `ctrl+a [` / `]` | switch ticket |
 | `ctrl+a ctrl+a` | jump to the next ticket waiting on you |
+| `ctrl+a /` | jump to a ticket, agent or project by typing (see below) |
 | `ctrl+a n` / `x` | add / close a ticket |
 | `ctrl+a ,` | settings: prefix key, updates, projects and accounts |
 | `ctrl+a P` / `A` / `z` | new project / new account / fold the current project |
@@ -149,6 +150,10 @@ The Add form opens on Type, set to Agent; ←/→ switches it to Ticket. The Tic
 | `ctrl+a l` | the ticket's links (issue, PR, checks), then the session's, newest first: Enter opens one, `c` copies it |
 | `ctrl+a t` | continue the session in another terminal (see [taskman resume](#continuing-a-session-in-another-terminal-taskman-resume)) |
 | `ctrl+a a` | send the prefix itself to the session |
+
+### Jumping by typing
+
+`ctrl+a /` puts a text box at the top of the sidebar, and the sidebar narrows to the cards that match what you type: a ticket's key (a bare number finds its key, so `52` finds ENG-52), a title, an agent's name, or a project's name, which shows all that project's cards, folded or not. It's a case-insensitive substring match, not a fuzzy one, over the tickets and agents taskman holds, not the tracker's other issues. ↑/↓ move the highlight, Enter selects the highlighted card as a click would, and Esc closes the box leaving the selection as it was. Either way the full sidebar comes back; this is a one-off jump, not a filter that stays on. With no match the sidebar says so and Enter does nothing. Nothing typed in the box reaches the session. It needs the sidebar showing, so unfold it with `ctrl+a b` or widen the window first.
 
 ### Another prefix
 

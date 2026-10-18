@@ -16,7 +16,8 @@ use unicode_width::UnicodeWidthStr;
 /// The dialog over the screen in `app.mode`, if any.
 pub(super) fn draw_dialog(f: &mut Frame, app: &mut App) {
     match &app.mode {
-        Mode::Normal => {}
+        // The jump box is the sidebar's own top row.
+        Mode::Normal | Mode::Jump(_) => {}
         Mode::Help(_) => draw_help(f, app),
         Mode::Links(list) => draw_links(f, list),
         Mode::Form(_) => draw_form(f, app),
@@ -753,6 +754,7 @@ fn draw_help(f: &mut Frame, app: &mut App) {
         ("1-9", "switch to ticket"),
         ("[ / ]", "previous / next ticket"),
         (again.as_str(), "next ticket waiting on you (also tab)"),
+        ("/", "jump to a ticket, agent or project by typing"),
         ("n", "add a ticket, or an agent with no ticket"),
         (",", "settings: prefix key, updates, projects, accounts"),
         ("P / A", "settings, on a new project / account"),

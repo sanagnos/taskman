@@ -40,6 +40,7 @@ mod events;
 mod forms;
 mod inbox;
 mod input;
+mod jump;
 mod launch;
 mod mouse;
 mod poll;
@@ -90,6 +91,8 @@ pub enum Mode {
     OfferTmux(Id),
     /// The ticket's and the session's links (`prefix l`), the selected one highlighted.
     Links(Box<LinkList>),
+    /// The jump box (`prefix /`): the sidebar narrows to what's typed.
+    Jump(jump::Jump),
 }
 
 pub struct LinkList {

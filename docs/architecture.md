@@ -36,6 +36,7 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 | `src/proctree.rs` | a process's descendants through `ps`, for telling whether a session left work running |
 | `src/app/launch.rs` | how a session's CLI starts (`Launch`, `App::launch`): arguments, environment, the ticket's and agent's briefs |
 | `src/app/input.rs` | keys: the modes, the prefix commands, paste, the links list, the session's history in `$EDITOR` |
+| `src/app/jump.rs` | `prefix /`: the jump box (`Jump`, `Mode::Jump`), its keys, and the pure match of a card against what's typed (`matches`); the sidebar draws only the matches meanwhile |
 | `src/app/mouse.rs` | the wheel, drag-selecting text in a pane (double and triple clicks pick a word or line), copying it |
 | `src/app/forms.rs` | `Field` and `Form` (fields reached by label, never by index), a field's `List` (the Add form's open issues, ↑/↓ moving a highlight), masked fields and linked hint lines, form keys, submitting with a background `Check` |
 | `src/app/add_form.rs` | the Add form: ticket or agent, CLI, worktree and base; the open issues it lists (`OpenIssues`), each list matched to its request (`Listing`) so a late one is dropped, and the one picked with ↑/↓; `parse_key` |
