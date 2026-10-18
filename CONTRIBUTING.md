@@ -30,7 +30,7 @@ Code that parses what others write (tracker responses, ticket files, keys and li
 
 ## Testing the TUI
 
-The TUI has unit tests that need no terminal. `src/app/test_support.rs` builds the App on a mock project with nothing started, sessions that run no process, and a state folder of each test's own. Behaviour (keys, mouse, paste, dialogs, what reaches a session) is tested in `src/app/events.rs`; what the screens show, in `src/ui/screens.rs`, against snapshots in `src/ui/snapshots/`. What only the real binary can show (the terminal, signals, a CLI's process) is tested in `tests/`, which drives it in a pty. [AGENTS.md](AGENTS.md) says which to use when.
+The TUI has unit tests that need no terminal. `src/app/test_support.rs` builds the App on a mock project with nothing started, sessions that run no process, and a state folder of each test's own. Behaviour (keys, mouse, paste, dialogs, what reaches a session) is tested in `src/app/events/`, a file for each part of the App; what the screens show, in `src/ui/screens.rs`, against snapshots in `src/ui/snapshots/`. What only the real binary can show (the terminal, signals, a CLI's process) is tested in `tests/`, which drives it in a pty. [AGENTS.md](AGENTS.md) says which to use when.
 
 ### Updating snapshots
 
