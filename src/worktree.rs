@@ -4,7 +4,7 @@
 use crate::resume::Hold;
 use crate::store::{self, Provider};
 use crate::{github, proc, untrusted};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
@@ -131,18 +131,18 @@ pub fn create(
         Ok(Created { path: folder.to_path_buf(), branch: branch.to_string(), note, stacked, made })
     };
     if folder.exists() {
-        let ours = github::worktrees(repo)
-            .unwrap_or_default()
-            .iter()
-            .any(|(p, b)| same_path(p, folder) && b.as_deref() == Some(branch));
-        return if ours {
-            done(None, false, false)
-        } else {
-            Err(format!(
-                "{} already exists; move it, or change Folder in Project settings",
-                store::tilde(folder)
-            ))
-        };
+        let list = github::worktrees(repo).unwrap_or_default();
+        match list.iter().find(|w| same_path(&w.path, folder)) {
+            // Left by a `git worktree add` that was killed or stopped at the time limit.
+            Some(w) if w.unfinished() => remove_unfinished(repo, folder)?,
+            Some(w) if w.branch.as_deref() == Some(branch) => return done(None, false, false),
+            _ => {
+                return Err(format!(
+                    "{} already exists; move it, or change Folder in Project settings",
+                    store::tilde(folder)
+                ));
+            }
+        }
     }
     if !ok(&git(repo, &["check-ref-format", "--branch", branch])) {
         return Err(format!(
@@ -163,9 +163,9 @@ pub fn create(
     let mut note = None;
     let mut stacked = false;
     let out = if local {
-        git(repo, &["worktree", "add", &f, branch])
+        add(repo, &[&f, branch])
     } else if remote {
-        git(repo, &["worktree", "add", "--track", "-b", branch, &f, &format!("origin/{branch}")])
+        add(repo, &["--track", "-b", branch, &f, &format!("origin/{branch}")])
     } else {
         let start = base.and_then(|b| {
             let start = start_point(repo, b, has_origin);
@@ -184,13 +184,43 @@ pub fn create(
                 "HEAD".into()
             }
         };
-        git(repo, &["worktree", "add", "--no-track", "-b", branch, &f, &start])
+        add(repo, &["--no-track", "-b", branch, &f, &start])
     };
-    match out {
-        Ok(o) if o.status.success() => done(note, stacked, true),
-        Ok(o) => Err(git_error(&o)),
-        Err(e) => Err(format!("could not run git: {e}")),
+    let err = match out {
+        Ok(o) if o.status.success() => return done(note, stacked, true),
+        Ok(o) => git_error(&o),
+        Err(e) => format!("could not run git: {e}"),
+    };
+    // git cleans up after a failure of its own, but one stopped at the time limit leaves the
+    // worktree half-made. The branch stays: the next try checks it out.
+    let list = github::worktrees(repo).unwrap_or_default();
+    if list.iter().any(|w| same_path(&w.path, folder) && w.unfinished()) {
+        let _ = remove_unfinished(repo, folder);
     }
+    Err(err)
+}
+
+/// `git worktree add` with `args`. In English, as git locks the worktree with "initializing" in
+/// the user's language until its files are checked out, and that's how `Worktree::unfinished`
+/// knows one that was stopped.
+fn add(repo: &Path, args: &[&str]) -> std::io::Result<Output> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(repo).args(["worktree", "add"]).args(args).env("LC_ALL", "C");
+    proc::run(&mut cmd, GIT_LIMIT)
+}
+
+/// Removes a worktree whose `git worktree add` never finished, so it can be made again. Its
+/// checkout never finished, so it holds no work; git keeps it locked, so it takes two `--force`s.
+fn remove_unfinished(repo: &Path, folder: &Path) -> Result<(), String> {
+    let f = folder.to_string_lossy();
+    if ok(&git(repo, &["worktree", "remove", "--force", "--force", &f])) {
+        return Ok(());
+    }
+    Err(format!(
+        "{} is a worktree git never finished making; remove it with \
+         git worktree remove --force --force {f}",
+        store::tilde(folder)
+    ))
 }
 
 /// Where a branch stacked on `base` starts: the newer of the local branch and origin's copy, as
@@ -278,7 +308,7 @@ pub fn removal_check(
     let list = checked(repo, &["worktree", "list", "--porcelain"])?;
     let list = github::parse_worktrees(&String::from_utf8_lossy(&list.stdout));
     // The main checkout is never removed, whatever the ticket thinks.
-    let Some((_, branch)) = list.iter().skip(1).find(|(p, _)| same_path(p, path)) else {
+    let Some(listed) = list.iter().skip(1).find(|w| same_path(&w.path, path)) else {
         return Ok(None);
     };
     let head = checked(path, &["rev-parse", "--verify", "HEAD"])?;
@@ -322,7 +352,7 @@ pub fn removal_check(
     let within = |tip: &str| ok(&git(repo, &["merge-base", "--is-ancestor", &head, tip]));
     let merged = pr_head.as_deref().is_some_and(within)
         || local_default_branch(repo).is_some_and(|b| within(&b));
-    let branch = branch.clone().filter(|_| merged);
+    let branch = listed.branch.clone().filter(|_| merged);
     Ok(Some(RemoveCheck { path: path.to_path_buf(), problems, branch, head, ignored }))
 }
 
@@ -620,13 +650,22 @@ fn exclude_if_inside(repo: &Path, folder: &Path) {
         return;
     };
     let path = PathBuf::from(String::from_utf8_lossy(&common.stdout).trim()).join("info/exclude");
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
-    if text.lines().any(|l| l.trim() == line) {
+    // Bytes, as the file needn't be UTF-8, and appended to: a read that failed must never empty
+    // the user's own rules.
+    let text = match std::fs::read(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(_) => return,
+    };
+    if text.split(|&b| b == b'\n').any(|l| l.trim_ascii() == line.as_bytes()) {
         return;
     }
-    let sep = if text.is_empty() || text.ends_with('\n') { "" } else { "\n" };
+    let sep = if text.is_empty() || text.ends_with(b"\n") { "" } else { "\n" };
     let _ = std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")));
-    let _ = std::fs::write(&path, format!("{text}{sep}# taskman worktrees\n{line}\n"));
+    let file = std::fs::OpenOptions::new().append(true).create(true).open(&path);
+    if let Ok(mut file) = file {
+        let _ = file.write_all(format!("{sep}# taskman worktrees\n{line}\n").as_bytes());
+    }
 }
 
 /// The session waits on the network calls, so an unreachable remote gives up after a while
@@ -670,6 +709,7 @@ fn git_error(o: &Output) -> String {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use std::os::unix::process::CommandExt;
 
     #[test]
     fn names_branches_per_tracker() {
@@ -761,9 +801,103 @@ mod tests {
         (root, repo)
     }
 
+    /// Commits a file to a new branch `eng-52-slow` whose checkout, while `<root>/slow` exists,
+    /// writes its process group to `<root>/pgid` and waits, as a big or Git LFS checkout might.
+    fn slow_branch(root: &Path, repo: &Path) {
+        let r = root.display();
+        let smudge = format!(
+            "if [ -e '{r}/slow' ]; then ps -o pgid= -p $$ > '{r}/pgid.new' && \
+             mv '{r}/pgid.new' '{r}/pgid'; sleep 30; fi; cat"
+        );
+        let id = "-c user.name=t -c user.email=t@example.com";
+        let script = format!(
+            "git checkout -q -b eng-52-slow && echo '* filter=slow' > .gitattributes && \
+             echo hello > a.txt && git add . && git {id} commit -q -m slow && git checkout -q main"
+        );
+        let o = Command::new("sh").arg("-c").arg(script).current_dir(repo).output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        assert!(ok(&git(repo, &["config", "filter.slow.smudge", &smudge])));
+        std::fs::write(root.join("slow"), "").unwrap();
+    }
+
+    /// Waits for the slow checkout to start, then stops its whole process group, as the time
+    /// limit does.
+    fn stop_slow_checkout(root: &Path) {
+        let pgid = root.join("pgid");
+        let start = std::time::Instant::now();
+        while !pgid.exists() {
+            assert!(start.elapsed() < Duration::from_secs(30), "the checkout never started");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let pgid = std::fs::read_to_string(&pgid).unwrap();
+        let o = Command::new("kill").args(["-KILL", "--", &format!("-{}", pgid.trim())]).output();
+        assert!(o.unwrap().status.success());
+        std::fs::remove_file(root.join("pgid")).unwrap();
+    }
+
     /// The owner lock removal must hold, on a made-up ticket's file in the scratch folder.
     fn hold(root: &Path) -> Hold {
         crate::resume::take(&root.join("ENG.owner")).unwrap().unwrap()
+    }
+
+    #[test]
+    fn never_leaves_or_adopts_a_half_made_worktree() {
+        let (root, repo) = scratch_repo("stopped");
+        slow_branch(&root, &repo);
+        let folder = folder_path(BESIDE, &repo, "ENG-52");
+        let listed = || {
+            let list = github::worktrees(&repo).unwrap();
+            list.into_iter().find(|w| same_path(&w.path, &folder))
+        };
+
+        // Its own `git worktree add` stopped mid-checkout: it says so and takes the folder away.
+        let creating = {
+            let (repo, folder) = (repo.clone(), folder.clone());
+            std::thread::spawn(move || create(&repo, &folder, "eng-52-slow", None))
+        };
+        stop_slow_checkout(&root);
+        assert!(creating.join().unwrap().is_err());
+        assert!(!folder.exists());
+        assert_eq!(listed(), None);
+
+        // One stopped before taskman last quit, say, locked and with every file staged for
+        // deletion: made again, not adopted.
+        let mut add = Command::new("git");
+        add.arg("-C").arg(&repo).args(["worktree", "add"]).arg(&folder).arg("eng-52-slow");
+        let mut adding = add
+            .env("LC_ALL", "C")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        stop_slow_checkout(&root);
+        let _ = adding.wait();
+        assert!(listed().is_some_and(|w| w.unfinished()));
+        assert_eq!(github::find_worktree(&repo, "ENG-52"), None);
+        std::fs::remove_file(root.join("slow")).unwrap();
+        let c = create(&repo, &folder, "eng-52-slow", None).unwrap();
+        assert!(c.made);
+        assert_eq!(std::fs::read_to_string(folder.join("a.txt")).unwrap(), "hello\n");
+        let status = git(&folder, &["status", "--porcelain"]).unwrap();
+        assert_eq!(String::from_utf8_lossy(&status.stdout), "");
+        assert_eq!(listed().and_then(|w| w.locked), None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn adds_to_an_exclude_file_that_isnt_utf8() {
+        let (root, repo) = scratch_repo("exclude");
+        let path = repo.join(".git/info/exclude");
+        let theirs = b"/secrets/\n# caf\xe9\n/build".to_vec();
+        std::fs::write(&path, &theirs).unwrap();
+        create(&repo, &folder_path(INSIDE, &repo, "ENG-53"), "ENG-53", None).unwrap();
+        let mut want = theirs;
+        want.extend_from_slice(b"\n# taskman worktrees\n/.claude/worktrees/\n");
+        assert_eq!(std::fs::read(&path).unwrap(), want);
+        create(&repo, &folder_path(INSIDE, &repo, "ENG-54"), "ENG-54", None).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), want);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

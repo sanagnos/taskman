@@ -770,9 +770,26 @@ fn parse_check(c: &Value) -> Check {
     Check { name, state, when, url: s("detailsUrl").to_string() }
 }
 
-/// A repository's worktrees, the main checkout first, each with its branch (None when detached),
-/// from any path inside it.
-pub type Worktrees = Vec<(PathBuf, Option<String>)>;
+/// A repository's worktrees, the main checkout first, from any path inside it.
+pub type Worktrees = Vec<Worktree>;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Worktree {
+    pub path: PathBuf,
+    /// None when detached.
+    pub branch: Option<String>,
+    /// Why it's locked (empty when no reason was given); None when it isn't.
+    pub locked: Option<String>,
+}
+
+impl Worktree {
+    /// A `git worktree add` that never finished, killed or timed out mid-checkout: git locks the
+    /// worktree as "initializing" until its files are checked out, and one left that way has
+    /// every file staged for deletion. Never a ticket's to work in.
+    pub fn unfinished(&self) -> bool {
+        self.locked.as_deref() == Some("initializing")
+    }
+}
 
 pub fn worktrees(path: &Path) -> Option<Worktrees> {
     let out = git(path, &["worktree", "list", "--porcelain"]).ok()?;
@@ -786,11 +803,15 @@ pub(crate) fn parse_worktrees(text: &str) -> Worktrees {
     let mut out: Worktrees = Vec::new();
     for line in text.lines() {
         if let Some(p) = line.strip_prefix("worktree ") {
-            out.push((PathBuf::from(p), None));
-        } else if let Some(b) = line.strip_prefix("branch refs/heads/")
-            && let Some(last) = out.last_mut()
-        {
-            last.1 = Some(b.to_string());
+            out.push(Worktree { path: PathBuf::from(p), branch: None, locked: None });
+        } else if let Some(last) = out.last_mut() {
+            if let Some(b) = line.strip_prefix("branch refs/heads/") {
+                last.branch = Some(b.to_string());
+            } else if line == "locked" {
+                last.locked = Some(String::new());
+            } else if let Some(why) = line.strip_prefix("locked ") {
+                last.locked = Some(why.to_string());
+            }
         }
     }
     out
@@ -798,22 +819,23 @@ pub(crate) fn parse_worktrees(text: &str) -> Worktrees {
 
 /// Resolves any path inside a repository (including a worktree) to its main checkout.
 pub fn main_checkout(path: &Path) -> Option<PathBuf> {
-    worktrees(path)?.into_iter().next().map(|(p, _)| p)
+    worktrees(path)?.into_iter().next().map(|w| w.path)
 }
 
 /// Finds the worktree whose branch belongs to the ticket: one ending in `/<KEY>`, as workflows that
 /// create their own worktrees name them (`change/ENG-52`), or any branch containing the key.
+/// Unfinished ones are left out: `worktree::create` makes them again.
 pub fn find_worktree(repo: &Path, key: &str) -> Option<(PathBuf, String)> {
     pick_worktree(&worktrees(repo)?, key)
 }
 
-pub fn pick_worktree(list: &[(PathBuf, Option<String>)], key: &str) -> Option<(PathBuf, String)> {
+pub fn pick_worktree(list: &[Worktree], key: &str) -> Option<(PathBuf, String)> {
     let mut best = None;
-    for (path, branch) in list {
-        let Some(b) = branch else { continue };
+    for w in list.iter().filter(|w| !w.unfinished()) {
+        let Some(b) = &w.branch else { continue };
         match names_ticket(b, key) {
-            Some(true) => return Some((path.clone(), b.clone())),
-            Some(false) => _ = best.get_or_insert((path.clone(), b.clone())),
+            Some(true) => return Some((w.path.clone(), b.clone())),
+            Some(false) => _ = best.get_or_insert((w.path.clone(), b.clone())),
             None => {}
         }
     }
@@ -1083,6 +1105,31 @@ mod tests {
     }
 
     #[test]
+    fn reads_locked_worktrees() {
+        // As git lists a `git worktree add` killed mid-checkout, one locked by hand without a
+        // reason, and one locked with a reason.
+        let list = parse_worktrees(
+            "worktree /src/acme\nHEAD 1\nbranch refs/heads/main\n\n\
+             worktree /src/acme-ENG-52\nHEAD 1\nbranch refs/heads/eng-52-login\n\
+             locked initializing\n\n\
+             worktree /src/acme-ENG-5\nHEAD 2\nbranch refs/heads/eng-5-signup\nlocked\n\n\
+             worktree /mnt/usb/acme-ENG-6\nHEAD 3\ndetached\nlocked on a USB drive\n\
+             prunable gitdir file points to non-existent location\n",
+        );
+        let locked: Vec<_> = list.iter().map(|w| w.locked.as_deref()).collect();
+        assert_eq!(locked, [None, Some("initializing"), Some(""), Some("on a USB drive")]);
+        assert_eq!(list[1].branch.as_deref(), Some("eng-52-login"));
+        let unfinished: Vec<_> = list.iter().map(Worktree::unfinished).collect();
+        assert_eq!(unfinished, [false, true, false, false]);
+        // The half-made worktree is no ticket's; one locked for another reason still is.
+        assert_eq!(pick_worktree(&list, "ENG-52"), None);
+        assert_eq!(
+            pick_worktree(&list, "ENG-5"),
+            Some(("/src/acme-ENG-5".into(), "eng-5-signup".into()))
+        );
+    }
+
+    #[test]
     fn matches_branches_to_tickets() {
         assert_eq!(names_ticket("0008-bulk/ENG-52", "eng-52"), Some(true));
         assert_eq!(names_ticket("eng-52-login", "ENG-52"), Some(false));
@@ -1098,7 +1145,8 @@ mod tests {
              worktree /src/acme-61\nHEAD 5\nbranch refs/heads/eng-61-login\n\n\
              worktree /src/acme-change\nHEAD 6\nbranch refs/heads/change/ENG-61\n",
         );
-        assert_eq!(list[3], ("/src/acme-tmp".into(), None));
+        assert_eq!(list[3].path, PathBuf::from("/src/acme-tmp"));
+        assert_eq!(list[3].branch, None);
         assert_eq!(
             pick_worktree(&list, "ENG-52"),
             Some(("/src/acme-52".into(), "eng-52-login".into()))

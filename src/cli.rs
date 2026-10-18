@@ -186,7 +186,14 @@ pub(crate) mod tests {
     }
 
     fn here(repo: &str) -> Here {
-        Here { dir: repo.into(), worktrees: vec![(repo.into(), Some("main".into()))] }
+        Here {
+            dir: repo.into(),
+            worktrees: vec![crate::github::Worktree {
+                path: repo.into(),
+                branch: Some("main".into()),
+                locked: None,
+            }],
+        }
     }
 
     #[test]
