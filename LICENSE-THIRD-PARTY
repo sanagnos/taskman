@@ -1773,7 +1773,7 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 MIT License (MIT)
 Used by:
-  sha2 0.11.0 <https://github.com/RustCrypto/hashes>
+  sha2 0.11.1 <https://github.com/RustCrypto/hashes>
 
 Copyright (c) 2016-2026 The RustCrypto Project Developers
 Copyright (c) 2016 Artyom Pavlov
@@ -3084,7 +3084,7 @@ Used by:
   serde 1.0.229 <https://github.com/serde-rs/serde>
   serde_core 1.0.229 <https://github.com/serde-rs/serde>
   serde_derive 1.0.229 <https://github.com/serde-rs/serde>
-  serde_json 1.0.151 <https://github.com/serde-rs/json>
+  serde_json 1.0.154 <https://github.com/serde-rs/json>
   syn 2.0.119 <https://github.com/dtolnay/syn>
   syn 3.0.6 <https://github.com/dtolnay/syn>
   thiserror-impl 1.0.69 <https://github.com/dtolnay/thiserror>
