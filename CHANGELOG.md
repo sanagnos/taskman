@@ -4,6 +4,8 @@ What changed in each release; a release's notes on GitHub are its section here. 
 
 ## Unreleased
 
+- The faint line between a project's agents and its tickets in the sidebar is gone: agents and tickets are spaced like any other cards again.
+
 ## 0.1.7 - 2026-10-18
 
 - Reorder the sidebar. `ctrl+a }` and `ctrl+a {` move the selected agent or ticket down or up one place and start move mode, where `{`/`}` or ↑/↓ go on, `p` moves its project instead (every project shows folded meanwhile), Enter keeps the order and Esc puts it back. Or drag a card, or a project's header, with the mouse: a line shows where it would land, the sidebar scrolls at its edges, release drops and Esc cancels. A card stays among its project's agents or tickets, and the order is saved in the order the lists already had, so `ctrl+a 1-9` follow it. A project with both agents and tickets now shows a faint line between them. A click on a project's header folds it when the button comes up, not when it goes down.

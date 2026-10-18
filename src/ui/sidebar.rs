@@ -296,7 +296,7 @@ fn sidebar_rows(
             continue;
         }
 
-        for (k, &i) in members.iter().enumerate() {
+        for &i in &members {
             let tv = &app.tickets[i];
             let selected = Some(i) == narrowed.map_or(Some(app.sel), |n| n.focus);
             let agent = tv.t.agent.is_some();
@@ -380,11 +380,6 @@ fn sidebar_rows(
             }));
             if !collapsed {
                 rows.push(blank());
-            }
-            // A faint line where the agents end and the tickets begin.
-            if agent && members.get(k + 1).is_some_and(|&n| app.tickets[n].t.agent.is_none()) {
-                let rule = "╌".repeat(w.saturating_sub(2));
-                rows.push(plain(Line::from(vec![Span::raw(" "), Span::styled(rule, dim())])));
             }
         }
         if collapsed {

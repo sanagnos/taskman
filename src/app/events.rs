@@ -417,14 +417,11 @@ fn the_wheel_scrolls_the_sidebar_and_clicks_land_where_cards_are_drawn() {
     for _ in 0..10 {
         mouse(&mut app, MouseEventKind::ScrollDown, s.x + 2, s.y + 5);
     }
-    // The divider under the agents puts every ticket a row lower; one row more than the wheel's
-    // notches brings ENG-71's first row to the top.
-    app.sidebar_scroll.top += 1;
     let screen = draw(&mut app, 160, 40);
-    assert_eq!(app.sidebar_scroll.top, 23);
+    assert_eq!(app.sidebar_scroll.top, 22);
     assert_eq!(selected(&app), "ENG-52");
     assert!(card(&app, "ENG-52").is_none(), "scrolled out of view, and stays selected");
-    // Row 23 is ENG-71's first row, under the "more" row: its hit is the two rows drawn.
+    // Row 22 is ENG-71's first row, under the "more" row: its hit is the two rows drawn.
     let rows = list_rows(&app);
     let partial = card(&app, "ENG-71").unwrap();
     assert_eq!((partial.y, partial.height), (rows.start + 1, 2));
@@ -435,13 +432,13 @@ fn the_wheel_scrolls_the_sidebar_and_clicks_land_where_cards_are_drawn() {
     mouse(&mut app, MouseEventKind::Down(MouseButton::Left), r.x + 3, r.y + 1);
     assert_eq!(selected(&app), "ENG-75");
     draw(&mut app, 160, 40);
-    assert_eq!(app.sidebar_scroll.top, 23, "in view: nothing moves");
+    assert_eq!(app.sidebar_scroll.top, 22, "in view: nothing moves");
     // A click on the card cut off at the top selects it, and it comes into view whole: by the
     // one row that was hidden, not up to its project's header.
     mouse(&mut app, MouseEventKind::Down(MouseButton::Left), partial.x + 3, partial.y);
     assert_eq!(selected(&app), "ENG-71");
     draw(&mut app, 160, 40);
-    assert_eq!(app.sidebar_scroll.top, 22);
+    assert_eq!(app.sidebar_scroll.top, 21);
     let r = card(&app, "ENG-71").unwrap();
     assert_eq!((r.y, r.height), (rows.start + 1, 3));
 }
