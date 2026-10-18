@@ -16,6 +16,7 @@ pub use sidebar::{SIDEBAR_STEP, SidebarScroll};
 use crate::app::{AgentState, App, Away, Mode, TicketView};
 use crate::github::CheckState;
 use crate::store::UiPrefs;
+use crate::untrusted;
 use pane::{draw_claude, draw_footer, draw_header, draw_prefix_menu, draw_selecting};
 use panels::{draw_board, draw_gh, draw_jira};
 use ratatui::Frame;
@@ -238,7 +239,7 @@ fn selection_bg() -> Color {
 /// checks that get cut when the line is short. Without GitHub, the branch, if any.
 fn pr_spans(app: &App, tv: &TicketView) -> Vec<Span<'static>> {
     if app.gh(&tv.t.repo) != crate::github::Gh::Ready {
-        return tv.t.branch.iter().map(|b| Span::styled(b.clone(), dim())).collect();
+        return tv.t.branch.iter().map(|b| Span::styled(untrusted::line(b), dim())).collect();
     }
     let target = app.pr_target(tv);
     let target = target.map(|(label, merged)| match merged {

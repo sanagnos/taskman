@@ -484,7 +484,9 @@ impl App {
             f.value = default.clone();
         }
         f.hint = match bases.iter().find(|b| b.key == f.value) {
-            Some(b) => format!("stacked: starts from {}'s branch {}", b.key, b.branch),
+            Some(b) => {
+                format!("stacked: starts from {}'s branch {}", b.key, untrusted::line(&b.branch))
+            }
             None if bases.is_empty() => {
                 format!("from origin/{default}; stacking needs another ticket with a branch")
             }

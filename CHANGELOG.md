@@ -5,6 +5,7 @@ What changed in each release; a release's notes on GitHub are its section here. 
 ## Unreleased
 
 - Typing in the Add form (`ctrl+a n`) while it's on Type, or on another choice, now goes to the Ticket or Name field instead of being dropped: a number, a key of the project or a link switches Type to Ticket, so `ctrl+a n` then `52` adds ENG-52, and anything else names an agent. A paste lands there too.
+- Branch names are treated as others' text, like titles and comments. A session's brief names a branch only when it is plain (letters, digits, `.`, `_`, `/`, `-`) and otherwise says to run `taskman status` for it; the sidebar, the panels and `taskman status` clean branch names of characters that hide text. A Local files ticket's branch is now made from its key and the rest of its file name as a slug, rather than taken from the file name as it is. A ticket no longer takes the branch of a PR from a fork as its own. Branches tickets already have are kept.
 
 ## 0.1.9 - 2026-10-18
 

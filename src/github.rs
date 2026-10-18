@@ -64,6 +64,9 @@ pub struct Pr {
     pub review_decision: String,
     pub mergeable: String,
     pub head: String,
+    /// Whether the head branch is in another repository, a fork: then whoever opened the PR
+    /// named it, so a ticket doesn't take it as its own branch. True when GitHub doesn't say.
+    pub cross_repository: bool,
     /// The head branch's last commit, which a merged PR vouches for when its worktree goes.
     pub head_oid: String,
     /// The branch it merges into: the default branch, or a stacked ticket's base.
@@ -345,7 +348,7 @@ fn pick_repo(remotes: &[Remote], resolved: &str) -> Option<DefaultRepo> {
     Some(DefaultRepo { name, host, several })
 }
 
-const FIELDS: &str = "number,title,url,state,isDraft,reviewDecision,mergeable,headRefName,headRefOid,baseRefName,statusCheckRollup,reviews,comments";
+const FIELDS: &str = "number,title,url,state,isDraft,reviewDecision,mergeable,headRefName,headRefOid,baseRefName,isCrossRepository,statusCheckRollup,reviews,comments";
 
 pub(crate) fn gh(dir: &Path, args: &[&str]) -> Result<String, String> {
     let out =
@@ -731,6 +734,7 @@ fn parse(json: &str) -> Result<Pr, String> {
         review_decision: s(&v["reviewDecision"]),
         mergeable: s(&v["mergeable"]),
         head: s(&v["headRefName"]),
+        cross_repository: v["isCrossRepository"].as_bool() != Some(false),
         head_oid: s(&v["headRefOid"]),
         base: s(&v["baseRefName"]),
         checks,
@@ -1005,7 +1009,7 @@ mod tests {
     fn parses_pr_view() {
         let json = r#"{"number":412,"title":"t","url":"u","state":"OPEN","isDraft":false,
             "reviewDecision":"CHANGES_REQUESTED","mergeable":"MERGEABLE","headRefName":"0008-bulk/ENG-52","baseRefName":"main",
-            "statusCheckRollup":[
+            "isCrossRepository":false,"statusCheckRollup":[
               {"__typename":"CheckRun","name":"unit","workflowName":"CI","status":"COMPLETED","conclusion":"SUCCESS","completedAt":"2024-01-01T00:00:00Z"},
               {"__typename":"CheckRun","name":"e2e","workflowName":"CI","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"https://github.com/acme/web/actions/runs/1/job/2"},
               {"__typename":"CheckRun","name":"lint","workflowName":"","status":"IN_PROGRESS","conclusion":""},
@@ -1016,6 +1020,10 @@ mod tests {
             "comments":[]}"#;
         let pr = parse(json).unwrap();
         assert_eq!(pr.base, "main");
+        assert!(!pr.cross_repository);
+        // A PR GitHub doesn't say is from this repository counts as a fork's.
+        let bare = parse(r#"{"number":1,"state":"OPEN","headRefName":"x","baseRefName":"main"}"#);
+        assert!(bare.unwrap().cross_repository);
         assert_eq!(pr.count(CheckState::Pass), 2);
         assert_eq!(pr.count(CheckState::Fail), 1);
         assert_eq!(pr.count(CheckState::Pending), 1);

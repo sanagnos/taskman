@@ -5,6 +5,7 @@ use super::{dim, selection_bg, spinner};
 use crate::app::{AgentState, App, Away, Mode, TicketView};
 use crate::keys::prefix;
 use crate::store::{Cli, tilde};
+use crate::untrusted;
 use crate::util::truncate;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
@@ -56,7 +57,8 @@ pub(super) fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     if !shown.is_empty() && !shown.eq_ignore_ascii_case(&tv.t.key) {
         spans.push(Span::raw(format!(" {title}")));
     }
-    let branch = tv.t.branch.as_deref().map(|b| format!(" {b}")).unwrap_or_default();
+    let branch =
+        tv.t.branch.as_deref().map(|b| format!(" {}", untrusted::line(b))).unwrap_or_default();
     let right = format!("{}{branch} ", tilde(&tv.t.cwd));
     let left_len: usize = spans.iter().map(|s| s.content.chars().count()).sum();
     // At least a space between the two sides, however long the folder.

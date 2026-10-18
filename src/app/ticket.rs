@@ -307,7 +307,8 @@ impl TicketView {
     }
 
     /// What a PR lookup found (`pr_lookup`), with the worktree git found for the ticket: shows
-    /// the PR, adopts an open PR's branch or forgets a remembered branch that's gone, and moves a
+    /// the PR, adopts an open PR's branch (not a fork's, whose name its author chose) or forgets
+    /// a remembered branch that's gone, and moves a
     /// session that never started into the worktree, unless taskman created one for the ticket
     /// already. Returns whether the ticket changed.
     pub(super) fn take_pr(
@@ -317,9 +318,11 @@ impl TicketView {
     ) -> bool {
         let mut changed = false;
         let res = res.map(|found| {
-            // Adopt an open PR's branch; forget a remembered branch that's gone.
+            // Adopt an open PR's branch; forget a remembered branch that's gone. A fork's branch
+            // isn't the ticket's: anyone can open a PR that says it closes the issue.
             if let Some(p) = &found.pr
                 && p.state == "OPEN"
+                && !p.cross_repository
                 && self.t.branch.is_none()
             {
                 self.t.branch = Some(p.head.clone());
@@ -459,6 +462,7 @@ mod tests {
             review_decision: String::new(),
             mergeable: String::new(),
             head: head.into(),
+            cross_repository: false,
             head_oid: String::new(),
             base: "main".into(),
             checks: vec![],
@@ -508,6 +512,20 @@ mod tests {
             (tv.t.cwd.as_path(), tv.t.branch.as_deref()),
             (Path::new("/src/acme"), Some("eng-52-wt"))
         );
+    }
+
+    /// A PR from a fork names a branch its author chose, and anyone can open one saying it closes
+    /// the issue: it shows in the panel, but the ticket doesn't take its branch.
+    #[test]
+    fn leaves_a_forks_branch_alone() {
+        let mut tv = TicketView::new(ticket());
+        let fork = Pr { cross_repository: true, ..pr("OPEN", "eng-52-fix;$(id)") };
+        tv.take_pr(found(Some(fork), None, false), None);
+        assert_eq!(tv.t.branch, None);
+        assert_eq!(tv.pr.data.as_ref().map(|p| p.as_ref().map(|p| p.number)), Some(Some(15)));
+        // The same repository's PR is adopted as before.
+        assert!(tv.take_pr(found(Some(pr("OPEN", "eng-52-login")), None, false), None));
+        assert_eq!(tv.t.branch.as_deref(), Some("eng-52-login"));
     }
 
     /// A worktree a workflow adds on `change/ENG-52` is what the lookup prefers, but the one

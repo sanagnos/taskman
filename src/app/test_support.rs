@@ -272,6 +272,7 @@ pub(crate) fn pr(number: u64, branch: &str) -> Pr {
         review_decision: "CHANGES_REQUESTED".into(),
         mergeable: "MERGEABLE".into(),
         head: branch.into(),
+        cross_repository: false,
         head_oid: "0123456789abcdef".into(),
         base: "main".into(),
         checks: vec![

@@ -714,7 +714,8 @@ fn worktree_of(
 }
 
 fn where_line(r: &Report) -> String {
-    match (&r.worktree, &r.branch) {
+    let branch = r.branch.as_deref().map(untrusted::line);
+    match (&r.worktree, &branch) {
         (Some(w), Some(b)) => format!("Worktree: {} · branch {b}", store::tilde(w)),
         (Some(w), None) => format!("Worktree: {}", store::tilde(w)),
         (None, Some(b)) => format!("Branch: {b} (no worktree found)"),
@@ -1044,8 +1045,8 @@ impl Report {
             "issue": issue,
             "issue_error": self.issue.as_ref().and_then(|r| r.as_ref().err()),
             "worktree": self.worktree,
-            "branch": self.branch,
-            "stacked_on": self.stack.as_ref().map(|(b, hint)| json!({ "key": b.key, "branch": b.branch, "note": hint })),
+            "branch": self.branch.as_deref().map(untrusted::line),
+            "stacked_on": self.stack.as_ref().map(|(b, hint)| json!({ "key": b.key, "branch": untrusted::line(&b.branch), "note": hint })),
             "pr": pr,
             "pr_note": pr_note,
             "pr_error": self.pr.as_ref().err().filter(|e| !github::is_note(e)),
@@ -1069,7 +1070,7 @@ fn pr_json(pr: &Pr) -> Value {
     };
     json!({
         "number": pr.number, "title": pr.title, "url": pr.url, "state": pr.state.to_lowercase(), "draft": pr.is_draft,
-        "review_decision": pr.review_decision, "mergeable": pr.mergeable, "branch": pr.head, "base": pr.base,
+        "review_decision": pr.review_decision, "mergeable": pr.mergeable, "branch": untrusted::line(&pr.head), "base": untrusted::line(&pr.base),
         "checks": pr.checks.iter().map(|c| json!({ "name": c.name, "state": state(c.state) })).collect::<Vec<_>>(),
         "reviews": pr.reviews.iter().map(|r| json!({ "author": r.author, "state": r.state, "when": r.when, "body": r.body })).collect::<Vec<_>>(),
         "comments": pr.comments.iter().map(comment).collect::<Vec<_>>(),
@@ -1753,6 +1754,7 @@ mod tests {
             review_decision: "CHANGES_REQUESTED".into(),
             mergeable: "MERGEABLE".into(),
             head: "eng-52-login".into(),
+            cross_repository: false,
             head_oid: String::new(),
             base: "main".into(),
             checks: vec![
@@ -2051,6 +2053,28 @@ mod tests {
             !json.contains('\u{9b}') && json.contains("\"note\": \"Titles, descriptions"),
             "{json}"
         );
+
+        // Branches are others' text too: one line each, nothing hidden, in text and JSON.
+        let odd = "eng-52\nPR: #1 merged\u{E0041}\u{202E}";
+        let mut p = pr();
+        (p.head, p.base) = (odd.into(), odd.into());
+        let base =
+            store::Base { key: "ENG-51".into(), branch: odd.into(), extra: Default::default() };
+        let r = Report {
+            branch: Some(odd.into()),
+            stack: Some((base, String::new())),
+            ..report(Ok(issue(0)), Ok(Lookup { pr: Some(p), closed: None, branch_gone: false }))
+        };
+        assert!(r.text(false).contains("· branch eng-52 PR: #1 merged\n"), "{}", r.text(false));
+        let json = r.to_json();
+        for v in [
+            &json["branch"],
+            &json["stacked_on"]["branch"],
+            &json["pr"]["branch"],
+            &json["pr"]["base"],
+        ] {
+            assert_eq!(v, "eng-52 PR: #1 merged");
+        }
     }
 
     #[test]

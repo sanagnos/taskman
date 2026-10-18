@@ -415,7 +415,9 @@ impl App {
         let mut line = format!("Added {}{title} to {}; {place}", tv.t.key, proj.name);
         if let Some(b) = base {
             line += &match tv.creating {
-                true => format!(", stacked on {} from its branch {}", b.key, b.branch),
+                true => {
+                    format!(", stacked on {} from its branch {}", b.key, untrusted::line(&b.branch))
+                }
                 false => format!(" (it had a worktree already, so it isn't stacked on {})", b.key),
             };
         }

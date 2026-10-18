@@ -356,7 +356,7 @@ workplan/
 ```
 
 - **Set up:** in the project's settings pick **Tracker: Local files**. **Tickets folder** defaults to `workplan`, and **Ticket prefix** to the one the folder's ticket files use already, else one from the project's name (`AW` for `acme-web`). Saving creates `backlog/ todo/ doing/ review/ done/` if the folder is missing or empty.
-- **Files:** a ticket is `<KEY>-<slug>.md`, a regular file: links are ignored, so a repository can't point a ticket at a file elsewhere on your disk. The key comes from the name; the slug is free, and with the default branch format the whole name is the ticket's branch (`WP-3-fix-login`). The first `# ` heading is the title (else the slug), the rest is the description, and optional frontmatter adds type, priority and assignee:
+- **Files:** a ticket is `<KEY>-<slug>.md`, a regular file: links are ignored, so a repository can't point a ticket at a file elsewhere on your disk. The key comes from the name; the slug is free, and with the default branch format the ticket's branch is the key and the slug in lowercase letters, digits and dashes (`WP-3-fix-login`; `wp-3-Fix_Login.md` gives the same). The first `# ` heading is the title (else the slug), the rest is the description, and optional frontmatter adds type, priority and assignee:
 
   ```markdown
   ---

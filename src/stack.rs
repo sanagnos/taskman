@@ -4,6 +4,7 @@
 
 use crate::github::Pr;
 use crate::store::Base;
+use crate::untrusted;
 
 /// Where a stacked ticket stands.
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -37,10 +38,11 @@ pub fn state(base: &Base, pr: Option<&Pr>, base_merged: Option<bool>) -> State {
 const UPDATE: &str = "pull with rebase in case GitHub rebased the branch, and if the base was squash-merged and its \
                       commits still show in the PR, rebase onto";
 
-/// One sentence for the GitHub panel and `taskman status`; `default` is the default branch.
+/// One sentence for the GitHub panel and `taskman status`; `default` is the default branch. The
+/// branches in it may be others' text, so it comes out on one line, cleaned.
 pub fn hint(base: &Base, pr: Option<&Pr>, state: State, default: &str) -> Option<String> {
     let Base { key, branch, .. } = base;
-    Some(match (state, pr) {
+    let hint = match (state, pr) {
         (State::Done, _) => return None,
         (State::Open, None) => format!("Stacked on {key}: open the PR against {branch}"),
         (State::Open, Some(p)) if p.base == *branch => {
@@ -55,21 +57,27 @@ pub fn hint(base: &Base, pr: Option<&Pr>, state: State, default: &str) -> Option
                 p.base, p.base
             )
         }
-    })
+    };
+    Some(untrusted::line(&hint))
 }
 
-/// What a stacked ticket's brief adds. `base_pr` is the base's open PR, when known.
+/// What a stacked ticket's brief adds. `base_pr` is the base's open PR, when known. A base
+/// branch `untrusted::branch` refuses is left out, as briefs hold no text others chose.
 pub fn brief(base: &Base, base_pr: Option<u64>, merged: bool, default: &str) -> String {
-    let Base { key, branch, .. } = base;
+    let key = &base.key;
+    let (named, branch) = match untrusted::branch(&base.branch) {
+        Some(b) => (format!("branch {b}"), b.to_string()),
+        None => (untrusted::BRANCH_LEFT_OUT.to_string(), format!("{key}'s branch")),
+    };
     if merged {
         return format!(
-            " This ticket was stacked on {key} (branch {branch}), which has merged, so its PR targets {default} now (retarget \
+            " This ticket was stacked on {key} ({named}), which has merged, so its PR targets {default} now (retarget \
              it if GitHub didn't). Before pushing again, {UPDATE} origin/{default} and push with --force-with-lease."
         );
     }
     let pr = base_pr.map(|n| format!(", PR #{n}")).unwrap_or_default();
     format!(
-        " This ticket stacks on {key} (branch {branch}{pr}): the worktree started from that branch. Open your PR against \
+        " This ticket stacks on {key} ({named}{pr}): the worktree started from that branch. Open your PR against \
          {branch}, push that branch first if it isn't on origin, and say in the PR body that it depends on {key}. When \
          {key} merges, GitHub may retarget your PR to {default} and rebase your branch on its side: if a push is then \
          refused, pull with rebase rather than force-pushing."
@@ -90,6 +98,7 @@ mod tests {
             review_decision: String::new(),
             mergeable: String::new(),
             head: "eng-52".into(),
+            cross_repository: false,
             head_oid: String::new(),
             base: base.into(),
             checks: vec![],
@@ -166,6 +175,19 @@ mod tests {
         );
         assert!(open.contains("rather than force-pushing"), "{open}");
         assert!(brief(&base, None, false, "main").contains("(branch you/eng-51-login):"));
+        // A branch with characters a brief can't vouch for is left out, and the hint cleans it.
+        let odd = Base { branch: "eng-51\u{E0049}$(x) y".into(), ..base.clone() };
+        let open = brief(&odd, Some(14), false, "main");
+        assert!(
+            open.starts_with(
+                " This ticket stacks on ENG-51 (run `taskman status` for its branch, PR #14)"
+            ) && open.contains("Open your PR against ENG-51's branch,")
+                && !open.contains("eng-51\u{E0049}"),
+            "{open}"
+        );
+        assert!(!brief(&odd, None, true, "main").contains("$(x)"));
+        let h = hint(&odd, None, State::Open, "main").unwrap();
+        assert_eq!(h, "Stacked on ENG-51: open the PR against eng-51$(x) y");
         let merged = brief(&base, Some(14), true, "main");
         assert!(
             merged.contains("which has merged, so its PR targets main")

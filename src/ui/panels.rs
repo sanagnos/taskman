@@ -345,7 +345,10 @@ pub(super) fn draw_board(f: &mut Frame, app: &mut App, area: Rect) {
             ]));
         }
         if let Some(b) = &tv.t.branch {
-            lines.push(Line::from(vec![indent(), Span::styled(truncate(b, w), dim())]));
+            lines.push(Line::from(vec![
+                indent(),
+                Span::styled(truncate(&untrusted::line(b), w), dim()),
+            ]));
         }
         let pr = tv.pr.data.as_ref().and_then(|p| p.as_ref());
         let mut summary = vec![indent()];
@@ -768,6 +771,7 @@ mod tests {
             review_decision: String::new(),
             mergeable: String::new(),
             head: "eng-52".into(),
+            cross_repository: false,
             head_oid: String::new(),
             base: "main".into(),
             checks: vec![Check {

@@ -40,7 +40,7 @@ pub fn check_format(format: &str) -> Result<(), String> {
 
 /// A ticket's branch. `title` is the issue's title and `tracker_branch` Linear's name for the
 /// branch; either is empty when unknown (Jira has no branch name, or the issue couldn't
-/// be fetched).
+/// be fetched). A tracker's name a brief couldn't carry (`untrusted::branch`) isn't used.
 pub fn branch_name(
     format: &str,
     provider: Option<Provider>,
@@ -50,7 +50,7 @@ pub fn branch_name(
 ) -> String {
     let tracker = match provider {
         // Linear's `branchName`, say, or a Local files ticket's file name.
-        Some(p) if p.branch_source().is_some() && !tracker_branch.is_empty() => {
+        Some(p) if p.branch_source().is_some() && untrusted::branch(tracker_branch).is_some() => {
             tracker_branch.to_string()
         }
         // Jira links branches by the key in capitals; lowercase keys don't link.
@@ -719,7 +719,7 @@ mod tests {
             branch_name(TRACKER, linear, "ENG-52", "Fix login", "you/eng-52-fix-login"),
             "you/eng-52-fix-login"
         );
-        // A Local files ticket's branch is its file's name.
+        // A Local files ticket's branch is made from its file's name (`local::File::branch`).
         assert_eq!(
             branch_name(TRACKER, Some(Provider::Local), "WP-3", "Fix login", "WP-3-fix-login"),
             "WP-3-fix-login"
@@ -727,6 +727,11 @@ mod tests {
         assert_eq!(
             branch_name(TRACKER, jira, "eng-52", "Fix the login page", ""),
             "ENG-52-fix-the-login-page"
+        );
+        // A tracker's name with characters a brief can't carry gives way to the key and title.
+        assert_eq!(
+            branch_name(TRACKER, linear, "ENG-52", "Fix login", "you/eng-52 $(x)\u{E0041}"),
+            "ENG-52-fix-login"
         );
         // The issue couldn't be fetched: just the key.
         assert_eq!(branch_name(TRACKER, linear, "ENG-52", "", ""), "ENG-52");

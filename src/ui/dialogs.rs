@@ -77,8 +77,8 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &mut App) {
                         ]
                     };
                     let room = confirm_width(f, keys).saturating_sub(2 + DIALOG_PAD_W) as usize;
-                    let body =
-                        removal_lines(&tilde(&c.path), c.branch.as_deref(), &c.ignored, room);
+                    let branch = c.branch.as_deref().map(untrusted::line);
+                    let body = removal_lines(&tilde(&c.path), branch.as_deref(), &c.ignored, room);
                     draw_confirm_lines(f, &question, body, keys);
                 }
                 Some(c) => {

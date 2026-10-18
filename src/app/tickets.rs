@@ -76,7 +76,7 @@ impl App {
                     .or_else(|| {
                         tv.t.base.as_ref().filter(|b| b.branch == pr.base).map(|b| b.key.clone())
                     })
-                    .unwrap_or_else(|| util::truncate(&pr.base, 14));
+                    .unwrap_or_else(|| util::truncate(&untrusted::line(&pr.base), 14));
                 Some((label, matches!(stack, Some((_, stack::State::Stale)))))
             }
             None => {

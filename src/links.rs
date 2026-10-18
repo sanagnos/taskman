@@ -1051,6 +1051,7 @@ mod tests {
             review_decision: String::new(),
             mergeable: String::new(),
             head: "eng-52".into(),
+            cross_repository: false,
             head_oid: String::new(),
             base: "main".into(),
             checks: vec![
