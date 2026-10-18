@@ -326,6 +326,8 @@ pub(super) fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             ),
             Span::raw(" press a command key · Esc cancels"),
         ])
+    } else if let Some(hint) = app.reorder_hint() {
+        Line::from(Span::styled(format!(" {hint}"), Style::new().fg(Color::Cyan)))
     } else if let Some((msg, _)) = &app.toast {
         Line::from(Span::styled(format!(" {msg}"), Style::new().fg(Color::Yellow)))
     } else {
@@ -370,6 +372,7 @@ pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
             &[
                 ("1-9", "switch"),
                 ("[ ]", "prev / next"),
+                ("{ }", "move"),
                 (&again, "next waiting"),
                 ("/", "jump"),
                 ("n", "add ticket/agent"),

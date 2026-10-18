@@ -45,6 +45,7 @@ mod launch;
 mod mouse;
 mod poll;
 mod projects;
+mod reorder;
 mod sessions;
 mod settings;
 mod sleep;
@@ -58,6 +59,7 @@ pub use add_form::parse_key;
 pub use forms::{Field, Form, FormKind, List};
 pub use launch::{NESTED_ENV, launch_id};
 pub use poll::{AgentState, Status};
+pub use reorder::Piece;
 pub use settings::{Settings, SettingsItem};
 pub use sync::Remote;
 pub use ticket::{Away, Blocked, TicketView};
@@ -93,6 +95,8 @@ pub enum Mode {
     Links(Box<LinkList>),
     /// The jump box (`prefix /`): the sidebar narrows to what's typed.
     Jump(jump::Jump),
+    /// Moving the selected card, or its project, in the sidebar (`prefix {` and `}`).
+    Move(Box<reorder::Moving>),
 }
 
 pub struct LinkList {
@@ -143,6 +147,8 @@ pub struct App {
     pub sidebar_hits: Vec<(Rect, Hit)>,
     /// How far the sidebar's list is scrolled; see `ui::sidebar::draw_sidebar`.
     pub sidebar_scroll: ui::SidebarScroll,
+    /// A press in the sidebar that may become a drag to reorder it; see `reorder.rs`.
+    pub drag: Option<reorder::Drag>,
     pub toast: Option<(String, Instant)>,
     pub quit: bool,
     /// A file to open in the user's editor; the event loop hands it the terminal meanwhile.
@@ -271,6 +277,7 @@ impl App {
             areas: Areas::default(),
             sidebar_hits: Vec::new(),
             sidebar_scroll: ui::SidebarScroll::default(),
+            drag: None,
             toast: None,
             quit: false,
             edit: None,
@@ -475,6 +482,7 @@ impl App {
     pub fn tick(&mut self, screen: Rect) {
         self.lay_out(screen);
         self.follow_selection();
+        self.follow_drag();
         self.drain_messages();
         if self.last_status_poll.elapsed() >= STATUS_EVERY {
             self.last_status_poll = Instant::now();

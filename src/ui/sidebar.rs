@@ -1,13 +1,13 @@
 //! The sidebar: the projects, their cards, and the list's scrolling.
 
 use super::{dim, pr_spans, selection_bg, state_badge};
-use crate::app::{App, Hit, Mode, TicketView};
+use crate::app::{App, Hit, Mode, Piece, TicketView};
 use crate::keys::prefix;
 use crate::untrusted;
 use crate::util::{fit_label, truncate, truncate_start};
 use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::layout::{Position, Rect};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use unicode_width::UnicodeWidthStr;
@@ -77,11 +77,19 @@ pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = sidebar_rows(app, w, collapsed, narrowed.as_ref());
     let view_h = view.height as usize;
     let sel = narrowed.as_ref().map_or(Some(app.sel), |n| n.focus);
+    // A project moving is folded, its card hidden: the header is what stays in view.
+    let moving = app
+        .moving_projects()
+        .then(|| sel.and_then(|s| app.tickets.get(s)).and_then(|tv| app.project_of(&tv.t)))
+        .flatten();
     let scroll = &mut app.sidebar_scroll;
     if scroll.shown != sel.map(|sel| (sel, collapsed)) || scroll.asked {
         scroll.shown = sel.map(|sel| (sel, collapsed));
         scroll.asked = false;
-        let is_card = |r: &SidebarRow| sel.is_some() && r.hit == sel.map(Hit::Ticket);
+        let is_card = |r: &SidebarRow| match moving {
+            Some(p) => r.hit == Some(Hit::Project(p)),
+            None => sel.is_some() && r.hit == sel.map(Hit::Ticket),
+        };
         if let Some(start) = rows.iter().position(is_card) {
             let end = start + rows[start..].iter().take_while(|r| is_card(r)).count();
             // Its project's header comes along only when the card is the project's first, right
@@ -140,6 +148,25 @@ pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
     {
         let r = Rect { y, height: 1, ..view };
         f.render_widget(Paragraph::new(more_line("↓", n, attention, w)), r);
+    }
+    // The line a dragged card would land on, from the hits just made.
+    app.retarget();
+    if let Some(t) = app.drag.as_ref().and_then(|d| d.target)
+        && (view.y..bottom).contains(&t.line)
+    {
+        let r = Rect { y: t.line, height: 1, ..view };
+        let on_card = app.sidebar_hits.iter().any(|(c, _)| c.contains(Position::new(r.x, r.y)));
+        if on_card {
+            // No blank row to draw on, as in the folded sidebar: underline the card's last row.
+            let cell = f.buffer_mut();
+            for x in r.x..r.right() {
+                cell[(x, r.y)].modifier.insert(Modifier::UNDERLINED);
+                cell[(x, r.y)].set_fg(Color::Cyan);
+            }
+        } else {
+            let line = format!(" {}", "━".repeat(w.saturating_sub(2)));
+            f.render_widget(Paragraph::new(line).style(Style::new().fg(Color::Cyan)), r);
+        }
     }
 }
 
@@ -206,6 +233,13 @@ fn sidebar_rows(
     };
     let blank = || plain(Line::default());
     let visible = app.ordered(true);
+    // Every project shows folded while one is moved, so each step passes one project.
+    let all_folded = app.moving_projects();
+    let mine = app.tickets.get(app.sel).and_then(|tv| app.project_of(&tv.t));
+    let held = |p: usize| match app.dragged() {
+        Some(Piece::Project(repo)) => app.projects[p].repo == *repo,
+        _ => false,
+    };
     let mut rows: Vec<SidebarRow> = Vec::new();
     for (p, proj) in app.projects.iter().enumerate() {
         let mut members = app.members(p);
@@ -215,16 +249,17 @@ fn sidebar_rows(
                 continue;
             }
         }
-        let folded = proj.collapsed && narrowed.is_none();
+        let folded = (proj.collapsed || all_folded) && narrowed.is_none();
         // Group header: ▾ name   (folded: ▸ name (3) ……… ●)
         let arrow = if folded { "▸ " } else { "▾ " };
         let count = if folded { format!(" ({})", members.len()) } else { String::new() };
         let waiting = folded && members.iter().any(|&i| app.tickets[i].needs_attention());
         // The ● ends one column from the edge, where the cards' badges end.
         let room = w.saturating_sub(2 + count.chars().count() + if waiting { 3 } else { 0 });
+        let name_style = if held(p) { dim() } else { Style::new().bold() };
         let mut header = vec![
             Span::styled(arrow, dim()),
-            Span::styled(truncate(&proj.name, room), Style::new().bold()),
+            Span::styled(truncate(&proj.name, room), name_style),
             Span::styled(count.clone(), dim()),
         ];
         if waiting {
@@ -235,7 +270,8 @@ fn sidebar_rows(
         rows.push(SidebarRow {
             line: Line::from(header),
             hit: Some(Hit::Project(p)),
-            selected: false,
+            // The project being moved with the keys, among the others folded.
+            selected: all_folded && mine == Some(p) && app.dragged().is_none(),
             entry: folded,
             attention: waiting,
         });
@@ -260,7 +296,7 @@ fn sidebar_rows(
             continue;
         }
 
-        for &i in &members {
+        for (k, &i) in members.iter().enumerate() {
             let tv = &app.tickets[i];
             let selected = Some(i) == narrowed.map_or(Some(app.sel), |n| n.focus);
             let agent = tv.t.agent.is_some();
@@ -331,15 +367,24 @@ fn sidebar_rows(
                 }
             }
             let attention = tv.needs_attention();
-            rows.extend(lines.into_iter().map(|line| SidebarRow {
-                line,
-                hit: Some(Hit::Ticket(i)),
-                selected,
-                entry: true,
-                attention,
+            // The card being dragged stays where it is, dimmed.
+            let lifted =
+                matches!(app.dragged(), Some(Piece::Card((repo, key))) if tv.t.is(repo, key));
+            rows.extend(lines.into_iter().map(|mut line| {
+                if lifted {
+                    for span in &mut line.spans {
+                        span.style = span.style.fg(Color::DarkGray).add_modifier(Modifier::DIM);
+                    }
+                }
+                SidebarRow { line, hit: Some(Hit::Ticket(i)), selected, entry: true, attention }
             }));
             if !collapsed {
                 rows.push(blank());
+            }
+            // A faint line where the agents end and the tickets begin.
+            if agent && members.get(k + 1).is_some_and(|&n| app.tickets[n].t.agent.is_none()) {
+                let rule = "╌".repeat(w.saturating_sub(2));
+                rows.push(plain(Line::from(vec![Span::raw(" "), Span::styled(rule, dim())])));
             }
         }
         if collapsed {

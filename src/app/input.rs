@@ -104,6 +104,10 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
+        // A key ends a drag under way; Esc is all it does.
+        if self.cancel_drag(key.code == KeyCode::Esc) {
+            return;
+        }
         // `d` deletes an account's keychain item with it, when it has one of its own.
         let delete_item = matches!(self.mode, Mode::ConfirmDeleteAccount(i)
             if key.code == KeyCode::Char('d') && self.own_keychain_item(i).is_some());
@@ -216,6 +220,10 @@ impl App {
             }
             Mode::Jump(_) => {
                 self.jump_key(key);
+                return;
+            }
+            Mode::Move(_) => {
+                self.move_key(key);
                 return;
             }
             Mode::OfferTmux(_) if !matches!(key.code, KeyCode::Enter | KeyCode::Esc) => return,
@@ -382,6 +390,8 @@ impl App {
                     self.select(i);
                 }
             }
+            KeyCode::Char('{') => self.start_move(-1),
+            KeyCode::Char('}') => self.start_move(1),
             KeyCode::Up | KeyCode::Char('[') => self.step(-1),
             KeyCode::Down | KeyCode::Char(']') => self.step(1),
             KeyCode::Char('n') => {

@@ -143,6 +143,47 @@ fn folded_long_sidebar_at_its_last_card() {
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 
+/// Move mode: the card steps down one place, and the footer says how to go on.
+#[test]
+fn moving_a_card_with_the_keys() {
+    let mut app = acme_app();
+    draw(&mut app, 160, 40);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(key(KeyCode::Char('}')));
+    assert_snapshot!(draw(&mut app, 160, 40));
+}
+
+/// Moving a project: every project is folded, the one that moves marked.
+#[test]
+fn moving_a_project_with_the_keys() {
+    let mut app = acme_app();
+    draw(&mut app, 160, 40);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(key(KeyCode::Char('}')));
+    app.on_key(key(KeyCode::Char('p')));
+    assert_snapshot!(draw(&mut app, 160, 40));
+}
+
+/// A card dragged: dimmed where it stands, the landing line under ENG-61, the footer's words.
+#[test]
+fn dragging_a_card() {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    let mut app = acme_app();
+    draw(&mut app, 160, 40);
+    let rows = |app: &crate::app::App, key: &str| {
+        let i = app.tickets.iter().position(|tv| tv.t.key == key).unwrap();
+        app.sidebar_hits.iter().find(|(_, h)| *h == crate::app::Hit::Ticket(i)).unwrap().0
+    };
+    let (from, to) = (rows(&app, "ENG-52"), rows(&app, "ENG-61"));
+    let mouse = |app: &mut crate::app::App, kind, y| {
+        app.on_mouse(MouseEvent { kind, column: 3, row: y, modifiers: KeyModifiers::NONE });
+        draw(app, 160, 40)
+    };
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), from.y);
+    let screen = mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), to.bottom() - 1);
+    assert_snapshot!(screen);
+}
+
 #[test]
 fn prefix_menu() {
     let mut app = acme_app();

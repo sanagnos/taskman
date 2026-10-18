@@ -242,6 +242,16 @@ mod tests {
     }
 
     #[test]
+    fn braces_arrive_the_same_with_or_without_the_kitty_protocol_reporting_shift() {
+        // Shift+[ as a kitty terminal reports it: `{` with SHIFT, or `[` with SHIFT where the
+        // layout is reported by key. Only the first is a brace; both must not leave SHIFT on.
+        let shifted = normalize(KeyEvent::new(KeyCode::Char('{'), KeyModifiers::SHIFT));
+        assert_eq!(shifted, KeyEvent::new(KeyCode::Char('{'), KeyModifiers::NONE));
+        let shifted = normalize(KeyEvent::new(KeyCode::Char('}'), KeyModifiers::SHIFT));
+        assert_eq!(shifted, KeyEvent::new(KeyCode::Char('}'), KeyModifiers::NONE));
+    }
+
+    #[test]
     fn encodes_common_keys() {
         assert_eq!(k(KeyCode::Char('x'), KeyModifiers::NONE), b"x");
         assert_eq!(k(KeyCode::Char('c'), KeyModifiers::CONTROL), [3]);

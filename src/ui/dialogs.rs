@@ -16,8 +16,8 @@ use unicode_width::UnicodeWidthStr;
 /// The dialog over the screen in `app.mode`, if any.
 pub(super) fn draw_dialog(f: &mut Frame, app: &mut App) {
     match &app.mode {
-        // The jump box is the sidebar's own top row.
-        Mode::Normal | Mode::Jump(_) => {}
+        // The jump box is the sidebar's own top row; move mode shows in the sidebar and footer.
+        Mode::Normal | Mode::Jump(_) | Mode::Move(_) => {}
         Mode::Help(_) => draw_help(f, app),
         Mode::Links(list) => draw_links(f, list),
         Mode::Form(_) => draw_form(f, app),
@@ -753,6 +753,7 @@ fn draw_help(f: &mut Frame, app: &mut App) {
     let keys = [
         ("1-9", "switch to ticket"),
         ("[ / ]", "previous / next ticket"),
+        ("{ / }", "move the card; ↑/↓ go on, p moves its project, Enter done"),
         (again.as_str(), "next ticket waiting on you (also tab)"),
         ("/", "jump to a ticket, agent or project by typing"),
         ("n", "add a ticket, or an agent with no ticket"),
@@ -796,7 +797,8 @@ fn draw_help(f: &mut Frame, app: &mut App) {
         Line::from(
             "a project header. Drag to copy text, past an edge or with the wheel for".bold(),
         ),
-        Line::from("more; ctrl+c copies it again, Esc clears it.".bold()),
+        Line::from("more; ctrl+c copies it again, Esc clears it. Drag a card or a project".bold()),
+        Line::from("header in the sidebar to reorder it; Esc cancels.".bold()),
         Line::from(""),
     ]);
     // The legend, drawn with the sidebar's own badges, two to a row so Help fits 40 rows (it

@@ -1,9 +1,10 @@
 //! The mouse: the wheel scrolls the pane under it (the sidebar's list too), a click in the
-//! sidebar selects a card or folds a project, a drag selects text in a pane (see `selection.rs`
-//! for the selection itself), and the selected text goes to the clipboard.
+//! sidebar selects a card or folds a project (a drag there reorders them, see `reorder.rs`), a
+//! drag in a pane selects text (see `selection.rs` for the selection itself), and the selected
+//! text goes to the clipboard.
 
 use super::sync::Msg;
-use super::{AgentState, App, Hit, Mode};
+use super::{AgentState, App, Hit, Mode, Piece};
 use crate::selection::{self, Grab, Pane, Selection, Snapshot};
 use crate::ui::SIDEBAR_STEP;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
@@ -107,10 +108,19 @@ impl App {
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.selection = None;
+                self.drag = None;
                 let clicks = self.click_count(pos);
                 match self.sidebar_hits.iter().find(|(r, _)| r.contains(pos)) {
-                    Some(&(_, Hit::Ticket(i))) => self.select(i),
-                    Some(&(_, Hit::Project(p))) => self.toggle_project(p),
+                    // A press may turn into a drag (see `reorder.rs`); a project's header folds
+                    // on release, once it's known not to have.
+                    Some(&(grip, Hit::Ticket(i))) => {
+                        self.select(i);
+                        let t = &self.tickets[i].t;
+                        self.press(Piece::Card((t.repo.clone(), t.key.clone())), grip, pos);
+                    }
+                    Some(&(grip, Hit::Project(p))) => {
+                        self.press(Piece::Project(self.projects[p].repo.clone()), grip, pos);
+                    }
                     None => {
                         if let Some((pane, rect)) = self.pane_at(pos) {
                             let snapshot =
@@ -132,6 +142,10 @@ impl App {
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
+                if self.drag.is_some() {
+                    self.drag_to(pos);
+                    return;
+                }
                 let Some(sel) = self.selection.as_ref().filter(|s| !s.released && s.grab.is_none())
                 else {
                     return;
@@ -143,6 +157,18 @@ impl App {
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
+                if let Some(d) = &self.drag {
+                    let header = match &d.piece {
+                        Piece::Project(repo) => self.projects.iter().position(|p| &p.repo == repo),
+                        Piece::Card(_) => None,
+                    };
+                    if !self.drop_drag()
+                        && let Some(p) = header
+                    {
+                        self.toggle_project(p);
+                    }
+                    return;
+                }
                 if let Some(sel) = self.selection.as_mut() {
                     if sel.grab.is_some() {
                         // Picked on the next frame.
