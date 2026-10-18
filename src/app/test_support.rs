@@ -379,12 +379,23 @@ pub(crate) fn draw(app: &mut App, w: u16, h: u16) -> String {
 }
 
 /// As `draw`, followed by the screen's colours: a letter a cell for each pair of foreground and
-/// background (`.` for the terminal's own), and what each letter is.
+/// background (`.` for the terminal's own), and what each letter is. A version longer than 0.0.0
+/// takes more cells than `draw`'s `v0.0.0`; those show as `.`, so the map doesn't change with it.
 pub(crate) fn draw_colours(app: &mut App, w: u16, h: u16) -> String {
     let text = draw(app, w, h);
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| ui::draw(f, app)).unwrap();
     let buf = term.backend().buffer();
+    let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let mut extra = std::collections::HashSet::new();
+    for y in 0..h {
+        let row: Vec<&str> = (0..w).map(|x| buf[(x, y)].symbol()).collect();
+        // Cells, not bytes: the box drawing before the version takes several bytes a cell.
+        let found = row.windows(version.len()).position(|cells| cells.concat() == version);
+        if let Some(start) = found {
+            extra.extend((start + "v0.0.0".len()..start + version.len()).map(|x| (x, y)));
+        }
+    }
     let letter = |i: usize| char::from(b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"[i]);
     let mut pairs = Vec::new();
     let mut map = String::new();
@@ -393,7 +404,9 @@ pub(crate) fn draw_colours(app: &mut App, w: u16, h: u16) -> String {
         for x in 0..w {
             let cell = &buf[(x, y)];
             let pair = (cell.fg, cell.bg);
-            if pair == (ratatui::style::Color::Reset, ratatui::style::Color::Reset) {
+            if pair == (ratatui::style::Color::Reset, ratatui::style::Color::Reset)
+                || extra.contains(&(usize::from(x), y))
+            {
                 map.push('.');
                 continue;
             }
