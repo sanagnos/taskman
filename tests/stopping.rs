@@ -77,13 +77,15 @@ fn a_restart_starts_the_next_cli_only_once_the_old_one_is_gone() {
     let first = pid(&dir, "ENG-1").unwrap();
 
     tui.send(b"\x01R");
-    // Checked from the restart on: as long as the old CLI runs, none replaces it.
-    while alive(first) {
-        assert_eq!(
-            pid(&dir, "ENG-1"),
-            Some(first),
-            "a second CLI started while the first was still running"
-        );
+    // Checked from the restart on: as long as the old CLI runs, none replaces it. Each check
+    // reads what it guards first and whether the CLI runs second: a CLI that's gone stays gone,
+    // so a failure means both held at once.
+    loop {
+        let seen = pid(&dir, "ENG-1");
+        if !alive(first) {
+            break;
+        }
+        assert_eq!(seen, Some(first), "a second CLI started while the first was still running");
         std::thread::sleep(Duration::from_millis(5));
     }
     tui.wait_until("no CLI started once the old one was gone", || {
@@ -127,8 +129,12 @@ fn closing_removes_the_worktree_only_once_its_cli_is_gone() {
     tui.send(b"\x01x");
     tui.wait_text("r close and remove");
     tui.send(b"r");
-    while alive(cli) {
-        assert!(wt1.exists(), "the worktree was removed while its CLI was still running in it");
+    loop {
+        let there = wt1.exists();
+        if !alive(cli) {
+            break;
+        }
+        assert!(there, "the worktree was removed while its CLI was still running in it");
         std::thread::sleep(Duration::from_millis(5));
     }
     tui.wait_until("the worktree wasn't removed once the CLI was gone", || !wt1.exists());
@@ -143,8 +149,12 @@ fn closing_removes_the_worktree_only_once_its_cli_is_gone() {
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
-    while alive(cli) {
-        assert!(wt2.exists(), "the worktree was removed while its CLI was still running in it");
+    loop {
+        let there = wt2.exists();
+        if !alive(cli) {
+            break;
+        }
+        assert!(there, "the worktree was removed while its CLI was still running in it");
         std::thread::sleep(Duration::from_millis(5));
     }
     tui.wait_until("the worktree wasn't removed once the CLI was gone", || !wt2.exists());
@@ -199,8 +209,12 @@ fn a_hand_off_keeps_the_session_claimed_until_the_old_cli_is_gone() {
     // hands the session off, but keeps it claimed until the CLI is gone.
     tui.send(b"\x01t");
     tui.wait_text("ENG-1 is handed off");
-    while alive(first) {
-        assert!(claimed(), "the session was let go while its CLI was still running");
+    loop {
+        let held = claimed();
+        if !alive(first) {
+            break;
+        }
+        assert!(held, "the session was let go while its CLI was still running");
         std::thread::sleep(Duration::from_millis(5));
     }
     // `taskman resume` then runs it, waiting the moment the TUI takes to let go if it must.
@@ -272,10 +286,13 @@ fn a_rename_claims_the_new_name_before_the_old_cli_is_gone() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    while alive(first) {
+    loop {
+        let seen = pid(&dir, "acme-planner");
+        if !alive(first) {
+            break;
+        }
         assert_eq!(
-            pid(&dir, "acme-planner"),
-            None,
+            seen, None,
             "a CLI started under the new name while the old one was still running"
         );
         std::thread::sleep(Duration::from_millis(5));

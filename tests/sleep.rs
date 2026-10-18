@@ -82,9 +82,9 @@ fn both_settled(tui: &mut Tui, dir: &Path) -> i32 {
     tui.send(b"\x012");
     tui.wait_text("stub ready for ENG-2");
     let two = pid(dir, "ENG-2.pid").unwrap();
+    // `ps` notes its run once it has listed the processes, so anything started from now on isn't
+    // in a baseline, however soon the TUI takes the answer in.
     tui.wait_until("both process trees weren't taken", || scans(dir) >= 2);
-    // The answer is applied on the TUI's next tick, a moment after `ps` ended.
-    std::thread::sleep(Duration::from_millis(500));
     two
 }
 

@@ -111,11 +111,12 @@ fn closes_tickets_and_removes_only_safe_worktrees() {
 
     let mut cmd = taskman(&dir);
     cmd.env("TASKMAN_CLAUDE", stub_cli(&dir, &dir.join("session.pid")));
-    let (tui, master) = spawn_in_pty(cmd);
-    let watchdog = {
-        let (pid, state, dir) = (tui.id().cast_signed(), state.clone(), dir.clone());
-        Watchdog::start(
+    let mut tui = {
+        let state = state.clone();
+        Tui::start_with(
             "closes_tickets_and_removes_only_safe_worktrees",
+            &dir,
+            cmd,
             Duration::from_secs(90),
             move || {
                 let inbox: Vec<_> = std::fs::read_dir(state.join("inbox"))
@@ -127,22 +128,14 @@ fn closes_tickets_and_removes_only_safe_worktrees() {
                 let tickets =
                     std::fs::read_to_string(state.join("tickets.json")).unwrap_or_default();
                 let _ = writeln!(std::io::stderr(), "inbox: {inbox:?}\ntickets.json: {tickets}");
-                // SAFETY: sends a signal; no memory is involved.
-                unsafe { libc::kill(pid, libc::SIGKILL) };
-                let _ = std::fs::remove_dir_all(dir);
             },
         )
     };
-    let mut keys = master.try_clone().unwrap();
-    let stop = Arc::new(AtomicBool::new(false));
-    let reader = drain(master, stop.clone());
-    let until = Instant::now() + Duration::from_secs(10);
-    while open().contains("ENG-3") || !state.join("inbox/alive").exists() {
-        assert!(Instant::now() < until, "the queued close didn't apply at start: {}", open());
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    tui.wait_until("the queued close didn't apply at start", || {
+        !open().contains("ENG-3") && state.join("inbox/alive").exists()
+    });
 
-    watchdog.step("close ENG-1 ENG-2 4");
+    tui.step("close ENG-1 ENG-2 4");
     let out = close(&["ENG-1", "ENG-2", "4"]);
     let (stdout, stderr) = (text(&out.stdout), text(&out.stderr));
     let lines: Vec<&str> = stdout.lines().collect();
@@ -158,7 +151,7 @@ fn closes_tickets_and_removes_only_safe_worktrees() {
     assert!(!open().contains("ENG-1") && !open().contains("ENG-2"));
 
     // Ignored files keep the worktree: only the close dialog offers to delete them.
-    watchdog.step("close ENG-7");
+    tui.step("close ENG-7");
     let out = close(&["ENG-7"]);
     assert_eq!(
         text(&out.stdout),
@@ -169,7 +162,7 @@ fn closes_tickets_and_removes_only_safe_worktrees() {
     assert!(!open().contains("ENG-7"));
 
     // --merged leaves a ticket whose PR it can't look up (this origin isn't on GitHub).
-    watchdog.step("close --merged ENG-5");
+    tui.step("close --merged ENG-5");
     let out = close(&["--merged", "ENG-5"]);
     assert!(!out.status.success());
     assert!(
@@ -181,14 +174,14 @@ fn closes_tickets_and_removes_only_safe_worktrees() {
 
     // ENG-6 runs in another terminal: `taskman resume` holds its owner file, beside the status
     // file of the session taskman started for ENG-1.
-    watchdog.step("lock ENG-6's owner file");
+    tui.step("lock ENG-6's owner file");
     let project_status =
         std::fs::read_dir(state.join("status")).unwrap().flatten().next().unwrap().path();
     let owner = std::fs::File::create(project_status.join("ENG-6.owner")).unwrap();
     // SAFETY: flock on a descriptor this test owns; it reads or writes no memory.
     assert_eq!(unsafe { libc::flock(owner.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
     (&owner).write_all(b"outside 4242").unwrap();
-    watchdog.step("close 6 while it runs elsewhere");
+    tui.step("close 6 while it runs elsewhere");
     let out = close(&["6"]);
     assert_eq!(
         text(&out.stderr),
@@ -198,24 +191,23 @@ fn closes_tickets_and_removes_only_safe_worktrees() {
     // The close dialog doesn't open for it, so r closes and removes nothing.
     let selected =
         || serde_json::from_str::<serde_json::Value>(&open()).unwrap()["selected"].as_u64();
-    watchdog.step("select ENG-6");
-    keys.write_all(b"\x01]").unwrap();
-    let until = Instant::now() + Duration::from_secs(5);
-    while selected() != Some(1) {
-        assert!(Instant::now() < until, "ENG-6 wasn't selected: {}", open());
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    watchdog.step("ctrl+a x, r on ENG-6");
-    keys.write_all(b"\x01x").unwrap();
-    std::thread::sleep(Duration::from_millis(500));
-    keys.write_all(b"r").unwrap();
-    std::thread::sleep(Duration::from_millis(1000));
+    tui.step("select ENG-6");
+    tui.send(b"\x01]");
+    tui.wait_until("ENG-6 wasn't selected", || selected() == Some(1));
+    tui.step("ctrl+a x, r on ENG-6");
+    tui.send(b"\x01x");
+    tui.wait_text("ENG-6 is running in another terminal; quit it there first");
+    tui.send(b"r");
+    // Keys are taken in order: once the quit dialog is up, the r has been taken too.
+    tui.send(b"\x01q");
+    tui.wait_text("Quit taskman?");
+    tui.send(b"\x1b");
     assert!(
         open().contains("ENG-6") && wt6.exists(),
         "the dialog closed a ticket running elsewhere"
     );
     // Back from the other terminal, it closes.
-    watchdog.step("close 6 once it's back");
+    tui.step("close 6 once it's back");
     drop(owner);
     let out = close(&["6"]);
     assert_eq!(
@@ -223,13 +215,18 @@ fn closes_tickets_and_removes_only_safe_worktrees() {
         format!("Closed ENG-6. Removed {} and branch ENG-6\n", wt6.display())
     );
 
-    watchdog.step("close 5 --keep-worktree");
+    tui.step("close 5 --keep-worktree");
     let out = close(&["5", "--keep-worktree"]);
     assert_eq!(text(&out.stdout), "Closed ENG-5\n");
 
-    watchdog.step("stop taskman");
-    stop_taskman(tui, &stop, reader);
-    let _ = std::fs::remove_dir_all(&dir);
+    tui.step("quit");
+    tui.wait_for("the quit dialog closed", |s| {
+        common::find(s, "Quit taskman?").is_none().then_some(())
+    });
+    tui.send(b"\x01q");
+    tui.wait_text("Quit taskman?");
+    tui.send(b"\r");
+    assert!(tui.wait_exit().success());
 }
 
 /// A race found in review: a ticket closed while its worktree removal is slow, then added
@@ -277,43 +274,23 @@ fn a_ticket_comes_back_only_after_its_worktree_is_removed() {
     let mut cmd = taskman(&dir);
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
     cmd.env("TASKMAN_CLAUDE", stub_cli(&dir, &session_pid)).env("PATH", path);
-    let (tui, master) = spawn_in_pty(cmd);
-    let kill_session = {
-        let session_pid = session_pid.clone();
+    let release = dir.clone();
+    let mut tui = Tui::start_with(
+        "a_ticket_comes_back_only_after_its_worktree_is_removed",
+        &dir,
+        cmd,
+        Duration::from_secs(90),
         move || {
-            let pid = std::fs::read_to_string(&session_pid)
-                .ok()
-                .and_then(|p| p.trim().parse::<i32>().ok());
-            if let Some(pid) = pid {
-                // SAFETY: sends a signal; no memory is involved.
-                unsafe { libc::kill(pid, libc::SIGKILL) };
-            }
-        }
-    };
-    let watchdog = {
-        let (pid, dir, kill_session) = (tui.id().cast_signed(), dir.clone(), kill_session.clone());
-        Watchdog::start(
-            "a_ticket_comes_back_only_after_its_worktree_is_removed",
-            Duration::from_secs(90),
-            move || {
-                let _ = std::fs::write(dir.join("release-wt-ENG-7"), "");
-                let _ = std::fs::write(dir.join("release-wt-ENG-8"), "");
-                // SAFETY: sends a signal; no memory is involved.
-                unsafe { libc::kill(pid, libc::SIGKILL) };
-                kill_session();
-                let _ = std::fs::remove_dir_all(dir);
-            },
-        )
-    };
-    let mut keys = master.try_clone().unwrap();
-    let stop = Arc::new(AtomicBool::new(false));
-    let reader = drain(master, stop.clone());
-    watchdog.step("ENG-7's session starts in its worktree");
+            let _ = std::fs::write(release.join("release-wt-ENG-7"), "");
+            let _ = std::fs::write(release.join("release-wt-ENG-8"), "");
+        },
+    );
+    tui.step("ENG-7's session starts in its worktree");
     wait_for("ENG-7's session didn't start", &|| {
         session_pid.exists() && state.join("inbox/alive").exists()
     });
 
-    watchdog.step("close 7, its removal held up");
+    tui.step("close 7, its removal held up");
     let closer = taskman(&dir)
         .args(["close", "7"])
         .current_dir(&repo)
@@ -324,14 +301,14 @@ fn a_ticket_comes_back_only_after_its_worktree_is_removed() {
         dir.join("removing-wt-ENG-7").exists()
     });
     assert!(!open().contains("ENG-7"), "{}", open());
-    watchdog.step("add ENG-7 during the removal");
+    tui.step("add ENG-7 during the removal");
     let (ok, said) = add("ENG-7");
     assert!(
         !ok && said.contains("ENG-7's worktree is still being removed; try again in a moment"),
         "{said}"
     );
     assert!(!open().contains("ENG-7"), "added during the removal: {}", open());
-    watchdog.step("let ENG-7's removal finish");
+    tui.step("let ENG-7's removal finish");
     std::fs::write(dir.join("release-wt-ENG-7"), "").unwrap();
     let out = closer.wait_with_output().unwrap();
     assert_eq!(
@@ -339,29 +316,30 @@ fn a_ticket_comes_back_only_after_its_worktree_is_removed() {
         format!("Closed ENG-7. Removed {} and branch ENG-7\n", wt7.display())
     );
     assert!(!wt7.exists());
-    watchdog.step("add ENG-7 once it's removed");
+    tui.step("add ENG-7 once it's removed");
     let (ok, said) = add("ENG-7");
     assert!(ok && open().contains("ENG-7"), "{said}");
 
     // ENG-8, selected now that ENG-7 left the top of the list, through the close dialog.
-    watchdog.step("ctrl+a x, r on ENG-8");
-    keys.write_all(b"\x01x").unwrap();
-    std::thread::sleep(Duration::from_millis(500));
-    keys.write_all(b"r").unwrap();
+    tui.step("ctrl+a x, r on ENG-8");
+    tui.send(b"\x01x");
+    tui.wait_text("Close ENG-8?");
+    tui.wait_text("r close and remove");
+    tui.send(b"r");
     wait_for("the dialog's removal never reached git worktree remove", &|| {
         dir.join("removing-wt-ENG-8").exists()
     });
     assert!(!open().contains("ENG-8"), "{}", open());
-    watchdog.step("add ENG-8 during the removal");
+    tui.step("add ENG-8 during the removal");
     let (ok, said) = add("ENG-8");
     assert!(
         !ok && said.contains("ENG-8's worktree is still being removed; try again in a moment"),
         "{said}"
     );
-    watchdog.step("let ENG-8's removal finish");
+    tui.step("let ENG-8's removal finish");
     std::fs::write(dir.join("release-wt-ENG-8"), "").unwrap();
     wait_for("ENG-8's worktree wasn't removed", &|| !wt8.exists());
-    watchdog.step("add ENG-8 once it's removed");
+    tui.step("add ENG-8 once it's removed");
     let added = || add("ENG-8");
     let until = Instant::now() + Duration::from_secs(5);
     // The removal thread lets go just after git returns.
@@ -374,11 +352,11 @@ fn a_ticket_comes_back_only_after_its_worktree_is_removed() {
     };
     assert!(ok && open().contains("ENG-8"), "{said}");
 
-    watchdog.step("stop taskman");
-    stop_taskman(tui, &stop, reader);
-    kill_session();
-    drop(watchdog);
-    let _ = std::fs::remove_dir_all(&dir);
+    tui.step("quit");
+    tui.send(b"\x01q");
+    tui.wait_text("Quit taskman?");
+    tui.send(b"\r");
+    assert!(tui.wait_exit().success());
 }
 
 /// The reservation lasts as long as git removes the worktree, not as long as taskman runs.
@@ -428,15 +406,11 @@ fn a_removal_keeps_the_ticket_out_after_taskman_ends() {
         }
     };
     let session_pid = dir.join("session.pid");
-    let start = || {
+    let command = || {
         let mut cmd = taskman(&dir);
         let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
         cmd.env("TASKMAN_CLAUDE", stub_cli(&dir, &session_pid)).env("PATH", path);
-        let (tui, master) = spawn_in_pty(cmd);
-        let keys = master.try_clone().unwrap();
-        let stop = Arc::new(AtomicBool::new(false));
-        let reader = drain(master, stop.clone());
-        (tui, keys, stop, reader)
+        cmd
     };
     let kill_sessions = {
         let session_pid = session_pid.clone();
@@ -450,7 +424,11 @@ fn a_removal_keeps_the_ticket_out_after_taskman_ends() {
             }
         }
     };
-    let (tui, _keys, stop, reader) = start();
+    // The first taskman takes no keys and ends by a signal, and the second needs the folder it
+    // leaves: a `Tui` would remove it as it's dropped.
+    let (tui, master) = spawn_in_pty(command());
+    let stop = Arc::new(AtomicBool::new(false));
+    let reader = drain(master, stop.clone());
     let watchdog = {
         let (pid, dir, kill_sessions) =
             (tui.id().cast_signed(), dir.clone(), kill_sessions.clone());
@@ -490,11 +468,22 @@ fn a_removal_keeps_the_ticket_out_after_taskman_ends() {
     let _ = closer.kill();
     let _ = closer.wait();
     assert!(wt9.exists(), "the removal went on before it was released");
+    drop(watchdog);
 
-    watchdog.step("start taskman again");
-    let (tui, mut keys, stop, reader) = start();
+    let release = dir.clone();
+    let mut tui = Tui::start_with(
+        "a_removal_keeps_the_ticket_out_after_taskman_ends",
+        &dir,
+        command(),
+        Duration::from_secs(120),
+        move || {
+            let _ = std::fs::write(release.join("release-wt-ENG-9"), "");
+            let _ = std::fs::write(release.join("release-wt-ENG-10"), "");
+        },
+    );
+    tui.step("start taskman again");
     wait_for("taskman didn't start again", &|| state.join("inbox/alive").exists());
-    watchdog.step("add ENG-9 while the old removal runs");
+    tui.step("add ENG-9 while the old removal runs");
     let (ok, said) = add("ENG-9");
     assert!(
         !ok && said.contains("ENG-9's worktree is still being removed; try again in a moment"),
@@ -502,10 +491,10 @@ fn a_removal_keeps_the_ticket_out_after_taskman_ends() {
     );
     assert!(!open().contains("ENG-9"), "added during the removal: {}", open());
 
-    watchdog.step("let ENG-9's removal finish");
+    tui.step("let ENG-9's removal finish");
     std::fs::write(dir.join("release-wt-ENG-9"), "").unwrap();
     wait_for("ENG-9's worktree wasn't removed", &|| !wt9.exists());
-    watchdog.step("add ENG-9 once it's removed");
+    tui.step("add ENG-9 once it's removed");
     let until = Instant::now() + Duration::from_secs(5);
     // git exits just after it deletes the folder, letting the lock go.
     let (ok, said) = loop {
@@ -526,7 +515,7 @@ fn a_removal_keeps_the_ticket_out_after_taskman_ends() {
     assert_eq!(eng9["cwd"].as_str().map(Path::new), Some(repo.as_path()), "{eng9}");
 
     // A normal quit during a removal waits for it, so the branch goes and the reply comes.
-    watchdog.step("close 10, its removal held up");
+    tui.step("close 10, its removal held up");
     let closer = taskman(&dir)
         .args(["close", "10"])
         .current_dir(&repo)
@@ -536,34 +525,23 @@ fn a_removal_keeps_the_ticket_out_after_taskman_ends() {
     wait_for("the removal never reached git worktree remove", &|| {
         dir.join("removing-wt-ENG-10").exists()
     });
-    watchdog.step("quit during the removal");
-    let mut tui = tui;
-    keys.write_all(b"\x01q").unwrap();
-    std::thread::sleep(Duration::from_millis(300));
-    keys.write_all(b"\r").unwrap();
-    std::thread::sleep(Duration::from_millis(1000));
-    assert!(tui.try_wait().unwrap().is_none(), "taskman quit before the removal finished");
+    tui.step("quit during the removal");
+    tui.send(b"\x01q");
+    tui.wait_text("Quit taskman?");
+    tui.send(b"\r");
+    tui.wait_text("Quitting once ENG-10's worktree is removed");
+    assert!(tui.child.try_wait().unwrap().is_none(), "taskman quit before the removal finished");
     let (ok, said) = add("ENG-10");
     assert!(!ok && said.contains("ENG-10's worktree is still being removed"), "{said}");
-    watchdog.step("let ENG-10's removal finish");
+    tui.step("let ENG-10's removal finish");
     std::fs::write(dir.join("release-wt-ENG-10"), "").unwrap();
     let out = closer.wait_with_output().unwrap();
     assert_eq!(
         text(&out.stdout),
         format!("Closed ENG-10. Removed {} and branch ENG-10\n", wt10.display())
     );
-    watchdog.step("taskman quits once the removal is done");
-    let until = Instant::now() + Duration::from_secs(10);
-    while tui.try_wait().unwrap().is_none() {
-        assert!(Instant::now() < until, "taskman didn't quit after the removal");
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    stop.store(true, Ordering::Relaxed);
-    let _ = reader.join();
-
-    kill_sessions();
-    drop(watchdog);
-    let _ = std::fs::remove_dir_all(&dir);
+    tui.step("taskman quits once the removal is done");
+    assert!(tui.wait_exit().success());
 }
 
 /// Project `acme` in `dir` with an origin, Local files tickets `keys` and none open, and taskman

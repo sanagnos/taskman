@@ -207,16 +207,29 @@ pub struct Tui {
     writer: std::fs::File,
     stop: Arc<AtomicBool>,
     reader: Option<std::thread::JoinHandle<()>>,
-    _watchdog: Watchdog,
+    watchdog: Watchdog,
 }
 
 impl Tui {
     /// Starts `cmd` in a pty with a `limit` for the whole test, past which the test binary ends.
     pub fn start(name: &'static str, dir: &Path, cmd: Command, limit: Duration) -> Self {
+        Self::start_with(name, dir, cmd, limit, || {})
+    }
+
+    /// As `start`, with `on_timeout` run first if the test goes past its limit: to let go of what
+    /// holds taskman up, or to print what the test knows.
+    pub fn start_with(
+        name: &'static str,
+        dir: &Path,
+        cmd: Command,
+        limit: Duration,
+        on_timeout: impl FnOnce() + Send + 'static,
+    ) -> Self {
         let (child, master) = spawn_in_pty(cmd);
         let pid = child.id().cast_signed();
         let d = dir.to_path_buf();
         let watchdog = Watchdog::start(name, limit, move || {
+            on_timeout();
             kill(pid);
             stubs(&d).into_iter().for_each(kill);
         });
@@ -247,15 +260,12 @@ impl Tui {
                 }
             })
         };
-        Tui {
-            child,
-            dir: dir.to_path_buf(),
-            term,
-            writer,
-            stop,
-            reader: Some(reader),
-            _watchdog: watchdog,
-        }
+        Tui { child, dir: dir.to_path_buf(), term, writer, stop, reader: Some(reader), watchdog }
+    }
+
+    /// Says what the test does next, for the note if it goes past its limit.
+    pub fn step(&self, what: &str) {
+        self.watchdog.step(what);
     }
 
     pub fn send(&mut self, bytes: &[u8]) {
