@@ -8,6 +8,7 @@ What changed in each release; a release's notes on GitHub are its section here. 
 - Branch names are treated as others' text, like titles and comments. A session's brief names a branch only when it is plain (letters, digits, `.`, `_`, `/`, `-`) and otherwise says to run `taskman status` for it; the sidebar, the panels and `taskman status` clean branch names of characters that hide text. A Local files ticket's branch is now made from its key and the rest of its file name as a slug, rather than taken from the file name as it is. A ticket no longer takes the branch of a PR from a fork as its own. Branches tickets already have are kept.
 - taskman asks the terminal for its background when it starts, and on a light one draws the selected card, the footer, hints and toasts so they read (they were dark grey bars and yellow text on white), and tells sessions the real colours, so Claude Code and Codex pick their light themes. Without an answer it reads `COLORFGBG`, else draws as before. Settings → General → **Theme** sets light or dark instead.
 - After a project is renamed, `taskman add --agent`, `taskman close --agent`, the Add form and the agent dialog find the agents added before the rename, by name: `taskman close --agent` said they weren't open, and `taskman add --agent` asked for a second agent of the same name.
+- Narrowing the window no longer ends a session that has a wide character (CJK text or an emoji such as ✅) at the end of a line: the session's CLI was killed when that line was next erased or written over.
 
 ## 0.1.9 - 2026-10-18
 

@@ -529,4 +529,65 @@ mod tests {
         *lock(&m) += 1;
         assert_eq!(*lock(&m), 2);
     }
+
+    fn parser(rows: u16, cols: u16) -> Parser {
+        vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK, Callbacks::default())
+    }
+
+    /// A narrower window cuts a wide character at the end of a line in half; erasing or printing
+    /// over what's left of it used to panic in vt100 and kill the session's CLI.
+    #[test]
+    fn a_wide_character_cut_by_a_resize_can_be_erased_and_overprinted() {
+        for then in [&b"\r\x1b[73C\x1b[K"[..], b"\r\x1b[K", b"\x1b[1K", b"\x1b[J", b"\r\x1b[73Cx"] {
+            let mut p = parser(38, 75);
+            p.process(format!("{}漢", "a".repeat(73)).as_bytes());
+            p.screen_mut().set_size(38, 74);
+            p.process(then);
+            assert!(!p.screen().contents().contains('漢'), "{then:?}");
+        }
+    }
+
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Pieces of output that move the cursor, erase, print wide characters, or are any
+        /// bytes at all, and resizes within `Session::resize`'s limits.
+        fn step() -> impl Strategy<Value = Result<Vec<u8>, (u16, u16)>> {
+            let piece = prop_oneof![
+                Just(b"\x1b[K".to_vec()),
+                Just(b"\x1b[1K".to_vec()),
+                Just(b"\x1b[2K".to_vec()),
+                Just(b"\x1b[J".to_vec()),
+                Just(b"\x1b[1J".to_vec()),
+                Just(b"\x1b[3X".to_vec()),
+                Just(b"\x1b[2P".to_vec()),
+                Just(b"\x1b[2@".to_vec()),
+                Just(b"\r\n".to_vec()),
+                Just("漢✅🚀".as_bytes().to_vec()),
+                (0u16..200).prop_map(|n| format!("\x1b[{n}C").into_bytes()),
+                (0u16..60, 0u16..200).prop_map(|(r, c)| format!("\x1b[{r};{c}H").into_bytes()),
+                "[a-z漢❌ ]{0,80}".prop_map(String::into_bytes),
+                proptest::collection::vec(any::<u8>(), 0..32),
+            ];
+            prop_oneof![4 => piece.prop_map(Ok), 1 => (2u16..60, 10u16..200).prop_map(Err)]
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(64))]
+
+            #[test]
+            fn output_and_resizes_never_panic(
+                steps in proptest::collection::vec(step(), 1..60),
+            ) {
+                let mut p = parser(24, 80);
+                for step in steps {
+                    match step {
+                        Ok(bytes) => p.process(&bytes),
+                        Err((rows, cols)) => p.screen_mut().set_size(rows, cols),
+                    }
+                }
+            }
+        }
+    }
 }

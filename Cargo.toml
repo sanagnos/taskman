@@ -56,7 +56,7 @@ unsafe_op_in_unsafe_fn = "warn"
 # tui-term uses it too. Upstream is dormant, so expect the fork to stay. It's also why taskman
 # isn't on crates.io: a published crate can't depend on a git fork.
 [patch.crates-io]
-vt100 = { git = "https://github.com/sanagnos/vt100-rust", rev = "3bae3d349d670e78c33b0f4ae5d67f4478747d45" }
+vt100 = { git = "https://github.com/sanagnos/vt100-rust", rev = "5da679c57b6c59b2fd54240e33b88ac7b551b64e" }
 
 [dev-dependencies]
 insta = { version = "1.49.0", default-features = false }
