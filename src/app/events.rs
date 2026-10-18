@@ -1008,6 +1008,11 @@ fn a_session_running_elsewhere_is_never_started_twice() {
     app.poll_status();
     assert_eq!(app.tickets[i].away, Some(Away::Outside));
     assert!(app.tickets[i].session.is_none(), "the pane showed the old screen as live");
+    // Stopping the pane's copy left a thread reaping its CLI, and nothing starts while it runs:
+    // wait for it, or a start below that should find the claim held is only refused for that.
+    if let Some(reaper) = app.tickets[i].take_reaper() {
+        reaper.wait();
+    }
     app.on_key(key(KeyCode::Enter));
     prefix(&mut app, KeyCode::Char('R'));
     assert_eq!(

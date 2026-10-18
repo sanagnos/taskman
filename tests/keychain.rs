@@ -25,20 +25,26 @@ fn the_account_form_saves_a_token_to_the_keychain() {
     tui.wait_text("Welcome to taskman");
 
     // The keychain is looked for in the background at start: until it's found the form offers
-    // only a variable or command, so open it again until it offers the keychain.
+    // only a variable or command, so open it again until it offers the keychain. Each step waits
+    // for what it caused, never for something to be gone: a screen read mid-draw lacks text that
+    // is about to appear, and a key sent on that belief lands in the form's Site as text, or
+    // together with the Esc before it, as Alt.
     let until = Instant::now() + Duration::from_secs(20);
     loop {
         tui.send(b"\x01A");
-        tui.wait_text("New account");
+        // The form's last row: the rows above it, Keep in among them, are drawn by now.
+        tui.wait_text("Esc back to list");
         if tui.text().contains("Keep in") {
             break;
         }
         assert!(Instant::now() < until, "no keychain offered:\n{}", tui.text());
-        close_settings(&mut tui);
+        close_settings(&mut tui, true);
     }
     tui.wait_text("taskman never saves your token in its files");
 
-    // Site (left empty), Email, Keep in, Token: pasted, as from the token page.
+    // Site (left empty), Email, Keep in, Token: pasted, as from the token page. A Site would be
+    // looked up on the network, so check it is empty before anything is saved.
+    assert!(site_is_empty(&tui.text()), "Site is not empty:\n{}", tui.text());
     tui.send(b"\tdana@example.com\t\t");
     tui.send(format!("\x1b[200~{TOKEN}\x1b[201~").as_bytes());
     tui.wait_text("••••••••••••••••••");
@@ -60,20 +66,28 @@ fn the_account_form_saves_a_token_to_the_keychain() {
     let calls = std::fs::read_to_string(bin.join("calls")).unwrap();
     assert!(!calls.contains(TOKEN), "the token was an argument: {calls}");
 
-    close_settings(&mut tui);
+    close_settings(&mut tui, false);
     tui.send(b"\x01q");
     tui.wait_text("Quit taskman?");
     tui.send(b"\r");
     assert!(tui.wait_exit().success());
 }
 
-/// Esc out of Settings, back to the list first if a form is being edited: one Esc at a time, as
-/// two at once read as Alt+Esc.
-fn close_settings(tui: &mut Tui) {
-    if tui.text().contains("Esc back to list") {
+/// Esc out of Settings. A form being edited (`editing`) takes one Esc to go back to the list;
+/// saving ends the editing. One Esc at a time, as two at once read as Alt+Esc, each waited for by
+/// the keys the next screen offers.
+fn close_settings(tui: &mut Tui, editing: bool) {
+    if editing {
         tui.send(b"\x1b");
-        tui.wait_text("Esc close");
     }
+    tui.wait_text("Esc close");
     tui.send(b"\x1b");
-    tui.wait_for("Settings closed", |s| common::find(s, "Esc close").is_none().then_some(()));
+    // Only closing Settings removes its title.
+    tui.wait_for("Settings closed", |s| common::find(s, " Settings ").is_none().then_some(()));
+}
+
+/// Whether the account form's Site has nothing in it.
+fn site_is_empty(screen: &str) -> bool {
+    let row = screen.lines().find_map(|l| l.split_once("│ Site").map(|(_, rest)| rest));
+    row.is_some_and(|r| r.trim_matches(|c: char| c == '│' || c.is_whitespace()).is_empty())
 }
