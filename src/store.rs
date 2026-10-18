@@ -213,7 +213,8 @@ pub struct Ticket {
     #[serde(default)]
     pub seen_gh: Option<Vec<String>>,
     /// Set for a project agent: a session with no ticket, named this. Its `key` is then the
-    /// session's name, `<project>-<agent>`.
+    /// session's name, `<project>-<agent>` as the project was named when the agent was added
+    /// (`agent_key`), so find an agent by this (`Ticket::is_agent`), not by its key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     /// An agent's standing instruction, appended to its brief at every session start (not sent
@@ -268,6 +269,24 @@ impl Ticket {
     pub fn is(&self, repo: &Path, key: &str) -> bool {
         self.repo == repo && self.key == key
     }
+
+    /// Whether this is the agent called `name` in the project whose main checkout is `repo`. By
+    /// its name, not its key: renaming a project rewrites no keys.
+    pub fn is_agent(&self, repo: &Path, name: &str) -> bool {
+        self.repo == repo && self.agent.as_deref().is_some_and(|a| slug(a) == slug(name))
+    }
+}
+
+/// The key of an agent being added to, or renamed in, project `project`: `<project>-<name>`.
+/// Only for that: an agent added before its project was renamed keeps the key it had, so a
+/// lookup goes by name (`find_agent`).
+pub fn agent_key(project: &str, name: &str) -> String {
+    format!("{}-{}", slug(project), slug(name))
+}
+
+/// The agent called `name` in the project whose main checkout is `repo`.
+pub fn find_agent<'a>(tickets: &'a [Ticket], repo: &Path, name: &str) -> Option<&'a Ticket> {
+    tickets.iter().find(|t| t.is_agent(repo, name))
 }
 
 /// The name a session gets (`--name`), which other sessions message it by: its key, or
@@ -1249,6 +1268,33 @@ mod tests {
             }
             _ => assert_eq!(before, after, "{at}"),
         }
+    }
+
+    #[test]
+    fn finds_an_agent_by_its_project_and_name() {
+        let t = |key: &str, repo: &str, agent: Option<&str>| -> Ticket {
+            serde_json::from_value(serde_json::json!({
+                "key": key, "repo": repo, "cwd": repo, "agent": agent,
+            }))
+            .unwrap()
+        };
+        // Added while its project was called acme, which is called web now.
+        let tickets = [
+            t("acme-planner", "/src/web", Some("planner")),
+            t("api-planner", "/src/api", Some("planner")),
+            t("acme-lead", "/src/web", None),
+        ];
+        let web = Path::new("/src/web");
+        assert_eq!(
+            find_agent(&tickets, web, "Planner").map(|t| t.key.as_str()),
+            Some("acme-planner")
+        );
+        assert_eq!(
+            find_agent(&tickets, Path::new("/src/api"), "planner").map(|t| t.key.as_str()),
+            Some("api-planner")
+        );
+        assert!(find_agent(&tickets, web, "lead").is_none(), "a ticket isn't an agent");
+        assert_eq!(agent_key("Acme Web", "Release Notes"), "acme-web-release-notes");
     }
 
     #[test]

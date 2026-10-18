@@ -144,3 +144,58 @@ fn a_request_for_a_project_that_is_gone_says_so() {
     let lines = reply("0003");
     assert!(!lines[0].ok && lines[0].text.contains("no longer in taskman"), "{lines:?}");
 }
+
+/// An agent keeps the key it was added with when its project is renamed, so `taskman add`,
+/// `taskman close` and the Add form find it by its name.
+#[test]
+fn a_renamed_projects_agent_is_found_by_its_name() {
+    let mut app = acme_app();
+    app.projects[0].name = "web".into();
+    let agents = |app: &App| app.tickets.iter().filter(|tv| tv.t.agent.is_some()).count();
+    let before = agents(&app);
+    // Asked for again, it's open: the dialog says so, and only its role changes.
+    let mut req = agent_request("Review the PRs");
+    req.items = vec![add::Item::Agent { name: "Lead".into(), role: Some("Review the PRs".into()) }];
+    ask(&mut app, req);
+    let Mode::ConfirmAgent(asked) = &app.mode else { panic!("no dialog") };
+    assert!(asked.open);
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(agents(&app), before);
+    assert_eq!(app.tickets[index(&app, "acme-lead")].t.role.as_deref(), Some("Review the PRs"));
+    // Opened by name from the Add form.
+    let added = app.add_agent(0, "lead", store::Cli::Claude, None, true);
+    assert!(matches!(added, Ok(crate::app::ticket::Added::Open(_))));
+    assert_eq!(selected(&app), "acme-lead");
+    assert_eq!(agents(&app), before);
+    // Closed by name.
+    request(
+        "0005",
+        &serde_json::json!({
+            "repo": "/src/acme", "reply_by": crate::util::now() + 60, "close": {},
+            "items": [{ "kind": "agent", "name": "lead" }],
+        }),
+    );
+    app.take_inbox();
+    app.close_next();
+    settle(&mut app);
+    let lines = reply("0005");
+    assert!(lines.iter().all(|l| l.ok) && !lines[0].text.contains("isn't open"), "{lines:?}");
+    assert!(!app.tickets.iter().any(|tv| tv.t.key == "acme-lead"));
+}
+
+/// A new agent's key is made from the project's name as it is now, which can be an agent's key
+/// from before a rename.
+#[test]
+fn a_new_agent_can_not_take_an_older_agents_key() {
+    let mut app = acme_app();
+    app.projects[0].name = "acme-release".into();
+    let e = app.add_agent(0, "notes-reviewer", store::Cli::Claude, None, false).err();
+    assert_eq!(
+        e.as_deref(),
+        Some(
+            "✦ acme-release-notes-reviewer is already a session name in this project: pick another name"
+        )
+    );
+    assert!(app.add_agent(0, "tester", store::Cli::Claude, None, false).is_ok());
+    assert!(app.tickets.iter().any(|tv| tv.t.key == "acme-release-tester"));
+}

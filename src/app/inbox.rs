@@ -151,8 +151,8 @@ impl App {
                     }
                     add::Item::Ticket { key, .. } => (key.clone(), Some(key.clone())),
                     add::Item::Agent { name, .. } => {
-                        let name = store::slug(name);
-                        (format!("✦ {name}"), Some(format!("{}-{name}", store::slug(&project))))
+                        let key = self.tickets.iter().find(|tv| tv.t.is_agent(&req.repo, name));
+                        (format!("✦ {}", store::slug(name)), key.map(|tv| tv.t.key.clone()))
                     }
                 })
                 .collect()
@@ -278,12 +278,8 @@ impl App {
 
     /// Whether the agent request `req` asks for is open already.
     fn agent_open(&self, req: &add::Request) -> bool {
-        req.agent().is_some_and(|(name, _)| {
-            self.projects.iter().find(|p| p.repo == req.repo).is_some_and(|p| {
-                let key = format!("{}-{}", store::slug(&p.name), store::slug(name));
-                self.tickets.iter().any(|tv| tv.t.is(&p.repo, &key))
-            })
-        })
+        req.agent()
+            .is_some_and(|(name, _)| self.tickets.iter().any(|tv| tv.t.is_agent(&req.repo, name)))
     }
 
     /// The user's answer to an agent `taskman add` asked for. The command was answered when the

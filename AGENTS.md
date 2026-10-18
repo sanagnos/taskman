@@ -12,7 +12,7 @@ Read these before changing behaviour:
 
 The invariants in docs/architecture.md, as rules; that file and design.md say why.
 
-- A ticket is its project's main checkout and its key (`Ticket::is`): keys repeat across projects, so never look one up by key alone.
+- A ticket is its project's main checkout and its key (`Ticket::is`): keys repeat across projects, so never look one up by key alone. An agent is its project's main checkout and its name (`Ticket::is_agent`, `store::find_agent`): its key is made from the project's name only when it's added (`store::agent_key`), and renaming the project rewrites no keys.
 - Never start a session without `start_session`, which takes the owner lock that keeps a session to one copy.
 - The user's own Claude settings are never touched: hooks and permissions go in through `--settings` (Codex: `-c` overrides).
 - Text from trackers and PRs is untrusted: print it through `untrusted` and keep it out of briefs (see "Untrusted text" in docs/design.md).

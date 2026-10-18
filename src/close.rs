@@ -171,8 +171,7 @@ fn plan(a: &Args, saved: &Saved, me: Option<&Ticket>, here: Option<&Here>) -> Re
         let p = cli::pick_project(a.project.as_deref(), &[], me, saved, here)?;
         let project = &saved.projects[p];
         let name = store::slug(name);
-        let key = format!("{}-{name}", store::slug(&project.name));
-        if saved.tickets.iter().any(|t| t.is(&project.repo, &key) && t.agent.is_some()) {
+        if store::find_agent(&saved.tickets, &project.repo, &name).is_some() {
             plan.push(p, Item::Agent { name, role: None });
         } else {
             plan.lines.push(Line::ok(format!("✦ {name} isn't open in {}", project.name)));
@@ -591,6 +590,13 @@ mod tests {
         assert_eq!(
             plan(&args("--agent tester").unwrap(), &s, me, None).unwrap().lines,
             vec![Line::ok("✦ tester isn't open in acme-api")]
+        );
+        // By name, not by a key made from the project's name, which may have changed since.
+        let mut renamed = saved();
+        renamed.projects[1].name = "api".into();
+        assert_eq!(
+            plan(&args("--agent planner").unwrap(), &renamed, me, None).unwrap().requests,
+            vec![(1, vec![Item::Agent { name: "planner".into(), role: None }])]
         );
     }
 

@@ -134,7 +134,7 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 
 What must stay true whatever changes. Each has a section in [design.md](design.md) saying why.
 
-- **A ticket is its project and its key** (`Ticket::is`). Keys repeat across projects, so nothing looks a ticket up, names its status file or claims its session by key alone.
+- **A ticket is its project and its key** (`Ticket::is`). Keys repeat across projects, so nothing looks a ticket up, names its status file or claims its session by key alone. An agent is found by its project and name (`Ticket::is_agent`, `store::find_agent`), not by a key made from the project's name: `store::agent_key` makes the key only when an agent is added or renamed, and a renamed project keeps its agents' keys.
 - **One copy of a session.** Every session starts through `start_session`, which takes the owner lock (`resume::Hold`); a pane and `taskman resume` never run the same session at once, and a lock that can't be taken stops the session starting. The lock is taskman's, not the CLI's, so a session also starts only once the last one's CLI is reaped (`TicketView::reaping`), and a hand-off keeps the lock until then. `taskman resume` finds sessions in the saved state, so a rename, close or project removal saves first (`App::try_save`) and is undone when the save fails, its claims kept.
 - **One conversation per session.** `session_ids::claim` refuses an id another ticket or agent holds, wherever an id comes in.
 - **The user's own CLI settings are never touched.** Hooks and permissions come in through `--settings` (Codex: `-c` overrides) on each launch.

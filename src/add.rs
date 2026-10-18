@@ -393,9 +393,9 @@ fn add(args: &[String]) -> Result<bool, String> {
         if name.is_empty() {
             return Err("use letters or digits in the agent's name".into());
         }
-        let key = format!("{}-{name}", store::slug(&project.name));
+        let open = store::find_agent(&saved.tickets, &project.repo, &name).is_some();
         // An open agent given a role still goes to taskman, which replaces its role.
-        if is_open(&saved, &project.repo, &key) && a.role.is_none() {
+        if open && a.role.is_none() {
             show(Line::ok(format!("✦ {name} is already open in taskman")));
         } else {
             items.push(Item::Agent { name, role: a.role.clone() });

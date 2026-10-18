@@ -244,8 +244,8 @@ impl App {
             return Err("Use letters or digits in the name".into());
         }
         let role = role.map(|r| untrusted::clean(&r));
-        let key = format!("{}-{name}", store::slug(&self.projects[p].name));
-        if let Some(i) = self.tickets.iter().position(|tv| tv.t.is(&self.projects[p].repo, &key)) {
+        let repo = &self.projects[p].repo;
+        if let Some(i) = self.tickets.iter().position(|tv| tv.t.is_agent(repo, &name)) {
             if role.is_some() {
                 self.tickets[i].t.role = role;
                 self.save();
@@ -254,6 +254,14 @@ impl App {
                 self.select(i);
             }
             return Ok(Added::Open(i));
+        }
+        let key = store::agent_key(&self.projects[p].name, &name);
+        // An agent added before the project was renamed can have it: agent web-x of project
+        // acme is acme-web-x, and so is agent x once the project is acme-web.
+        if self.tickets.iter().any(|tv| tv.t.is(repo, &key)) {
+            return Err(format!(
+                "✦ {key} is already a session name in this project: pick another name"
+            ));
         }
         // An agent closed earlier under this name picks its conversation back up, if it ran in
         // the same CLI, and its role.
@@ -482,13 +490,19 @@ impl App {
         let Some(p) = self.project_of(&self.tickets[i].t) else {
             return Err("This agent's project is gone".into());
         };
-        let key = format!("{}-{name}", store::slug(&self.projects[p].name));
-        if key == self.tickets[i].t.key {
+        if self.tickets[i].t.agent.as_deref() == Some(name.as_str()) {
             self.mode = Mode::Normal;
             return Ok(());
         }
-        if self.tickets.iter().any(|tv| tv.t.is(&self.projects[p].repo, &key)) {
+        let repo = &self.projects[p].repo;
+        if self.tickets.iter().any(|tv| tv.t.is_agent(repo, &name)) {
             return Err(format!("This project already has an agent called {name}"));
+        }
+        let key = store::agent_key(&self.projects[p].name, &name);
+        if self.tickets.iter().any(|tv| tv.t.is(repo, &key)) {
+            return Err(format!(
+                "✦ {key} is already a session name in this project: pick another name"
+            ));
         }
         if matches!(self.tickets[i].away, Some(Away::Outside | Away::Leaving(_))) {
             return Err(elsewhere());

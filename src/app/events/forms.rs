@@ -112,6 +112,22 @@ fn renames_an_agent() {
     assert!(saved().tickets.iter().any(|t| t.agent.as_deref() == Some("planner")));
 }
 
+/// Its own name again, after its project was renamed, changes nothing; another agent's is refused.
+#[test]
+fn a_renamed_projects_agent_keeps_its_key_under_its_own_name() {
+    let mut app = acme_app();
+    app.projects[0].name = "web".into();
+    app.select(index(&app, "acme-lead"));
+    rename(&mut app, "lead");
+    assert!(matches!(app.mode, Mode::Normal), "{:?}", rename_error(&app));
+    assert_eq!(selected(&app), "acme-lead");
+    rename(&mut app, "release-notes-reviewer");
+    assert_eq!(
+        rename_error(&app),
+        Some("This project already has an agent called release-notes-reviewer")
+    );
+}
+
 /// Opens the Rename form on the selected agent and submits `name`.
 fn rename(app: &mut App, name: &str) {
     prefix(app, KeyCode::Char('e'));
