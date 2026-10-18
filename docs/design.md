@@ -58,6 +58,13 @@ Every session gets `--name`: the ticket key (`ENG-52`) or `<project>-<agent>`, q
 
 Only running sessions can be messaged, so while a project's agent runs, taskman also starts that project's ticket sessions (one per tick). Ticket sessions otherwise start lazily, when first selected, to keep memory down, and one nobody has looked at for a while is put to sleep (see "Sleeping sessions").
 
+## Agents hand file changes to ticket sessions
+
+A project agent runs in the project's main checkout, and once a design talk turns concrete it tends to start editing there: a change with no ticket, no worktree of its own and no PR, beside ticket sessions working on the same code. Describing the agent's job ("conversation and coordinating") didn't stop that, so in a project with a tracker the brief sets a rule: work that changes code or files goes to a ticket session, which the agent creates, adds and briefs (`file_changes` in src/app/launch.rs). Without a tracker there are no ticket sessions, so the rule isn't there and the agent does the work itself.
+
+- **It yields to the user and the role.** A rule in the system prompt weighs heavily, and some changes don't merit a ticket: a typo, a one-line doc fix the user asks for while talking. So the user asking for the change in the agent's session overrides it, and so does the agent's role, the user's way to set it per agent ("you may edit docs directly") without a setting of its own.
+- **Creating the ticket is the tracker's difference** (`Tracker::ticket_tools`). `taskman add --new` creates Local files tickets; on the others the brief points at the session's own tools (a plugin or MCP server, `gh issue create`) and asks the agent to check they work on the project's workspace, site or repository first, since an MCP server is signed in to one for every session on the machine (see "Sessions read their ticket through `taskman status`"). With none, it asks the user for the key. The brief doesn't tell the agent to install anything: what a project needs is the user's call, and the guide says it.
+
 ## A ticket is its project and its key
 
 A key is unique only within its project: every Local files board can have `WP-1`, and Jira, Linear and GitHub Issues keys repeat across sites, workspaces and repositories. So a ticket is identified by its project's main checkout and its key (`Ticket::is`) everywhere: lookups, background results (`Msg` carries both), `taskman add` ("already open" means in that project), the inbox (requests already named the project), and status files. The main checkout, not the project's name, because the name can change while sessions run and the folder can't.

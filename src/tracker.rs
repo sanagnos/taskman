@@ -7,6 +7,7 @@ use crate::jira::{self, JiraConfig};
 use crate::linear::{self, LinearConfig};
 use crate::local;
 use crate::store::{self, Account, Config, Project, Provider, Tracker};
+use crate::untrusted;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -742,6 +743,24 @@ impl Tracker {
                     .eq_ignore_ascii_case(&store::jira_base(&other.site)),
                 Provider::Linear | Provider::Github => self.site.eq_ignore_ascii_case(&other.site),
             }
+    }
+
+    /// What a project agent creates this tracker's tickets with, and the place to check those
+    /// tools are signed in to, while `taskman add --new` creates only Local files tickets. None for
+    /// Local files.
+    pub fn ticket_tools(&self) -> Option<(&'static str, String)> {
+        let site = untrusted::line(&self.site);
+        match self.provider {
+            Provider::Jira => Some((
+                "a Jira plugin or MCP server",
+                format!("the Jira site {}", store::site_host(&site)),
+            )),
+            Provider::Linear => {
+                Some(("a Linear plugin or MCP server", format!("the Linear workspace {site}")))
+            }
+            Provider::Github => Some(("`gh issue create`", format!("the repository {site}"))),
+            Provider::Local => None,
+        }
     }
 }
 

@@ -5,7 +5,7 @@
 use super::App;
 use super::poll::parse_status;
 use crate::session_ids::{self, Claim};
-use crate::store::{self, Cli, Config, Saved, Ticket};
+use crate::store::{self, Cli, Config, Saved, Ticket, Tracker};
 use crate::{github, local, resume, stack, untrusted, update};
 use portable_pty::CommandBuilder;
 use std::ffi::OsString;
@@ -173,6 +173,34 @@ fn agent_brief_head(
                 Cli::Codex => " It writes to taskman's state folder: ask to run it outside the sandbox.",
             },
     );
+    lines
+}
+
+/// What an agent in a project with a tracker does with work that changes code or files: it goes to
+/// a ticket session, unless the user asks for it here or the agent's role says otherwise. Without
+/// a tracker there are no ticket sessions, and the agent does the work itself.
+fn file_changes(tracker: &Tracker, cli: Cli) -> Vec<String> {
+    let brief = match cli {
+        Cli::Claude => "brief that session",
+        Cli::Codex => {
+            "put what the work needs in the ticket, which its session reads, as you can't message it"
+        }
+    };
+    let mut lines = vec![format!(
+        "Work that changes code or files goes to a ticket session, not this one: create a ticket for it (`taskman add \
+         --new \"Title\"` creates one and adds its session), then {brief}. Make the change here yourself only when the \
+         user asks you to, or your role says you may."
+    )];
+    // Corrects the line above until `taskman add --new` creates tickets on every tracker.
+    if let Some((tools, place)) = tracker.ticket_tools() {
+        lines.push(format!(
+            "`taskman add --new` can't create {} tickets yet, so create the ticket with your own tools, such as {tools}, \
+             after checking they work on {place}: they're set up once for every session on the machine, so they may point \
+             at another. Then `taskman add <KEY>` adds its session. With no such tools, ask the user to create the ticket \
+             and give you its key.",
+            tracker.provider.label()
+        ));
+    }
     lines
 }
 
@@ -454,6 +482,9 @@ impl App {
                  creates a ticket in todo and adds its session; `taskman move <KEY> COLUMN` moves one. Neither commits anything.",
                 store::tilde(&board)
             ));
+        }
+        if let Some(tracker) = project.and_then(|p| p.tracker.as_ref()) {
+            lines.extend(file_changes(tracker, t.cli));
         }
         if has_tickets && tickets.is_empty() {
             lines.push("The project has no ticket sessions yet.".into());
@@ -954,6 +985,52 @@ mod tests {
         app.tickets.retain(|tv| tv.t.agent.is_some());
         let b = brief(&launch_of(&app, "acme-lead"));
         assert!(b.ends_with("\nThe project has no ticket sessions yet."), "{b}");
+    }
+
+    #[test]
+    fn an_agents_brief_leaves_file_changes_to_ticket_sessions() {
+        let app = acme_app();
+        let rule = "Work that changes code or files goes to a ticket session";
+        let b = brief(&launch_of(&app, "acme-lead"));
+        assert!(b.contains(rule) && b.contains("or your role says you may"), "{b}");
+        // Without a tracker the agent does the work itself.
+        let b = brief(&launch_of(&app, "notes-writer"));
+        assert!(!b.contains(rule) && !b.contains("--new"), "{b}");
+
+        let tracker = |provider: &str, site: &str| -> Tracker {
+            serde_json::from_value(json!({ "provider": provider, "site": site, "key": "ENG" }))
+                .unwrap()
+        };
+        // Local files: `taskman add --new` creates the ticket, so there's no fallback.
+        let local = file_changes(&tracker("local", "workplan"), Cli::Claude);
+        assert_eq!(local.len(), 1);
+        assert!(local[0].starts_with(rule) && local[0].contains("`taskman add --new \"Title\"`"));
+        assert!(local[0].contains("then brief that session."), "{}", local[0]);
+        // The others: the session's own tools, checked against the project's site.
+        for (provider, site, tools, place) in [
+            ("linear", "acme", "a Linear plugin or MCP server", "the Linear workspace acme"),
+            (
+                "jira",
+                "https://example.atlassian.net",
+                "a Jira plugin or MCP server",
+                "the Jira site example.atlassian.net",
+            ),
+            ("github", "acme/web", "`gh issue create`", "the repository acme/web"),
+        ] {
+            let lines = file_changes(&tracker(provider, site), Cli::Claude);
+            assert_eq!(lines.len(), 2, "{provider}");
+            assert!(lines[0].starts_with(rule));
+            assert!(
+                lines[1]
+                    .contains(&format!("such as {tools}, after checking they work on {place}:")),
+                "{}",
+                lines[1]
+            );
+            assert!(lines[1].contains("`taskman add <KEY>`") && lines[1].contains("ask the user"));
+        }
+        // A Codex agent can't message the ticket's session, so the ticket carries the brief.
+        let codex = file_changes(&tracker("local", "workplan"), Cli::Codex);
+        assert!(codex[0].contains("put what the work needs in the ticket"), "{}", codex[0]);
     }
 
     #[test]

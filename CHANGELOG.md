@@ -4,6 +4,8 @@ What changed in each release; a release's notes on GitHub are its section here. 
 
 ## Unreleased
 
+- In a project with a tracker, a project agent now hands work that changes code or files to a ticket session: it creates a ticket, adds it with `taskman add` and briefs its session, unless you ask it to make the change itself or its role says it may. On Linear, Jira and GitHub Issues it creates the ticket with its own tracker tools (a plugin or MCP server, or `gh`), after checking they work on the project's workspace, site or repository, or asks you for the key.
+
 ## 0.1.8 - 2026-10-18
 
 - The faint line between a project's agents and its tickets in the sidebar is gone: agents and tickets are spaced like any other cards again.
