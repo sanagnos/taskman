@@ -1689,6 +1689,19 @@ fn field(app: &App, label: &str) -> String {
     }
 }
 
+/// The Add form as `ctrl+a n` opens it, on Type, switched to Ticket with the Ticket field focused.
+fn open_ticket_form_on_ticket(app: &mut App, project: usize) {
+    app.open_ticket_form(Some(project));
+    switch_to_ticket(app);
+}
+
+fn switch_to_ticket(app: &mut App) {
+    focus(app, "Type");
+    app.on_key(key(KeyCode::Left));
+    assert_eq!(field(app, "Type"), "Ticket");
+    focus(app, "Ticket");
+}
+
 fn type_text(app: &mut App, text: &str) {
     for c in text.chars() {
         app.on_key(key(KeyCode::Char(c)));
@@ -1696,12 +1709,24 @@ fn type_text(app: &mut App, text: &str) {
 }
 
 #[test]
+fn the_add_form_opens_on_type_set_to_agent() {
+    let mut app = acme_app();
+    prefix(&mut app, KeyCode::Char('n'));
+    assert_eq!(focused(&app), "Type");
+    assert_eq!(field(&app, "Type"), "Agent");
+    // One arrow key to a ticket, whose open issues are ready under its field.
+    app.on_key(key(KeyCode::Left));
+    assert_eq!(field(&app, "Type"), "Ticket");
+    assert!(!listed(&app).is_empty());
+}
+
+#[test]
 fn the_add_form_adds_an_agent() {
     let mut app = acme_app();
     prefix(&mut app, KeyCode::Char('n'));
     assert_eq!(field(&app, "Project"), "acme");
-    focus(&mut app, "Type");
-    app.on_key(key(KeyCode::Right));
+    // It opens on Type, set to Agent.
+    assert_eq!(focused(&app), "Type");
     assert_eq!(field(&app, "Type"), "Agent");
     // Its role, then its name, last as the ticket is.
     app.on_key(key(KeyCode::Down));
@@ -1724,6 +1749,7 @@ fn the_add_form_adds_an_agent() {
 fn the_add_form_switches_to_a_ticket_already_open() {
     let mut app = acme_app();
     prefix(&mut app, KeyCode::Char('n'));
+    switch_to_ticket(&mut app);
     type_text(&mut app, "x");
     app.on_key(ctrl('u'));
     type_text(&mut app, "61");
@@ -1732,6 +1758,7 @@ fn the_add_form_switches_to_a_ticket_already_open() {
     assert_eq!(selected(&app), "ENG-61");
     // Esc leaves the form as it was.
     prefix(&mut app, KeyCode::Char('n'));
+    switch_to_ticket(&mut app);
     type_text(&mut app, "62");
     app.on_key(key(KeyCode::Esc));
     assert!(matches!(app.mode, Mode::Normal));
@@ -2669,7 +2696,8 @@ fn open_in_web(app: &App, key: &str) -> bool {
 #[test]
 fn the_add_form_lists_open_issues_and_adds_one_by_its_title() {
     let mut app = web_app();
-    app.open_ticket_form(Some(app.projects.len() - 1));
+    let last = app.projects.len() - 1;
+    open_ticket_form_on_ticket(&mut app, last);
     assert_eq!(field(&app, "Project"), "web");
     assert_eq!(
         listed(&app),
@@ -2694,7 +2722,8 @@ fn the_add_form_lists_open_issues_and_adds_one_by_its_title() {
 #[test]
 fn the_add_form_takes_issue_numbers_and_links_and_refuses_pull_requests() {
     let mut app = web_app();
-    app.open_ticket_form(Some(app.projects.len() - 1));
+    let last = app.projects.len() - 1;
+    open_ticket_form_on_ticket(&mut app, last);
     // Digits list the issues whose number starts with them.
     type_text(&mut app, "1");
     assert_eq!(listed(&app), ["#15 Fix the login form", "#14 Fix the search page"]);
@@ -2722,7 +2751,8 @@ fn the_add_form_says_when_the_open_issues_could_not_be_listed() {
     let failed =
         super::add_form::OpenIssues::Failed("gh isn't logged in; run gh auth login".into());
     app.open_issues.insert("/src/web".into(), (std::time::Instant::now(), failed));
-    app.open_ticket_form(Some(app.projects.len() - 1));
+    let last = app.projects.len() - 1;
+    open_ticket_form_on_ticket(&mut app, last);
     assert_eq!(
         listed(&app),
         ["Couldn't list the open issues: gh isn't logged in; run gh auth login"]
@@ -2765,7 +2795,7 @@ fn a_list_of_open_issues_from_before_the_tracker_changed_is_dropped() {
     app.tx.send(Msg::OpenIssues(old, Ok(vec![open_issue(15, "Fix the login form")]))).unwrap();
     app.drain_messages();
     app.mode = Mode::Normal;
-    app.open_ticket_form(Some(p));
+    open_ticket_form_on_ticket(&mut app, p);
     assert_eq!(listed(&app), ["#4 Checkout is slow"]);
     type_text(&mut app, "login");
     app.on_key(key(KeyCode::Enter));
@@ -2795,7 +2825,7 @@ fn a_list_of_open_issues_for_a_deleted_project_is_dropped() {
     app.tx.send(Msg::OpenIssues(old, late())).unwrap();
     app.tx.send(Msg::OpenIssues(new, Ok(vec![open_issue(9, "Crash on start")]))).unwrap();
     app.drain_messages();
-    app.open_ticket_form(Some(p));
+    open_ticket_form_on_ticket(&mut app, p);
     assert_eq!(listed(&app), ["#9 Crash on start"]);
 }
 
@@ -2813,7 +2843,7 @@ fn adding_in_acme(issues: Vec<crate::tracker::Listed>) -> App {
     app.github.insert("/src/acme".into(), crate::github::Gh::NotGit);
     let listed = super::add_form::OpenIssues::Listed(issues);
     app.open_issues.insert("/src/acme".into(), (std::time::Instant::now(), listed));
-    app.open_ticket_form(Some(0));
+    open_ticket_form_on_ticket(&mut app, 0);
     app
 }
 
@@ -2873,7 +2903,7 @@ fn the_add_form_lists_linear_and_jira_issues_by_their_keys() {
     app.github.insert("/src/acme".into(), crate::github::Gh::NotGit);
     let listed_now = super::add_form::OpenIssues::Listed(issues());
     app.open_issues.insert("/src/acme".into(), (std::time::Instant::now(), listed_now));
-    app.open_ticket_form(Some(0));
+    open_ticket_form_on_ticket(&mut app, 0);
     type_text(&mut app, "eng-58");
     assert_eq!(listed(&app), ["ENG-58 Slow search"]);
     app.on_key(ctrl('u'));
@@ -2901,7 +2931,7 @@ fn the_add_form_lists_a_boards_tickets_not_done_and_adds_the_one_picked() {
     app.projects.push(serde_json::from_value(plan).unwrap());
     app.github.insert(dir.clone(), crate::github::Gh::NotGit);
     let p = app.projects.len() - 1;
-    app.open_ticket_form(Some(p));
+    open_ticket_form_on_ticket(&mut app, p);
     // Read from the board in the background, as a tracker's are fetched.
     settle(&mut app);
     assert_eq!(listed(&app), ["WP-1 Fix the login form", "WP-2 Export to CSV"]);

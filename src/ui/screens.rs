@@ -480,6 +480,11 @@ fn add_form_listing_open_issues() {
     app.open_issues_listed(listing, Ok(list));
     app.on_key(crate::app::test_support::ctrl('a'));
     app.on_key(key(KeyCode::Char('n')));
+    // Opens on Type, as an Agent; the list is under the Ticket field.
+    app.on_key(key(KeyCode::Left));
+    for _ in 0..4 {
+        app.on_key(key(KeyCode::Tab));
+    }
     assert_snapshot!(draw(&mut app, 80, 30));
 }
 
@@ -500,6 +505,11 @@ fn add_form_picking_an_open_issue() {
     app.open_issues_listed(listing, Ok(list));
     app.on_key(crate::app::test_support::ctrl('a'));
     app.on_key(key(KeyCode::Char('n')));
+    // Opens on Type, as an Agent; the list is under the Ticket field.
+    app.on_key(key(KeyCode::Left));
+    for _ in 0..4 {
+        app.on_key(key(KeyCode::Tab));
+    }
     for _ in 0..6 {
         app.on_key(key(KeyCode::Down));
     }

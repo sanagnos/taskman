@@ -149,7 +149,7 @@ impl App {
                 Field::choice(
                     "Type",
                     kinds,
-                    "Ticket",
+                    "Agent",
                     "a ticket's session, or an agent with no ticket",
                 ),
                 Field::choice(
@@ -165,7 +165,7 @@ impl App {
                 Field::text("Ticket", "", ""),
             ],
         );
-        form.focus_on("Ticket");
+        form.focus_on("Type");
         self.form_worktrees.replace(None);
         self.list_open_issues(project.unwrap_or(0).min(self.projects.len() - 1));
         self.update_ticket_hint(&mut form);
@@ -699,15 +699,17 @@ mod tests {
             panic!("no form")
         };
         let labels = |f: &Form| f.fields.iter().map(|x| x.label).collect::<Vec<_>>();
+        // It opens on Type, set to Agent: Worktree and Base give way to its role.
+        assert_eq!(labels(&form), ["Project", "Type", "CLI", "Role", "Name"]);
+        assert_eq!(form.fields[form.focus].label, "Type");
+        form.set("Name", "reviewer");
+        form.set("Type", "Ticket");
+        app.update_ticket_hint(&mut form);
         assert_eq!(labels(&form), ["Project", "Type", "CLI", "Worktree", "Base", "Ticket"]);
-        assert_eq!(form.fields[form.focus].label, "Ticket");
-        // An agent: the ticket field becomes its name, keeping what was typed and staying last,
-        // and Worktree and Base give way to its role.
-        form.set("Ticket", "reviewer");
+        assert_eq!(form.value("Ticket"), "reviewer");
         form.set("Type", "Agent");
         app.update_ticket_hint(&mut form);
         assert_eq!(labels(&form), ["Project", "Type", "CLI", "Role", "Name"]);
-        assert_eq!(form.value("Name"), "reviewer");
         form.set("Type", "Ticket");
         app.update_ticket_hint(&mut form);
         assert_eq!(labels(&form), ["Project", "Type", "CLI", "Worktree", "Base", "Ticket"]);
