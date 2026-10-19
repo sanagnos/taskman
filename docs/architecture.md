@@ -119,6 +119,7 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 | `CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md` | how to contribute, what taskman trusts and how to report a vulnerability (and verify a release), where to ask for help |
 | `.github/` | the CI and release workflows, issue and pull request templates, Dependabot, `CODEOWNERS` |
 | `deny.toml` | cargo-deny's settings, checked in CI: advisories, bans, the accepted licenses and sources |
+| `rust-toolchain.toml` | the Rust CI and the release builds use, which rustup installs in a clone; Cargo.toml's `rust-version` is the oldest supported, which CI checks too |
 | `about.toml`, `about.hbs`, `LICENSE-THIRD-PARTY` | the notices of the crates built into the binary: cargo-about's settings (accepting `deny.toml`'s licenses) and template, and the file they generate, which the binary embeds (`taskman --licenses`) and every release archive carries beside `LICENSE-MIT` and `LICENSE-APACHE`; CI and the release build regenerate it and fail when it doesn't match `Cargo.lock` |
 
 ## How the pieces fit

@@ -1,10 +1,14 @@
 # Builds taskman for each platform and publishes a GitHub Release with the binaries (each archive
 # holding the binary and its license files), one SHA256SUMS, and the version's section of
 # CHANGELOG.md as its notes. On a public repository it also attests where each file was built
-# (`gh attestation verify`).
+# (`gh attestation verify`). Nothing is published unless CI passed on the tag's commit and each
+# binary that can run on its runner said the tag's version.
 #
 # Runs when a version tag (v1.2.3) is pushed. It can also be started by hand for a tag without a
-# release, to build one again after deleting it:  gh workflow run release.yml -f tag=v1.2.3
+# release, to build one again after deleting it or after CI on its commit was re-run and passed:
+#   gh workflow run release.yml -f tag=v1.2.3
+# That runs this file as it is on main. A tag from before rust-toolchain.toml and the dist profile
+# needs the workflow it was tagged with: add --ref v1.2.3.
 #
 # The build jobs run every dependency's build script, so they get a read-only token that isn't
 # kept in .git/config; only the release job, which runs no project code, can write or attest.
@@ -32,6 +36,55 @@ env:
   TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
+  # CI on main must have passed on the tag's commit. Releases are immutable and every install
+  # updates to the new one within the hour, so a broken one can only be replaced by another
+  # version; and an admin's push to main skips the required checks but still runs CI. The release
+  # script pushes the release commit and its tag together, so CI on it is usually still running:
+  # this waits for it. Runs no project code, alongside the builds.
+  ci:
+    runs-on: ubuntu-24.04
+    # CI's slowest job has 30 minutes, after waiting for a runner.
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Wait for CI on the tag's commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$TAG" --jq .sha)"
+          echo "$TAG is $sha"
+          start=$(date +%s)
+          while :; do
+            # "status|conclusion|url" of the latest run (null when there's none); the conclusion
+            # is empty until it ends.
+            run="$(gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$sha" \
+              --event push --branch main --limit 1 --json status,conclusion,url \
+              --jq '.[0] // {} | "\(.status)|\(.conclusion)|\(.url)"')"
+            IFS='|' read -r status conclusion url <<<"$run"
+            if [ "$status" = completed ]; then
+              if [ "$conclusion" = success ]; then
+                echo "CI passed on $sha: $url"
+                exit 0
+              fi
+              echo "CI on $sha ended $conclusion: $url" >&2
+              echo "Fix main and release a new version, or re-run CI and start this again." >&2
+              exit 1
+            fi
+            waited=$(( $(date +%s) - start ))
+            if [ "$status" = null ] && [ "$waited" -gt 600 ]; then
+              echo "No CI run on main for $sha: release a commit that CI passed on main." >&2
+              exit 1
+            fi
+            if [ "$waited" -gt 3000 ]; then
+              echo "CI on $sha hasn't finished: $url. Start this again once it has." >&2
+              exit 1
+            fi
+            echo "Waiting for CI on $sha: ${url/#null/not started}"
+            sleep 30
+          done
+
   build:
     permissions:
       contents: read
@@ -61,6 +114,9 @@ jobs:
           ref: refs/tags/${{ env.TAG }}
           persist-credentials: false
 
+      # The Rust in rust-toolchain.toml at the tag, which CI tested the commit with.
+      - run: rustup toolchain install && rustup target add "$TARGET"
+
       - name: Check the tag matches Cargo.toml
         run: |
           version="v$(cargo pkgid | sed 's/.*[#@]//')"
@@ -69,9 +125,31 @@ jobs:
             exit 1
           fi
 
-      - run: rustup target add "$TARGET"
+      # The dist profile (Cargo.toml): the release profile, optimised further.
+      - run: cargo build --profile dist --locked --target "$TARGET"
 
-      - run: cargo build --release --locked --target "$TARGET"
+      # A binary that doesn't start, or says another version, must not reach the installs that
+      # update to it. The Intel macOS build runs on the Apple Silicon runner through Rosetta; if
+      # the runner has no Rosetta, only that binary goes unchecked.
+      - name: Run the binary
+        run: |
+          bin="target/$TARGET/dist/taskman"
+          if [ "$TARGET" = x86_64-apple-darwin ] && ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+            echo "::warning::No Rosetta on this runner: $TARGET's binary was built but not run."
+            exit 0
+          fi
+          version="$("$bin" --version)"
+          if [ "$version" != "taskman ${TAG#v}" ]; then
+            echo "$bin --version says \"$version\", not taskman ${TAG#v}" >&2
+            exit 1
+          fi
+          echo "$version: the tag's version"
+          "$bin" --licenses > licenses.txt
+          head -1 licenses.txt
+          if ! cmp -s licenses.txt LICENSE-THIRD-PARTY; then
+            echo "$bin --licenses doesn't print LICENSE-THIRD-PARTY" >&2
+            exit 1
+          fi
 
       # LICENSE-THIRD-PARTY, the notices of the crates in the binary, goes in the archive and is
       # embedded in the binary, so it must be the committed file: generated again here from the
@@ -91,8 +169,8 @@ jobs:
       # directory: the install script and `taskman update` take only `taskman` out of the archive.
       - name: Package
         run: |
-          cp LICENSE-MIT LICENSE-APACHE LICENSE-THIRD-PARTY "target/$TARGET/release/"
-          tar czf "taskman-$TAG-$TARGET.tar.gz" -C "target/$TARGET/release" \
+          cp LICENSE-MIT LICENSE-APACHE LICENSE-THIRD-PARTY "target/$TARGET/dist/"
+          tar czf "taskman-$TAG-$TARGET.tar.gz" -C "target/$TARGET/dist" \
             taskman LICENSE-MIT LICENSE-APACHE LICENSE-THIRD-PARTY
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -102,7 +180,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: build
+    needs: [ci, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

@@ -9,6 +9,7 @@ What changed in each release; a release's notes on GitHub are its section here. 
 - taskman installs an update in the background only when `gh` verified its attestation, and only within the same minor version. Without `gh`, logged out, or with `TASKMAN_INSECURE_SKIP_ATTESTATION` set, the sidebar says `↑ vX.Y.Z: run taskman update` and Settings → Updates says why. A new minor version, such as 0.2.0, is a breaking release: the sidebar says `↑ v0.2.0: breaking changes`, Settings links its notes, and `taskman update` installs it. To go back to an earlier release, set Settings → Updates to "Only notify" and run the install script with `TASKMAN_VERSION=vX.Y.Z` (see the guide).
 - The install script, `taskman update` and the background updates accept an attestation only from the release workflow run from a version tag or `main`, on a GitHub-hosted runner, and `taskman update` hands gh the archive in a new folder only you can open.
 - `taskman status` no longer avoids the name of a session that was killed before it could say it ended, when it says what a session that isn't running would be called: like `taskman resume`, it counts a session as running while taskman or `taskman resume` runs it.
+- The release binaries are about a fifth smaller, built with link-time optimisation. A release is now published only once CI has passed on its commit and each binary has run and reported the release's version, so a broken build no longer reaches the installs that update to it.
 
 ## 0.1.10 - 2026-10-18
 

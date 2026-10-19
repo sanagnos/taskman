@@ -58,6 +58,15 @@ unsafe_op_in_unsafe_fn = "warn"
 [patch.crates-io]
 vt100 = { git = "https://github.com/sanagnos/vt100-rust", rev = "5da679c57b6c59b2fd54240e33b88ac7b551b64e" }
 
+# What the release workflow builds (--profile dist): a fifth smaller than a release build, for a
+# build nearly twice as long, so it's a profile of its own and `cargo build --release` stays quick.
+# Symbols are kept: stripped, a backtrace in panics.log names no functions. `panic` must stay
+# "unwind": a session's reader thread survives a panic in the terminal parser (session.rs).
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+
 [dev-dependencies]
 insta = { version = "1.49.0", default-features = false }
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }

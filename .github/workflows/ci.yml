@@ -36,7 +36,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: rustup toolchain install stable --profile minimal --component rustfmt,clippy && rustup default stable
+      # The Rust in rust-toolchain.toml, which the release builds use too.
+      - run: rustup toolchain install
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
@@ -54,7 +55,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: rustup toolchain install stable --profile minimal --component llvm-tools-preview && rustup default stable
+      - run: rustup toolchain install && rustup component add llvm-tools-preview
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
@@ -77,16 +78,18 @@ jobs:
           ' coverage.json >> "$GITHUB_STEP_SUMMARY"
           echo "::notice title=Coverage::$(jq -r '.data[0].totals.lines.percent * 10 | round / 10' coverage.json)% of lines (details in the run's summary)"
 
-  # The oldest Rust taskman supports (rust-version in Cargo.toml).
+  # The oldest Rust taskman supports (rust-version in Cargo.toml), over rust-toolchain.toml's.
   msrv:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      RUSTUP_TOOLCHAIN: "1.88"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: rustup toolchain install 1.88 --profile minimal && rustup default 1.88
+      - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo check --all-targets --locked
 

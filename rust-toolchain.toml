@@ -1,0 +1,8 @@
+# The Rust that CI and the release builds use, so a release is built with the toolchain its
+# commit was tested with, and clippy's lints don't change under a pull request when a new stable
+# comes out. Raise it in a pull request of its own. The oldest Rust taskman supports is
+# Cargo.toml's rust-version, which CI checks too.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

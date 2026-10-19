@@ -70,7 +70,7 @@ curl https://sh.rustup.rs -sSf | sh -s -- -y && . ~/.cargo/env
 cargo install --locked --git https://github.com/sanagnos/taskman
 ```
 
-Run the same command again to update. Or build from a clone: `cargo install --locked --path .`. taskman isn't on crates.io yet: it builds with a fork of `vt100` that keeps links, which a published crate can't depend on.
+Run the same command again to update. Or build from a clone: `cargo install --locked --path .`, with the Rust that `rust-toolchain.toml` names, which rustup installs. taskman isn't on crates.io yet: it builds with a fork of `vt100` that keeps links, which a published crate can't depend on.
 
 ### Uninstall
 
