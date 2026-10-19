@@ -245,7 +245,7 @@ fn a_ticket_comes_back_only_after_its_worktree_is_removed() {
     for key in ["ENG-7", "ENG-8"] {
         std::fs::write(repo.join(format!("workplan/todo/{key}-race.md")), "# race\n").unwrap();
     }
-    let bin = slow_git(&dir);
+    slow_git(&dir);
 
     let state = dir.join("state/taskman");
     std::fs::create_dir_all(&state).unwrap();
@@ -272,8 +272,7 @@ fn a_ticket_comes_back_only_after_its_worktree_is_removed() {
 
     let session_pid = dir.join("session.pid");
     let mut cmd = taskman(&dir);
-    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
-    cmd.env("TASKMAN_CLAUDE", stub_cli(&dir, &session_pid)).env("PATH", path);
+    cmd.env("TASKMAN_CLAUDE", stub_cli(&dir, &session_pid));
     let release = dir.clone();
     let mut tui = Tui::start_with(
         "a_ticket_comes_back_only_after_its_worktree_is_removed",
@@ -375,7 +374,7 @@ fn a_removal_keeps_the_ticket_out_after_taskman_ends() {
     for key in ["ENG-9", "ENG-10"] {
         std::fs::write(repo.join(format!("workplan/todo/{key}-kill.md")), "# kill\n").unwrap();
     }
-    let bin = slow_git(&dir);
+    slow_git(&dir);
 
     let state = dir.join("state/taskman");
     std::fs::create_dir_all(&state).unwrap();
@@ -408,8 +407,7 @@ fn a_removal_keeps_the_ticket_out_after_taskman_ends() {
     let session_pid = dir.join("session.pid");
     let command = || {
         let mut cmd = taskman(&dir);
-        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
-        cmd.env("TASKMAN_CLAUDE", stub_cli(&dir, &session_pid)).env("PATH", path);
+        cmd.env("TASKMAN_CLAUDE", stub_cli(&dir, &session_pid));
         cmd
     };
     let kill_sessions = {
@@ -552,7 +550,7 @@ fn held_at_add(dir: &Path, name: &'static str, keys: &[&str]) -> (std::path::Pat
     for key in keys {
         std::fs::write(repo.join(format!("workplan/todo/{key}-late.md")), "# late\n").unwrap();
     }
-    let bin = slow_add_git(dir);
+    slow_add_git(dir);
     let state = dir.join("state/taskman");
     std::fs::create_dir_all(&state).unwrap();
     let tickets = serde_json::json!({
@@ -561,8 +559,7 @@ fn held_at_add(dir: &Path, name: &'static str, keys: &[&str]) -> (std::path::Pat
     });
     std::fs::write(state.join("tickets.json"), tickets.to_string()).unwrap();
     let mut cmd = taskman(dir);
-    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
-    cmd.env("TASKMAN_CLAUDE", stub_cli(dir, &dir.join("session.pid"))).env("PATH", path);
+    cmd.env("TASKMAN_CLAUDE", stub_cli(dir, &dir.join("session.pid")));
     let tui = Tui::start(name, dir, cmd, Duration::from_secs(90));
     tui.wait_until("taskman didn't start", || state.join("inbox/alive").exists());
     (repo, tui)

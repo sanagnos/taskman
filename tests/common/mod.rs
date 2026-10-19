@@ -18,7 +18,8 @@ static SPAWN: Mutex<()> = Mutex::new(());
 
 /// The taskman binary with its state and config in `dir`, and none of the environment that would
 /// make it think it runs inside a session or change how it draws, so tests pass in any shell: a
-/// test that wants NO_COLOR sets it. `spawn_in_pty` sets TERM.
+/// test that wants NO_COLOR sets it. `spawn_in_pty` sets TERM. Its home is `dir/home`, and
+/// `stub_tools` go first on PATH, so no test reaches the developer's own gh login or keychain.
 pub fn taskman(dir: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_taskman"));
     for (k, _) in std::env::vars_os() {
@@ -29,10 +30,35 @@ pub fn taskman(dir: &Path) -> Command {
             cmd.env_remove(k);
         }
     }
+    let home = dir.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let path =
+        format!("{}:{}", stub_tools(dir).display(), std::env::var("PATH").unwrap_or_default());
     cmd.env("XDG_STATE_HOME", dir.join("state"))
         .env("TASKMAN_CONFIG", dir.join("config.json"))
-        .env("TASKMAN_NO_AUTOUPDATE", "1");
+        .env("TASKMAN_NO_AUTOUPDATE", "1")
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("PATH", path);
     cmd
+}
+
+/// `dir/bin`, where tests put the commands they stub, with gh and the keychain tools (`security`,
+/// `secret-tool`) that fail saying they're stubbed, unless the test put its own there first.
+/// Returns the folder, which `taskman` puts first on PATH.
+pub fn stub_tools(dir: &Path) -> PathBuf {
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    for name in ["gh", "security", "secret-tool"] {
+        if !bin.join(name).exists() {
+            script(
+                &bin,
+                name,
+                "#!/bin/sh\necho \"$(basename \"$0\") is stubbed in the tests\" >&2\nexit 1\n",
+            );
+        }
+    }
+    bin
 }
 
 /// Starts `cmd` in a new pty, as its controlling terminal. Returns it and the pty's master side,
@@ -562,10 +588,9 @@ pub fn stub_file(dir: &Path, key: &str, what: &str) -> String {
 
 /// Commands taskman may run that would reach the desktop, as stubs in `dir/bin`: every clipboard
 /// command taskman tries writes what it's given to `dir/clipboard.<name>`, and the browser does
-/// nothing. Returns the folder, to go first on PATH.
+/// nothing. Returns the folder, which `taskman` puts first on PATH.
 pub fn stub_desktop(dir: &Path) -> PathBuf {
-    let bin = dir.join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
+    let bin = stub_tools(dir);
     for name in ["pbcopy", "clip.exe", "wl-copy", "xclip", "xsel"] {
         // Whole or not at all: a test may read it as it's written.
         let d = dir.display();
@@ -600,10 +625,8 @@ pub fn clipboard(dir: &Path) -> Option<String> {
 /// taskman with the stub session and desktop, on the project in `dir`.
 pub fn stubbed(dir: &Path) -> Command {
     let bin = stub_desktop(dir);
-    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
     let mut cmd = taskman(dir);
     cmd.env("TASKMAN_CLAUDE", stub_session(dir))
-        .env("PATH", path)
         .env("BROWSER", bin.join("browser"))
         // So Linux without a desktop still has a clipboard command (the stub xclip) to try.
         .env("DISPLAY", ":99")
@@ -643,32 +666,28 @@ pub fn acme(dir: &Path) -> std::path::PathBuf {
 }
 
 /// A git in `dir/bin` that waits at `worktree remove FOLDER` until the test writes
-/// `dir/release-FOLDER`, after touching `dir/removing-FOLDER`. Returns the folder.
-pub fn slow_git(dir: &Path) -> std::path::PathBuf {
+/// `dir/release-FOLDER`, after touching `dir/removing-FOLDER`, in the folder `taskman` puts first
+/// on PATH.
+pub fn slow_git(dir: &Path) {
     let real_git = Command::new("sh").args(["-c", "command -v git"]).output().unwrap();
     let real_git = String::from_utf8_lossy(&real_git.stdout).trim().to_string();
-    let bin = dir.join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
+    let bin = stub_tools(dir);
     let shim = format!(
         "#!/bin/sh\ncase \"$*\" in *'worktree remove'*)\n  eval last=\\${{$#}}; f=$(basename \"$last\")\n  \
          touch '{d}/removing-'$f; i=0\n  while [ ! -e '{d}/release-'$f ] && [ $i -lt 600 ]; do sleep 0.05; i=$((i+1)); done;;\n\
          esac\nexec '{real_git}' \"$@\"\n",
         d = dir.display()
     );
-    std::fs::write(bin.join("git"), shim).unwrap();
-    std::fs::set_permissions(bin.join("git"), std::os::unix::fs::PermissionsExt::from_mode(0o755))
-        .unwrap();
-    bin
+    script(&bin, "git", &shim);
 }
 
 /// A git in `dir/bin` that waits at `worktree add` until the test writes `dir/release-FOLDER`,
-/// after touching `dir/adding-FOLDER`, and touches `dir/added-FOLDER` once the worktree is made.
-/// Returns the folder.
-pub fn slow_add_git(dir: &Path) -> std::path::PathBuf {
+/// after touching `dir/adding-FOLDER`, and touches `dir/added-FOLDER` once the worktree is made, in
+/// the folder `taskman` puts first on PATH.
+pub fn slow_add_git(dir: &Path) {
     let real_git = Command::new("sh").args(["-c", "command -v git"]).output().unwrap();
     let real_git = String::from_utf8_lossy(&real_git.stdout).trim().to_string();
-    let bin = dir.join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
+    let bin = stub_tools(dir);
     // `worktree add ... FOLDER START`: the folder is the argument before the last.
     let shim = format!(
         "#!/bin/sh\ncase \"$*\" in *'worktree add'*)\n  eval folder=\\${{$(($# - 1))}}; f=$(basename \"$folder\")\n  \
@@ -676,8 +695,5 @@ pub fn slow_add_git(dir: &Path) -> std::path::PathBuf {
          '{real_git}' \"$@\"; s=$?; touch '{d}/added-'$f; exit $s;;\nesac\nexec '{real_git}' \"$@\"\n",
         d = dir.display()
     );
-    std::fs::write(bin.join("git"), shim).unwrap();
-    std::fs::set_permissions(bin.join("git"), std::os::unix::fs::PermissionsExt::from_mode(0o755))
-        .unwrap();
-    bin
+    script(&bin, "git", &shim);
 }

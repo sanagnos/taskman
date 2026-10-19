@@ -363,15 +363,20 @@ pub(crate) fn gh(dir: &Path, args: &[&str]) -> Result<String, String> {
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
-        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        if err.contains("no git remotes") || err.contains("none of the git remotes") {
-            return Err(NO_REMOTE.into());
-        }
-        if err.contains("gh auth login") {
-            return Err(Gh::LoggedOut.why().into());
-        }
-        Err(err)
+        Err(gh_error(String::from_utf8_lossy(&out.stderr).trim()))
     }
+}
+
+/// What gh's error output says: the setup's problem in taskman's words when it's about the setup,
+/// else as gh put it.
+fn gh_error(err: &str) -> String {
+    if err.contains("no git remotes") || err.contains("none of the git remotes") {
+        return NO_REMOTE.into();
+    }
+    if err.contains("gh auth login") {
+        return Gh::LoggedOut.why().into();
+    }
+    err.to_string()
 }
 
 /// What the PR lookup found for a ticket.
@@ -449,7 +454,10 @@ const CLOSING_QUERY: &str = "query($owner: String!, $name: String!, $number: Int
 
 /// The PRs GitHub links to the issue as closing it, in the issue's own repository: a PR from
 /// another one can't be viewed by its number there.
-fn closing(repo: &Path, c: &Closes) -> Result<Vec<Candidate>, String> {
+fn closing(
+    gh: &impl Fn(&[&str]) -> Result<String, String>,
+    c: &Closes,
+) -> Result<Vec<Candidate>, String> {
     let args = [
         "api".to_string(),
         "graphql".into(),
@@ -464,7 +472,7 @@ fn closing(repo: &Path, c: &Closes) -> Result<Vec<Candidate>, String> {
         "-f".into(),
         format!("query={CLOSING_QUERY}"),
     ];
-    let json = gh(repo, &args.iter().map(String::as_str).collect::<Vec<_>>())?;
+    let json = gh(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
     Ok(parse_closing(&json, &format!("{}/{}", c.repo.owner, c.repo.name)))
 }
 
@@ -489,38 +497,36 @@ fn parse_closing(json: &str, name: &str) -> Vec<Candidate> {
 
 /// Finds the ticket's PR: one GitHub links as closing its issue (`closes`) when there's an open
 /// or merged one, else among those on its branch and those mentioning its key. A PR closed
-/// without merging isn't shown, so abandoned work doesn't look live.
+/// without merging isn't shown, so abandoned work doesn't look live. `gh` runs gh with the given
+/// arguments in `repo` (`|args| github::gh(repo, args)`); git reads `repo` itself.
 pub fn fetch(
     repo: &Path,
     branch: Option<&str>,
     key: &str,
     closes: Option<&Closes>,
+    gh: impl Fn(&[&str]) -> Result<String, String>,
 ) -> Result<Lookup, String> {
     // A failed query only means falling back to the search: the calls after it say what's wrong.
     if let Some(c) = closes
-        && let Ok(linked) = closing(repo, c)
+        && let Ok(linked) = closing(&gh, c)
         && let (Some(n), _) = pick(&linked)
     {
         let spec = c.repo.spec();
-        let pr = view(repo, n, Some(&spec))?;
+        let pr = view(&gh, n, Some(&spec))?;
         return Ok(Lookup { pr: Some(pr), closed: None, branch_gone: false });
     }
     let mut found = Vec::new();
     if let Some(b) = branch {
         found = candidates(
-            &gh(
-                repo,
-                &["pr", "list", "--state", "all", "--head", b, "--json", LIST, "--limit", "10"],
-            )?,
+            &gh(&["pr", "list", "--state", "all", "--head", b, "--json", LIST, "--limit", "10"])?,
             None,
         )?;
     }
     let open_on_branch = found.iter().any(|c| c.state == "OPEN");
     if !open_on_branch {
-        let by_key = gh(
-            repo,
-            &["pr", "list", "--state", "all", "--search", key, "--json", LIST, "--limit", "20"],
-        )?;
+        let by_key = gh(&[
+            "pr", "list", "--state", "all", "--search", key, "--json", LIST, "--limit", "20",
+        ])?;
         for c in candidates(&by_key, Some(key))? {
             if !found.iter().any(|x| x.number == c.number) {
                 found.push(c);
@@ -533,22 +539,26 @@ pub fn fetch(
         _ => false,
     };
     let pr = match best {
-        Some(n) => Some(view(repo, n, None)?),
+        Some(n) => Some(view(&gh, n, None)?),
         None => None,
     };
     Ok(Lookup { pr, closed: if best.is_none() { closed } else { None }, branch_gone })
 }
 
-/// PR `n` in full, with its review threads: in the repository gh picks in `repo`, or in `spec`'s
+/// PR `n` in full, with its review threads: in the repository gh picks, or in `spec`'s
 /// (`[host/]owner/name`).
-fn view(repo: &Path, n: u64, spec: Option<&str>) -> Result<Pr, String> {
+fn view(
+    gh: &impl Fn(&[&str]) -> Result<String, String>,
+    n: u64,
+    spec: Option<&str>,
+) -> Result<Pr, String> {
     let n = n.to_string();
     let mut args = vec!["pr", "view", n.as_str(), "--json", FIELDS];
     if let Some(spec) = spec {
         args.extend(["--repo", spec]);
     }
-    let mut pr = parse(&gh(repo, &args)?)?;
-    pr.threads = threads(repo, &pr);
+    let mut pr = parse(&gh(&args)?)?;
+    pr.threads = threads(gh, &pr);
     if let Ok(t) = &pr.threads {
         for r in &mut pr.reviews {
             if let Some((_, url)) = t.review_urls.iter().find(|(id, _)| *id == r.id) {
@@ -583,7 +593,7 @@ const THREADS_QUERY: &str =
 
 /// The PR's review threads, and its reviews' pages, through gh's GraphQL API: `gh pr view` shows
 /// neither. The host and repository come from the PR's URL, so they're the ones `gh pr view` used.
-fn threads(repo: &Path, pr: &Pr) -> Result<Threads, String> {
+fn threads(gh: &impl Fn(&[&str]) -> Result<String, String>, pr: &Pr) -> Result<Threads, String> {
     let (host, owner, name) =
         pr_repo(&pr.url).ok_or_else(|| format!("can't tell the repository from {}", pr.url))?;
     // -f passes text as it is; -F reads numbers (and would read a file for a value starting
@@ -606,7 +616,7 @@ fn threads(repo: &Path, pr: &Pr) -> Result<Threads, String> {
         "-f".into(),
         format!("query={THREADS_QUERY}"),
     ];
-    parse_threads(&gh(repo, &args.iter().map(String::as_str).collect::<Vec<_>>())?)
+    parse_threads(&gh(&args.iter().map(String::as_str).collect::<Vec<_>>())?)
 }
 
 /// `("github.com", "acme", "web")` from `https://github.com/acme/web/pull/412`.
@@ -871,6 +881,7 @@ fn mentions(text: &str, key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use serde_json::json;
 
     #[test]
@@ -1110,6 +1121,279 @@ mod tests {
         );
         assert_eq!(pr_repo("https://github.com/acme/web/issues/412"), None);
         assert_eq!(pr_repo(""), None);
+    }
+
+    const PR_LIST: &str = include_str!("../tests/fixtures/github/pr-list.json");
+    const PR_LIST_CLOSED: &str = include_str!("../tests/fixtures/github/pr-list-closed.json");
+    const PR_LIST_BRANCH: &str = include_str!("../tests/fixtures/github/pr-list-branch.json");
+    const PR_VIEW: &str = include_str!("../tests/fixtures/github/pr-view.json");
+    const THREADS_JSON: &str = include_str!("../tests/fixtures/github/review-threads.json");
+    const CLOSING_JSON: &str = include_str!("../tests/fixtures/github/closing-prs.json");
+
+    /// Which of the lookup's gh calls `args` is, by what only that call has.
+    fn call(args: &[&str]) -> &'static str {
+        let has = |a: &str| args.contains(&a);
+        let query = args.iter().find(|a| a.starts_with("query=")).copied().unwrap_or("");
+        match () {
+            _ if has("--head") => "branch",
+            _ if has("--search") => "search",
+            _ if args.starts_with(&["pr", "view"]) => "view",
+            _ if query.contains("closedByPullRequestsReferences") => "closing",
+            _ if query.contains("reviewThreads") => "threads",
+            _ => "unexpected",
+        }
+    }
+
+    /// Runs `fetch` in `repo` with gh answering each call from `replies`, and returns the lookup
+    /// and the calls, in order.
+    fn lookup(
+        repo: &Path,
+        branch: Option<&str>,
+        closes: Option<&Closes>,
+        replies: &[(&str, Result<&str, &str>)],
+    ) -> (Result<Lookup, String>, Vec<String>) {
+        let calls = std::cell::RefCell::new(Vec::new());
+        let gh = |args: &[&str]| {
+            let c = call(args);
+            calls.borrow_mut().push(format!("{c}: {}", args[..3].join(" ")));
+            let reply = replies.iter().find(|(name, _)| *name == c).map(|(_, r)| *r);
+            reply.unwrap_or(Err("no reply")).map(String::from).map_err(String::from)
+        };
+        let res = fetch(repo, branch, "ENG-52", closes, gh);
+        (res, calls.into_inner())
+    }
+
+    fn names(calls: &[String]) -> Vec<&str> {
+        calls.iter().map(|c| c.split(':').next().unwrap()).collect()
+    }
+
+    fn acme_web_12() -> Closes {
+        Closes { repo: crate::github_issues::Repo::parse("acme/web").unwrap(), number: 12 }
+    }
+
+    #[test]
+    fn takes_the_pr_github_links_as_closing_the_issue() {
+        let replies = [
+            ("closing", Ok(CLOSING_JSON)),
+            ("view", Ok(PR_VIEW)),
+            ("threads", Ok(THREADS_JSON)),
+            ("search", Ok(PR_LIST)),
+        ];
+        let (res, calls) = lookup(Path::new("/src/acme"), None, Some(&acme_web_12()), &replies);
+        let found = res.unwrap();
+        // The open one in the issue's repository, viewed there; no search.
+        assert_eq!(names(&calls), ["closing", "view", "threads"]);
+        assert_eq!(calls[0], "closing: api graphql --hostname");
+        let pr = found.pr.unwrap();
+        assert_eq!((pr.number, pr.head.as_str(), pr.cross_repository), (45, "eng-52-login", false));
+        assert_eq!((found.closed, found.branch_gone), (None, false));
+        // The threads came, and gave the review its page.
+        assert_eq!(pr.threads.as_ref().unwrap().list[0].path, "src/auth/link.rs");
+        assert_eq!(pr.reviews[0].url, "https://github.com/acme/web/pull/45#pullrequestreview-1");
+        assert_eq!((pr.count(CheckState::Pass), pr.count(CheckState::Fail)), (1, 1));
+    }
+
+    #[test]
+    fn falls_back_to_the_search_when_the_closing_query_fails() {
+        let replies = [
+            ("closing", Err("HTTP 502: Bad Gateway (https://api.github.com/graphql)")),
+            ("search", Ok(PR_LIST)),
+            ("view", Ok(PR_VIEW)),
+            ("threads", Ok(THREADS_JSON)),
+        ];
+        let (res, calls) = lookup(Path::new("/src/acme"), None, Some(&acme_web_12()), &replies);
+        assert_eq!(names(&calls), ["closing", "search", "view", "threads"]);
+        assert_eq!(res.unwrap().pr.unwrap().number, 45);
+        // As when the issue links only a PR closed without merging.
+        let closed = r#"{"data":{"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":[
+            {"number":40,"state":"CLOSED","updatedAt":"t","repository":{"nameWithOwner":"acme/web"}}]}}}}}"#;
+        let replies = [("closing", Ok(closed)), ("search", Ok(PR_LIST)), ("view", Ok(PR_VIEW))];
+        let (res, calls) = lookup(Path::new("/src/acme"), None, Some(&acme_web_12()), &replies);
+        assert_eq!(names(&calls)[..3], ["closing", "search", "view"]);
+        assert_eq!(res.unwrap().pr.unwrap().number, 45);
+    }
+
+    #[test]
+    fn shows_the_open_pr_before_the_merged_one() {
+        // #61 (ENG-520) is newer and open, but isn't ENG-52's; #38 merged; #40 closed.
+        let replies = [("search", Ok(PR_LIST)), ("view", Ok(PR_VIEW)), ("threads", Err("x"))];
+        let (res, calls) = lookup(Path::new("/src/acme"), None, None, &replies);
+        assert_eq!(names(&calls), ["search", "view", "threads"]);
+        assert_eq!(calls[1], "view: pr view 45");
+        let found = res.unwrap();
+        let pr = found.pr.unwrap();
+        assert_eq!(found.closed, None);
+        // Threads that couldn't be fetched still leave the PR.
+        assert!(pr.threads.is_err());
+        // An open PR on the ticket's branch is enough: no search.
+        let replies = [("branch", Ok(PR_LIST_BRANCH)), ("view", Ok(PR_VIEW))];
+        let (res, calls) = lookup(Path::new("/src/acme"), Some("eng-52-login"), None, &replies);
+        assert_eq!(names(&calls), ["branch", "view", "threads"]);
+        assert_eq!(res.unwrap().pr.unwrap().number, 45);
+    }
+
+    #[test]
+    fn hides_a_pr_closed_without_merging() {
+        let (res, calls) =
+            lookup(Path::new("/src/acme"), None, None, &[("search", Ok(PR_LIST_CLOSED))]);
+        assert_eq!(names(&calls), ["search"]);
+        let found = res.unwrap();
+        assert!(found.pr.is_none());
+        assert_eq!((found.closed, found.branch_gone), (Some(40), false));
+    }
+
+    #[test]
+    fn flags_a_branch_that_is_gone() {
+        let root = std::env::temp_dir().join(format!("taskman-github-gone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let sh = |dir: &Path, cmd: &str| {
+            let o = Command::new("sh").arg("-c").arg(cmd).current_dir(dir).output().unwrap();
+            assert!(o.status.success(), "{cmd}: {}", String::from_utf8_lossy(&o.stderr));
+        };
+        sh(
+            &root,
+            "git init -q --bare -b main origin.git && git clone -q origin.git acme 2>/dev/null",
+        );
+        let repo = root.join("acme");
+        sh(
+            &repo,
+            "git -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m one && git push -q origin main",
+        );
+        let replies = [("branch", Ok("[]")), ("search", Ok(PR_LIST_CLOSED))];
+        let (res, calls) = lookup(&repo, Some("eng-52-login"), None, &replies);
+        assert_eq!(names(&calls), ["branch", "search"]);
+        let found = res.unwrap();
+        assert!(found.pr.is_none() && found.branch_gone);
+        // A branch that's still there, here or on origin, isn't.
+        sh(&repo, "git push -q origin main:eng-52-pushed");
+        for branch in ["main", "eng-52-pushed"] {
+            let (res, _) = lookup(&repo, Some(branch), None, &replies);
+            assert!(!res.unwrap().branch_gone, "{branch}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn says_what_gh_failing_means() {
+        let logged_out = "To get started with GitHub CLI, please run:  gh auth login\n\
+                          Alternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.";
+        assert_eq!(gh_error(logged_out), Gh::LoggedOut.why());
+        assert_eq!(Gh::from_error(&gh_error(logged_out)), Some(Gh::LoggedOut));
+        let no_remote = "no git remotes found";
+        assert_eq!(Gh::from_error(&gh_error(no_remote)), Some(Gh::NoRemote));
+        assert_eq!(gh_error("HTTP 502: Bad Gateway"), "HTTP 502: Bad Gateway");
+        // The lookup passes it on, so the panel hides until gh is logged in again.
+        let replies = [("search", Err(Gh::LoggedOut.why()))];
+        let (res, _) = lookup(Path::new("/src/acme"), None, None, &replies);
+        assert_eq!(res.err().as_deref(), Some(Gh::LoggedOut.why()));
+    }
+
+    /// JSON of any shape, with the names and values the parsers look for among the rest.
+    fn any_json() -> impl Strategy<Value = Value> {
+        const NAMES: &[&str] = &[
+            "number",
+            "title",
+            "url",
+            "state",
+            "isDraft",
+            "headRefName",
+            "isCrossRepository",
+            "statusCheckRollup",
+            "__typename",
+            "status",
+            "conclusion",
+            "completedAt",
+            "reviews",
+            "comments",
+            "author",
+            "login",
+            "id",
+            "submittedAt",
+            "body",
+            "createdAt",
+            "data",
+            "repository",
+            "pullRequest",
+            "reviewThreads",
+            "nodes",
+            "first",
+            "newest",
+            "totalCount",
+            "line",
+            "originalLine",
+            "isResolved",
+        ];
+        let text = prop_oneof![
+            prop::sample::select(
+                &["StatusContext", "CheckRun", "COMPLETED", "SUCCESS", "OPEN"][..]
+            )
+            .prop_map(String::from),
+            "\\PC{0,8}",
+        ];
+        let leaf = prop_oneof![
+            Just(Value::Null),
+            any::<bool>().prop_map(Value::from),
+            any::<i64>().prop_map(Value::from),
+            any::<f64>().prop_map(Value::from),
+            text.prop_map(Value::from),
+        ];
+        leaf.prop_recursive(5, 64, 6, |inner| {
+            let name = prop_oneof![prop::sample::select(NAMES).prop_map(String::from), "\\PC{0,6}"];
+            prop_oneof![
+                prop::collection::vec(inner.clone(), 0..6).prop_map(Value::from),
+                prop::collection::vec((name, inner), 0..6)
+                    .prop_map(|fields| Value::Object(fields.into_iter().collect())),
+            ]
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        #[test]
+        fn reads_owner_and_name_from_any_https_remote(
+            host in "[a-z0-9][a-z0-9.-]{0,15}",
+            owner in "[A-Za-z0-9_.-]{1,15}",
+            name in "[A-Za-z0-9_.-]{1,15}",
+        ) {
+            let url = format!("https://{host}/{owner}/{name}.git");
+            prop_assert_eq!(remote_repo(&url), Some(format!("{owner}/{name}")));
+        }
+
+        #[test]
+        fn finds_a_key_between_non_alphanumeric_characters(
+            key in "[A-Za-z]{1,5}-[0-9]{1,4}",
+            before in "([a-z0-9 ]{0,8}[ /_(\\[:.-])?",
+            after in "([ /_)\\]:.-][a-z0-9 ]{0,8})?",
+            lower in any::<bool>(),
+        ) {
+            let text = if lower { key.to_lowercase() } else { key.to_uppercase() };
+            let text = format!("{before}{text}{after}");
+            prop_assert!(mentions(&text, &key), "{} in {}", key, text);
+        }
+
+        #[test]
+        fn never_finds_a_key_followed_by_a_digit(
+            key in "[A-Za-z]{1,5}-[0-9]{1,4}",
+            before in "[a-z ]{0,8}",
+            digit in 0..10u8,
+            after in "[a-z0-9 ]{0,8}",
+        ) {
+            // Neither side has a hyphen, so the key can be nowhere else.
+            let text = format!("{before}{key}{digit}{after}");
+            prop_assert!(!mentions(&text, &key), "{} in {}", key, text);
+        }
+
+        #[test]
+        fn reading_any_json_never_panics(v in any_json()) {
+            let json = v.to_string();
+            let _ = parse(&json);
+            let _ = parse_threads(&json);
+            let _ = parse_closing(&json, "acme/web");
+            let _ = candidates(&json, Some("ENG-52"));
+            let _ = parse(&format!("[{json}"));
+        }
     }
 
     #[test]

@@ -33,17 +33,15 @@ done
 }
 
 /// A `ps` that notes each run once it has finished (`ps.log`), so the test knows when the TUI has
-/// looked at the sessions' process trees.
-fn ps(dir: &Path) -> PathBuf {
-    let bin = dir.join("psbin");
-    std::fs::create_dir_all(&bin).unwrap();
+/// looked at the sessions' process trees. In the folder `taskman` puts first on PATH.
+fn ps(dir: &Path) {
+    let bin = common::stub_tools(dir);
     let real = ["/bin/ps", "/usr/bin/ps"].into_iter().find(|p| Path::new(p).exists()).unwrap();
     let text = format!(
         "#!/bin/sh\n{real} \"$@\"\nrc=$?\necho ran >> '{}/ps.log'\nexit $rc\n",
         dir.display()
     );
     script(&bin, "ps", &text);
-    bin
 }
 
 fn scans(dir: &Path) -> usize {
@@ -54,9 +52,9 @@ fn scans(dir: &Path) -> usize {
 fn start(name: &'static str, dir: &Path) -> Tui {
     common::project(dir, &["ENG-1", "ENG-2"]);
     std::fs::write(dir.join("config.json"), format!(r#"{{"sleep_after":{AFTER}}}"#)).unwrap();
-    let path = format!("{}:{}", ps(dir).display(), std::env::var("PATH").unwrap_or_default());
+    ps(dir);
     let mut cmd = taskman(dir);
-    cmd.env("TASKMAN_CLAUDE", cli(dir)).env("PATH", path);
+    cmd.env("TASKMAN_CLAUDE", cli(dir));
     Tui::start(name, dir, cmd, Duration::from_secs(120))
 }
 

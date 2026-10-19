@@ -1,0 +1,19 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "reviews": { "nodes": [{ "id": "PRR_1", "url": "https://github.com/acme/web/pull/45#pullrequestreview-1" }] },
+        "reviewThreads": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "path": "src/auth/link.rs", "line": 42, "originalLine": 40, "isResolved": false, "isOutdated": false,
+              "first": { "totalCount": 1, "nodes": [{ "id": "PRRC_1", "author": { "login": "ben-example" }, "body": "Use a constant-time compare here.", "createdAt": "2026-10-01T08:00:00Z", "url": "https://github.com/acme/web/pull/45#discussion_r1" }] },
+              "newest": { "nodes": [{ "id": "PRRC_1", "author": { "login": "ben-example" }, "body": "Use a constant-time compare here.", "createdAt": "2026-10-01T08:00:00Z", "url": "https://github.com/acme/web/pull/45#discussion_r1" }] }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

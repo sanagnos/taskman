@@ -516,7 +516,8 @@ fn fetch_report(
         let base_pr = s.spawn(|| {
             base.as_ref().and_then(|b| {
                 let closes = tracker.and_then(|t| t.closes(&b.key));
-                github::fetch(&project.repo, Some(&b.branch), &b.key, closes.as_ref()).ok()
+                let gh = |args: &[&str]| github::gh(&project.repo, args);
+                github::fetch(&project.repo, Some(&b.branch), &b.key, closes.as_ref(), gh).ok()
             })
         });
         let list = github::worktrees(&project.repo);
@@ -528,6 +529,7 @@ fn fetch_report(
                 wt.1.as_deref(),
                 key,
                 tracker.and_then(|t| t.closes(key)).as_ref(),
+                |args| github::gh(&project.repo, args),
             )
             .map_err(|e| explain_sandbox(e, codex)),
         };

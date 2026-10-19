@@ -154,7 +154,7 @@ pub(super) fn pr_lookup(
 ) -> (Result<github::Lookup, String>, Option<(PathBuf, String)>) {
     let wt = github::find_worktree(repo, key);
     let branch = wt.as_ref().map(|(_, b)| b.clone()).or(branch);
-    (github::fetch(repo, branch.as_deref(), key, closes), wt)
+    (github::fetch(repo, branch.as_deref(), key, closes, |args| github::gh(repo, args)), wt)
 }
 
 impl App {

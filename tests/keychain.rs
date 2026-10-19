@@ -18,9 +18,9 @@ fn the_account_form_saves_a_token_to_the_keychain() {
     std::fs::create_dir_all(&bin).unwrap();
     let program = if cfg!(target_os = "macos") { "security" } else { "secret-tool" };
     script(&bin, program, include_str!("fixtures/keychain-stub.sh"));
+    // In the folder `taskman` puts first on PATH, before its own stubs.
     let mut cmd = taskman(&dir);
-    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
-    cmd.env("PATH", path).env_remove("JIRA_EMAIL");
+    cmd.env_remove("JIRA_EMAIL");
     let mut tui = Tui::start("the_account_form_saves_a_token_to_the_keychain", &dir, cmd, LIMIT);
     tui.wait_text("Welcome to taskman");
 
