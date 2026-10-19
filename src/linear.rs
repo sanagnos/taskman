@@ -1,6 +1,8 @@
 //! Linear GraphQL client: one issue with its comments, in the same shape as the other trackers.
 
-use crate::tracker::{self, CHOICE_PAGES, COMMENTS, Choice, Comment, Created, Issue, Listed};
+use crate::tracker::{
+    self, CHOICE_PAGES, COMMENTS, Choice, Comment, Created, FetchError, Issue, Listed,
+};
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -29,9 +31,8 @@ impl LinearConfig {
         Self { endpoint: endpoint.to_string(), key: key.to_string(), agent }
     }
 
-    fn query(&self, query: &str, variables: &Value) -> Result<Value, String> {
-        let (status, v) =
-            self.send(query, variables).map_err(|e| format!("Linear request failed: {e}"))?;
+    fn query(&self, query: &str, variables: &Value) -> Result<Value, FetchError> {
+        let (status, v) = self.send(query, variables).map_err(|e| failed(&e))?;
         answer(status, &v)
     }
 
@@ -89,11 +90,16 @@ impl LinearConfig {
     }
 
     /// Creates an issue in the team whose key is `prefix`, in the state the team starts issues in.
-    pub fn create(&self, prefix: &str, title: &str, description: &str) -> Result<Created, String> {
+    pub fn create(
+        &self,
+        prefix: &str,
+        title: &str,
+        description: &str,
+    ) -> Result<Created, FetchError> {
         let team = prefix.trim().to_uppercase();
         let d = self.query(TEAM, &json!({ "team": team }))?;
         let Some(id) = d["teams"]["nodes"][0]["id"].as_str() else {
-            return Err(format!("Linear has no team {team}, or this API key can't see it"));
+            return Err(format!("Linear has no team {team}, or this API key can't see it").into());
         };
         let mut input = json!({ "teamId": id, "title": title });
         if !description.trim().is_empty() {
@@ -102,28 +108,37 @@ impl LinearConfig {
         let place = format!("team {team} in Linear");
         let maybe = |e: &str| tracker::maybe_created(e, &place);
         let (status, v) = self.send(CREATE, &json!({ "input": input })).map_err(|e| {
-            let e2 = format!("Linear request failed: {e}");
-            if tracker::unsent(&e) { e2 } else { maybe(&e2) }
+            let e2 = failed(&e);
+            if tracker::unsent(&e) { e2 } else { e2.map(|e| maybe(&e)) }
         })?;
         // A server failing is the one answer that doesn't say the issue wasn't made.
         if status >= 500 {
-            return Err(maybe(&format!("Linear answered HTTP {status}")));
+            return Err(maybe(&format!("Linear answered HTTP {status}")).into());
         }
         let d = answer(status, &v)?;
-        parse_created(&d, &place)
+        Ok(parse_created(&d, &place)?)
     }
 }
 
-/// What Linear's answer to a query holds, or why it failed.
-fn answer(status: u16, v: &Value) -> Result<Value, String> {
+/// A request that got no status back.
+fn failed(e: &ureq::Error) -> FetchError {
+    FetchError::request(e, format!("Linear request failed: {e}"))
+}
+
+/// What Linear's answer to a query holds, or why it failed. Linear answers a missing entity with
+/// an error saying "Entity not found", an `INVALID_INPUT` like any other bad variable.
+fn answer(status: u16, v: &Value) -> Result<Value, FetchError> {
     if status == 401 || status == 403 || errors_mention(v, "authentication") {
-        return Err("Linear rejected the API key".into());
+        return Err(FetchError::Auth("Linear rejected the API key".into()));
     }
     if let Some(msg) = v["errors"][0]["message"].as_str() {
-        return Err(msg.to_string());
+        if msg.starts_with("Entity not found") {
+            return Err(FetchError::NotFound(msg.to_string()));
+        }
+        return Err(FetchError::Other(msg.to_string()));
     }
     if status >= 400 {
-        return Err(format!("Linear request failed: HTTP {status}"));
+        return Err(FetchError::Other(format!("Linear request failed: HTTP {status}")));
     }
     Ok(v["data"].clone())
 }
@@ -230,16 +245,14 @@ const MAX_PAGES: usize = 40;
 
 /// Fetches an issue by its identifier, like `ENG-123`, its description and comments' Markdown
 /// passed through `text` (`markdown_to_text` for a panel).
-pub fn fetch(cfg: &LinearConfig, key: &str, text: fn(&str) -> String) -> Result<Issue, String> {
-    let d = cfg.query(ISSUE, &json!({ "id": key, "comments": COMMENTS })).map_err(|e| {
-        if e.to_lowercase().contains("not found") {
-            format!("{key} not found, or not visible to this key")
-        } else {
-            e
-        }
+pub fn fetch(cfg: &LinearConfig, key: &str, text: fn(&str) -> String) -> Result<Issue, FetchError> {
+    let not_found = || FetchError::NotFound(format!("{key} not found, or not visible to this key"));
+    let d = cfg.query(ISSUE, &json!({ "id": key, "comments": COMMENTS })).map_err(|e| match e {
+        FetchError::NotFound(_) => not_found(),
+        e => e,
     })?;
     if d["issue"].is_null() {
-        return Err(format!("{key} not found, or not visible to this key"));
+        return Err(not_found());
     }
     let mut issue = parse_issue(&d["issue"], text);
     // Linear lists comments newest first and has no count, so count the older pages.
@@ -352,6 +365,7 @@ fn inline(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::replay;
+    use crate::tracker::FetchError::{Auth, NotFound, Other, Unreachable};
     use crate::tracker::{Client, Text};
     use proptest::prelude::*;
 
@@ -460,20 +474,28 @@ mod tests {
             let server = replay::serve(vec![(status, body)]);
             client(&server).fetch("ENG-52", Text::Plain).unwrap_err()
         };
-        let not_found = "ENG-52 not found, or not visible to this key";
+        let not_found = NotFound("ENG-52 not found, or not visible to this key".into());
         assert_eq!(fetch(200, include_str!("../tests/fixtures/linear/not-found.json")), not_found);
         assert_eq!(fetch(400, include_str!("../tests/fixtures/linear/not-found.json")), not_found);
         assert_eq!(fetch(200, include_str!("../tests/fixtures/linear/no-issue.json")), not_found);
-        let rejected = "Linear rejected the API key";
+        let rejected = Auth("Linear rejected the API key".into());
         assert_eq!(
             fetch(400, include_str!("../tests/fixtures/linear/unauthenticated.json")),
             rejected
         );
         assert_eq!(fetch(401, ""), rejected);
-        assert_eq!(fetch(500, "<html>down</html>"), "Linear request failed: HTTP 500");
+        assert_eq!(
+            fetch(500, "<html>down</html>"),
+            Other("Linear request failed: HTTP 500".into())
+        );
         assert_eq!(
             fetch(400, r#"{"errors":[{"message":"Variable \"$id\" got invalid value"}]}"#),
-            "Variable \"$id\" got invalid value"
+            Other("Variable \"$id\" got invalid value".into())
+        );
+        // Words in an error that isn't Linear's for a missing issue don't make it one.
+        assert_eq!(
+            fetch(400, r#"{"errors":[{"message":"Team not found in this query"}]}"#),
+            Other("Team not found in this query".into())
         );
         // Counting the older comments fails part-way.
         let server = replay::serve(vec![
@@ -482,8 +504,12 @@ mod tests {
         ]);
         assert_eq!(
             client(&server).fetch("ENG-52", Text::Plain).unwrap_err(),
-            "Linear request failed: HTTP 502"
+            Other("Linear request failed: HTTP 502".into())
         );
+        // Nothing listens.
+        let down = LinearConfig::at(&replay::closed(), "lin_api_mock");
+        let e = super::fetch(&down, "ENG-52", markdown_to_text).unwrap_err();
+        assert!(matches!(&e, Unreachable(m) if m.starts_with("Linear request failed: ")), "{e:?}");
     }
 
     #[test]
@@ -536,6 +562,9 @@ mod tests {
             assert!(e.contains("may have been created anyway: look in team ENG in Linear"), "{e}");
             assert_eq!(asked, 2);
         }
+        // Nothing listens: the error says so, for Codex's sandbox to be explained.
+        let down = Client::Linear(LinearConfig::at(&replay::closed(), "lin_api_mock"));
+        assert!(down.create("ENG", "Fix it", "").unwrap_err().cut_off);
     }
 
     #[test]
@@ -649,6 +678,21 @@ mod tests {
             parse_teams(&json!({ "teams": { "nodes": [v.clone()], "pageInfo": v.clone() } }));
             parse_created(&json!({ "issueCreate": { "success": v.clone(), "issue": v.clone() } }), "ENG")
                 .ok();
+        }
+
+        #[test]
+        fn only_linears_missing_entity_is_not_found(
+            lead in prop::sample::select(vec!["", "Entity not found", "Team not found", "not found"]),
+            msg in "\\PC{0,30}",
+            status in prop::sample::select(vec![200u16, 400, 500]),
+        ) {
+            let msg = format!("{lead}{msg}");
+            match answer(status, &json!({ "errors": [{ "message": msg }] })) {
+                Err(NotFound(m)) => prop_assert!(m == msg && m.starts_with("Entity not found")),
+                Err(Auth(_)) => prop_assert!(msg.to_lowercase().contains("authentication")),
+                Err(Other(m)) => prop_assert!(m == msg && !m.starts_with("Entity not found")),
+                other => prop_assert!(false, "{:?}", other),
+            }
         }
 
         #[test]

@@ -1,6 +1,8 @@
 //! Jira Cloud REST client: one issue with its comments, rendered to plain text.
 
-use crate::tracker::{self, CHOICE_PAGES, COMMENTS, Choice, Comment, Created, Issue, Listed};
+use crate::tracker::{
+    self, CHOICE_PAGES, COMMENTS, Choice, Comment, Created, FetchError, Issue, Listed,
+};
 use crate::util::parse_ts;
 use base64::Engine;
 use serde_json::{Value, json};
@@ -119,16 +121,21 @@ impl JiraConfig {
     /// Creates a ticket in the project whose key is `prefix`: a Task, or the project's first
     /// standard issue type when it has no Task. Refused, with Jira's reasons, when the project
     /// requires fields taskman doesn't fill.
-    pub fn create(&self, prefix: &str, title: &str, description: &str) -> Result<Created, String> {
+    pub fn create(
+        &self,
+        prefix: &str,
+        title: &str,
+        description: &str,
+    ) -> Result<Created, FetchError> {
         let project = prefix.to_uppercase();
         let v = self.get(&format!("/rest/api/3/project/{project}")).map_err(|e| match e {
-            ureq::Error::StatusCode(404) => {
-                format!("Jira has no project {project}, or this account can't see it")
-            }
-            e => describe(e, ""),
+            ureq::Error::StatusCode(404) => FetchError::Other(format!(
+                "Jira has no project {project}, or this account can't see it"
+            )),
+            e => failure(e, ""),
         })?;
         let Some((type_id, type_name)) = issue_type(&v) else {
-            return Err(format!("Jira project {project} has no issue type a ticket can be"));
+            return Err(format!("Jira project {project} has no issue type a ticket can be").into());
         };
         let mut fields = json!({
             "project": { "key": project },
@@ -142,14 +149,16 @@ impl JiraConfig {
         let (status, v) =
             self.post("/rest/api/3/issue", &json!({ "fields": fields })).map_err(|e| {
                 let sent = !tracker::unsent(&e);
-                let e = describe(e, "");
-                if sent { tracker::maybe_created(&e, &place) } else { e }
+                let e = failure(e, "");
+                if sent { e.map(|e| tracker::maybe_created(&e, &place)) } else { e }
             })?;
         match status {
-            200..=299 => parse_created(&v, &self.base, &place),
-            401 | 403 => Err(describe(ureq::Error::StatusCode(status), "")),
-            400..=499 => Err(refusal(&v, &project, &type_name, status)),
-            _ => Err(tracker::maybe_created(&format!("Jira answered HTTP {status}"), &place)),
+            200..=299 => Ok(parse_created(&v, &self.base, &place)?),
+            401 | 403 => Err(failure(ureq::Error::StatusCode(status), "")),
+            400..=499 => Err(refusal(&v, &project, &type_name, status).into()),
+            _ => {
+                Err(tracker::maybe_created(&format!("Jira answered HTTP {status}"), &place).into())
+            }
         }
     }
 
@@ -161,28 +170,33 @@ impl JiraConfig {
 }
 
 fn describe(e: ureq::Error, key: &str) -> String {
+    failure(e, key).into()
+}
+
+/// What a request about `key` (empty for none) that failed with `e` means.
+fn failure(e: ureq::Error, key: &str) -> FetchError {
     match e {
-        ureq::Error::StatusCode(401 | 403) => {
-            "Jira rejected the credentials (check the email and API token)".to_string()
-        }
+        ureq::Error::StatusCode(401 | 403) => FetchError::Auth(
+            "Jira rejected the credentials (check the email and API token)".to_string(),
+        ),
         ureq::Error::StatusCode(404) if !key.is_empty() => {
-            format!("{key} not found, or not visible to this account")
+            FetchError::NotFound(format!("{key} not found, or not visible to this account"))
         }
-        other => format!("Jira request failed: {other}"),
+        other => FetchError::request(&other, format!("Jira request failed: {other}")),
     }
 }
 
-pub fn fetch(cfg: &JiraConfig, key: &str) -> Result<Issue, String> {
+pub fn fetch(cfg: &JiraConfig, key: &str) -> Result<Issue, FetchError> {
     let path = format!(
         "/rest/api/3/issue/{key}?fields=summary,status,issuetype,priority,assignee,description,comment"
     );
-    let v = cfg.get(&path).map_err(|e| describe(e, key))?;
+    let v = cfg.get(&path).map_err(|e| failure(e, key))?;
     let mut issue = parse_issue(&v);
     // The issue carries its oldest comments only, up to a limit; past it, ask for the newest.
     if issue.comments_left_out > 0 {
         let path =
             format!("/rest/api/3/issue/{key}/comment?orderBy=-created&maxResults={COMMENTS}");
-        let page = cfg.get(&path).map_err(|e| describe(e, key))?;
+        let page = cfg.get(&path).map_err(|e| failure(e, key))?;
         (issue.comments, issue.comments_left_out) = parse_comments(&page);
     }
     Ok(issue)
@@ -463,6 +477,7 @@ fn walk(node: &Value, out: &mut String, depth: usize) {
 mod tests {
     use super::*;
     use crate::replay;
+    use crate::tracker::FetchError::{Auth, NotFound, Other, Unreachable};
     use crate::tracker::{Client, Text};
     use proptest::prelude::*;
     use serde_json::json;
@@ -569,29 +584,30 @@ mod tests {
             let server = replay::serve(vec![(status, not_found)]);
             client(&server).fetch("ENG-52", Text::Plain).unwrap_err()
         };
-        assert_eq!(fetch(404), "ENG-52 not found, or not visible to this account");
-        assert_eq!(fetch(401), "Jira rejected the credentials (check the email and API token)");
-        assert_eq!(fetch(403), "Jira rejected the credentials (check the email and API token)");
-        assert!(fetch(500).starts_with("Jira request failed: "));
+        assert_eq!(fetch(404), NotFound("ENG-52 not found, or not visible to this account".into()));
+        let rejected = Auth("Jira rejected the credentials (check the email and API token)".into());
+        assert_eq!(fetch(401), rejected);
+        assert_eq!(fetch(403), rejected);
+        assert!(matches!(fetch(500), Other(e) if e.starts_with("Jira request failed: ")));
         // The comments request fails after the issue's.
         let server = replay::serve(vec![
             (200, include_str!("../tests/fixtures/jira/issue-many-comments.json")),
             (503, ""),
         ]);
-        assert!(
-            client(&server)
-                .fetch("ENG-53", Text::Plain)
-                .unwrap_err()
-                .starts_with("Jira request failed: ")
-        );
+        assert!(matches!(
+            client(&server).fetch("ENG-53", Text::Plain).unwrap_err(),
+            Other(e) if e.starts_with("Jira request failed: ")
+        ));
         // Not JSON, from a proxy say.
         let server = replay::serve(vec![(200, "<html>sign in</html>")]);
-        assert!(
-            client(&server)
-                .fetch("ENG-52", Text::Plain)
-                .unwrap_err()
-                .starts_with("Jira request failed: ")
-        );
+        assert!(matches!(
+            client(&server).fetch("ENG-52", Text::Plain).unwrap_err(),
+            Other(e) if e.starts_with("Jira request failed: ")
+        ));
+        // Nothing listens.
+        let down = Client::Jira(JiraConfig::new(&replay::closed(), "ana@example.com", "token"));
+        let e = down.fetch("ENG-52", Text::Plain).unwrap_err();
+        assert!(matches!(&e, Unreachable(m) if m.starts_with("Jira request failed: ")), "{e:?}");
     }
 
     #[test]

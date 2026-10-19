@@ -4,7 +4,7 @@
 //! worktree's remotes would pick.
 
 use crate::github;
-use crate::tracker::{self, COMMENTS, Comment, Created, Issue, LinkedPr, Listed};
+use crate::tracker::{self, COMMENTS, Comment, Created, FetchError, Issue, LinkedPr, Listed};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -162,7 +162,7 @@ impl GithubConfig {
         Some(Self { repo: Repo::parse(site)?, runner: Runner::Gh(dir.to_path_buf()) })
     }
 
-    fn query(&self, query: &str, vars: &[(&str, String)]) -> Result<Value, String> {
+    fn query(&self, query: &str, vars: &[(&str, String)]) -> Result<Value, FetchError> {
         let mut args: Vec<String> = vec!["api".into(), "graphql".into()];
         args.extend(["--hostname".into(), self.repo.host.clone()]);
         // -f passes text as it is; -F reads numbers (and would read a file for a value starting
@@ -174,7 +174,8 @@ impl GithubConfig {
         }
         args.extend(["-f".into(), format!("query={query}")]);
         let out = self.gh(&args).map_err(|e| self.explain(&e))?;
-        let v: Value = serde_json::from_str(&out).map_err(|e| format!("gh api: {e}"))?;
+        let v: Value =
+            serde_json::from_str(&out).map_err(|e| FetchError::Other(format!("gh api: {e}")))?;
         if let Some(msg) = v["errors"][0]["message"].as_str() {
             return Err(self.explain(msg));
         }
@@ -194,7 +195,12 @@ impl GithubConfig {
 
     /// Opens an issue in the repository, keyed with `prefix`. The REST call, as GraphQL's needs
     /// the repository's id first.
-    pub fn create(&self, prefix: &str, title: &str, description: &str) -> Result<Created, String> {
+    pub fn create(
+        &self,
+        prefix: &str,
+        title: &str,
+        description: &str,
+    ) -> Result<Created, FetchError> {
         let mut args: Vec<String> = vec!["api".into(), "--hostname".into(), self.repo.host.clone()];
         args.extend(["-X".into(), "POST".into()]);
         args.push(format!("repos/{}/{}/issues", self.repo.owner, self.repo.name));
@@ -215,61 +221,73 @@ impl GithubConfig {
             if refused || unrun {
                 self.explain(&e)
             } else {
-                tracker::maybe_created(&self.explain(&e), &place)
+                self.explain(&e).map(|e| tracker::maybe_created(&e, &place))
             }
         })?;
-        parse_created(&out, prefix, &place)
+        Ok(parse_created(&out, prefix, &place)?)
     }
 
     /// What a failed call means and what to do about it. gh's active account is the one used, and
     /// people often have two (work and personal), so access errors name the repository and host.
-    fn explain(&self, e: &str) -> String {
+    /// gh's error text is all it says, so the kind is read from it.
+    fn explain(&self, e: &str) -> FetchError {
         let (repo, host) = (self.repo.spec(), &self.repo.host);
         let lower = e.to_lowercase();
-        if lower.contains("could not resolve to a repository") || lower.contains("http 404") {
-            format!(
+        // gh's errors can run over lines ("error connecting to …", then advice); a panel shows
+        // one line.
+        let one_line =
+            || e.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("; ");
+        if lower.contains("could not resolve to an issue") {
+            FetchError::NotFound(one_line())
+        } else if lower.contains("could not resolve to a repository") || lower.contains("http 404")
+        {
+            FetchError::Other(format!(
                 "gh can't see {repo} on {host}: it doesn't exist, or gh's active account can't reach it. Run gh auth switch -h {host} for another account, or gh auth refresh -h {host} -s repo for a private repository"
-            )
+            ))
         } else if lower.contains("http 401") || lower.contains("bad credentials") {
-            format!("{host} rejected gh's login; run gh auth login -h {host}, or gh auth switch")
+            FetchError::Auth(format!(
+                "{host} rejected gh's login; run gh auth login -h {host}, or gh auth switch"
+            ))
         } else if lower.contains("scope") {
-            format!("gh's token can't read {repo}'s issues; run gh auth refresh -h {host} -s repo")
+            FetchError::Auth(format!(
+                "gh's token can't read {repo}'s issues; run gh auth refresh -h {host} -s repo"
+            ))
         } else if lower.contains("saml") {
-            format!(
+            FetchError::Auth(format!(
                 "{repo}'s organization needs gh's token authorized for its single sign-on; run gh auth refresh -h {host}"
-            )
+            ))
         } else if lower.contains("http 403") || lower.contains("resource not accessible") {
-            format!(
+            FetchError::Auth(format!(
                 "gh's active account can't read {repo}'s issues; run gh auth switch -h {host} for another account"
-            )
+            ))
+        } else if e == github::Gh::LoggedOut.why() {
+            FetchError::Auth(e.to_string())
+        } else if lower.contains("error connecting to") {
+            FetchError::Unreachable(one_line())
         } else {
-            // gh's errors can run over lines ("error connecting to …", then advice); a panel
-            // shows one line.
-            e.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("; ")
+            FetchError::Other(one_line())
         }
     }
 
     /// Fetches the issue `key` names (its number), its body and comments' Markdown passed through
     /// `text` (`markdown_to_text` for a panel).
-    pub fn fetch(&self, key: &str, text: fn(&str) -> String) -> Result<Issue, String> {
+    pub fn fetch(&self, key: &str, text: fn(&str) -> String) -> Result<Issue, FetchError> {
         let repo = self.repo.spec();
         let n = number(key).ok_or_else(|| format!("{key} has no issue number"))?;
-        let not_found = || format!("{key} not found: {repo} has no issue #{n}");
+        let not_found =
+            || FetchError::NotFound(format!("{key} not found: {repo} has no issue #{n}"));
         let d = self
             .query(ISSUE, &[("number", n.to_string()), ("comments", COMMENTS.to_string())])
-            .map_err(|e| {
-                if e.to_lowercase().contains("could not resolve to an issue") {
-                    not_found()
-                } else {
-                    e
-                }
+            .map_err(|e| match e {
+                FetchError::NotFound(_) => not_found(),
+                e => e,
             })?;
         let node = &d["repository"]["issueOrPullRequest"];
         match node["__typename"].as_str() {
             Some("Issue") => Ok(parse_issue(node, text)),
-            Some("PullRequest") => {
-                Err(format!("{key} not found: #{n} in {repo} is a pull request, not an issue"))
-            }
+            Some("PullRequest") => Err(FetchError::NotFound(format!(
+                "{key} not found: #{n} in {repo} is a pull request, not an issue"
+            ))),
             _ => Err(not_found()),
         }
     }
@@ -371,6 +389,7 @@ fn parse_open(d: &Value, prefix: &str) -> Result<Vec<Listed>, String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::tracker::FetchError::{Auth, NotFound, Other, Unreachable};
     use crate::tracker::{Client, Text};
     use proptest::prelude::*;
     use std::collections::VecDeque;
@@ -530,36 +549,46 @@ pub(crate) mod tests {
         };
         assert_eq!(
             fetch(Ok(include_str!("../tests/fixtures/github/pull-request.json"))),
-            "WEB-45 not found: #45 in acme/web is a pull request, not an issue"
+            NotFound("WEB-45 not found: #45 in acme/web is a pull request, not an issue".into())
         );
+        let no_issue = NotFound("WEB-45 not found: acme/web has no issue #45".into());
+        assert_eq!(fetch(Ok(include_str!("../tests/fixtures/github/no-issue.json"))), no_issue);
+        // What gh prints when the answer has errors.
         assert_eq!(
             fetch(Err(
                 "GraphQL: Could not resolve to an issue or pull request with the number of 45. (repository.issueOrPullRequest)"
             )),
-            "WEB-45 not found: acme/web has no issue #45"
+            no_issue
         );
         assert_eq!(
             fetch(Ok(include_str!("../tests/fixtures/github/no-repository.json"))),
-            "gh can't see acme/web on github.com: it doesn't exist, or gh's active account can't reach it. Run gh auth switch -h github.com for another account, or gh auth refresh -h github.com -s repo for a private repository"
+            Other("gh can't see acme/web on github.com: it doesn't exist, or gh's active account can't reach it. Run gh auth switch -h github.com for another account, or gh auth refresh -h github.com -s repo for a private repository".into())
         );
         assert_eq!(
             fetch(Err("HTTP 401: Bad credentials (https://api.github.com/graphql)")),
-            "github.com rejected gh's login; run gh auth login -h github.com, or gh auth switch"
+            Auth("github.com rejected gh's login; run gh auth login -h github.com, or gh auth switch".into())
         );
         assert_eq!(
             fetch(Err(
                 "GraphQL: Your token has not been granted the required scopes to execute this query."
             )),
-            "gh's token can't read acme/web's issues; run gh auth refresh -h github.com -s repo"
+            Auth("gh's token can't read acme/web's issues; run gh auth refresh -h github.com -s repo".into())
         );
         assert_eq!(
             fetch(Err("error connecting to github.com\ncheck your internet connection")),
-            "error connecting to github.com; check your internet connection"
+            Unreachable("error connecting to github.com; check your internet connection".into())
         );
         // Being logged out, or gh missing, is said as the PR panel says it.
-        assert_eq!(fetch(Err(github::Gh::LoggedOut.why())), github::Gh::LoggedOut.why());
+        assert_eq!(
+            fetch(Err(github::Gh::LoggedOut.why())),
+            Auth(github::Gh::LoggedOut.why().into())
+        );
+        assert_eq!(fetch(Err(github::Gh::Missing.why())), Other(github::Gh::Missing.why().into()));
         let (cfg, _) = replay("acme/web", vec![]);
-        assert_eq!(cfg.fetch("WEB", |s| s.to_string()).unwrap_err(), "WEB has no issue number");
+        assert_eq!(
+            cfg.fetch("WEB", |s| s.to_string()).unwrap_err(),
+            Other("WEB has no issue number".into())
+        );
     }
 
     #[test]
@@ -667,6 +696,22 @@ pub(crate) mod tests {
             if let Some(Ok(key)) = key_from_input(&s, "WEB", &repo) {
                 prop_assert!(key.starts_with("WEB-"));
                 prop_assert!(number(&key).is_some());
+            }
+        }
+
+        #[test]
+        fn only_a_missing_issue_is_not_found(
+            lead in "\\PC{0,20}",
+            said in prop::sample::select(vec!["", " not found", "Could not resolve to an issue", "error connecting to github.com"]),
+            tail in "\\PC{0,20}",
+        ) {
+            let (cfg, _) = replay("acme/web", vec![]);
+            let gh = format!("{lead}{said}{tail}");
+            let lower = gh.to_lowercase();
+            match cfg.explain(&gh) {
+                NotFound(_) => prop_assert!(lower.contains("could not resolve to an issue"), "{gh:?}"),
+                Unreachable(_) => prop_assert!(lower.contains("error connecting to"), "{gh:?}"),
+                Auth(m) | Other(m) => prop_assert!(!m.is_empty() || gh.trim().is_empty(), "{gh:?}"),
             }
         }
 

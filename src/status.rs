@@ -11,7 +11,7 @@ use crate::cli::{Arg, Lexer};
 use crate::github::{self, CheckState, Lookup, Pr, Worktree, Worktrees};
 use crate::status_file::{self, Record};
 use crate::store::{self, Config, Project, Provider, Saved, Ticket};
-use crate::tracker::{Client, Issue, Text};
+use crate::tracker::{Client, FetchError, Issue, Text};
 use crate::{cli, local, resume, stack, untrusted, util, worktree};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -373,9 +373,8 @@ fn same_tracker(a: &Project, b: &Project) -> bool {
     matches!((&a.tracker, &b.tracker), (Some(x), Some(y)) if x.shares_keys_with(y))
 }
 
-/// Adds what to do when a request failed to connect inside Codex's sandbox.
-pub(crate) fn explain_sandbox(e: String, codex: bool) -> String {
-    let cut_off = e.contains("request failed: io:") || e.contains("error connecting to");
+/// Adds what to do when a request got no answer (`cut_off`) inside Codex's sandbox.
+pub(crate) fn explain_sandbox(e: String, cut_off: bool, codex: bool) -> String {
     if codex && cut_off {
         format!(
             "{e}. Codex's sandbox blocks network access: run the command outside it (approve it when asked, and allow it from then on)."
@@ -383,6 +382,18 @@ pub(crate) fn explain_sandbox(e: String, codex: bool) -> String {
     } else {
         e
     }
+}
+
+/// `explain_sandbox` for a tracker's error, whose kind says whether it was cut off.
+pub(crate) fn explain_fetch(e: FetchError, codex: bool) -> String {
+    let cut_off = matches!(e, FetchError::Unreachable(_));
+    explain_sandbox(e.into(), cut_off, codex)
+}
+
+/// `explain_sandbox` for gh's error, whose text is all gh says about it.
+fn explain_gh(e: String, codex: bool) -> String {
+    let cut_off = e.contains("error connecting to");
+    explain_sandbox(e, cut_off, codex)
 }
 
 /// The state of a session taskman put to sleep to save memory: it can't be messaged until it's
@@ -476,18 +487,16 @@ fn fetch_report(
     ticket: Option<&Ticket>,
     project: &Project,
     saved: &Saved,
-    client: &Result<Option<Client>, String>,
+    client: &Result<Option<Client>, FetchError>,
     codex: bool,
 ) -> Report {
     let tracker = project.tracker.as_ref();
     let base = ticket.and_then(|t| t.base.clone());
     let (issue, base_pr, (wt, pr)) = std::thread::scope(|s| {
         let issue = s.spawn(|| match client {
-            Ok(Some(c)) => {
-                Some(c.fetch(key, Text::Markdown).map_err(|e| explain_sandbox(e, codex)))
-            }
+            Ok(Some(c)) => Some(c.fetch(key, Text::Markdown).map_err(|e| explain_fetch(e, codex))),
             Ok(None) => None,
-            Err(e) => Some(Err(e.clone())),
+            Err(e) => Some(Err(e.to_string())),
         });
         // Whether a stacked ticket's base merged: its own PR says, even once its ticket is closed.
         let base_pr = s.spawn(|| {
@@ -508,7 +517,7 @@ fn fetch_report(
                 tracker.and_then(|t| t.closes(key)).as_ref(),
                 |args| github::gh(&project.repo, args),
             )
-            .map_err(|e| explain_sandbox(e, codex)),
+            .map_err(|e| explain_gh(e, codex)),
         };
         (
             issue.join().unwrap_or_else(|_| Some(Err("the tracker request crashed".into()))),
@@ -601,7 +610,7 @@ fn overview(
             })
         })
         .collect();
-    let tracker_error = client.as_ref().err().cloned();
+    let tracker_error = client.as_ref().err().map(FetchError::to_string);
     let tracker = project.tracker.is_some();
     Overview {
         project: project.name.clone(),
@@ -1744,14 +1753,26 @@ mod tests {
         .unwrap();
         let err = |p: usize, c: &Config| Client::for_project(c, &s.projects[p]).err().unwrap();
         assert!(matches!(Client::for_project(&config, &s.projects[2]), Ok(None)));
-        assert!(err(0, &config).contains("no Linear account picked for project acme"));
+        assert!(matches!(
+            err(0, &config),
+            FetchError::Auth(e) if e.contains("no Linear account picked for project acme")
+        ));
         let mut config = config;
         config.accounts[0].site = "acme".into();
         let e = err(0, &config);
         assert!(
-            e.contains("TASKMAN_TEST_UNSET_TOKEN isn't set")
-                && e.contains("Linear account linear-1"),
-            "{e}"
+            matches!(&e, FetchError::Auth(e) if e.contains("TASKMAN_TEST_UNSET_TOKEN isn't set")
+                && e.contains("Linear account linear-1")),
+            "{e:?}"
+        );
+        // A token command that isn't there makes sh say "not found", which says nothing about a
+        // ticket.
+        config.accounts[0].token = "cmd:taskman-test-no-such-command".into();
+        let e = err(0, &config);
+        assert!(
+            matches!(&e, FetchError::Auth(e) if e.contains("the token command failed")
+                && e.contains("not found")),
+            "{e:?}"
         );
     }
 
@@ -1862,16 +1883,19 @@ mod tests {
     #[test]
     fn explains_codexs_sandbox_only_when_a_request_was_cut_off() {
         let cut = "Linear request failed: io: failed to lookup address information";
+        let unreachable = || FetchError::Unreachable(cut.into());
         assert!(
-            explain_sandbox(cut.into(), true).contains("Codex's sandbox blocks network access")
+            explain_fetch(unreachable(), true).contains("Codex's sandbox blocks network access")
         );
         assert!(
-            explain_sandbox("error connecting to api.github.com".into(), true)
+            explain_gh("error connecting to api.github.com".into(), true)
                 .contains("run the command outside it")
         );
-        assert_eq!(explain_sandbox(cut.into(), false), cut);
+        assert_eq!(explain_fetch(unreachable(), false), cut);
+        // The kind decides, not the words.
+        assert_eq!(explain_fetch(FetchError::Other(cut.into()), true), cut);
         assert_eq!(
-            explain_sandbox("Linear rejected the API key".into(), true),
+            explain_fetch(FetchError::Auth("Linear rejected the API key".into()), true),
             "Linear rejected the API key"
         );
     }

@@ -3,7 +3,7 @@
 //! the project's own folder; callers pass that folder, never a worktree's copy.
 
 use crate::cli::{Arg, Lexer};
-use crate::tracker::{Issue, Listed};
+use crate::tracker::{FetchError, Issue, Listed};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -229,12 +229,14 @@ impl Cache {
     }
 }
 
-/// Why writing the board failed, and whether the system refused the write (as Codex's sandbox
-/// does outside the session's folder), which `sandbox_hint` explains.
+/// Why writing the board (or creating a ticket in a tracker) failed, whether the system refused
+/// the write (as Codex's sandbox does outside the session's folder), which `sandbox_hint` explains,
+/// and whether the tracker's request got no answer, which `status::explain_sandbox` explains.
 #[derive(Debug)]
 pub struct WriteError {
     pub message: String,
     pub denied: bool,
+    pub cut_off: bool,
 }
 
 impl WriteError {
@@ -243,13 +245,20 @@ impl WriteError {
             e.kind(),
             std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
         );
-        WriteError { message: format!("{what}: {e}"), denied }
+        WriteError { message: format!("{what}: {e}"), denied, cut_off: false }
     }
 }
 
 impl From<String> for WriteError {
     fn from(message: String) -> Self {
-        WriteError { message, denied: false }
+        WriteError { message, denied: false, cut_off: false }
+    }
+}
+
+impl From<FetchError> for WriteError {
+    fn from(e: FetchError) -> Self {
+        let cut_off = matches!(e, FetchError::Unreachable(_));
+        WriteError { message: e.into(), denied: false, cut_off }
     }
 }
 
@@ -262,26 +271,35 @@ impl From<&str> for WriteError {
 /// The file of ticket `key` among `files`. Two files with the key (in two columns after a git
 /// merge, say) is an error naming both, so the user picks one.
 pub fn find_in(files: &[File], key: &str, board: &Path) -> Result<File, String> {
+    lookup(files, key, board).map_err(String::from)
+}
+
+/// `find_in`, saying whether there's no file (`NotFound`) or two.
+fn lookup(files: &[File], key: &str, board: &Path) -> Result<File, FetchError> {
     let found: Vec<&File> = files.iter().filter(|f| f.key.eq_ignore_ascii_case(key)).collect();
     match found[..] {
         [f] => Ok(f.clone()),
-        [] => Err(format!(
+        [] => Err(FetchError::NotFound(format!(
             "{} not found: no {key}-….md in {}",
             key.to_uppercase(),
             crate::store::tilde(board)
-        )),
+        ))),
         _ => {
             let paths = found.iter().map(|f| rel(board, &f.path)).collect::<Vec<_>>().join(" and ");
-            Err(format!("{key} has two files, {paths}; remove one"))
+            Err(FetchError::Other(format!("{key} has two files, {paths}; remove one")))
         }
     }
 }
 
 pub fn find(board: &Path, key: &str) -> Result<File, String> {
+    find_file(board, key).map_err(String::from)
+}
+
+fn find_file(board: &Path, key: &str) -> Result<File, FetchError> {
     if let Some(why) = linked(board) {
-        return Err(why);
+        return Err(FetchError::Other(why));
     }
-    find_in(&files(board), key, board)
+    lookup(&files(board), key, board)
 }
 
 /// A path shown relative to the board's parent: `workplan/doing/WP-3-fix-login.md`.
@@ -365,8 +383,12 @@ fn split_frontmatter(content: &str) -> (&str, &str) {
 }
 
 /// Reads ticket `key` from the board: the issue, and its file.
-pub fn fetch(board: &Path, key: &str, text: fn(&str) -> String) -> Result<(Issue, File), String> {
-    let file = find(board, key)?;
+pub fn fetch(
+    board: &Path,
+    key: &str,
+    text: fn(&str) -> String,
+) -> Result<(Issue, File), FetchError> {
+    let file = find_file(board, key)?;
     let content = read_no_follow(&file.path)
         .map_err(|e| format!("couldn't read {}: {e}", rel(board, &file.path)))?;
     Ok((parse(&content, &file, text), file))
@@ -931,6 +953,10 @@ mod tests {
             e.message.contains("its columns are backlog, todo, doing, review, done") && !e.denied
         );
         assert!(find(&board, "WP-7").unwrap_err().starts_with("WP-7 not found"));
+        assert!(matches!(
+            fetch(&board, "WP-7", |s| s.to_string()),
+            Err(FetchError::NotFound(e)) if e.starts_with("WP-7 not found: no WP-7-….md in ")
+        ));
         // The cache lists again once a column changes.
         let mut cache = Cache::default();
         assert_eq!(cache.files(&board).len(), 2);
