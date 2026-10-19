@@ -3,10 +3,14 @@
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::io::{Read, Write};
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 
 const SCROLLBACK: usize = 10_000;
+
+/// How much input may wait for a session's CLI to read it. Past this, `Session::write` drops what
+/// it's given rather than queue more for a CLI that isn't reading.
+pub const QUEUE: usize = 4 << 20;
 
 /// Answers the terminal queries a real terminal would, and captures title/clipboard requests.
 #[derive(Default)]
@@ -65,7 +69,7 @@ pub type Parser = vt100::Parser<Callbacks>;
 
 pub struct Session {
     pub parser: Arc<Mutex<Parser>>,
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    input: Input,
     master: Box<dyn MasterPty + Send>,
     /// The CLI's process; None once `reap` has taken it.
     child: Option<Box<dyn Child + Send + Sync>>,
@@ -89,8 +93,7 @@ impl Session {
         let child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
         let mut reader = pair.master.try_clone_reader()?;
-        let writer: Arc<Mutex<Box<dyn Write + Send>>> =
-            Arc::new(Mutex::new(pair.master.take_writer()?));
+        let input = Input::spawn(pair.master.take_writer()?)?;
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             rows,
             cols,
@@ -101,8 +104,8 @@ impl Session {
         let last_output = Arc::new(AtomicU64::new(now_ms()));
 
         {
-            let (parser, writer, exited, last_output) =
-                (parser.clone(), writer.clone(), exited.clone(), last_output.clone());
+            let (parser, input, exited, last_output) =
+                (parser.clone(), input.clone(), exited.clone(), last_output.clone());
             let mut killer = child.clone_killer();
             std::thread::spawn(move || {
                 // A panic here (in vt100, say) ends this session only; the others and the TUI
@@ -125,11 +128,7 @@ impl Session {
                                     p.process(&buf[..n]);
                                     std::mem::take(&mut p.callbacks_mut().replies)
                                 };
-                                if !replies.is_empty() {
-                                    let mut w = lock(&writer);
-                                    let _ = w.write_all(&replies);
-                                    let _ = w.flush();
-                                }
+                                input.send(replies);
                                 last_output.store(now_ms(), Ordering::Relaxed);
                                 dirty.store(true, Ordering::Relaxed);
                             }
@@ -147,7 +146,7 @@ impl Session {
 
         Ok(Self {
             parser,
-            writer,
+            input,
             master: pair.master,
             child: Some(child),
             exited,
@@ -156,18 +155,21 @@ impl Session {
         })
     }
 
-    pub fn write(&self, bytes: &[u8]) {
-        let mut w = lock(&self.writer);
-        let _ = w.write_all(bytes);
-        let _ = w.flush();
+    /// Queues `bytes` for the CLI and returns at once, however slowly it reads them. False if
+    /// they were dropped: they'd have taken more than `QUEUE` waiting for it.
+    #[must_use]
+    pub fn write(&self, bytes: &[u8]) -> bool {
+        self.input.send(bytes.to_vec())
     }
 
-    pub fn paste(&self, text: &str) {
+    /// As `write`, for text pasted: bracketed if the CLI asked for that.
+    #[must_use]
+    pub fn paste(&self, text: &str) -> bool {
         let bracketed = lock(&self.parser).screen().bracketed_paste();
         if bracketed {
-            self.write(format!("\x1b[200~{text}\x1b[201~").as_bytes());
+            self.input.send(format!("\x1b[200~{text}\x1b[201~").into_bytes())
         } else {
-            self.write(text.replace('\n', "\r").as_bytes());
+            self.input.send(text.replace('\n', "\r").into_bytes())
         }
     }
 
@@ -281,13 +283,14 @@ impl Session {
         clippy::cast_possible_truncation,
         reason = "the legacy encoding clamps each coordinate to 223, so 32 + it fits a byte"
     )]
-    pub fn send_wheel(&self, col: u16, row: u16, up: bool) {
+    #[must_use]
+    pub fn send_wheel(&self, col: u16, row: u16, up: bool) -> bool {
         let enc = lock(&self.parser).screen().mouse_protocol_encoding();
         let button = if up { 64u8 } else { 65 };
         let (c, r) = (col as u32 + 1, row as u32 + 1);
         match enc {
             vt100::MouseProtocolEncoding::Sgr => {
-                self.write(format!("\x1b[<{button};{c};{r}M").as_bytes());
+                self.write(format!("\x1b[<{button};{c};{r}M").as_bytes())
             }
             _ => self.write(&[
                 0x1b,
@@ -328,7 +331,52 @@ fn test_panic() -> Option<Vec<u8>> {
     Some(marker.into_encoded_bytes())
 }
 
-/// Locks a session's parser or writer even after a thread panicked holding it: the reader thread
+/// What a session sends its CLI, written to the pty by a thread of its own, so neither the UI
+/// thread nor the reader (answering a query) waits on a CLI that's slow to read: with them
+/// writing it themselves, a long paste to a CLI that read slowly and sent queries as it did held
+/// all three up for good. Each clone sends to the same thread, which ends once they're all gone.
+#[derive(Clone)]
+struct Input {
+    tx: mpsc::Sender<Vec<u8>>,
+    /// Bytes sent and not yet written.
+    queued: Arc<AtomicUsize>,
+}
+
+impl Input {
+    fn spawn(mut w: Box<dyn Write + Send>) -> std::io::Result<Self> {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let queued = Arc::new(AtomicUsize::new(0));
+        let left = queued.clone();
+        std::thread::Builder::new().name("pty writer".into()).spawn(move || {
+            // After a failed write (the CLI gone), what's left is dropped as it comes.
+            let mut open = true;
+            for bytes in rx {
+                open = open && w.write_all(&bytes).and_then(|()| w.flush()).is_ok();
+                left.fetch_sub(bytes.len(), Ordering::Release);
+            }
+        })?;
+        Ok(Self { tx, queued })
+    }
+
+    /// Queues `bytes` for the writer thread, unless they'd take the queue past `QUEUE`.
+    fn send(&self, bytes: Vec<u8>) -> bool {
+        let n = bytes.len();
+        if n == 0 {
+            return true;
+        }
+        if self.queued.fetch_add(n, Ordering::AcqRel) + n > QUEUE {
+            self.queued.fetch_sub(n, Ordering::AcqRel);
+            return false;
+        }
+        // The thread lives as long as any clone, so this only fails if it panicked.
+        if self.tx.send(bytes).is_err() {
+            self.queued.fetch_sub(n, Ordering::AcqRel);
+        }
+        true
+    }
+}
+
+/// Locks a session's parser even after a thread panicked holding it: the reader thread
 /// can panic inside vt100, and that must end only its own session, not the TUI on its next draw.
 pub fn lock<T: ?Sized>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -378,22 +426,48 @@ pub fn stop_all(sessions: Vec<Session>, reapers: Vec<Reaper>) {
 }
 
 /// A session with no process behind it, for tests: what's written to it lands in the returned
-/// buffer, and what it shows is whatever the test feeds its parser (`Session::output`).
+/// `Sent`, through a writer thread as a real session's does, and what it shows is whatever the
+/// test feeds its parser (`Session::output`).
 #[cfg(test)]
 pub mod fake {
-    use super::{Callbacks, Session, now_ms};
+    use super::{Callbacks, Input, Session, now_ms};
     use portable_pty::{Child, ChildKiller, ExitStatus, MasterPty, PtySize};
-    use std::sync::atomic::{AtomicBool, AtomicU64};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     /// The bytes a fake session was sent.
-    pub type Sent = Arc<Mutex<Vec<u8>>>;
+    pub struct Sent {
+        pub(super) bytes: Arc<Mutex<Vec<u8>>>,
+        queued: Arc<AtomicUsize>,
+    }
 
-    struct Writer(Sent);
+    impl Sent {
+        /// What the session was sent, once its writer thread has written all of it: none of it
+        /// can still be on its way, so a test can tell that nothing was sent.
+        pub fn bytes(&self) -> Vec<u8> {
+            let until = Instant::now() + Duration::from_secs(5);
+            while self.queued.load(Ordering::Acquire) != 0 {
+                assert!(Instant::now() < until, "the fake session's writer is stuck");
+                std::thread::yield_now();
+            }
+            super::lock(&self.bytes).clone()
+        }
+    }
+
+    /// The fake pty's writer: given a gate, each write waits until the test drops its `Release`,
+    /// as a CLI that doesn't read holds a real one up.
+    struct Writer {
+        sent: Arc<Mutex<Vec<u8>>>,
+        gate: Option<std::sync::mpsc::Receiver<()>>,
+    }
 
     impl std::io::Write for Writer {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            super::lock(&self.0).extend_from_slice(buf);
+            if let Some(gate) = &self.gate {
+                let _ = gate.recv();
+            }
+            super::lock(&self.sent).extend_from_slice(buf);
             Ok(buf.len())
         }
 
@@ -459,20 +533,28 @@ pub mod fake {
         }
     }
 
-    /// Ends a `Session::fake_slow`'s CLI when sent on, or dropped.
+    /// Ends a `Session::fake_slow`'s CLI when sent on, or dropped; lets a `Session::fake_stuck`
+    /// read its input when dropped.
     pub type Release = std::sync::mpsc::Sender<()>;
 
     impl Session {
         pub fn fake(rows: u16, cols: u16) -> (Self, Sent) {
-            let (session, sent) = Self::fake_with(rows, cols, None);
-            (session, sent)
+            Self::fake_with(rows, cols, None, None)
         }
 
         /// A fake whose CLI goes on after it's stopped until the `Release` is used: its reaper
         /// runs that long, as with a CLI that takes a moment to quit.
         pub fn fake_slow(rows: u16, cols: u16) -> (Self, Sent, Release) {
             let (release, exit) = std::sync::mpsc::channel();
-            let (session, sent) = Self::fake_with(rows, cols, Some(exit));
+            let (session, sent) = Self::fake_with(rows, cols, Some(exit), None);
+            (session, sent, release)
+        }
+
+        /// A fake whose CLI reads none of its input until the `Release` is dropped: its writer
+        /// thread waits on the first write till then.
+        pub fn fake_stuck(rows: u16, cols: u16) -> (Self, Sent, Release) {
+            let (release, gate) = std::sync::mpsc::channel();
+            let (session, sent) = Self::fake_with(rows, cols, None, Some(gate));
             (session, sent, release)
         }
 
@@ -480,8 +562,12 @@ pub mod fake {
             rows: u16,
             cols: u16,
             exit: Option<std::sync::mpsc::Receiver<()>>,
+            gate: Option<std::sync::mpsc::Receiver<()>>,
         ) -> (Self, Sent) {
-            let sent = Sent::default();
+            let bytes = Arc::<Mutex<Vec<u8>>>::default();
+            let input = Input::spawn(Box::new(Writer { sent: bytes.clone(), gate }))
+                .expect("a thread for the fake's writer");
+            let sent = Sent { bytes, queued: input.queued.clone() };
             let parser = vt100::Parser::new_with_callbacks(
                 rows,
                 cols,
@@ -490,7 +576,7 @@ pub mod fake {
             );
             let session = Self {
                 parser: Arc::new(Mutex::new(parser)),
-                writer: Arc::new(Mutex::new(Box::new(Writer(sent.clone())))),
+                input,
                 master: Box::new(Master),
                 child: Some(Box::new(Process { exit: exit.map(Mutex::new) })),
                 exited: Arc::new(AtomicBool::new(false)),
@@ -528,6 +614,47 @@ mod tests {
         assert!(m.is_poisoned());
         *lock(&m) += 1;
         assert_eq!(*lock(&m), 2);
+    }
+
+    /// A CLI that reads nothing doesn't hold up whoever writes to it: a long paste and the keys
+    /// after it return at once, and past `QUEUE` the rest is dropped instead.
+    #[test]
+    fn writing_to_a_cli_that_doesnt_read_returns_at_once() {
+        let (session, sent, release) = Session::fake_stuck(24, 80);
+        let start = std::time::Instant::now();
+        let paste = "x".repeat(100_000);
+        assert!(session.paste(&paste));
+        assert!(session.write(b"\r"));
+        let big = vec![b'y'; QUEUE];
+        assert!(!session.write(&big), "more than the queue holds was taken");
+        assert!(session.write(b"z"), "a key that still fits was dropped");
+        assert!(start.elapsed() < std::time::Duration::from_secs(1), "{:?}", start.elapsed());
+
+        drop(release);
+        assert_eq!(sent.bytes(), [paste.as_bytes(), b"\r", b"z"].concat());
+    }
+
+    /// The writer thread ends with its session, even one whose CLI never read what it was sent.
+    #[test]
+    fn the_writer_thread_ends_with_the_session() {
+        for stuck in [false, true] {
+            let (session, sent, release) = if stuck {
+                Session::fake_stuck(24, 80)
+            } else {
+                let (session, sent) = Session::fake(24, 80);
+                (session, sent, std::sync::mpsc::channel().0)
+            };
+            assert!(session.write(b"hello"));
+            drop(session);
+            drop(release);
+            // The thread holds the fake pty's writer, which holds the other copy.
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while Arc::strong_count(&sent.bytes) > 1 {
+                assert!(std::time::Instant::now() < until, "the writer thread is still running");
+                std::thread::yield_now();
+            }
+            assert_eq!(lock(&sent.bytes).as_slice(), b"hello");
+        }
     }
 
     fn parser(rows: u16, cols: u16) -> Parser {

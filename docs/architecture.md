@@ -59,7 +59,7 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 
 | File | What it holds |
 |---|---|
-| `src/session.rs` | one `claude` process in a pseudo-terminal (portable-pty) with a vt100 screen; answers terminal queries, the colour queries with the theme's `Colours`; stopping one (`stop`, or dropping it) hangs its CLI up and reaps it on a thread, whose `Reaper` is kept by whatever must wait for the CLI to be gone (`stop_all` at quit waits for them all); for tests, `Session::fake`, with no process, recording what it's sent, and `fake_slow`, whose CLI stays until the test lets it go |
+| `src/session.rs` | one `claude` process in a pseudo-terminal (portable-pty) with a vt100 screen; answers terminal queries, the colour queries with the theme's `Colours`; writes to the pty from a thread of its own (`Input`), so `write` and `paste` never wait on the CLI and drop what would leave over `QUEUE` unread; stopping one (`stop`, or dropping it) hangs its CLI up and reaps it on a thread, whose `Reaper` is kept by whatever must wait for the CLI to be gone (`stop_all` at quit waits for them all); for tests, `Session::fake`, with no process, recording what it's sent, `fake_slow`, whose CLI stays until the test lets it go, and `fake_stuck`, whose CLI reads nothing until then |
 | `src/background.rs` | a conversation Claude runs as a background session: `job_id` takes the id from the message an ended resume leaves on the screen (only an id-shaped token), `stop` runs `claude stop <id>` through `proc::run`; `TicketView::background` holds it for the ended pane, and `Msg::BackgroundStopped` resumes |
 | `src/session_ids.rs` | one conversation per session: `claim` refuses a session id another ticket or agent already holds (hooks, leftover status files, `--resume`); the toast and `session-conflicts.log` when Claude Code switches a session onto another's (see "One conversation per session" in design.md) |
 
@@ -95,6 +95,7 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 | `src/replay.rs` | tests only: a local HTTP server answering with recorded responses (`tests/fixtures/`), so the Jira and Linear clients are tested without reaching a tracker |
 | `tests/hangup.rs` | the binary in a pty, its terminal closed while idle (a clean quit, as `prefix q`) and mid-input (the watchdog): taskman and its session must end |
 | `tests/resize.rs` | the binary in a pty, resized: the next key arrives on its own (a byte echoed by the stub session, a lone prefix key opening the menu), and taskman uses little processor time while nothing is typed |
+| `tests/paste.rs` | the binary in a pty, a 100 KB paste to a stub CLI that reads it slowly and asks for the cursor after each read: switching cards still works within 5 s, and `prefix q` quits |
 | `tests/links.rs` | a session's links reach the outer terminal as OSC 8, and `prefix l` opens one through a stub `$BROWSER` |
 | `tests/close.rs` | `taskman close` against the binary in a pty, with real git worktrees and an origin |
 | `tests/ownership.rs` | one copy of a session: `prefix R` restarts it under the same claim, killing `taskman resume` leaves it claimed by its CLI, and a lock that can't be taken stops the session starting until Enter once it can |

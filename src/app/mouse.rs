@@ -355,7 +355,9 @@ impl App {
         let area = self.areas.claude;
         let Some(s) = self.tickets.get(self.sel).and_then(|tv| tv.session.as_ref()) else { return };
         if s.wants_mouse() {
-            s.send_wheel(pos.x.saturating_sub(area.x), pos.y.saturating_sub(area.y), up);
+            if !s.send_wheel(pos.x.saturating_sub(area.x), pos.y.saturating_sub(area.y), up) {
+                self.toast(super::input::NOT_SENT);
+            }
         } else {
             s.scroll(if up { 3 } else { -3 });
         }

@@ -322,8 +322,24 @@ impl Tui {
         self.watchdog.step(what);
     }
 
-    pub fn send(&mut self, bytes: &[u8]) {
-        self.writer.write_all(bytes).unwrap();
+    /// Types `bytes` into taskman's terminal. The master side doesn't block, so a long send waits
+    /// for taskman to read what's there, failing the test if it doesn't within `WAIT`.
+    pub fn send(&mut self, mut bytes: &[u8]) {
+        let until = Instant::now() + WAIT;
+        while !bytes.is_empty() {
+            match self.writer.write(bytes) {
+                Ok(n) => bytes = &bytes[n..],
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < until,
+                        "taskman read none of its input for {WAIT:?}; the screen:\n{}",
+                        self.text()
+                    );
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(e) => panic!("writing to taskman's terminal: {e}"),
+            }
+        }
     }
 
     /// Runs `f` on the terminal as it is now.

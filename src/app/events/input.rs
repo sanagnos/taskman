@@ -22,6 +22,17 @@ fn keys_and_pastes_reach_the_session() {
     assert!(sent(&to_session).ends_with("\x1b[200~one\ntwo\x1b[201~"));
 }
 
+/// A paste that would leave more than `session::QUEUE` waiting for the CLI is dropped, saying
+/// so, rather than wait on it; what's typed next still goes.
+#[test]
+fn a_paste_too_big_for_the_session_is_dropped_with_a_toast() {
+    let (mut app, to_session) = at_eng_52();
+    app.on_paste(&"x".repeat(crate::session::QUEUE + 1));
+    assert_eq!(toast(&app), Some(super::super::input::NOT_SENT));
+    app.on_key(key(KeyCode::Char('y')));
+    assert_eq!(sent(&to_session), "y");
+}
+
 #[test]
 fn prefix_commands_never_reach_the_session() {
     let (mut app, to_session) = at_eng_52();

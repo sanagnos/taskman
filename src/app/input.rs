@@ -15,6 +15,11 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::Rect;
 use std::path::Path;
 
+/// Said when what was typed or pasted is dropped, as more than `session::QUEUE` would then wait
+/// for the session's CLI to read it.
+pub(super) const NOT_SENT: &str =
+    "Not sent: that would leave over 4 MB waiting for the session to read";
+
 /// Writes a file only its owner can read: a session's history can hold anything it printed.
 fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     use std::io::Write;
@@ -319,8 +324,10 @@ impl App {
         match &tv.session {
             Some(s) if !s.exited() => {
                 s.reset_scroll();
-                if let Some(bytes) = keys::encode(&key, s.application_cursor()) {
-                    s.write(&bytes);
+                if let Some(bytes) = keys::encode(&key, s.application_cursor())
+                    && !s.write(&bytes)
+                {
+                    self.toast(NOT_SENT);
                 }
             }
             _ if key.code == KeyCode::Enter && tv.t.pending_worktree.is_some() => {
@@ -384,8 +391,10 @@ impl App {
             KeyCode::Tab => self.next_attention(),
             // `a` whatever the prefix, as in screen: the prefix's own letter may be a command.
             KeyCode::Char('a') => {
-                if let Some(s) = self.tickets.get(self.sel).and_then(|tv| tv.session.as_ref()) {
-                    s.write(&[prefix.byte()]);
+                if let Some(s) = self.tickets.get(self.sel).and_then(|tv| tv.session.as_ref())
+                    && !s.write(&[prefix.byte()])
+                {
+                    self.toast(NOT_SENT);
                 }
             }
             KeyCode::Char(d @ '1'..='9') => {
@@ -484,7 +493,9 @@ impl App {
         let half = self.areas.claude.height as i32 / 2;
         let Some(s) = self.tickets.get(self.sel).and_then(|tv| tv.session.as_ref()) else { return };
         if s.wants_mouse() {
-            s.write(if up { b"\x1b[5~" } else { b"\x1b[6~" });
+            if !s.write(if up { b"\x1b[5~" } else { b"\x1b[6~" }) {
+                self.toast(NOT_SENT);
+            }
         } else {
             s.scroll(if up { half } else { -half });
         }
@@ -538,7 +549,9 @@ impl App {
                 self.selection = None;
                 if let Some(s) = self.tickets.get(self.sel).and_then(|tv| tv.session.as_ref()) {
                     s.reset_scroll();
-                    s.paste(text);
+                    if !s.paste(text) {
+                        self.toast(NOT_SENT);
+                    }
                 }
             }
             _ => {}

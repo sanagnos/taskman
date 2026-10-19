@@ -504,7 +504,7 @@ pub(crate) fn browser(app: &mut App) -> Opened {
 
 /// What a fake session was sent, as text.
 pub(crate) fn sent(s: &Sent) -> String {
-    String::from_utf8_lossy(&crate::session::lock(s)).into_owned()
+    String::from_utf8_lossy(&s.bytes()).into_owned()
 }
 
 #[test]

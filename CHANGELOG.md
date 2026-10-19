@@ -8,6 +8,7 @@ What changed in each release; a release's notes on GitHub are its section here. 
 - `taskman --help` and the bug report form name GitHub Issues among the trackers, and the install script, on a platform with no prebuilt release, links the guide's section on building from source.
 - `taskman update --help` prints its usage instead of updating, and `taskman update` refuses arguments it doesn't know (such as a misspelt `--force`) instead of ignoring them. Every command now reads its options the same way: an empty `--project=` is refused with `--project needs a value`, and an option that takes no value refuses one (`taskman close --merged=no` was read as `--merged`).
 - `taskman --help | head`, and the same with a command's usage or output, no longer ends in a "Broken pipe" panic when the reader stops early.
+- A long paste into a session whose CLI reads slowly no longer freezes taskman until the CLI has read it all: keys, switching cards and quitting work meanwhile. Input that would leave more than 4 MB waiting for a session to read is dropped, and a toast says so.
 
 ## 0.1.11 - 2026-10-19
 
