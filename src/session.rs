@@ -222,8 +222,12 @@ impl Session {
             return;
         }
         self.size = (rows, cols);
-        let _ = self.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
+        // The screen first: the CLI redraws for its new size as soon as the pty has it, and
+        // that output must land on a screen of that size. vt100 0.18 moves rows between the screen
+        // and its history on a resize, so the redraw of a CLI that got there first would be
+        // taken as drawn on the old screen, and rows of its history overwritten.
         lock(&self.parser).screen_mut().set_size(crate::term::dim(rows), crate::term::dim(cols));
+        let _ = self.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
     }
 
     /// How long since the child last wrote anything.
