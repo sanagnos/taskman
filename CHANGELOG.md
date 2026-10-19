@@ -7,6 +7,7 @@ What changed in each release; a release's notes on GitHub are its section here. 
 - taskman rewrites `inbox/alive` in its state folder once a second instead of about three times a second, so tools that watch the folder (backups, indexers, file watchers) are woken less. `taskman add` and `taskman close` still answer within a second.
 - `taskman --help` and the bug report form name GitHub Issues among the trackers, and the install script, on a platform with no prebuilt release, links the guide's section on building from source.
 - `taskman update --help` prints its usage instead of updating, and `taskman update` refuses arguments it doesn't know (such as a misspelt `--force`) instead of ignoring them. Every command now reads its options the same way: an empty `--project=` is refused with `--project needs a value`, and an option that takes no value refuses one (`taskman close --merged=no` was read as `--merged`).
+- `taskman --help | head`, and the same with a command's usage or output, no longer ends in a "Broken pipe" panic when the reader stops early.
 
 ## 0.1.11 - 2026-10-19
 

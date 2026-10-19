@@ -8,6 +8,18 @@ use crate::store::{self, Project, Saved, Ticket};
 use crate::untrusted;
 use std::path::Path;
 
+/// Like println!, but a reader that stops early (`taskman --help | head`) isn't a panic: the line
+/// is dropped and the command carries on, so it still finishes what it was doing and releases what
+/// it holds.
+macro_rules! out {
+    ($($arg:tt)*) => {{
+        use std::io::Write;
+        let mut stdout = std::io::stdout().lock();
+        let _ = writeln!(stdout, $($arg)*);
+    }};
+}
+pub(crate) use out;
+
 /// Runs `taskman NAME`: prints `usage` for `-h` or `--help` anywhere in `args`, before anything is
 /// read or fetched, else returns the exit code `command` gives, or prints its error and returns 1.
 pub(crate) fn run(
@@ -17,7 +29,7 @@ pub(crate) fn run(
     command: impl FnOnce(&[String]) -> Result<i32, String>,
 ) -> i32 {
     if args.iter().any(|a| a == "-h" || a == "--help") {
-        println!("{usage}");
+        out!("{usage}");
         return 0;
     }
     match command(args) {

@@ -123,14 +123,14 @@ fn update(force: bool) -> Result<(), String> {
         match (parse(&current), parse(&latest)) {
             (Some(c), Some(l)) if c == l => {
                 save(&state);
-                println!(
+                crate::cli::out!(
                     "taskman {current} is the latest release; nothing to update (taskman update --force reinstalls it)."
                 );
                 return Ok(());
             }
             (Some(c), Some(l)) if c > l => {
                 save(&state);
-                println!(
+                crate::cli::out!(
                     "taskman {current} is newer than the latest release, {latest}; nothing to update."
                 );
                 return Ok(());
@@ -138,15 +138,17 @@ fn update(force: bool) -> Result<(), String> {
             _ => {}
         }
     }
-    println!("Updating taskman {current} → {latest} in {}", bin_dir.display());
+    crate::cli::out!("Updating taskman {current} → {latest} in {}", bin_dir.display());
     if newer(&latest, &current) && !same_minor(&latest, &current) {
-        println!("{latest} has breaking changes: see its notes, {REPO_URL}/releases/tag/{latest}");
+        crate::cli::out!(
+            "{latest} has breaking changes: see its notes, {REPO_URL}/releases/tag/{latest}"
+        );
     }
     install(&exe, &latest, By::Command)?;
     // A running TUI reads this and says the update applies when it restarts.
     state.installed = Some(Installed { version: latest.clone(), dir: bin_dir.to_path_buf() });
     save(&state);
-    println!(
+    crate::cli::out!(
         "Restart taskman to use {latest}: quit with {} q, then run taskman again.",
         crate::keys::prefix()
     );
@@ -387,7 +389,7 @@ fn install(exe: &Path, tag: &str, by: By) -> Result<(), String> {
     let archive = format!("taskman-{tag}-{target}.tar.gz");
     let say = |line: String| {
         if by == By::Command {
-            println!("{line}");
+            crate::cli::out!("{line}");
         }
     };
     if by == By::Background

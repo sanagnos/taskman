@@ -280,7 +280,7 @@ fn main() -> anyhow::Result<()> {
         Some("resume") => std::process::exit(resume::run(&args[2..])),
         Some("update") => std::process::exit(update::run(&args[2..])),
         Some("-V" | "--version") => {
-            println!("taskman {}", env!("CARGO_PKG_VERSION"));
+            cli::out!("taskman {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
         // The notices of the crates built into the binary, which the install script and
@@ -291,77 +291,77 @@ fn main() -> anyhow::Result<()> {
             return Ok(());
         }
         Some("-h" | "--help") => {
-            println!(
+            cli::out!(
                 "taskman {}: several tickets at once, each with its session (Claude or Codex),",
                 env!("CARGO_PKG_VERSION")
             );
-            println!(
+            cli::out!(
                 "tracker issue (Jira, Linear, GitHub Issues or a local file) and GitHub PR, grouped by project.\n"
             );
-            println!(
+            cli::out!(
                 "Usage: taskman              start the TUI ({} shows the command keys)",
                 keys::prefix()
             );
-            println!(
+            cli::out!(
                 "       taskman status [KEY] a ticket's issue, worktree and PR, fetched fresh; without KEY,"
             );
-            println!(
+            cli::out!(
                 "                            the ticket or project of the current folder, else every"
             );
-            println!(
+            cli::out!(
                 "                            project (--project NAME, --json; --help for more)"
             );
-            println!(
+            cli::out!(
                 "       taskman add KEY...   add tickets to taskman without switching to them, with the"
             );
-            println!(
+            cli::out!(
                 "                            project's defaults; queued if taskman isn't running"
             );
-            println!(
+            cli::out!(
                 "                            (--agent NAME, --codex, --no-worktree; --help for more)"
             );
-            println!(
+            cli::out!(
                 "       taskman close KEY... close tickets, removing a worktree only if nothing would be lost;"
             );
-            println!(
+            cli::out!(
                 "                            queued if taskman isn't running (--merged, --keep-worktree,"
             );
-            println!("                            --agent NAME; --help for more)");
-            println!(
+            cli::out!("                            --agent NAME; --help for more)");
+            cli::out!(
                 "       taskman move KEY COLUMN  move a Local files ticket to another column of the board in"
             );
-            println!("                            its project folder (--help for more)");
-            println!(
+            cli::out!("                            its project folder (--help for more)");
+            cli::out!(
                 "       taskman resume KEY   continue a ticket's or agent's session in this terminal, as"
             );
-            println!(
+            cli::out!(
                 "                            taskman starts it; hand it off there first with {} t",
                 keys::prefix()
             );
-            println!(
+            cli::out!(
                 "                            (--project NAME, --ticket, --agent; --help for more)"
             );
-            println!(
+            cli::out!(
                 "       taskman update       install the latest release (--force reinstalls it)"
             );
-            println!("       taskman --version    print the version");
-            println!(
+            cli::out!("       taskman --version    print the version");
+            cli::out!(
                 "       taskman --licenses   print the licenses of the third-party code in the binary"
             );
-            println!(
+            cli::out!(
                 "       taskman hook STATE   used by the Claude Code and Codex hooks taskman adds\n"
             );
-            println!(
+            cli::out!(
                 "Set up projects and accounts inside taskman: {} , opens Settings.\n",
                 keys::prefix()
             );
-            println!("Environment: TASKMAN_CLAUDE  the claude command to run (default: claude)");
-            println!("             TASKMAN_CODEX   the codex command to run (default: codex)");
-            println!("             TASKMAN_CONFIG  another accounts file");
-            println!("             TASKMAN_NO_AUTOUPDATE=1  don't check for updates or show them");
-            println!("             XDG_STATE_HOME, XDG_CONFIG_HOME  move state and config\n");
-            println!("State:  {}", store::state_dir().display());
-            println!("Config: {}", store::config_path().display());
+            cli::out!("Environment: TASKMAN_CLAUDE  the claude command to run (default: claude)");
+            cli::out!("             TASKMAN_CODEX   the codex command to run (default: codex)");
+            cli::out!("             TASKMAN_CONFIG  another accounts file");
+            cli::out!("             TASKMAN_NO_AUTOUPDATE=1  don't check for updates or show them");
+            cli::out!("             XDG_STATE_HOME, XDG_CONFIG_HOME  move state and config\n");
+            cli::out!("State:  {}", store::state_dir().display());
+            cli::out!("Config: {}", store::config_path().display());
             return Ok(());
         }
         _ => {}

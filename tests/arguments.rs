@@ -1,6 +1,7 @@
 //! The commands read their arguments alike: an empty `--project=` is refused with the same message
 //! by each, and `taskman update` prints its usage for `--help` rather than updating, and refuses
-//! what it doesn't know.
+//! what it doesn't know. Help and usage piped into a reader that stops early (`| head`) end
+//! quietly.
 
 mod common;
 
@@ -45,4 +46,25 @@ fn update_prints_its_usage_and_refuses_unknown_options() {
     assert_eq!(out.status.code(), Some(1));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.starts_with("taskman update: unknown option --frce\n\nUsage:"), "{err}");
+}
+
+#[test]
+fn help_into_a_closed_pipe_ends_quietly() {
+    let dir = common::scratch_dir("arguments-pipe");
+    for args in [&["--help"][..], &["--version"], &["status", "--help"], &["update", "-h"]] {
+        // The reader is gone before taskman writes, as when `head` has read all it wants.
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let out = common::taskman(&dir)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(writer)
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{args:?}: {err}");
+        assert!(err.is_empty(), "{args:?}: {err}");
+    }
+    assert!(!dir.join("state/taskman/panics.log").exists());
 }

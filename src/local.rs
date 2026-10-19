@@ -577,7 +577,7 @@ committed.
 pub fn run(args: &[String]) -> i32 {
     crate::cli::run("move", MOVE_USAGE, args, |args| {
         // File and column names come from the repository.
-        println!("{}", crate::untrusted::clean(&move_command(args)?));
+        crate::cli::out!("{}", crate::untrusted::clean(&move_command(args)?));
         Ok(0)
     })
 }

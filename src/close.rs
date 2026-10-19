@@ -56,7 +56,7 @@ fn close(args: &[String]) -> Result<bool, String> {
         all_ok &= line.ok;
         let text = untrusted::clean(&line.text);
         if line.ok {
-            println!("{text}");
+            cli::out!("{text}");
         } else {
             eprintln!("taskman close: {text}");
         }

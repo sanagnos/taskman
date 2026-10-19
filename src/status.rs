@@ -65,40 +65,43 @@ fn status(args: &[String]) -> Result<bool, String> {
             let (ticket, project) = locate(&key, &saved, scope)?;
             let r = report(&key, ticket, project, &saved, &config, codex);
             let own = me.is_some_and(|m| ticket.is_some_and(|t| t.is(&m.repo, &m.key)));
-            print(&if as_json {
-                untrusted::labelled_json(r.to_json())
-            } else {
-                untrusted::labelled(&r.text(!own))
-            });
+            cli::out!(
+                "{}",
+                if as_json {
+                    untrusted::labelled_json(r.to_json())
+                } else {
+                    untrusted::labelled(&r.text(!own))
+                }
+            );
             Ok(r.ok())
         }
         Target::Project(p) => {
             let project = &saved.projects[p];
             let me = me.filter(|t| t.repo == project.repo).map(|t| t.key.as_str());
             let o = overview(project, &saved, &config, codex, me);
-            print(&if as_json {
-                untrusted::labelled_json(o.to_json())
-            } else {
-                untrusted::labelled(&o.text())
-            });
+            cli::out!(
+                "{}",
+                if as_json {
+                    untrusted::labelled_json(o.to_json())
+                } else {
+                    untrusted::labelled(&o.text())
+                }
+            );
             Ok(o.tickets.iter().all(Report::ok))
         }
         Target::All => {
             let all = everything(&saved, &config, codex);
-            print(&if as_json {
-                untrusted::labelled_json(all.to_json())
-            } else {
-                untrusted::labelled(&all.text())
-            });
+            cli::out!(
+                "{}",
+                if as_json {
+                    untrusted::labelled_json(all.to_json())
+                } else {
+                    untrusted::labelled(&all.text())
+                }
+            );
             Ok(all.0.iter().all(|o| o.tickets.iter().all(Report::ok)))
         }
     }
-}
-
-/// Like println!, but a reader that stops early (`| head`) isn't an error.
-fn print(text: &str) {
-    use std::io::Write;
-    let _ = writeln!(std::io::stdout(), "{text}");
 }
 
 /// How to name a ticket in a hint: one the user has, rather than a made-up key.
