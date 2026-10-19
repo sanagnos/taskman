@@ -1473,6 +1473,9 @@ mod tests {
             assert!(script.contains(&format!(") target={t} ;;")), "install.sh picks {t}");
         }
         assert_eq!(released.matches("- { target: ").count(), targets.len());
+        // The release workflow wants an archive for each of install.sh's `) target=` lines.
+        assert_eq!(script.matches(") target=").count(), targets.len());
+        assert!(released.contains(r"s/.*) target=\([a-z0-9_-]*\) ;;.*/\1/p"));
         // A Linux build with neither C library has no release; this one has, where there's one.
         assert_eq!(target_for("linux", "x86_64", ""), None);
         if cfg!(any(target_os = "macos", target_os = "linux"))

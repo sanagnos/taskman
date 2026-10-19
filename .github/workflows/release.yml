@@ -1,9 +1,9 @@
 # Builds taskman for each platform and publishes a GitHub Release with the binaries (each archive
 # holding the binary and its license files), one SHA256SUMS, and the version's section of
 # CHANGELOG.md as its notes. On a public repository it also attests where each file was built
-# (`gh attestation verify`). Nothing is published unless CI passed on the tag's commit and each
-# binary that can run on its runner said the tag's version; a build marked optional that fails is
-# left out instead.
+# (`gh attestation verify`). Nothing is published unless CI passed on the tag's commit, every
+# build that install.sh and `taskman update` can ask for has its archive, and each binary that can
+# run on its runner said the tag's version.
 #
 # Runs when a version tag (v1.2.3) is pushed. It can also be started by hand for a tag without a
 # release, to build one again after deleting it or after CI on its commit was re-run and passed:
@@ -11,11 +11,19 @@
 # That runs this file as it is on main. A tag from before rust-toolchain.toml and the dist profile
 # needs the workflow it was tagged with: add --ref v1.2.3.
 #
+# A dry run builds, runs and checks every binary and archive as a release would, from a branch's
+# latest commit and for Cargo.toml's version, and keeps the archives and SHA256SUMS as the run's
+# artifacts; it needs no tag, doesn't wait for CI, and skips the release job, so it publishes and
+# attests nothing:
+#   gh workflow run release.yml --ref my-branch -f dry_run=true
+#
 # The build jobs run every dependency's build script, so they get a read-only token that isn't
 # kept in .git/config; only the release job, which runs no project code, can write or attest.
 # Actions are pinned by commit; Dependabot proposes updates (.github/dependabot.yml).
 name: Release
-run-name: Release ${{ inputs.tag || github.ref_name }}
+run-name: >-
+  ${{ inputs.dry_run && format('Release dry run on {0}', github.ref_name)
+  || format('Release {0}', inputs.tag || github.ref_name) }}
 
 on:
   push:
@@ -23,27 +31,80 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing version tag to build and release, like v1.2.3"
-        required: true
+        description: "Existing version tag to build and release, like v1.2.3 (none for a dry run)"
+        required: false
+      dry_run:
+        description: "Build and check the branch's latest commit, and publish nothing"
+        type: boolean
+        default: false
 
 permissions: {}
 
 concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
+  # Dry runs are by commit, so one never waits on, or holds up, a release.
+  group: >-
+    release-${{ inputs.dry_run && format('dry-run-{0}', github.sha)
+    || inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
-env:
-  # The tag being released: the one pushed, or the one given when started by hand.
-  TAG: ${{ inputs.tag || github.ref_name }}
-
 jobs:
+  # What to build: the tag's commit, or in a dry run the commit it was started on. Checked here,
+  # before a runner is taken for each build. Reads Cargo.toml through the API; runs no project code.
+  # Each job after it has the tag as TAG: the one pushed or given when started by hand, or in a
+  # dry run Cargo.toml's version as a tag, which names the archives and each binary must say.
+  version:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      ref: ${{ steps.version.outputs.ref }}
+    steps:
+      - name: Name the version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          GIVEN: ${{ inputs.tag }}
+        run: |
+          if [ "$DRY_RUN" = true ]; then
+            if [ -n "$GIVEN" ]; then
+              echo "A dry run builds the commit it's started on: give --ref instead of a tag." >&2
+              exit 1
+            fi
+            ref="$GITHUB_SHA"
+            # The version line in [package] is the first one in Cargo.toml (as release.sh says).
+            version="$(gh api "repos/$GITHUB_REPOSITORY/contents/Cargo.toml?ref=$ref" \
+              -H 'Accept: application/vnd.github.raw' \
+              | sed -n 's/^version = "\(.*\)"$/\1/p' | head -1)"
+            tag="v$version"
+            echo "Dry run of $tag at $ref ($GITHUB_REF_NAME): nothing is published."
+          elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ -z "$GIVEN" ]; then
+            echo "Give the tag to release (-f tag=v1.2.3), or -f dry_run=true for a dry run." >&2
+            exit 1
+          else
+            tag="${GIVEN:-$GITHUB_REF_NAME}"
+            ref="refs/tags/$tag"
+          fi
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "$tag isn't a version tag like v1.2.3" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
   # CI on main must have passed on the tag's commit. Releases are immutable and every install
   # updates to the new one within the hour, so a broken one can only be replaced by another
   # version; and an admin's push to main skips the required checks but still runs CI. The release
   # script pushes the release commit and its tag together, so CI on it is usually still running:
-  # this waits for it. Runs no project code, alongside the builds.
+  # this waits for it. Runs no project code, alongside the builds. A dry run has no tag to wait on.
   ci:
+    needs: version
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
     # CI's slowest job has 30 minutes, after waiting for a runner.
     timeout-minutes: 60
     permissions:
@@ -87,6 +148,7 @@ jobs:
           done
 
   build:
+    needs: version
     permissions:
       contents: read
     strategy:
@@ -98,29 +160,23 @@ jobs:
           # Linux and WSL. The older Ubuntu keeps the glibc requirement low (install.sh's
           # glibc_min). Each build runs on its own architecture, so each binary is run below.
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
-          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm, optional: true }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
           # Static, for Alpine and a glibc older than glibc_min.
-          - { target: x86_64-unknown-linux-musl, os: ubuntu-22.04, optional: true }
-          - { target: aarch64-unknown-linux-musl, os: ubuntu-22.04-arm, optional: true }
-    # Builds no release has shipped yet: one that fails is left out of the release rather than
-    # holding up the others. Drop `optional` once a release has them.
-    continue-on-error: ${{ matrix.optional == true }}
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-22.04-arm }
+    # No build is optional: a release is immutable, so one published without an archive could
+    # never get it, and the machines install.sh and `taskman update` send to it would find none.
+    # A failed build leaves no release; the others still finish (fail-fast is off) to show theirs.
     runs-on: ${{ matrix.os }}
     # A build takes about two minutes; generous, as a release waits on the slowest.
     timeout-minutes: 30
     env:
+      TAG: ${{ needs.version.outputs.tag }}
       TARGET: ${{ matrix.target }}
     steps:
-      - name: Check the tag is a version
-        run: |
-          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "$TAG isn't a version tag like v1.2.3" >&2
-            exit 1
-          fi
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ env.TAG }}
+          ref: ${{ needs.version.outputs.ref }}
           persist-credentials: false
 
       # The Rust in rust-toolchain.toml at the tag, which CI tested the commit with.
@@ -134,6 +190,7 @@ jobs:
           sudo apt-get install -y -q --no-install-recommends musl-tools
           echo "CC_${TARGET//-/_}=musl-gcc" >> "$GITHUB_ENV"
 
+      # In a dry run the tag is Cargo.toml's version, so this checks only that cargo reads the same.
       - name: Check the tag matches Cargo.toml
         run: |
           version="v$(cargo pkgid | sed 's/.*[#@]//')"
@@ -222,19 +279,46 @@ jobs:
           path: taskman-*.tar.gz
           if-no-files-found: error
 
-  release:
-    needs: [ci, build]
+  # The archives together, in a release and a dry run alike: one for each build install.sh can
+  # pick (the unit test in update.rs keeps that list, `taskman update`'s and the build matrix the
+  # same), each holding what it should, and SHA256SUMS for them. Runs no project code: install.sh
+  # is read through the API.
+  check:
+    needs: [version, build]
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
     permissions:
-      contents: write
-      # Only for the attestations: a token to sign them with (OIDC), and the right to store them.
-      id-token: write
-      attestations: write
+      contents: read
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           merge-multiple: true
+
+      # A release is immutable, so an archive missing from it could never be added.
+      - name: Check there's an archive for every build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ needs.version.outputs.ref }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/contents/scripts/install.sh?ref=$REF" \
+            -H 'Accept: application/vnd.github.raw' > install.sh
+          targets="$(sed -n 's/.*) target=\([a-z0-9_-]*\) ;;.*/\1/p' install.sh)"
+          if [ -z "$targets" ]; then
+            echo "Found no builds in install.sh's target= lines." >&2
+            exit 1
+          fi
+          want="$(for t in $targets; do echo "taskman-$TAG-$t.tar.gz"; done | sort -u)"
+          shopt -s nullglob
+          got="$(printf '%s\n' taskman-*.tar.gz | sort)"
+          if [ "$got" != "$want" ]; then
+            echo "The archives aren't one for each build install.sh picks." >&2
+            echo "Missing: $(comm -23 <(echo "$want") <(echo "$got") | xargs)" >&2
+            echo "Not picked by install.sh: $(comm -13 <(echo "$want") <(echo "$got") | xargs)" >&2
+            exit 1
+          fi
+          echo "$want"
 
       # Every archive carries the binary and its license files; a release without the notices
       # would be missing what the licenses of the code in it ask for.
@@ -253,6 +337,40 @@ jobs:
       # it doesn't list.
       - name: Checksums
         run: sha256sum taskman-*.tar.gz | tee SHA256SUMS
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: SHA256SUMS
+          path: SHA256SUMS
+          if-no-files-found: error
+
+  # The only job that can write. Skipped in a dry run, and whenever a build, the check or CI
+  # failed: nothing is published, attested or drafted.
+  release:
+    needs: [version, ci, check]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      # Only for the attestations: a token to sign them with (OIDC), and the right to store them.
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          merge-multiple: true
+
+      # The archives the check job checked, and nothing else.
+      - name: Check the checksums
+        run: |
+          sha256sum -c SHA256SUMS
+          if [ "$(ls taskman-*.tar.gz | sort)" != "$(awk '{print $2}' SHA256SUMS | sort)" ]; then
+            echo "The archives aren't the ones SHA256SUMS lists." >&2
+            exit 1
+          fi
 
       # Signed statements that this workflow built each file from the tag, kept by GitHub, so
       # `gh attestation verify` can tell a release's files from ones built anywhere else.
