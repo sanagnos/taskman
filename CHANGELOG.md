@@ -5,6 +5,7 @@ What changed in each release; a release's notes on GitHub are its section here. 
 ## Unreleased
 
 - `taskman --licenses` and the release archives' `LICENSE-THIRD-PARTY` list the crates without their versions.
+- A click on a project's header, or a drag of it, makes it the current project: `ctrl+a n` and `ctrl+a ,` open on it until you select a card, instead of on the selected card's project. An empty project's header counts too, so the Add form can open on a project with no cards.
 
 ## 0.1.10 - 2026-10-18
 

@@ -112,14 +112,17 @@ impl App {
                 let clicks = self.click_count(pos);
                 match self.sidebar_hits.iter().find(|(r, _)| r.contains(pos)) {
                     // A press may turn into a drag (see `reorder.rs`); a project's header folds
-                    // on release, once it's known not to have.
+                    // on release, once it's known not to have. Either way it makes the project
+                    // the current one.
                     Some(&(grip, Hit::Ticket(i))) => {
                         self.select(i);
                         let t = &self.tickets[i].t;
                         self.press(Piece::Card((t.repo.clone(), t.key.clone())), grip, pos);
                     }
                     Some(&(grip, Hit::Project(p))) => {
-                        self.press(Piece::Project(self.projects[p].repo.clone()), grip, pos);
+                        let repo = self.projects[p].repo.clone();
+                        self.header_project = Some(repo.clone());
+                        self.press(Piece::Project(repo), grip, pos);
                     }
                     None => {
                         if let Some((pane, rect)) = self.pane_at(pos) {
