@@ -1009,13 +1009,14 @@ impl Updater {
             Some(Notice { version, action: Action::Breaking }) => out.push_str(&format!(
                 "\n{version} has breaking changes, so it isn't installed in the background. Read its notes ({REPO_URL}/releases/tag/{version}), then run taskman update."
             )),
-            Some(Notice { version, action: Action::Update })
+            Some(Notice { version, action: Action::Update }) => {
                 if self.failed.contains(&version)
-                    && let Some(why) = &self.why_failed =>
-            {
-                out.push_str(&format!(
-                    "\n{version} wasn't installed in the background: {why}. taskman update installs it, or says why it can't."
-                ));
+                    && let Some(why) = &self.why_failed
+                {
+                    out.push_str(&format!(
+                        "\n{version} wasn't installed in the background: {why}. taskman update installs it, or says why it can't."
+                    ));
+                }
             }
             _ => {}
         }
