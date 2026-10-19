@@ -303,7 +303,7 @@ fn main() -> anyhow::Result<()> {
                 env!("CARGO_PKG_VERSION")
             );
             println!(
-                "tracker issue (Jira, Linear or a local file) and GitHub PR, grouped by project.\n"
+                "tracker issue (Jira, Linear, GitHub Issues or a local file) and GitHub PR, grouped by project.\n"
             );
             println!(
                 "Usage: taskman              start the TUI ({} shows the command keys)",

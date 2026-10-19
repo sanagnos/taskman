@@ -12,13 +12,13 @@ Then read [docs/design.md](docs/design.md). Several choices look simplifiable an
 
 ## Build and check
 
-Rust 1.88 or newer (edition 2024; the code uses `let` chains).
+Rust 1.88 or newer (edition 2024; the code uses `let` chains). With rustup, a clone builds with the Rust that `rust-toolchain.toml` names, the one CI uses.
 
 ```bash
 cargo build                 # debug build: target/debug/taskman
 cargo test                  # unit tests live next to the code; tests/ drives the binary in a pty
 cargo fmt                   # CI fails on unformatted code (rustfmt.toml)
-cargo clippy --all-targets  # zero warnings; CI runs it with -D warnings
+cargo clippy --all-targets -- -D warnings  # as CI runs it: zero warnings
 scripts/test-install.sh     # install.sh and `taskman update` against fake releases (after cargo build)
 scripts/coverage.sh         # coverage per file, test-install.sh included (cargo install cargo-llvm-cov)
 cargo about generate --locked --fail about.hbs -o LICENSE-THIRD-PARTY   # after a dependency change (cargo install cargo-about --locked --features cli)
@@ -70,13 +70,15 @@ Seed `$S/state/taskman/tickets.json` and `$S/config.json` to set up a scenario. 
 
 ## Pull requests
 
-- One change per pull request, with a description of what changed and why, and how you checked it (tests, or what you saw in the TUI).
+- One change per pull request. Fill in the template: what changed and why, how you checked it (tests, or what you saw in the TUI), and the tools you used.
 - Commit messages: a summary line, then what changed and why.
 - CI must pass: fmt, clippy, tests, the install script's tests, MSRV and cargo-deny.
 - Dependabot opens weekly pull requests for the crates and the actions, each release a week old at least. `LICENSE-THIRD-PARTY` names crates, not versions, so one that only changes versions passes CI as it is. One that adds or drops a crate, or brings a changed license text, fails the notices check: check out its branch, regenerate the file with the `cargo about` command above and push it.
 - By contributing you agree that your contribution is dual licensed under MIT OR Apache-2.0, as the README says.
 
-Coding agents are welcome to help; you remain responsible for the change, so review what they write and run it.
+### AI-assisted contributions
+
+Coding agents are welcome to help; [AGENTS.md](AGENTS.md) is written for them. Say in the pull request which tools you used and how much of the change they wrote. You remain responsible for it: be ready to explain any part of it, and run it yourself, not only its tests. An issue an agent drafted should be trimmed by a person to what matters (what happened, what you expected, how to get there) before it's opened.
 
 ## Releases
 

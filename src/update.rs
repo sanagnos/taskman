@@ -1,7 +1,7 @@
 //! Updates: `taskman update`, and the TUI's background updates (`Updater`).
 //!
 //! Both download the release's build for this platform over HTTPS from the repository's release
-//! pages, falling back to `gh` while the repository is private, check it against the release's
+//! pages, falling back to `gh` (which can read a private copy), check it against the release's
 //! SHA256SUMS and, when gh can, its attestation, check the new binary runs, then rename it over the
 //! running binary's file. The running TUI keeps its own copy of the old binary; the new one applies
 //! when taskman restarts. The TUI installs only a release with the same minor version (a new minor

@@ -5,6 +5,7 @@ What changed in each release; a release's notes on GitHub are its section here. 
 ## Unreleased
 
 - taskman rewrites `inbox/alive` in its state folder once a second instead of about three times a second, so tools that watch the folder (backups, indexers, file watchers) are woken less. `taskman add` and `taskman close` still answer within a second.
+- `taskman --help` and the bug report form name GitHub Issues among the trackers, and the install script, on a platform with no prebuilt release, links the guide's section on building from source.
 
 ## 0.1.11 - 2026-10-19
 

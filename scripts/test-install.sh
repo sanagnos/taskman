@@ -2,8 +2,8 @@
 # Tests scripts/install.sh, and `taskman update` when target/debug/taskman is built (or the one in
 # $CARGO_TARGET_DIR), against fake releases served from a local web server laid out like GitHub's
 # release pages (TASKMAN_RELEASES_URL): a good release, an older one with only <archive>.sha256,
-# and broken ones that must install nothing. Then install.sh through a fake gh, the way in while
-# the repository is private, which must skip a draft. Attestations are checked with a fake gh too,
+# and broken ones that must install nothing. Then install.sh through a fake gh, its fallback when the
+# HTTPS download fails, which must skip a draft. Attestations are checked with a fake gh too,
 # which insists on the release workflow's identity, GitHub-hosted runners and a private folder for
 # the archive: verified, failed, signed by another workflow, unreachable, missing (both where a
 # release may have none and where it must have one), a gh too old for them, a logged-out gh, none at

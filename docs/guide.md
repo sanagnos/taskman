@@ -207,7 +207,7 @@ Set `NO_COLOR` to any value but an empty one ([no-color.org](https://no-color.or
 
 Claude and Codex often show a link's text with the URL hidden behind it. taskman passes those links on to your terminal, so ctrl+click (cmd+click on macOS) opens them as anywhere else. While taskman has the mouse, some terminals want Shift as well: in WezTerm it's ctrl+shift+click. Over SSH they open on your own machine. Inside tmux, links need tmux 3.4 or later with its hyperlinks feature on (`set -as terminal-features ',*:hyperlinks'`).
 
-The tracker and GitHub panels are linked the same way: the ticket's title opens the issue (Jira and Linear; a Local files ticket opens in `$EDITOR` with `o`), or its key on the border while the issue loads or can't be fetched, the PR's title opens the PR, each check opens its run, a reviewer's name opens their review, a thread's file and line open the thread, and http(s) URLs in descriptions, comments and reviews open themselves. On an agent's project board, a ticket's key opens its issue and a failing or running check its run.
+The tracker and GitHub panels are linked the same way: the ticket's title opens the issue (Jira, Linear and GitHub Issues; a Local files ticket opens in `$EDITOR` with `o`), or its key on the border while the issue loads or can't be fetched, the PR's title opens the PR, each check opens its run, a reviewer's name opens their review, a thread's file and line open the thread, and http(s) URLs in descriptions, comments and reviews open themselves. On an agent's project board, a ticket's key opens its issue and a failing or running check its run.
 
 `ctrl+a l` lists the selected ticket's links first (the issue, the PR, failing then running checks, reviews, threads, URLs in their text, passing checks), then the session's links and the plain URLs in its text, newest first, including ones scrolled away: Enter opens one in your browser (`$BROWSER`, else `wslview`, `explorer.exe` on WSL, `xdg-open` or `open`), `c` copies it. Use it in terminals without links, such as macOS Terminal. Only http(s) links are passed on or opened; others (`file:` paths, editor links) are listed, dimmed, so you can copy them.
 
@@ -265,7 +265,7 @@ Every session taskman starts is named (`claude --name`): ticket sessions by thei
 
 ## Sessions read their ticket: `taskman status`
 
-Every session taskman starts can read its ticket and PR with `taskman status`, and its startup instructions tell it to. It fetches them fresh with the project's own tracker account, so a session needs no Jira or Linear tools of its own, and they can't point at the wrong workspace:
+Every session taskman starts can read its ticket and PR with `taskman status`, and its startup instructions tell it to. It fetches them fresh with the project's own tracker account, so a session needs no tracker tools of its own, and they can't point at the wrong workspace:
 
 ```
 $ taskman status

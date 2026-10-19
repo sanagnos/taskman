@@ -29,7 +29,7 @@ cargo build                 # debug build: target/debug/taskman
 cargo test                  # unit tests live next to the code (#[cfg(test)] mod tests); tests/ runs the binary
 INSTA_UPDATE=always cargo test screens  # rewrite the screen snapshots after a change to drawing; review the diff
 cargo fmt                   # CI fails on unformatted code (rustfmt.toml)
-cargo clippy --all-targets  # keep it at zero warnings; CI runs it with -D warnings
+cargo clippy --all-targets -- -D warnings  # as CI runs it: zero warnings
 cargo install --path .      # install the local build as `taskman`
 scripts/release.sh X.Y.Z    # cut a release (see "Releasing")
 scripts/test-install.sh     # install.sh and `taskman update` against fake releases (after cargo build)
@@ -57,7 +57,7 @@ Start with the unit tests, which need no terminal. `app::test_support::acme_app`
 - **Behaviour** goes in `app/events/`, in the file named after the `app/` file it exercises (`input.rs`, `sessions.rs`, `add_form.rs`; helpers more than one file uses go in `mod.rs`): drive `on_key`, `on_mouse`, `on_paste` and `Msg`s (`settle` waits for a thread's), and check `mode`, `selection`, `toast`, what a fake session was sent and `tickets.json` as saved. Pure decisions still get extracted and tested where they live (see `app/ticket.rs` and `app/poll.rs`).
 - **What a screen shows** goes in `ui/screens.rs`: `draw` returns the screen as text, the spinner and version fixed and links left out, compared with its snapshot in `ui/snapshots/`. Times are relative to now (`test_support::iso`), in the middle of an age bucket, so they draw the same on any day. A changed snapshot fails the test and leaves a `.snap.new` beside it; check the difference, then rewrite them with `INSTA_UPDATE=always cargo test screens` (or `cargo insta review`) and commit the `.snap` files with the change.
 
-What needs the real binary (the terminal itself, signals, a CLI's process, the clipboard and browser commands, hooks and other processes) gets a test in `tests/`: `common::Tui` runs the binary in a pty on a `common::project`, with `common::stubbed` for its session CLI and the desktop commands. Wait with `wait_text`, `wait_for` or `wait_until`, which give up with the screen printed, never a fixed sleep; each test's state, config and home are its own scratch folder, and gh and the keychain tools are stubs that fail, so nothing reaches your own login: a test that needs gh answering puts its own in `common::stub_tools`' folder (see `tests/pr.rs`). A test that should count towards coverage ends taskman as a user would (`ctrl+a q`, Enter, then `wait_exit`): a binary that's killed writes no profile. Run a new test many times in a row, and under load, before trusting it: CI's macOS runners are slow.
+What needs the real binary (the terminal itself, signals, a CLI's process, the clipboard and browser commands, hooks and other processes) gets a test in `tests/`: `common::Tui` runs the binary in a pty on a `common::project`, with `common::stubbed` for its session CLI and the desktop commands. Wait with `wait_text`, `wait_for` or `wait_until`, which give up with the screen printed, never a fixed sleep; each test's state, config and home are its own scratch folder, and gh and the keychain tools are stubs that fail, so nothing reaches your own login: a test that needs gh answering puts its own in `common::stub_tools`' folder (see `tests/pr.rs`). A test that should count towards coverage ends taskman as a user would (`ctrl+a q`, Enter, then `wait_exit`): a binary that's killed writes no profile. Run a new test many times in a row, and under load, before trusting it: CI's macOS runners are slow. Wait for what a key needs (the dialog open, the session started) before sending it, as a key sent early lands somewhere else, and assert only on facts read while the precondition still held: a screen or file read later may show what came after.
 
 For what neither covers, or to look at something by hand, drive the real binary in a detached tmux session, with state and config kept away from the real ones:
 
@@ -69,7 +69,7 @@ tmux send-keys -t tmtest C-a ,        # keys
 tmux capture-pane -p -t tmtest        # read the screen (-e for colours)
 ```
 
-Seed `$S/state/taskman/tickets.json` and `$S/config.json` to set up a scenario. Use `TASKMAN_CONFIG`, not `XDG_CONFIG_HOME`, to isolate the accounts file: `gh` keeps its login under `XDG_CONFIG_HOME` too. Quit with `ctrl+a q`, Enter, so the Claude sessions it started stop.
+Seed `$S/state/taskman/tickets.json` and `$S/config.json` to set up a scenario. Use `TASKMAN_CONFIG`, not `XDG_CONFIG_HOME`, to isolate the accounts file: `gh` keeps its login under `XDG_CONFIG_HOME` too. Quit with `ctrl+a q`, Enter, so the Claude sessions it started stop. Send Escape on its own (`tmux send-keys -t tmtest Escape`, then the next key): Escape followed by a key in one go arrives as Alt+key.
 
 ## Gotchas
 
@@ -91,6 +91,16 @@ Seed `$S/state/taskman/tickets.json` and `$S/config.json` to set up a scenario. 
 - Commit messages: a summary line, then what changed and why.
 - Agent instructions live in this file only, so Claude Code and Codex get the same ones: `CLAUDE.md` is just an import of it, since Claude Code stops reading `AGENTS.md` on its own when a `CLAUDE.md` or `CLAUDE.local.md` exists. Don't put instructions in `CLAUDE.md`, or Codex won't see them.
 - Maintainers keep notes for their own checkouts in `CLAUDE.local.md`, which is gitignored.
+
+## Pull requests
+
+What CONTRIBUTING.md asks of people, for agents:
+
+- For anything bigger than a fix, open an issue first, so the approach is agreed before it's built.
+- One change per pull request.
+- Fill in `.github/PULL_REQUEST_TEMPLATE.md`, also when the body is given with `gh pr create --body` (which skips the template): what and why, how it was checked (the tests added and what was seen in the TUI), the tools used and the checklist.
+- Say which agent was used, and how much of the change it wrote, in the template's "Tools used".
+- Run the checks as CI runs them before pushing: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` (without `-D warnings` it passes on warnings that fail CI), `cargo test`, and `scripts/test-install.sh` after `cargo build` when the install script or the updater changes.
 
 ## Releasing
 

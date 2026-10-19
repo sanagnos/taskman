@@ -8,7 +8,12 @@
 <!-- Tests added, and what you saw in the TUI (the tmux recipe in CONTRIBUTING.md). -->
 
 
-- [ ] `cargo fmt`, `cargo clippy --all-targets` and `cargo test` pass
+## Tools used
+
+<!-- Coding agents or other tools that wrote part of this, and how much; "none" is fine. -->
+
+
+- [ ] `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` pass
 - [ ] Changed screen snapshots (`src/ui/snapshots/`) reviewed
 - [ ] docs/architecture.md updated if files or structure changed
 - [ ] docs/guide.md and CHANGELOG.md ("Unreleased") updated if users would notice the change

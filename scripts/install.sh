@@ -3,11 +3,8 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/sanagnos/taskman/main/scripts/install.sh | bash
 #
-# It downloads the release over HTTPS with curl or wget. While the repository is private, that
-# fails without a login, and it downloads through the GitHub CLI (gh) instead; fetch the script
-# itself through gh too:
-#
-#   gh api repos/sanagnos/taskman/contents/scripts/install.sh -H 'Accept: application/vnd.github.raw' | bash
+# It downloads the release over HTTPS with curl or wget, and through the GitHub CLI (gh) when that
+# fails and gh is installed, which can also read a private copy of the repository.
 #
 # The download must match the release's checksum and the new binary must run before it replaces
 # the installed one. When gh is installed and logged in, it also verifies the release's attestation.
@@ -53,7 +50,7 @@ main() {
     Darwin/arm64) target=aarch64-apple-darwin ;;
     Darwin/x86_64) target=x86_64-apple-darwin ;;
     Linux/x86_64) target=x86_64-unknown-linux-gnu ;;
-    *) fail "there's no prebuilt taskman for $os/$arch yet. Build it from source instead: see 'From source' in the README." ;;
+    *) fail "there's no prebuilt taskman for $os/$arch yet. Build it from source instead: see https://github.com/$repo/blob/main/docs/guide.md#from-source" ;;
   esac
 
   # ---- tools -----------------------------------------------------------------------------
@@ -113,7 +110,7 @@ main() {
   staged=""
   trap 'rm -rf "$tmp"; [ -z "$staged" ] || rm -f "$staged"' EXIT
 
-  # HTTPS needs nothing but curl or wget; gh can also read the repository while it's private.
+  # HTTPS needs nothing but curl or wget; gh is the fallback, and can also read a private copy.
   via=""
   if [ -z "$tag" ] && latest="$(location "$base/latest" 2>/dev/null)"; then
     tag="$(printf '%s' "$latest" | sed -n 's|.*/releases/tag/\([^/?#]*\).*|\1|p')"
@@ -137,7 +134,7 @@ main() {
     if command -v gh >/dev/null 2>&1; then
       fail "couldn't download $what for $target from $base, nor through gh. Check your connection and that the release exists: gh release list -R $repo"
     fi
-    fail "couldn't download $what for $target from $base. Check your connection. While the repository is private, install the GitHub CLI (gh), log in with an account that can read $repo (gh auth login), and run this again."
+    fail "couldn't download $what for $target from $base. Check your connection and that the release exists, then run this again."
   fi
   case "$tag" in
     v[0-9]*.[0-9]*.[0-9]*) ;;
