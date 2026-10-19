@@ -191,7 +191,7 @@ impl App {
                     if let Err(e) = &res
                         && let Some(gh) = github::Gh::from_error(e)
                     {
-                        self.github.insert(tv.t.repo.clone(), gh);
+                        changed |= self.github.insert(tv.t.repo.clone(), gh) != Some(gh);
                     }
                     changed |= tv.take_pr(res, worktree);
                 }
@@ -271,7 +271,8 @@ impl App {
                     // Shown once, at start, so it stays longer than a toast's 4s.
                     self.toast = Some((tip, Instant::now() + Duration::from_secs(8)));
                 }
-                Msg::Gh(repo, gh) => _ = self.github.insert(repo, gh),
+                // Saved, for the next start's first frame.
+                Msg::Gh(repo, gh) => changed |= self.github.insert(repo, gh) != Some(gh),
                 Msg::Keychain(k) => self.keychain = Some(k),
                 Msg::Scanned(id, launch, kind, found) => self.scanned(&id, &launch, kind, found),
                 Msg::BackgroundStopped(id, launch, res) => {
@@ -371,15 +372,14 @@ impl App {
     pub(super) fn check_github(&self, repos: Vec<PathBuf>) {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            for repo in repos {
-                let gh = github::probe(&repo);
+            for (repo, gh) in github::probe(&repos) {
                 let _ = tx.send(Msg::Gh(repo, gh));
             }
         });
     }
 
-    /// Whether the folder can show PRs. Not yet checked counts as ready: a failed fetch
-    /// says otherwise.
+    /// Whether the folder can show PRs. Not yet checked counts as ready, for fetches and worktrees:
+    /// a failed fetch says otherwise. The PR panel waits for the check (`panels`).
     pub fn gh(&self, repo: &Path) -> github::Gh {
         self.github.get(repo).copied().unwrap_or(github::Gh::Ready)
     }

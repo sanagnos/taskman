@@ -157,8 +157,9 @@ impl Threads {
 pub const NO_REMOTE: &str = "This repo has no GitHub remote";
 
 /// Whether a project's folder can show PRs: a git repository with a GitHub remote, and `gh`
-/// installed and logged in to it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// installed and logged in to it. Saved as the last known answer (`store::UiPrefs::github`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Gh {
     Ready,
     NotGit,
@@ -196,34 +197,84 @@ pub fn is_note(e: &str) -> bool {
     matches!(Gh::from_error(e), Some(Gh::NoRemote | Gh::NotGit))
 }
 
-/// Checks `folder` without the network: its remotes' hosts, then `gh auth token` for them, which
-/// reads gh's own login.
-pub fn probe(folder: &Path) -> Gh {
-    let Ok(out) = git(folder, &["remote", "-v"]) else { return Gh::NotGit };
-    if !out.status.success() {
-        return Gh::NotGit;
+/// Checks `folders` without the network: their remotes' hosts, then `gh auth token` for them,
+/// which reads gh's own login. gh can take a second to answer, so each host is asked once however
+/// many folders share it, and the hosts all at once.
+pub fn probe(folders: &[PathBuf]) -> Vec<(PathBuf, Gh)> {
+    let hosts: Vec<Option<Vec<String>>> = std::thread::scope(|s| {
+        let handles: Vec<_> = folders.iter().map(|f| s.spawn(move || folder_hosts(f))).collect();
+        handles.into_iter().map(|h| h.join().ok().flatten()).collect()
+    });
+    let ready = readiness(&hosts, |asked| {
+        std::thread::scope(|s| {
+            let handles: Vec<_> = asked.iter().map(|h| s.spawn(move || token(h))).collect();
+            handles.into_iter().map(|h| h.join().unwrap_or(Token::No)).collect()
+        })
+    });
+    folders.iter().cloned().zip(ready).collect()
+}
+
+/// What `gh auth token` said for a host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Token {
+    Yes,
+    No,
+    /// gh isn't installed.
+    NoGh,
+}
+
+fn token(host: &str) -> Token {
+    match proc::run(Command::new("gh").args(["auth", "token", "--hostname", host]), GH_LIMIT) {
+        Ok(o) if o.status.success() => Token::Yes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Token::NoGh,
+        _ => Token::No,
     }
-    let hosts = remote_hosts(&String::from_utf8_lossy(&out.stdout));
-    let token = |host: &str| {
-        proc::run(Command::new("gh").args(["auth", "token", "--hostname", host]), GH_LIMIT)
-            .map(|o| o.status)
-    };
-    let github = hosts.iter().any(|h| h.contains("github"));
-    for h in &hosts {
-        match token(h) {
-            Ok(s) if s.success() => return Gh::Ready,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return if github { Gh::Missing } else { Gh::NoRemote };
+}
+
+/// The hosts of `folder`'s remotes; None if it isn't a git repository.
+fn folder_hosts(folder: &Path) -> Option<Vec<String>> {
+    let out = git(folder, &["remote", "-v"]).ok().filter(|o| o.status.success())?;
+    Some(remote_hosts(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Each folder's readiness from its remotes' hosts (None: not a git repository), with `ask` called
+/// once, on every host any folder needs, each once, for their tokens in that order.
+fn readiness(
+    folders: &[Option<Vec<String>>],
+    ask: impl FnOnce(&[String]) -> Vec<Token>,
+) -> Vec<Gh> {
+    let github = |hosts: &[String]| hosts.iter().any(|h| h.contains("github"));
+    let mut asked: Vec<String> = Vec::new();
+    for hosts in folders.iter().flatten() {
+        let alias = github(hosts).then(|| "github.com".to_string());
+        for h in hosts.iter().cloned().chain(alias) {
+            if !asked.contains(&h) {
+                asked.push(h);
             }
-            _ => {}
         }
     }
-    // An SSH alias like github.com-work is resolved by gh to github.com, which may be logged in.
-    match github {
-        true if token("github.com").is_ok_and(|s| s.success()) => Gh::Ready,
-        true => Gh::LoggedOut,
-        false => Gh::NoRemote,
-    }
+    let tokens = ask(&asked);
+    let token = |h: &str| {
+        let i = asked.iter().position(|a| a == h);
+        i.and_then(|i| tokens.get(i).copied()).unwrap_or(Token::No)
+    };
+    let one = |hosts: &[String]| {
+        let github = github(hosts);
+        for h in hosts {
+            match token(h) {
+                Token::Yes => return Gh::Ready,
+                Token::NoGh => return if github { Gh::Missing } else { Gh::NoRemote },
+                Token::No => {}
+            }
+        }
+        // An SSH alias like github.com-work is resolved by gh to github.com, which may be logged in.
+        match github {
+            true if token("github.com") == Token::Yes => Gh::Ready,
+            true => Gh::LoggedOut,
+            false => Gh::NoRemote,
+        }
+    };
+    folders.iter().map(|f| f.as_deref().map_or(Gh::NotGit, one)).collect()
 }
 
 /// The hosts of `git remote -v`'s URLs, each once.
@@ -883,6 +934,53 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use serde_json::json;
+
+    /// `readiness` with gh answering from `tokens`, by host; returns what it found and the hosts
+    /// gh was asked about.
+    fn ready_with(folders: &[Option<&[&str]>], tokens: &[(&str, Token)]) -> (Vec<Gh>, Vec<String>) {
+        let folders: Vec<Option<Vec<String>>> =
+            folders.iter().map(|f| f.map(|h| h.iter().map(|h| h.to_string()).collect())).collect();
+        let mut asked = Vec::new();
+        let ready = readiness(&folders, |hosts| {
+            asked = hosts.to_vec();
+            let answer = |h: &String| tokens.iter().find(|(t, _)| t == h).map(|(_, a)| *a);
+            hosts.iter().map(|h| answer(h).unwrap_or(Token::No)).collect()
+        });
+        (ready, asked)
+    }
+
+    #[test]
+    fn asks_gh_once_per_host() {
+        let github: &[&str] = &["github.com"];
+        let (ready, asked) = ready_with(
+            &[Some(github), Some(github), Some(&["github.com", "gitlab.example.com"]), None],
+            &[("github.com", Token::Yes)],
+        );
+        assert_eq!(ready, [Gh::Ready, Gh::Ready, Gh::Ready, Gh::NotGit]);
+        assert_eq!(asked, ["github.com", "gitlab.example.com"]);
+        let (_, asked) = ready_with(&[None, Some(&[])], &[]);
+        assert!(asked.is_empty(), "{asked:?}");
+    }
+
+    #[test]
+    fn tells_why_a_folder_has_no_pr_panel() {
+        let alias: &[&str] = &["github.com-work"];
+        let (ready, asked) = ready_with(&[Some(alias)], &[("github.com", Token::Yes)]);
+        assert_eq!(
+            (ready, asked),
+            (vec![Gh::Ready], vec!["github.com-work".into(), "github.com".into()])
+        );
+        assert_eq!(ready_with(&[Some(alias)], &[]).0, [Gh::LoggedOut]);
+        let gh = [("github.com", Token::NoGh), ("gitlab.example.com", Token::NoGh)];
+        let (ready, _) = ready_with(&[Some(&["github.com"]), Some(&["gitlab.example.com"])], &gh);
+        assert_eq!(ready, [Gh::Missing, Gh::NoRemote]);
+        // gh logged in to a GitHub Enterprise host.
+        let enterprise = [("git.example.com", Token::Yes)];
+        assert_eq!(
+            ready_with(&[Some(&["git.example.com"]), Some(&[])], &enterprise).0,
+            [Gh::Ready, Gh::NoRemote]
+        );
+    }
 
     #[test]
     fn reads_remote_hosts() {

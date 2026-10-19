@@ -69,6 +69,8 @@ impl App {
                 "This project has no tracker; connect one in its settings ({} ,)",
                 keys::prefix()
             )
+        } else if !self.github.contains_key(&tv.t.repo) {
+            "The PR panel shows once gh is checked, in a moment".to_string()
         } else {
             format!("No PR panel: {}", self.gh(&tv.t.repo).why())
         };

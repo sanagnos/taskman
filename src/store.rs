@@ -1,6 +1,7 @@
 //! Persisted state (projects, tickets, UI preferences), the accounts config, and status file paths.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// What each provider does differently is in `tracker.rs`.
@@ -384,8 +385,26 @@ pub struct UiPrefs {
     /// The tip that tmux or screen uses the same prefix has been shown, once.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub prefix_tip_shown: bool,
+    /// Whether each project's folder could show PRs when last checked (`github::probe`), by
+    /// folder, so the first frame draws the PR panel without waiting for gh. Read into the app at
+    /// start (`App::github`) and written from it at each save.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", deserialize_with = "known_gh")]
+    pub github: BTreeMap<PathBuf, crate::github::Gh>,
     #[serde(flatten)]
     pub extra: Extra,
+}
+
+/// The saved readiness this build knows, without the rest: what a newer taskman saved there in a
+/// form this one can't read is dropped rather than refused, as it's checked again at start.
+fn known_gh<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<BTreeMap<PathBuf, crate::github::Gh>, D::Error> {
+    let serde_json::Value::Object(all) = serde_json::Value::deserialize(d)? else {
+        return Ok(BTreeMap::new());
+    };
+    let known =
+        all.into_iter().filter_map(|(k, v)| Some((k.into(), serde_json::from_value(v).ok()?)));
+    Ok(known.collect())
 }
 
 impl Default for UiPrefs {
@@ -397,6 +416,7 @@ impl Default for UiPrefs {
             show_gh: true,
             codex_explained: false,
             prefix_tip_shown: false,
+            github: BTreeMap::new(),
             extra: Extra::new(),
         }
     }
@@ -1188,6 +1208,25 @@ mod tests {
         );
         let some: UiPrefs = serde_json::from_str(r#"{"show_gh":false}"#).unwrap();
         assert!(!some.show_gh && some.show_jira);
+    }
+
+    #[test]
+    fn remembers_github_readiness_and_drops_what_it_cant_read() {
+        use crate::github::Gh;
+        let mut ui = UiPrefs::default();
+        assert!(!serde_json::to_string(&ui).unwrap().contains("github"));
+        ui.github.insert("/src/acme".into(), Gh::Ready);
+        ui.github.insert("/src/notes".into(), Gh::LoggedOut);
+        let text = serde_json::to_string(&ui).unwrap();
+        assert!(text.contains(r#""github":{"/src/acme":"ready","/src/notes":"logged_out"}"#));
+        assert_eq!(serde_json::from_str::<UiPrefs>(&text).unwrap().github, ui.github);
+        // A newer taskman's answer this one doesn't know, or another shape altogether.
+        let newer =
+            r#"{"github":{"/src/acme":"ready","/src/notes":"rate_limited","/src/web":{"at":1}}}"#;
+        let read: UiPrefs = serde_json::from_str(newer).unwrap();
+        assert_eq!(read.github, BTreeMap::from([("/src/acme".into(), Gh::Ready)]));
+        let read: UiPrefs = serde_json::from_str(r#"{"github":["/src/acme"]}"#).unwrap();
+        assert!(read.github.is_empty());
     }
 
     /// tickets.json and config.json as the first private build wrote them: its own serializer's

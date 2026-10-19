@@ -193,8 +193,9 @@ pub struct App {
     open_issues: std::collections::HashMap<PathBuf, (Instant, add_form::OpenIssues)>,
     /// Each project's default branch name, read from git once.
     default_branches: std::cell::RefCell<std::collections::HashMap<PathBuf, String>>,
-    /// Whether each project's folder can show PRs (`github::probe`), by folder.
-    github: std::collections::HashMap<PathBuf, github::Gh>,
+    /// Whether each project's folder can show PRs (`github::probe`), by folder: as saved last
+    /// time until the check at start answers, and missing for a folder not checked yet.
+    github: std::collections::BTreeMap<PathBuf, github::Gh>,
     /// While the close dialog is open: whether the ticket's worktree can be removed with it.
     pub close_check: Option<worktree::RemoveCheck>,
     /// While the close dialog is open: why the ticket's worktree couldn't be checked (git failed),
@@ -258,15 +259,8 @@ impl App {
                 let _ = tx.send(Msg::Keychain(keychain));
             }
         });
-        // Checked before the first frame, so the layout doesn't jump once it's known.
-        app.github = std::thread::scope(|s| {
-            let handles: Vec<_> = app
-                .projects
-                .iter()
-                .map(|p| s.spawn(|| (p.repo.clone(), github::probe(&p.repo))))
-                .collect();
-            handles.into_iter().filter_map(|h| h.join().ok()).collect()
-        });
+        // The first frame draws from the saved answers; gh can take a second to give its own.
+        app.check_github(app.projects.iter().map(|p| p.repo.clone()).collect());
         if resumed {
             app.save();
         }
@@ -274,7 +268,8 @@ impl App {
     }
 
     /// The state alone, with nothing read or started: no tokens, no PR panels, no session.
-    fn from_saved(exe: &Path, saved: Saved, config: Config, updater: update::Updater) -> Self {
+    fn from_saved(exe: &Path, mut saved: Saved, config: Config, updater: update::Updater) -> Self {
+        let github = std::mem::take(&mut saved.ui.github);
         let (tx, rx) = mpsc::channel();
         let tickets: Vec<TicketView> = saved.tickets.into_iter().map(TicketView::new).collect();
         let sel = saved.selected.min(tickets.len().saturating_sub(1));
@@ -316,7 +311,7 @@ impl App {
             form_worktrees: Default::default(),
             open_issues: Default::default(),
             default_branches: Default::default(),
-            github: Default::default(),
+            github,
             close_check: None,
             close_unchecked: None,
             asking: Default::default(),
@@ -350,7 +345,13 @@ impl App {
             projects: self.projects.clone(),
             tickets: self.tickets.iter().map(|tv| tv.t.clone()).collect(),
             selected: self.sel,
-            ui: self.prefs.clone(),
+            ui: store::UiPrefs {
+                github: (self.github.iter())
+                    .filter(|(repo, _)| self.projects.iter().any(|p| &p.repo == *repo))
+                    .map(|(repo, gh)| (repo.clone(), *gh))
+                    .collect(),
+                ..self.prefs.clone()
+            },
             format: store::Format,
             extra: self.unknown.clone(),
         };
@@ -565,7 +566,7 @@ impl App {
         }
         (
             tracker && self.prefs.show_jira,
-            self.gh(&tv.t.repo) == github::Gh::Ready && self.prefs.show_gh,
+            self.github.get(&tv.t.repo) == Some(&github::Gh::Ready) && self.prefs.show_gh,
         )
     }
 

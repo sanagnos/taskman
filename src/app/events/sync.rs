@@ -338,3 +338,30 @@ fn the_links_list_opens_with_the_tickets_links() {
     settle(&mut app);
     assert_eq!(app.clipboard_out.len(), 1);
 }
+
+#[test]
+fn the_pr_panel_draws_from_the_saved_gh_check_until_the_new_one_answers() {
+    use crate::github::Gh;
+    let acme = std::path::PathBuf::from("/src/acme");
+    // A folder never checked draws without the panel, and `g` says it's coming.
+    let mut app = offline(crate::app::test_support::acme());
+    draw(&mut app, 160, 40);
+    assert!(!app.panels().1);
+    prefix(&mut app, KeyCode::Char('g'));
+    prefix(&mut app, KeyCode::Char('g'));
+    assert_eq!(toast(&app), Some("The PR panel shows once gh is checked, in a moment"));
+    app.tx.send(Msg::Gh(acme.clone(), Gh::Ready)).unwrap();
+    // A folder no project has any more isn't saved.
+    app.tx.send(Msg::Gh("/src/gone".into(), Gh::Ready)).unwrap();
+    app.drain_messages();
+    assert!(app.panels().1);
+    assert_eq!(saved().ui.github, [(acme.clone(), Gh::Ready)].into());
+
+    // The next start draws the panel from what was saved, and hides it once gh says otherwise.
+    let mut app = offline(saved());
+    assert!(app.panels().1);
+    app.tx.send(Msg::Gh(acme.clone(), Gh::LoggedOut)).unwrap();
+    app.drain_messages();
+    assert!(!app.panels().1);
+    assert_eq!(saved().ui.github, [(acme, Gh::LoggedOut)].into());
+}
