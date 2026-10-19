@@ -7,7 +7,7 @@
 use crate::cli::{self, Arg, Lexer, pick_project, resolve_key};
 use crate::status::{self, Here};
 use crate::store::{self, Cli, Saved, Ticket};
-use crate::tracker::{Client, Text};
+use crate::tracker::{Client, FetchError, Text};
 use crate::{local, untrusted, util};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -415,10 +415,14 @@ fn add(args: &[String]) -> Result<bool, String> {
                         created.push(made.key.clone());
                         items.push(Item::Ticket { key: made.key, title: title.trim().into() });
                     }
-                    Err(e) => show(Line::err(status::explain_sandbox(
-                        local::sandbox_hint(e, codex),
-                        codex,
-                    ))),
+                    Err(e) => {
+                        let cut_off = e.cut_off;
+                        show(Line::err(status::explain_sandbox(
+                            local::sandbox_hint(e, codex),
+                            cut_off,
+                            codex,
+                        )));
+                    }
                 }
             }
         }
@@ -445,12 +449,12 @@ fn add(args: &[String]) -> Result<bool, String> {
             // tracker can't be asked, the key is added unchecked.
             let checked = match &client {
                 Ok(Some(c)) => c.fetch(&key, Text::Markdown),
-                Ok(None) => Err(String::new()),
+                Ok(None) => Err(FetchError::Other(String::new())),
                 Err(e) => Err(e.clone()),
             };
             let title = match checked {
                 Ok(issue) => issue.summary,
-                Err(e) if e.contains(" not found") => {
+                Err(FetchError::NotFound(e)) => {
                     show(Line::err(e));
                     continue;
                 }
@@ -458,7 +462,7 @@ fn add(args: &[String]) -> Result<bool, String> {
                     if project.tracker.is_some() && !std::mem::replace(&mut warned, true) {
                         eprintln!(
                             "taskman add: couldn't check the ticket in the tracker, adding it anyway: {}",
-                            untrusted::clean(&status::explain_sandbox(e, codex))
+                            untrusted::clean(&status::explain_fetch(e, codex))
                         );
                     }
                     String::new()

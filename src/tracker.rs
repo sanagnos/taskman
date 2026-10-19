@@ -71,6 +71,70 @@ impl Text {
     }
 }
 
+/// Why a request to a tracker failed. The kind is what a command acts on (`taskman add` refuses
+/// a key that's `NotFound` and adds one unchecked otherwise); the text is what it says, often the
+/// tracker's own words, so it's printed through `untrusted`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FetchError {
+    /// The tracker answered that the issue doesn't exist, or the account can't see it.
+    NotFound(String),
+    /// No answer came: the network, or a sandbox, cut the request off.
+    Unreachable(String),
+    /// The tracker refused the credentials, or there were none to send (a token that couldn't be
+    /// read, no account picked).
+    Auth(String),
+    Other(String),
+}
+
+impl FetchError {
+    pub fn message(&self) -> &str {
+        match self {
+            FetchError::NotFound(m)
+            | FetchError::Unreachable(m)
+            | FetchError::Auth(m)
+            | FetchError::Other(m) => m,
+        }
+    }
+
+    /// The same kind of error, saying `f` of what it said.
+    pub fn map(self, f: impl FnOnce(String) -> String) -> FetchError {
+        match self {
+            FetchError::NotFound(m) => FetchError::NotFound(f(m)),
+            FetchError::Unreachable(m) => FetchError::Unreachable(f(m)),
+            FetchError::Auth(m) => FetchError::Auth(f(m)),
+            FetchError::Other(m) => FetchError::Other(f(m)),
+        }
+    }
+
+    /// From a request that failed with `e`, saying `message`.
+    pub(crate) fn request(e: &ureq::Error, message: String) -> FetchError {
+        if cut_off(e) { FetchError::Unreachable(message) } else { FetchError::Other(message) }
+    }
+}
+
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+impl From<String> for FetchError {
+    fn from(message: String) -> Self {
+        FetchError::Other(message)
+    }
+}
+
+impl From<FetchError> for String {
+    fn from(e: FetchError) -> Self {
+        match e {
+            FetchError::NotFound(m)
+            | FetchError::Unreachable(m)
+            | FetchError::Auth(m)
+            | FetchError::Other(m) => m,
+        }
+    }
+}
+
 /// What fetches a project's issues.
 #[derive(Clone)]
 pub enum Client {
@@ -104,28 +168,29 @@ impl Client {
     }
 
     /// The project's client for the CLI commands, from the same account choice and token sources
-    /// as the TUI, reading the token now; None for a project without a tracker.
-    pub fn for_project(config: &Config, project: &Project) -> Result<Option<Client>, String> {
+    /// as the TUI, reading the token now; None for a project without a tracker. A token that
+    /// can't be read is `Auth`, whatever its command printed.
+    pub fn for_project(config: &Config, project: &Project) -> Result<Option<Client>, FetchError> {
         let Some(t) = &project.tracker else { return Ok(None) };
         if !t.provider.needs_account() {
             return Ok(Client::new(t, &project.repo, None));
         }
         let Some(i) = config.account_for(t) else {
-            return Err(format!(
+            return Err(FetchError::Auth(format!(
                 "no {} account picked for project {}; pick or add one in its settings in taskman ({} ,)",
                 t.provider.label(),
                 project.name,
                 crate::keys::prefix()
-            ));
+            )));
         };
         let a = &config.accounts[i];
-        let token = a
-            .resolve_token()
-            .map_err(|e| format!("{e} (the token of {} account {})", t.provider.label(), a.id))?;
+        let token = a.resolve_token().map_err(|e| {
+            FetchError::Auth(format!("{e} (the token of {} account {})", t.provider.label(), a.id))
+        })?;
         Ok(Client::new(t, &project.repo, Some((a, &token))))
     }
 
-    pub fn fetch(&self, key: &str, text: Text) -> Result<Issue, String> {
+    pub fn fetch(&self, key: &str, text: Text) -> Result<Issue, FetchError> {
         let text = text.render();
         match self {
             Client::Jira(c) => jira::fetch(c, key),
@@ -364,6 +429,19 @@ pub(crate) fn unsent(e: &ureq::Error) -> bool {
             | ureq::Error::InvalidProxyUrl
             | ureq::Error::ConnectProxyFailed(_)
             | ureq::Error::RequireHttpsOnly(_)
+            | ureq::Error::Timeout(Timeout::Resolve | Timeout::Connect)
+    )
+}
+
+/// Whether a request that failed with `e` got no answer at all, as when Codex's sandbox cuts the
+/// network off: the name didn't resolve, or the connection failed or broke.
+pub(crate) fn cut_off(e: &ureq::Error) -> bool {
+    use ureq::Timeout;
+    matches!(
+        e,
+        ureq::Error::Io(_)
+            | ureq::Error::HostNotFound
+            | ureq::Error::ConnectionFailed
             | ureq::Error::Timeout(Timeout::Resolve | Timeout::Connect)
     )
 }
@@ -842,6 +920,20 @@ impl Tracker {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn an_error_keeps_its_kind_and_says_its_message() {
+        let e = FetchError::NotFound("ENG-52 not found".into());
+        assert_eq!(e.to_string(), "ENG-52 not found");
+        assert_eq!(
+            e.map(|m| format!("{m}, or not visible")),
+            FetchError::NotFound("ENG-52 not found, or not visible".into())
+        );
+        assert_eq!(FetchError::from("no".to_string()), FetchError::Other("no".into()));
+        let cut = local::WriteError::from(FetchError::Unreachable("offline".into()));
+        assert!(cut.cut_off && !cut.denied && cut.message == "offline");
+        assert!(!local::WriteError::from(FetchError::Auth("refused".into())).cut_off);
+    }
 
     #[test]
     fn creates_only_with_a_title_and_prefix() {

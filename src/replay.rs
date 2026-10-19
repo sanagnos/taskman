@@ -60,6 +60,12 @@ pub fn serve(responses: Vec<(u16, &'static str)>) -> Server {
     Server { url, got }
 }
 
+/// A URL where nothing listens, so a request to it is refused.
+pub fn closed() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    format!("http://{}", listener.local_addr().unwrap())
+}
+
 fn read_request(reader: &mut impl BufRead) -> Option<Request> {
     let mut line = String::new();
     reader.read_line(&mut line).ok()?;

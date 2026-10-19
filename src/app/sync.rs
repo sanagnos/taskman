@@ -335,7 +335,7 @@ impl App {
                 tv.jira.start(n);
                 let (repo, key, tx) = (tv.t.repo.clone(), tv.t.key.clone(), self.tx.clone());
                 std::thread::spawn(move || {
-                    let res = client.fetch(&key, Text::Plain);
+                    let res = client.fetch(&key, Text::Plain).map_err(String::from);
                     let _ = tx.send(Msg::Jira(n, (repo, key), res));
                 });
             }
@@ -414,7 +414,9 @@ impl App {
         }
         tv.creation = Some(std::thread::spawn(move || {
             let issue = match later.map_or(access, |f| f()) {
-                Access::Client(client) => Some(client.fetch(&key, Text::Plain)),
+                Access::Client(client) => {
+                    Some(client.fetch(&key, Text::Plain).map_err(String::from))
+                }
                 _ => None,
             };
             let (title, tracker_branch) = match &issue {

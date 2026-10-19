@@ -4,6 +4,8 @@ What changed in each release; a release's notes on GitHub are its section here. 
 
 ## Unreleased
 
+- `taskman add` adds a key unchecked when the account's token command isn't installed, as it does whenever the tracker can't be asked, instead of refusing it as not found. A tracker error that merely mentions "not found" (a name that didn't resolve, say) no longer reads as a missing ticket either, and Codex's sandbox hint follows the kind of failure rather than the HTTP library's wording.
+
 ## 0.1.12 - 2026-10-19
 
 - taskman rewrites `inbox/alive` in its state folder once a second instead of about three times a second, so tools that watch the folder (backups, indexers, file watchers) are woken less. `taskman add` and `taskman close` still answer within a second.
