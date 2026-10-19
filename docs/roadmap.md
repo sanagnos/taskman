@@ -83,7 +83,6 @@ taskman installs new releases in the background and applies them on restart (see
 
 From the pre-open-source review; the install and integrity fixes, attestations, immutable releases and tag protection shipped, these didn't:
 
-- **Linux arm64 and musl builds** (`aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`) and their `install.sh` cases. Try them in a test release first: GitHub's arm64 Linux runners are free for public repositories, and a failing build holds up every other target's release.
 - **cargo-dist,** evaluated and not adopted for now: it would replace `release.yml`, the install script and the asset names that `taskman update` and older releases' updaters rely on, for Homebrew, binstall and installer extras the launch doesn't need. Reconsider for a Homebrew tap. cargo-binstall needs only `[package.metadata.binstall]` pointing at the existing archives, which Cargo.toml has; untried. taskman isn't on crates.io (the `vt100` fork can't be a published dependency), so it would be `cargo binstall --git`.
 
 ## Known gaps

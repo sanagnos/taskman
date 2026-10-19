@@ -36,20 +36,43 @@ main() {
   bin_dir="${TASKMAN_BIN_DIR:-$HOME/.local/bin}"
   tag="${TASKMAN_VERSION:-}"
 
+  # The oldest glibc the Linux glibc builds run on: the highest GLIBC_ version their binaries ask
+  # for, which the release workflow checks against this line. Older, or no glibc at all (Alpine),
+  # gets the musl build, which is static and runs on any Linux.
+  glibc_min=2.34
+
   say() { printf '%s\n' "$*"; }
   fail() { printf 'taskman install: %s\n' "$*" >&2; exit 1; }
+
+  # Whether version $1 is $2 or later: releases (vX.Y.Z) or glibc versions (X.Y).
+  at_least() {
+    awk -v a="${1#v}" -v b="${2#v}" 'BEGIN {
+      split(a, x, "."); split(b, y, ".")
+      for (i = 1; i <= 3; i++) if (x[i] + 0 != y[i] + 0) exit !(x[i] + 0 > y[i] + 0)
+      exit 0
+    }'
+  }
 
   # ---- which build -----------------------------------------------------------------------
   os="$(uname -s)"
   arch="$(uname -m)"
+  libc=""
   # A shell under Rosetta reports x86_64 on Apple Silicon; the native build is the right one.
   if [ "$os" = Darwin ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then
     arch=arm64
   fi
-  case "$os/$arch" in
-    Darwin/arm64) target=aarch64-apple-darwin ;;
-    Darwin/x86_64) target=x86_64-apple-darwin ;;
-    Linux/x86_64) target=x86_64-unknown-linux-gnu ;;
+  if [ "$os" = Linux ]; then
+    # glibc's getconf knows its version; musl's has no such variable.
+    glibc="$(getconf GNU_LIBC_VERSION 2>/dev/null | sed -n 's/^glibc \([0-9][0-9.]*\).*/\1/p')" || glibc=""
+    if [ -n "$glibc" ] && at_least "$glibc" "$glibc_min"; then libc=gnu; else libc=musl; fi
+  fi
+  case "$os/$arch/$libc" in
+    Darwin/arm64/) target=aarch64-apple-darwin ;;
+    Darwin/x86_64/) target=x86_64-apple-darwin ;;
+    Linux/x86_64/gnu) target=x86_64-unknown-linux-gnu ;;
+    Linux/x86_64/musl) target=x86_64-unknown-linux-musl ;;
+    Linux/aarch64/gnu) target=aarch64-unknown-linux-gnu ;;
+    Linux/aarch64/musl) target=aarch64-unknown-linux-musl ;;
     *) fail "there's no prebuilt taskman for $os/$arch yet. Build it from source instead: see https://github.com/$repo/blob/main/docs/guide.md#from-source" ;;
   esac
 
@@ -94,15 +117,6 @@ main() {
       wget) https "$1" || return 1; { wget -q -S --max-redirect=0 -O /dev/null "$1" 2>&1 || true; } | sed -n 's/^ *[Ll]ocation: *//p' | tr -d '\r' | tail -1 ;;
       *) return 1 ;;
     esac
-  }
-
-  # Whether release $1 is release $2 or later (vX.Y.Z both).
-  at_least() {
-    awk -v a="${1#v}" -v b="${2#v}" 'BEGIN {
-      split(a, x, "."); split(b, y, ".")
-      for (i = 1; i <= 3; i++) if (x[i] + 0 != y[i] + 0) exit !(x[i] + 0 > y[i] + 0)
-      exit 0
-    }'
   }
 
   # ---- which release, and how --------------------------------------------------------------

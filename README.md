@@ -22,7 +22,7 @@ It installs the latest release into `~/.local/bin`, and taskman keeps itself up 
 cargo install --locked --git https://github.com/sanagnos/taskman
 ```
 
-Prebuilt binaries cover macOS (Apple Silicon and Intel) and Linux x86_64 with glibc 2.34 or newer (Ubuntu 22.04 and later, WSL); elsewhere, build from source. More ways, and what each does, in the [guide](docs/guide.md#install). To remove it, see [Uninstall](docs/guide.md#uninstall).
+Prebuilt binaries cover macOS (Apple Silicon and Intel) and Linux on x86_64 and arm64, WSL included: built for glibc 2.34 or newer (Ubuntu 22.04 and later), and with musl for Alpine and older distributions, which the install script picks between. Elsewhere, build from source. More ways, and what each does, in the [guide](docs/guide.md#install). To remove it, see [Uninstall](docs/guide.md#uninstall).
 
 ## Requirements
 

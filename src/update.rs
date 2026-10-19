@@ -41,17 +41,35 @@ const MAX_DOWNLOAD: u64 = 200 * 1024 * 1024;
 /// How often the TUI looks at update.json for a `taskman update` run elsewhere.
 const RELOAD_EVERY: Duration = Duration::from_secs(5);
 
+/// The C library this build links: on Linux, glibc ("gnu") or musl.
+const LIBC: &str = if cfg!(target_env = "musl") {
+    "musl"
+} else if cfg!(target_env = "gnu") {
+    "gnu"
+} else {
+    ""
+};
+
 /// The release build for this platform, as named in the release's archives
 /// (`taskman-v1.2.3-<target>.tar.gz`). None where there's no prebuilt taskman.
-const TARGET: Option<&str> = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-    Some("aarch64-apple-darwin")
-} else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-    Some("x86_64-apple-darwin")
-} else if cfg!(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")) {
-    Some("x86_64-unknown-linux-gnu")
-} else {
-    None
-};
+fn target() -> Option<&'static str> {
+    target_for(std::env::consts::OS, std::env::consts::ARCH, LIBC)
+}
+
+/// The release build for `os` and `arch` (as `std::env::consts` names them) with `libc`. A copy
+/// updates to the build it is, glibc or musl: install.sh chose it for the machine, and the glibc
+/// one already runs there.
+fn target_for(os: &str, arch: &str, libc: &str) -> Option<&'static str> {
+    Some(match (os, arch, libc) {
+        ("macos", "aarch64", _) => "aarch64-apple-darwin",
+        ("macos", "x86_64", _) => "x86_64-apple-darwin",
+        ("linux", "x86_64", "gnu") => "x86_64-unknown-linux-gnu",
+        ("linux", "x86_64", "musl") => "x86_64-unknown-linux-musl",
+        ("linux", "aarch64", "gnu") => "aarch64-unknown-linux-gnu",
+        ("linux", "aarch64", "musl") => "aarch64-unknown-linux-musl",
+        _ => return None,
+    })
+}
 
 /// This build's version as a release tag.
 pub fn running() -> String {
@@ -383,7 +401,7 @@ fn unverifiable() -> Option<Attestation> {
 /// this platform's build, checks it against the release's checksum and its attestation, and checks
 /// the new binary runs and is that release before it replaces the old one.
 fn install(exe: &Path, tag: &str, by: By) -> Result<(), String> {
-    let target = TARGET.ok_or(
+    let target = target().ok_or(
         "there's no prebuilt taskman for this platform; build it from source (see the README)",
     )?;
     let archive = format!("taskman-{tag}-{target}.tar.gz");
@@ -1433,6 +1451,35 @@ mod tests {
                 && script.contains("--deny-self-hosted-runners")
         );
         assert!(!script.contains("--signer-workflow"));
+    }
+
+    #[test]
+    fn updates_to_a_build_the_release_has_and_install_sh_picks() {
+        let released = include_str!("../.github/workflows/release.yml");
+        let script = include_str!("../scripts/install.sh");
+        let mut targets = vec![];
+        for os in ["macos", "linux", "freebsd"] {
+            for arch in ["aarch64", "x86_64", "arm"] {
+                for libc in ["gnu", "musl", ""] {
+                    targets.extend(target_for(os, arch, libc));
+                }
+            }
+        }
+        targets.sort();
+        targets.dedup();
+        assert_eq!(targets.len(), 6, "{targets:?}");
+        for t in &targets {
+            assert!(released.contains(&format!("- {{ target: {t},")), "release.yml builds {t}");
+            assert!(script.contains(&format!(") target={t} ;;")), "install.sh picks {t}");
+        }
+        assert_eq!(released.matches("- { target: ").count(), targets.len());
+        // A Linux build with neither C library has no release; this one has, where there's one.
+        assert_eq!(target_for("linux", "x86_64", ""), None);
+        if cfg!(any(target_os = "macos", target_os = "linux"))
+            && cfg!(any(target_arch = "x86_64", target_arch = "aarch64"))
+        {
+            assert!(target().is_some());
+        }
     }
 
     #[test]

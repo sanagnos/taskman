@@ -2,7 +2,8 @@
 # holding the binary and its license files), one SHA256SUMS, and the version's section of
 # CHANGELOG.md as its notes. On a public repository it also attests where each file was built
 # (`gh attestation verify`). Nothing is published unless CI passed on the tag's commit and each
-# binary that can run on its runner said the tag's version.
+# binary that can run on its runner said the tag's version; a build marked optional that fails is
+# left out instead.
 #
 # Runs when a version tag (v1.2.3) is pushed. It can also be started by hand for a tag without a
 # release, to build one again after deleting it or after CI on its commit was re-run and passed:
@@ -94,8 +95,16 @@ jobs:
         include:
           - { target: aarch64-apple-darwin, os: macos-14 }
           - { target: x86_64-apple-darwin, os: macos-14 }
-          # Linux and WSL. The older Ubuntu keeps the glibc requirement low.
+          # Linux and WSL. The older Ubuntu keeps the glibc requirement low (install.sh's
+          # glibc_min). Each build runs on its own architecture, so each binary is run below.
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm, optional: true }
+          # Static, for Alpine and a glibc older than glibc_min.
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-22.04, optional: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-22.04-arm, optional: true }
+    # Builds no release has shipped yet: one that fails is left out of the release rather than
+    # holding up the others. Drop `optional` once a release has them.
+    continue-on-error: ${{ matrix.optional == true }}
     runs-on: ${{ matrix.os }}
     # A build takes about two minutes; generous, as a release waits on the slowest.
     timeout-minutes: 30
@@ -116,6 +125,14 @@ jobs:
 
       # The Rust in rust-toolchain.toml at the tag, which CI tested the commit with.
       - run: rustup toolchain install && rustup target add "$TARGET"
+
+      # ring compiles C, which for musl needs musl's headers and libc: musl-gcc.
+      - name: Install musl-gcc
+        if: endsWith(matrix.target, '-musl')
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends musl-tools
+          echo "CC_${TARGET//-/_}=musl-gcc" >> "$GITHUB_ENV"
 
       - name: Check the tag matches Cargo.toml
         run: |
@@ -150,6 +167,32 @@ jobs:
             echo "$bin --licenses doesn't print LICENSE-THIRD-PARTY" >&2
             exit 1
           fi
+
+      # install.sh picks the glibc build from glibc_min on and the musl build below it, so the
+      # glibc build may ask for nothing newer, and the musl build, static, for no library at all.
+      - name: Check the libraries it needs
+        if: runner.os == 'Linux'
+        run: |
+          bin="target/$TARGET/dist/taskman"
+          case "$TARGET" in
+            *-gnu)
+              min="$(sed -n 's/^ *glibc_min=//p' scripts/install.sh)"
+              needs="$(objdump -T "$bin" | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/^GLIBC_//' | sort -uV | tail -1)"
+              if [ -z "$min" ] || [ -z "$needs" ] \
+                || [ "$(printf '%s\n' "$min" "$needs" | sort -V | tail -1)" != "$min" ]; then
+                echo "$bin needs glibc ${needs:-?}, newer than install.sh's glibc_min (${min:-unset})" >&2
+                exit 1
+              fi
+              echo "$bin needs glibc $needs; install.sh picks it from glibc $min on"
+              ;;
+            *-musl)
+              if readelf -d "$bin" | grep NEEDED; then
+                echo "$bin needs the shared libraries above; a musl build must be static" >&2
+                exit 1
+              fi
+              echo "$bin is static"
+              ;;
+          esac
 
       # LICENSE-THIRD-PARTY, the notices of the crates in the binary, goes in the archive and is
       # embedded in the binary, so it must be the committed file: generated again here from the

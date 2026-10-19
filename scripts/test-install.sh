@@ -7,7 +7,8 @@
 # which insists on the release workflow's identity, GitHub-hosted runners and a private folder for
 # the archive: verified, failed, signed by another workflow, unreachable, missing (both where a
 # release may have none and where it must have one), a gh too old for them, a logged-out gh, none at
-# all, and skipped on request. Then a breaking release, which `taskman update` installs when asked.
+# all, and skipped on request. Then which build install.sh picks on each OS, architecture and glibc
+# (faked), and a breaking release, which `taskman update` installs when asked.
 #
 # Usage: scripts/test-install.sh   (needs python3; run from anywhere)
 set -euo pipefail
@@ -17,12 +18,22 @@ work="$(mktemp -d)"
 server_pid=""
 trap '[ -z "$server_pid" ] || kill "$server_pid" 2>/dev/null; rm -rf "$work"' EXIT
 
+# This machine's build, as install.sh picks it: glibc's from install.sh's glibc_min on, else musl's.
+glibc="$(getconf GNU_LIBC_VERSION 2>/dev/null | sed -n 's/^glibc //p')" || glibc=""
+glibc_min="$(sed -n 's/^ *glibc_min=//p' "$root/scripts/install.sh")"
+libc=musl
+if [ -n "$glibc" ] && [ "$(printf '%s\n' "$glibc_min" "$glibc" | sort -t. -k1,1n -k2,2n | head -1)" = "$glibc_min" ]; then
+  libc=gnu
+fi
 case "$(uname -s)/$(uname -m)" in
   Darwin/*) if [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ] || [ "$(uname -m)" = arm64 ]; then
               target=aarch64-apple-darwin; else target=x86_64-apple-darwin; fi ;;
-  Linux/x86_64) target=x86_64-unknown-linux-gnu ;;
+  Linux/x86_64) target=x86_64-unknown-linux-$libc ;;
+  Linux/aarch64) target=aarch64-unknown-linux-$libc ;;
   *) echo "skipped: no release build for this platform"; exit 0 ;;
 esac
+# Every release build: the fake releases have an archive for each, all running here.
+targets="aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-gnu aarch64-unknown-linux-musl"
 
 if command -v sha256sum >/dev/null 2>&1; then sum() { sha256sum "$@"; }; else sum() { shasum -a 256 "$@"; }; fi
 
@@ -30,15 +41,17 @@ if command -v sha256sum >/dev/null 2>&1; then sum() { sha256sum "$@"; }; else su
 rel="$work/releases"
 # The license files a release archive carries beside the binary; an install leaves them out.
 licenses="LICENSE-MIT LICENSE-APACHE LICENSE-THIRD-PARTY"
-# release TAG BINARY_SCRIPT: an archive holding a `taskman` that runs BINARY_SCRIPT.
+# release TAG BINARY_SCRIPT: an archive for each build holding a `taskman` that runs BINARY_SCRIPT.
 release() {
-  local tag="$1" dir="$rel/$1" build="$work/build/$1"
+  local tag="$1" dir="$rel/$1" build="$work/build/$1" t
   mkdir -p "$dir" "$build"
   printf '#!/bin/sh\n%s\n' "$2" > "$build/taskman"
   chmod 755 "$build/taskman"
   for f in $licenses; do echo "$f of $tag" > "$build/$f"; done
-  # shellcheck disable=SC2086
-  tar czf "$dir/taskman-$tag-$target.tar.gz" -C "$build" taskman $licenses
+  for t in $targets; do
+    # shellcheck disable=SC2086
+    tar czf "$dir/taskman-$tag-$t.tar.gz" -C "$build" taskman $licenses
+  done
 }
 sums() { (cd "$rel/$1" && sum taskman-*.tar.gz > SHA256SUMS); }
 
@@ -141,7 +154,7 @@ GH
 chmod 755 "$work/attestbin/gh"
 
 # Only the tools the script and taskman update use: with curl and wget, without gh.
-tools="bash uname sysctl sha256sum shasum cut sed tr tail mktemp rm awk tar gzip mkdir install xattr mv"
+tools="bash uname sysctl getconf sha256sum shasum cut sed tr tail mktemp rm awk tar gzip mkdir install xattr mv"
 mkdir -p "$work/nogh"
 for t in $tools curl wget; do
   p="$(command -v "$t" || true)"
@@ -300,6 +313,50 @@ check "refuses a release with no attestation from require_from on" 1 "taskman 1.
 said "(release v1.1.0 has none, though every release from $require_from on has one); nothing was installed."
 [ ! -e "$bin"/.taskman.new.* ] || { echo "FAIL a staged binary was left behind"; failures=$((failures + 1)); }
 [ ! -e "$bin"/LICENSE-* ] || { echo "FAIL the archive's license files were installed beside the binary"; failures=$((failures + 1)); }
+
+# Which build install.sh picks, on machines faked with uname, getconf and sysctl: $FAKE_OS and
+# $FAKE_ARCH for uname -s and -m, glibc $FAKE_GLIBC (none when empty, as with musl), and Apple
+# Silicon under Rosetta when $FAKE_ARM64 is 1.
+mkdir -p "$work/platform"
+cat > "$work/platform/uname" <<'SH'
+#!/bin/sh
+case "$1" in -s) echo "$FAKE_OS" ;; -m) echo "$FAKE_ARCH" ;; *) echo "fake uname: $*" >&2; exit 1 ;; esac
+SH
+cat > "$work/platform/getconf" <<'SH'
+#!/bin/sh
+if [ "$1" = GNU_LIBC_VERSION ] && [ -n "$FAKE_GLIBC" ]; then echo "glibc $FAKE_GLIBC"; exit 0; fi
+echo "getconf: $1: unknown variable" >&2; exit 1
+SH
+cat > "$work/platform/sysctl" <<'SH'
+#!/bin/sh
+if [ "$*" = "-n hw.optional.arm64" ] && [ "$FAKE_OS" = Darwin ]; then echo "${FAKE_ARM64:-0}"; exit 0; fi
+echo "sysctl: unknown oid '$*'" >&2; exit 1
+SH
+chmod 755 "$work/platform/uname" "$work/platform/getconf" "$work/platform/sysctl"
+bin="$work/platformbin"
+on() { # OS ARCH GLIBC ARM64
+  rm -f "$bin/taskman"
+  inst PATH="$work/platform:$PATH" FAKE_OS="$1" FAKE_ARCH="$2" FAKE_GLIBC="$3" FAKE_ARM64="$4"
+}
+picks() { # TARGET OS ARCH GLIBC [ARM64]
+  check "picks $1 on $2/$3${4:+ with glibc $4}${5:+ under Rosetta}" 0 "taskman 1.2.0" on "$2" "$3" "$4" "${5:-}"
+  said "Installing taskman v1.2.0 ($1) into"
+}
+picks x86_64-unknown-linux-gnu Linux x86_64 2.39
+picks x86_64-unknown-linux-gnu Linux x86_64 "$glibc_min"
+picks x86_64-unknown-linux-gnu Linux x86_64 2.100
+picks x86_64-unknown-linux-musl Linux x86_64 2.31
+picks x86_64-unknown-linux-musl Linux x86_64 ""
+picks aarch64-unknown-linux-gnu Linux aarch64 2.35
+picks aarch64-unknown-linux-musl Linux aarch64 2.26
+picks aarch64-unknown-linux-musl Linux aarch64 ""
+picks aarch64-apple-darwin Darwin arm64 ""
+picks aarch64-apple-darwin Darwin x86_64 "" 1
+picks x86_64-apple-darwin Darwin x86_64 ""
+check "refuses a platform with no build" 1 none on Linux armv7l 2.36 ""
+said "there's no prebuilt taskman for Linux/armv7l yet. Build it from source instead"
+check "refuses an OS with no build" 1 none on FreeBSD amd64 "" ""
+said "there's no prebuilt taskman for FreeBSD/amd64 yet."
 
 # ---- taskman update ----------------------------------------------------------------------
 exe="${CARGO_TARGET_DIR:-$root/target}/debug/taskman"

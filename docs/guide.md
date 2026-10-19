@@ -18,7 +18,7 @@ The [README](../README.md#install) has the quick install. The details:
 
 ### Platforms
 
-Prebuilt releases cover macOS (Apple Silicon and Intel) and Linux on x86_64 with glibc 2.34 or newer (Ubuntu 22.04, Debian 12, Fedora 35, RHEL 9 and later; WSL). Elsewhere, such as Linux on ARM or Alpine, build it [from source](#from-source). There's no native Windows build: use WSL.
+Prebuilt releases cover macOS (Apple Silicon and Intel) and Linux on x86_64 and arm64 (aarch64), WSL included. Linux has two builds for each: one for glibc 2.34 or newer (Ubuntu 22.04, Debian 12, Fedora 35, RHEL 9 and later), and a static one built with musl that runs on any Linux, such as Alpine or a distribution with an older glibc (Amazon Linux 2, Debian 11, Ubuntu 20.04). The install script picks the glibc build where glibc is new enough and the musl one elsewhere, and `taskman update` keeps to the build that's installed. Elsewhere, such as 32-bit ARM, build it [from source](#from-source). There's no native Windows build: use WSL.
 
 The install script picks the build for your machine and downloads the latest release into `~/.local/bin` (`TASKMAN_BIN_DIR` changes it). The download must match the release's `SHA256SUMS` and the new binary must run before it replaces an installed one; otherwise nothing changes. When the GitHub CLI (`gh`) is installed and logged in, the script also verifies the release's attestation (`gh attestation verify`), which shows the repository's release workflow built the archive, run from a version tag or `main` on GitHub's own runners, and installs nothing if that fails. Every release from v0.1.0 on has one, so a release from then on without one is refused too: its archive may have been replaced. Without `gh`, or for a v0.0.x release, from before the repository was public and so without one, it says the checksum was the only check. If verification fails because gh can't reach GitHub or Sigstore (a timeout, a connection error, a busy or rate-limited server), the error says so: try again later. On a network that always blocks it, `TASKMAN_INSECURE_SKIP_ATTESTATION=1` installs on the checksum alone and prints a warning that it did; it weakens the install to what it was without `gh`, so use it only there. It then tells you anything still missing (PATH, Claude Code). `TASKMAN_VERSION=vX.Y.Z` installs a specific release.
 
@@ -33,7 +33,7 @@ To go back to an earlier release, say after a breaking one, set Settings → Upd
 What the quick install does, step by step. Pick your build and download it with the release's checksums:
 
 ```bash
-target=aarch64-apple-darwin     # Intel Mac: x86_64-apple-darwin; Linux or WSL: x86_64-unknown-linux-gnu
+target=aarch64-apple-darwin     # Intel Mac: x86_64-apple-darwin; Linux or WSL: x86_64-unknown-linux-gnu, or aarch64-unknown-linux-gnu on ARM; Alpine or glibc before 2.34: -musl in place of -gnu
 cd "$(mktemp -d)"
 curl -fsSLO https://github.com/sanagnos/taskman/releases/latest/download/SHA256SUMS
 archive="$(grep -o "taskman-v[0-9.]*-$target.tar.gz" SHA256SUMS)"
