@@ -1,7 +1,8 @@
 //! What draws over the screen: confirm dialogs, links, forms, settings and help.
 
+use super::sidebar::{more_line, scroll_to_show, shown_rows};
 use super::{asleep, badge, dim, selection_bg, spinner};
-use crate::app::{AgentAsk, AgentState, App, Form, LinkList, Mode, SettingsItem};
+use crate::app::{AgentAsk, AgentState, App, Form, Mode, SettingsItem};
 use crate::keys::prefix;
 use crate::store::tilde;
 use crate::untrusted;
@@ -19,7 +20,7 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &mut App) {
         // The jump box is the sidebar's own top row; move mode shows in the sidebar and footer.
         Mode::Normal | Mode::Jump(_) | Mode::Move(_) => {}
         Mode::Help(_) => draw_help(f, app),
-        Mode::Links(list) => draw_links(f, list),
+        Mode::Links(_) => draw_links(f, app),
         Mode::Form(_) => draw_form(f, app),
         Mode::Settings(_) => draw_settings(f, app),
         Mode::ConfirmDeleteAccount(i) => {
@@ -157,21 +158,21 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &mut App) {
 
 /// The ticket's links, then the session's newest first (`prefix l`): the text each showed, its URL
 /// under it. Links that don't open (not http(s)) are dimmed, and can be copied.
-fn draw_links(f: &mut Frame, list: &LinkList) {
+fn draw_links(f: &mut Frame, app: &mut App) {
+    let Mode::Links(list) = &mut app.mode else { return };
     let w = (100 + DIALOG_PAD_W).min(f.area().width.saturating_sub(2));
     let room = usize::from(w.saturating_sub(2 + DIALOG_PAD_W + 2));
     let both = list.panel > 0 && list.panel < list.links.len();
-    // Two rows a link, the keys under them, and room for both groups' headings.
-    let headings = if both { 2 } else { 0 };
-    let shown =
-        usize::from(f.area().height.saturating_sub(2 + DIALOG_PAD_H + 2 + 4 + headings) / 2).max(1);
-    let first = list.sel.saturating_sub(shown - 1);
-    let mut text = Vec::new();
-    for (i, link) in list.links.iter().enumerate().skip(first).take(shown) {
+    // Two rows a link, under its group's heading when there are both groups; `at` is where each
+    // link starts.
+    let mut rows = Vec::new();
+    let mut at = Vec::new();
+    for (i, link) in list.links.iter().enumerate() {
         if both && (i == 0 || i == list.panel) {
             let heading = if i == 0 { "This ticket" } else { "The session, newest first" };
-            text.push(Line::from(Span::styled(heading, dim().bold())));
+            rows.push(Line::from(Span::styled(heading, dim().bold())));
         }
+        at.push(rows.len());
         let openable = crate::links::openable(&link.url);
         let marker = if i == list.sel { "› " } else { "  " };
         let mut style = if openable { Style::new() } else { dim() };
@@ -183,20 +184,40 @@ fn draw_links(f: &mut Frame, list: &LinkList) {
             Some(label) => (truncate(&untrusted::line(label), room), Some(url)),
             None => (url, None),
         };
-        text.push(Line::from(vec![Span::raw(marker), Span::styled(top, style.bold())]));
+        rows.push(Line::from(vec![Span::raw(marker), Span::styled(top, style.bold())]));
         let note = if openable { "" } else { "  (doesn't open: c copies it)" };
         let under = under.unwrap_or_default();
-        text.push(Line::from(vec![
+        rows.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(truncate(&under, room.saturating_sub(note.len())), dim().fg(Color::Cyan)),
             Span::styled(note, dim()),
         ]));
     }
-    let more = list.links.len().saturating_sub(first + shown);
-    text.push(Line::from(Span::styled(
-        if more > 0 { format!("  … {more} more") } else { String::new() },
-        dim(),
-    )));
+    // The list, a blank row and the keys, inside the borders and padding, with two rows spare
+    // above and below the dialog.
+    let view_h = usize::from(f.area().height.saturating_sub(2 + DIALOG_PAD_H + 2 + 4)).max(1);
+    let row = at[list.sel];
+    let header = (both && (list.sel == 0 || list.sel == list.panel)).then(|| row - 1);
+    let total = rows.len();
+    list.top = scroll_to_show(list.top, total, view_h, row..row + 2, header);
+    let (first, end) = shown_rows(list.top, total, view_h);
+    // A link cut by an edge of the view shows neither of its rows, and counts as hidden.
+    let cut = |r: usize| {
+        (r == first && r > 0 && at.contains(&(r - 1))) || (r + 1 == end && at.contains(&r))
+    };
+    let mut text = Vec::new();
+    if first > 0 {
+        let above = at.iter().filter(|&&r| r < first).count();
+        text.push(more_line("↑", above, false, room));
+    }
+    for (r, line) in rows.into_iter().enumerate().take(end).skip(first) {
+        text.push(if cut(r) { Line::from("") } else { line });
+    }
+    if end < total {
+        let below = at.iter().filter(|&&r| r + 2 > end).count();
+        text.push(more_line("↓", below, false, room));
+    }
+    text.push(Line::from(""));
     let mut keys = Vec::new();
     for (i, (key, what)) in
         [("↑/↓", "choose"), ("Enter", "open"), ("c", "copy"), ("Esc", "close")].iter().enumerate()
@@ -644,7 +665,7 @@ fn fit(field: &crate::app::Field, room: usize) -> String {
 
 /// Settings: updates, projects and accounts listed on the left, the selected one's form on
 /// the right.
-fn draw_settings(f: &mut Frame, app: &App) {
+fn draw_settings(f: &mut Frame, app: &mut App) {
     let Mode::Settings(s) = &app.mode else { return };
     let deletable =
         matches!(s.items[s.cursor], SettingsItem::Project(_) | SettingsItem::Account(_));
@@ -685,17 +706,21 @@ fn draw_settings(f: &mut Frame, app: &App) {
             dim().add_modifier(ratatui::style::Modifier::BOLD),
         )));
     };
+    // Where each item's row is, and whether a section's heading is right above it.
+    let mut at = Vec::new();
     for (row, item) in s.items.iter().enumerate() {
-        match item {
-            SettingsItem::General => section(&mut lines, "GENERAL"),
-            SettingsItem::Project(0) => section(&mut lines, "PROJECTS"),
-            SettingsItem::NewProject if app.projects.is_empty() => section(&mut lines, "PROJECTS"),
-            SettingsItem::Account(0) => section(&mut lines, "ACCOUNTS"),
-            SettingsItem::NewAccount if app.config.accounts.is_empty() => {
-                section(&mut lines, "ACCOUNTS");
-            }
-            _ => {}
+        let heading = match item {
+            SettingsItem::General => Some("GENERAL"),
+            SettingsItem::Project(0) => Some("PROJECTS"),
+            SettingsItem::NewProject if app.projects.is_empty() => Some("PROJECTS"),
+            SettingsItem::Account(0) => Some("ACCOUNTS"),
+            SettingsItem::NewAccount if app.config.accounts.is_empty() => Some("ACCOUNTS"),
+            _ => None,
+        };
+        if let Some(title) = heading {
+            section(&mut lines, title);
         }
+        at.push((lines.len(), heading.is_some()));
         let (left, right, new) = match item {
             SettingsItem::General => {
                 let how = if app.updater.installs_automatically(app.config.auto_update) {
@@ -733,7 +758,20 @@ fn draw_settings(f: &mut Frame, app: &App) {
             Span::styled(format!("{right} "), if selected && !s.editing { base } else { dim() }),
         ]));
     }
-    f.render_widget(Paragraph::new(lines), list);
+    let (view_h, total) = (usize::from(list.height), lines.len());
+    let (row, headed) = at[s.cursor];
+    let top = scroll_to_show(s.top, total, view_h, row..row + 1, headed.then(|| row - 1));
+    let (first, end) = shown_rows(top, total, view_h);
+    let hidden = |rows: std::ops::Range<usize>| at.iter().filter(|(r, _)| rows.contains(r)).count();
+    let mut shown = Vec::new();
+    if first > 0 {
+        shown.push(more_line("↑", hidden(0..first), false, w));
+    }
+    shown.extend(lines.drain(first..end));
+    if end < total {
+        shown.push(more_line("↓", hidden(end..total), false, w));
+    }
+    f.render_widget(Paragraph::new(shown), list);
 
     let pane = Block::new()
         .borders(Borders::LEFT)
@@ -744,6 +782,9 @@ fn draw_settings(f: &mut Frame, app: &App) {
     let body =
         Rect { x: pane_inner.x + 1, width: pane_inner.width.saturating_sub(1), ..pane_inner };
     render_form(f, &s.form, body, s.editing, keys);
+    if let Mode::Settings(s) = &mut app.mode {
+        s.top = top;
+    }
 }
 
 fn draw_help(f: &mut Frame, app: &mut App) {

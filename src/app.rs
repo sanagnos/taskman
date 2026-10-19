@@ -104,6 +104,8 @@ pub struct LinkList {
     pub sel: usize,
     /// How many of the links, at the top, are the ticket's panels' rather than the session's.
     pub panel: usize,
+    /// The list row at the top of the view, moved as it's drawn to keep `sel` in view.
+    pub top: usize,
 }
 
 /// An agent `taskman add` asked for. A session can run `taskman add` without a prompt, and text it

@@ -23,6 +23,7 @@ mod mouse;
 mod projects;
 mod reorder;
 mod sessions;
+mod settings;
 mod sleep;
 mod sync;
 mod tickets;

@@ -335,3 +335,57 @@ fn the_links_list_opens_the_link_picked() {
     assert_eq!(toast(&app), Some("Opened https://linear.app/acme/issue/ENG-52"));
     assert_eq!(*opened.lock().unwrap(), ["https://linear.app/acme/issue/ENG-52"]);
 }
+
+#[test]
+fn the_links_list_stops_at_both_ends_and_keeps_the_choice_in_view() {
+    let mut app = acme_app();
+    let links = (0..30)
+        .map(|k| crate::links::Link { url: format!("https://example.com/{k:02}"), label: None })
+        .collect();
+    app.mode = Mode::Links(Box::new(crate::app::LinkList { links, sel: 0, panel: 0, top: 0 }));
+    let sel = |app: &App| match &app.mode {
+        Mode::Links(list) => (list.sel, list.top),
+        _ => panic!("links closed"),
+    };
+    // ↑ on the first link stays there.
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(sel(&app), (0, 0));
+    let screen = draw(&mut app, 80, 24);
+    assert!(screen.contains("› https://example.com/00"), "{screen}");
+    assert!(screen.contains("↓ 24 more"), "{screen}");
+    // ↓ down the list: each link shows as it's reached, and ↓ on the last stays there.
+    for k in 1..=30 {
+        app.on_key(key(KeyCode::Down));
+        let screen = draw(&mut app, 80, 24);
+        let k = k.min(29);
+        assert_eq!(sel(&app).0, k);
+        assert!(screen.contains(&format!("› https://example.com/{k:02}")), "{k}:\n{screen}");
+    }
+    let screen = draw(&mut app, 80, 24);
+    assert!(screen.contains("↑ 24 more") && screen.matches(" more").count() == 1, "{screen}");
+    // Back up one: that link was in view already, so the list stays put.
+    let top = sel(&app).1;
+    app.on_key(key(KeyCode::Up));
+    let screen = draw(&mut app, 80, 24);
+    assert_eq!(sel(&app), (28, top));
+    assert!(screen.contains("https://example.com/29"), "{screen}");
+}
+
+#[test]
+fn the_links_list_shows_a_groups_heading_with_its_first_link() {
+    let mut app = acme_app();
+    let links = (0..30)
+        .map(|k| crate::links::Link { url: format!("https://example.com/{k:02}"), label: None })
+        .collect();
+    app.mode = Mode::Links(Box::new(crate::app::LinkList { links, sel: 0, panel: 15, top: 0 }));
+    app.on_key(key(KeyCode::End));
+    draw(&mut app, 80, 24);
+    // Back up to the session's first link, out of view: its heading comes into view above it.
+    for _ in 0..14 {
+        app.on_key(key(KeyCode::Up));
+        draw(&mut app, 80, 24);
+    }
+    let screen = draw(&mut app, 80, 24);
+    assert!(screen.contains("The session, newest first"), "{screen}");
+    assert!(screen.contains("› https://example.com/15"), "{screen}");
+}

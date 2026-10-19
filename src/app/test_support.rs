@@ -212,6 +212,17 @@ pub(crate) fn long_sidebar(n: usize) -> App {
     app
 }
 
+/// `acme_app` with `n` projects in all: acme, notes, then acme-02 and on, with no tracker.
+pub(crate) fn many_projects(n: usize) -> App {
+    let mut app = acme_app();
+    for k in app.projects.len()..n {
+        let name = format!("acme-{k:02}");
+        let project = serde_json::json!({ "name": name, "repo": format!("/src/{name}") });
+        app.projects.push(serde_json::from_value(project).unwrap());
+    }
+    app
+}
+
 pub(crate) fn issue(key: &str) -> Issue {
     let comment = |id: &str, author: &str, secs: i64, body: &str| Comment {
         id: id.into(),

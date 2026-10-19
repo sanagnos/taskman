@@ -398,7 +398,7 @@ fn sidebar_rows(
 /// The rows a view `view_h` tall shows of `total`, from row `top`: an edge row with rows beyond
 /// it says how many instead (`more_line`), so the content starts one row in at the top when
 /// scrolled and stops one row short at the bottom while the list goes on.
-fn shown_rows(top: usize, total: usize, view_h: usize) -> (usize, usize) {
+pub(super) fn shown_rows(top: usize, total: usize, view_h: usize) -> (usize, usize) {
     let first = top + usize::from(top > 0);
     let end = if top + view_h < total { (top + view_h).saturating_sub(1) } else { total };
     (first.min(total), end.max(first).min(total))
@@ -407,8 +407,9 @@ fn shown_rows(top: usize, total: usize, view_h: usize) -> (usize, usize) {
 /// The row to scroll to so that rows `want` (a card) show whole, with row `header` (its project's,
 /// given when the card is the project's first) above them when there's room, moving `top` only
 /// as far as that takes: not at all while the card is in view. A card taller than the view shows
-/// from its first row.
-fn scroll_to_show(
+/// from its first row. The Settings and links lists scroll with it too, a section's or group's
+/// heading as the header.
+pub(super) fn scroll_to_show(
     top: usize,
     total: usize,
     view_h: usize,
@@ -435,7 +436,7 @@ fn scroll_to_show(
 /// An edge row where the list goes on past the view: how many entries (cards, folded projects)
 /// are hidden there, the arrow alone when only an open project's header is, with ● when one of
 /// them needs the user.
-fn more_line(arrow: &str, entries: usize, attention: bool, w: usize) -> Line<'static> {
+pub(super) fn more_line(arrow: &str, entries: usize, attention: bool, w: usize) -> Line<'static> {
     let text = if entries > 0 { format!(" {arrow} {entries} more") } else { format!(" {arrow}") };
     let used = text.chars().count();
     let mut spans = vec![Span::styled(text, dim())];

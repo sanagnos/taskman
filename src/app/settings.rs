@@ -28,6 +28,8 @@ pub struct Settings {
     pub form: Box<Form>,
     /// Keys go to the form (true) or move through the list (false).
     pub editing: bool,
+    /// The list row at the top of the view, moved as it's drawn to keep the cursor in view.
+    pub top: usize,
 }
 
 /// The tip for a user whose multiplexer has taskman's prefix too: `tmux` is tmux's `prefix`
@@ -123,7 +125,12 @@ impl App {
     pub(super) fn settings_show(&mut self, item: SettingsItem, form: Box<Form>, editing: bool) {
         let items = self.settings_items();
         let cursor = items.iter().position(|x| *x == item).unwrap_or(0);
-        self.mode = Mode::Settings(Box::new(Settings { items, cursor, form, editing }));
+        // Shown again after a save or a delete: the list stays where it was scrolled.
+        let top = match &self.mode {
+            Mode::Settings(s) => s.top,
+            _ => 0,
+        };
+        self.mode = Mode::Settings(Box::new(Settings { items, cursor, form, editing, top }));
     }
 
     pub(super) fn settings_key(&mut self, key: KeyEvent) {

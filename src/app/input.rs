@@ -584,7 +584,9 @@ impl App {
         match (links.is_empty(), &tv.session) {
             (true, None) => self.toast("No links yet, and no session: press Enter to start it"),
             (true, Some(_)) => self.toast("No links in this session"),
-            (false, _) => self.mode = Mode::Links(Box::new(LinkList { links, sel: 0, panel })),
+            (false, _) => {
+                self.mode = Mode::Links(Box::new(LinkList { links, sel: 0, panel, top: 0 }));
+            }
         }
     }
 

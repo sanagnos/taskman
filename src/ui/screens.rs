@@ -285,6 +285,15 @@ fn settings() {
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 
+/// Settings with more projects than fit, on the last: the list scrolls to show it, and counts
+/// the items above and below.
+#[test]
+fn settings_scrolled_to_the_last_project() {
+    let mut app = crate::app::test_support::many_projects(30);
+    app.open_settings(SettingsItem::Project(29), false);
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
 /// Settings → General, with the sleep settings: an hour and no limit, the defaults.
 #[test]
 fn settings_general() {
