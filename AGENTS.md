@@ -49,6 +49,7 @@ Rust edition 2024; the code uses `let` chains, so it needs Rust 1.88 or newer.
 - Tests never call a real tracker: record a response into `tests/fixtures/` (trimmed by hand, mock data only) and serve it with `replay::serve`.
 - Keep docs/guide.md (and the README, for install and the quick start) current when behaviour or setup changes, keep docs/architecture.md current when files or structure change, and add a line under "Unreleased" in CHANGELOG.md for anything users notice.
 - Public files don't name internal ticket keys; say what a change does instead.
+- Tickets are tracked privately: keep ticket keys out of PR titles, PR descriptions and commit messages; branches keep them (taskman's branch names), since that's how the PR is linked.
 
 ## Testing the TUI
 
