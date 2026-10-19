@@ -505,7 +505,7 @@ impl App {
         }
         match self.issue_url(&tv.t) {
             Some(url) => {
-                if !crate::util::open_url(&url) {
+                if !(self.open_url)(&url) {
                     self.toast(format!("Could not open {url}"));
                 }
             }
@@ -518,7 +518,7 @@ impl App {
         match tv.pr.data.as_ref().and_then(|p| p.as_ref()) {
             Some(pr) => {
                 let url = pr.url.clone();
-                if !crate::util::open_url(&url) {
+                if !(self.open_url)(&url) {
                     self.toast(format!("Could not open {url}"));
                 }
             }
@@ -588,7 +588,7 @@ impl App {
                     return;
                 }
                 self.mode = Mode::Normal;
-                if util::open_url(&url) {
+                if (self.open_url)(&url) {
                     self.toast(format!("Opened {}", util::truncate(&untrusted::line(&url), 80)));
                 } else {
                     self.toast("No browser found: set $BROWSER, or c copies the link");

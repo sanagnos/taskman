@@ -168,6 +168,9 @@ pub struct App {
     /// Stops a Claude background session by its id (`background::stop`, run on a thread); tests
     /// swap it so they never touch the user's real ones.
     stop_background: Arc<Stopper>,
+    /// Opens a URL in the user's browser (`util::open_url`); tests swap it so they never open
+    /// one, and record what would have.
+    open_url: Arc<dyn Fn(&str) -> bool + Send + Sync>,
     /// A drag-selection of rendered text in the Claude, Jira or GitHub pane.
     pub selection: Option<Selection>,
     /// The last left click: where, when, and how many in a row (see `mouse::click_count`).
@@ -299,6 +302,7 @@ impl App {
             clipboard_out: Vec::new(),
             clipboard: Arc::new(selection::copy),
             stop_background: Arc::new(background::stop),
+            open_url: Arc::new(crate::util::open_url),
             selection: None,
             last_click: None,
             panel: None,

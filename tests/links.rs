@@ -85,6 +85,7 @@ fn links_reach_the_terminal_and_the_list_opens_them() {
     tui.send(b"\x1b[B\r");
     tui.wait_text("Opened https://example.com/artifact");
     assert_eq!(wait_opened(&tui, &opened, 3), [SPEC, "https://example.com/plain?x=1", URL]);
+    tui.quit();
 }
 
 /// taskman in a pty with one ticket, whose session prints two links and sleeps; `$BROWSER` notes

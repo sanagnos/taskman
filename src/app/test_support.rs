@@ -3,8 +3,9 @@
 //! a mock project to fill it with, fake sessions, and drawing it into a `TestBackend`.
 //!
 //! None of it reaches outside the test: unit tests keep their state folder and config file in a
-//! scratch folder of their own (`store::scratch`), sessions are `Session::fake`, and copying goes
-//! out as OSC 52 (`clipboard_out`) rather than through the desktop's clipboard commands.
+//! scratch folder of their own (`store::scratch`), sessions are `Session::fake`, copying goes out
+//! as OSC 52 (`clipboard_out`) rather than through the desktop's clipboard commands, and no URL
+//! opens in a browser (`browser` records them).
 
 use super::{AgentState, App};
 use crate::github::{self, Check, CheckState, Pr, PrComment, Review, Thread, Threads};
@@ -40,6 +41,7 @@ pub(crate) fn offline(saved: Saved) -> App {
     );
     app.clipboard = Arc::new(|_| crate::selection::Copied::Osc52);
     app.stop_background = Arc::new(|_| Err("no claude in tests".into()));
+    app.open_url = Arc::new(|_| false);
     app
 }
 
@@ -483,6 +485,21 @@ pub(crate) fn answer_choices(app: &mut App, got: Result<&[(&str, &str)], &str>) 
 /// The toast showing, if any.
 pub(crate) fn toast(app: &App) -> Option<&str> {
     app.toast.as_ref().map(|(t, _)| t.as_str())
+}
+
+/// The URLs the App opened, in order.
+pub(crate) type Opened = Arc<std::sync::Mutex<Vec<String>>>;
+
+/// Gives the App a browser that opens nothing and notes each URL it's given; returns them. Without
+/// it, an App from `offline` finds no browser.
+pub(crate) fn browser(app: &mut App) -> Opened {
+    let opened = Opened::default();
+    let notes = opened.clone();
+    app.open_url = Arc::new(move |url| {
+        notes.lock().unwrap().push(url.into());
+        true
+    });
+    opened
 }
 
 /// What a fake session was sent, as text.

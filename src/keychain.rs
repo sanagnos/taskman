@@ -271,9 +271,13 @@ pub fn macos_stub() -> Keychain {
 fn write_stub(program: &std::path::Path) {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(program.parent().unwrap()).unwrap();
-    // Written aside and renamed, so no test runs it half written ("Text file busy").
+    // Copied by cp, not written here: a process another test starts at that moment inherits a
+    // file this one has open to write, and running the stub then fails ("Text file busy"). Copied
+    // aside and renamed, so no test runs it half written.
     let tmp = program.with_extension("tmp");
-    std::fs::write(&tmp, include_str!("../tests/fixtures/keychain-stub.sh")).unwrap();
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/keychain-stub.sh");
+    let copied = std::process::Command::new("cp").arg(fixture).arg(&tmp).status().unwrap();
+    assert!(copied.success(), "cp {fixture} {}", tmp.display());
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
     std::fs::rename(&tmp, program).unwrap();
 }

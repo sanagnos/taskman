@@ -383,6 +383,15 @@ impl Tui {
         }
     }
 
+    /// Quits as a user would, `prefix q` and Enter, and waits for taskman to end: a binary that's
+    /// killed writes no coverage profile.
+    pub fn quit(&mut self) {
+        self.send(b"\x01q");
+        self.wait_text("Quit taskman?");
+        self.send(b"\r");
+        assert!(self.wait_exit().success());
+    }
+
     /// Whether the terminal is in cooked mode, as a shell expects it: lines, echoed. Read through
     /// the master side, which reports the terminal's settings on Linux and macOS alike; macOS
     /// revokes the other side once taskman, which leads its session, has gone.

@@ -73,6 +73,7 @@ fn a_selection_stays_and_ctrl_c_copies_it_without_interrupting() {
     tui.wait_until("ctrl+c didn't interrupt the session", || {
         stub_file(&dir, "ENG-1", "signals") == "INT\n"
     });
+    tui.quit();
 }
 
 #[test]
@@ -112,6 +113,7 @@ fn streaming_output_moves_neither_the_highlight_nor_the_copy() {
             .max()?;
         (last > at + 50).then_some(())
     });
+    tui.quit();
 }
 
 #[test]
@@ -132,6 +134,7 @@ fn the_wheel_keeps_the_selection_on_its_text() {
         (find(s, "line 090") == Some((col, row + 9))).then_some(())
     });
     assert_eq!(tui.with(|t| highlighted(t.screen())), "line 090");
+    tui.quit();
 }
 
 #[test]
@@ -156,6 +159,7 @@ fn dragging_past_the_top_scrolls_and_selects_beyond_the_view() {
     assert_eq!(numbers.last(), Some(&80), "{copied}");
     assert!(numbers[0] <= 30, "{copied}");
     assert!(numbers.windows(2).all(|w| w[1] == w[0] + 1), "{copied}");
+    tui.quit();
 }
 
 #[test]
@@ -192,6 +196,7 @@ fn prefix_v_opens_the_history_in_the_editor() {
         .path();
     let mode = std::fs::metadata(history.join("ENG-1.txt")).unwrap().permissions();
     assert_eq!(std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777, 0o600);
+    tui.quit();
 }
 
 /// The colours in the SGR escapes in `raw` (30 to 38, 40 to 48, 58, 90 to 97, 100 to 107), and
@@ -270,4 +275,5 @@ fn a_selection_shows_under_no_color_with_nothing_coloured() {
         }
         assert_eq!(colours_and_resets(&t.raw), Vec::<String>::new());
     });
+    tui.quit();
 }

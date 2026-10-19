@@ -285,3 +285,33 @@ fn a_failed_save_keeps_showing_until_one_works() {
     assert_eq!(toast(&app), None);
     assert!(saved().ui.show_comments, "the change made while saving failed is saved too");
 }
+
+// ---- a worktree that failed ----------------------------------------------------------------
+
+#[test]
+fn prefix_shift_m_runs_a_ticket_whose_worktree_failed_in_the_main_checkout() {
+    let mut app = acme_app();
+    lay_out(&mut app, 80, 24);
+    let refused = "ctrl+a M is for a ticket whose worktree couldn't be created";
+    // ENG-52 has its worktree.
+    prefix(&mut app, KeyCode::Char('M'));
+    assert_eq!(toast(&app), Some(refused));
+    assert_eq!(app.tickets[app.sel].t.cwd, std::path::Path::new("/src/acme-ENG-52"));
+
+    let (i, _) = failed_worktree(&mut app);
+    // Nor while it's being tried again.
+    app.on_key(key(KeyCode::Enter));
+    app.resume_worktrees();
+    prefix(&mut app, KeyCode::Char('M'));
+    assert_eq!(toast(&app), Some(refused));
+    assert!(app.tickets[i].t.pending_worktree.is_some());
+    // It fails again: the folder is still in the way.
+    settle(&mut app);
+    prefix(&mut app, KeyCode::Char('M'));
+    let t = &saved().tickets[i];
+    let msg = format!("ENG-5 runs in the main checkout {}", t.repo.display());
+    assert_eq!(toast(&app), Some(msg.as_str()));
+    assert_eq!((&t.cwd, t.branch.as_deref()), (&t.repo, None));
+    assert!(t.pending_worktree.is_none() && !t.created_worktree);
+    assert!(!app.tickets[i].waiting(), "the session still waits");
+}

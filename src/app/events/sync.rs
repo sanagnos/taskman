@@ -256,6 +256,41 @@ fn a_worktree_finished_after_its_ticket_closed_stays_when_its_session_can_not_be
     assert!(toast(&app).is_some_and(|t| t.starts_with(expected)), "{:?}", toast(&app));
 }
 
+/// A session never falls back to the main checkout on its own: one whose worktree git couldn't
+/// make waits, saying why, until the user retries (Enter) or chooses the main checkout (prefix M).
+#[test]
+fn a_session_whose_worktree_failed_waits_for_the_user() {
+    let mut app = acme_app();
+    lay_out(&mut app, 80, 24);
+    let (i, in_the_way) = failed_worktree(&mut app);
+    let error = format!(
+        "{} already exists; move it, or change Folder in Project settings",
+        in_the_way.display()
+    );
+    assert_eq!(toast(&app), Some(format!("Couldn't create ENG-5's worktree: {error}").as_str()));
+    let t = &saved().tickets[i];
+    let pending = t.pending_worktree.as_ref().expect("the worktree is no longer asked for");
+    assert_eq!(pending.error.as_deref(), Some(error.as_str()));
+    assert_eq!((&t.cwd, t.branch.as_deref(), t.created_worktree), (&t.repo, None, false));
+    assert!(!app.tickets[i].creating && app.tickets[i].waiting());
+
+    // Held as `taskman resume` holds it, a start that goes wrong finds the claim taken rather
+    // than running a CLI in the main checkout.
+    let mut outside = resume::take(&resume::owner_file(&t.repo, "ENG-5")).unwrap().unwrap();
+    outside.write("outside 4242");
+    app.ensure_selected_session();
+    let tv = &app.tickets[i];
+    assert!(tv.session.is_none() && tv.away.is_none(), "a session started without its worktree");
+    assert_eq!(tv.status.state, AgentState::NotStarted);
+    let screen = draw(&mut app, 120, 30);
+    assert!(
+        screen.contains("Couldn't create a worktree for ENG-5")
+            && screen.contains("already exists; move it")
+            && screen.contains("Press Enter to try again once it's fixed."),
+        "{screen}"
+    );
+}
+
 /// A workflow's worktree on `change/ENG-70` is what the lookup prefers for the key, but the one
 /// taskman created stays the ticket's: a refresh never moves the ticket there, so closing can't
 /// offer the workflow's folder and branch for removal.

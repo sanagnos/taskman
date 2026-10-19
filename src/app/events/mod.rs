@@ -5,8 +5,8 @@
 
 use super::sessions::HAND_OFF_WAIT;
 use super::test_support::{
-    acme_app, ago, answer_choices, attach, attach_ended, attach_slow, ctrl, draw, key, lay_out,
-    long_sidebar, offline, reaped, sent, settle, toast,
+    acme_app, ago, answer_choices, attach, attach_ended, attach_slow, browser, ctrl, draw, key,
+    lay_out, long_sidebar, offline, reaped, sent, settle, toast,
 };
 use super::{AgentState, App, Away, Hit, Mode, sync::Msg};
 use crate::store::{self, Saved};
@@ -127,6 +127,24 @@ fn sh(dir: &std::path::Path, cmd: &str) {
         .unwrap()
         .success();
     assert!(ok, "{cmd}");
+}
+
+/// Adds ticket ENG-5 to project web, a git repository of this test's with no tracker, and waits
+/// for git to fail at making its worktree: a folder is in the way. Returns the ticket and the
+/// folder; removed, the next try succeeds.
+fn failed_worktree(app: &mut App) -> (usize, std::path::PathBuf) {
+    let repo = store::state_dir().join("web");
+    std::fs::create_dir_all(&repo).unwrap();
+    sh(&repo, "git init -q -b main && git commit -q --allow-empty -m init");
+    let web = serde_json::json!({ "name": "web", "repo": repo });
+    app.projects.push(serde_json::from_value(web).unwrap());
+    let in_the_way = crate::worktree::folder_path(crate::worktree::BESIDE, &repo, "ENG-5");
+    std::fs::create_dir_all(&in_the_way).unwrap();
+    let p = app.projects.len() - 1;
+    let added = app.add_ticket(p, "ENG-5".into(), store::Cli::Claude, true, None, true);
+    assert!(matches!(added, Ok(crate::app::ticket::Added::New(_))));
+    settle(app);
+    (app.sel, in_the_way)
 }
 
 // ---- `taskman add` through the inbox -------------------------------------------------------
