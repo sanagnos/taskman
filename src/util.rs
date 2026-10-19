@@ -152,6 +152,7 @@ pub fn truncate_middle(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn fits_a_label_in_display_columns() {
@@ -189,5 +190,42 @@ mod tests {
         assert_eq!(parse_ts("2024-03-01T13:00:00.123+0100"), Some(1709294400));
         assert_eq!(parse_ts("2024-03-01T07:00:00-05:00"), Some(1709294400));
         assert_eq!(parse_ts("garbage"), None);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn reading_a_timestamp_never_panics(
+            s in prop_oneof![
+                "\\PC{0,30}",
+                concat!(
+                    "[0-9+\\-]{4}-[0-9+\\-]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}",
+                    "(\\.[0-9]{0,6})?(Z|[+\\-][0-9:]{0,6}|\\PC{0,3})?",
+                ),
+                "[0-9TZ:.+\\- é日]{0,30}",
+            ],
+        ) {
+            parse_ts(&s);
+        }
+
+        #[test]
+        fn a_timestamp_reads_the_same_in_each_form(
+            (y, mo, d) in (1970..2100i64, 1..=12i64, 1..=28i64),
+            (h, mi, se) in (0..24i64, 0..60i64, 0..60i64),
+            frac in "(\\.[0-9]{1,6})?",
+            (sign, oh, om) in (prop::sample::select(vec!['+', '-']), 0..=14i64, 0..60i64),
+        ) {
+            let at = format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{se:02}");
+            let utc = parse_ts(&format!("{at}Z")).unwrap();
+            prop_assert_eq!(parse_ts(&at), Some(utc));
+            prop_assert_eq!(parse_ts(&format!("{at}{frac}Z")), Some(utc));
+            let offset = (oh * 3600 + om * 60) * if sign == '-' { -1 } else { 1 };
+            for zone in [format!("{sign}{oh:02}:{om:02}"), format!("{sign}{oh:02}{om:02}")] {
+                prop_assert_eq!(parse_ts(&format!("{at}{frac}{zone}")), Some(utc - offset));
+            }
+            let next = format!("{y:04}-{mo:02}-{:02}T{h:02}:{mi:02}:{se:02}Z", d + 1);
+            prop_assert_eq!(parse_ts(&next), Some(utc + 86400));
+        }
     }
 }
