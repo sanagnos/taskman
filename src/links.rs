@@ -636,6 +636,7 @@ fn each_row(screen: &mut vt100::Screen, mut f: impl FnMut(&vt100::Screen, u16)) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn parser(rows: u16, cols: u16, scrollback: usize) -> vt100::Parser {
         vt100::Parser::new(rows, cols, scrollback)
@@ -1157,5 +1158,152 @@ mod tests {
         assert!(!openable("https://example.com:http/"));
         assert!(!openable("https://[zz]/"));
         assert!(!openable("https:example.com"));
+    }
+
+    /// Text with URLs in it, as untrusted text might put them: schemes in either case, cut short,
+    /// or run into punctuation, brackets and characters that aren't ASCII.
+    fn text_with_urls() -> impl Strategy<Value = String> {
+        let one_of = |s: &[&'static str]| prop::sample::select(s.to_vec()).prop_map(String::from);
+        let piece = prop_oneof![
+            2 => one_of(&["https://", "http://", "HTTPS://", "Http://", "http", "http:/"]),
+            3 => one_of(&["example.com", "a", "x/y", "q?a=1", "#f", "%20", "例え"]),
+            3 => one_of(&[
+                ".", ",", ";", ":", "!", "?", "'", "*", "(", ")", "[", "]", " ", "\n", "│", "<",
+                ">", "\"",
+            ]),
+            1 => "\\PC",
+        ];
+        prop::collection::vec(piece, 0..16).prop_map(|p| p.concat())
+    }
+
+    /// `trimmed` as it reads, counting the brackets again for each character it takes off.
+    fn trimmed_slowly(url: &str) -> usize {
+        let mut s = url;
+        while let Some(c) = s.chars().next_back() {
+            let more = |close, open| s.matches(close).count() > s.matches(open).count();
+            let drop = match c {
+                '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '*' => true,
+                ')' => more(')', '('),
+                ']' => more(']', '['),
+                _ => false,
+            };
+            if !drop {
+                break;
+            }
+            s = &s[..s.len() - c.len_utf8()];
+        }
+        s.len()
+    }
+
+    /// Whether `small` is `big` with some bytes left out.
+    fn left_out_of(small: &[u8], big: &[u8]) -> bool {
+        let mut big = big.iter();
+        small.iter().all(|b| big.any(|c| c == b))
+    }
+
+    /// What ratatui's output and `mark`'s links write between and in cells: the bytes and the text
+    /// among them, which has no escape in it.
+    fn frame() -> impl Strategy<Value = (Vec<u8>, Vec<u8>)> {
+        let text = prop::collection::vec(any::<u8>().prop_filter("not ESC", |&b| b != 0x1b), 1..6);
+        let escape = prop::sample::select(vec![
+            "\x1b]8;id=x;https://example.com/a\x07",
+            "\x1b]8;;https://example.com/b\x07",
+            CLOSE,
+            CLOSE,
+            "\x1b[2;1H",
+            "\x1b[1m",
+            "\x1b[38;2;1;2;3m",
+            "\x1b[39m",
+            "\x1b[2J",
+            "\x1b[K",
+            "\x1b]0;title\x07",
+        ]);
+        let piece = prop_oneof![
+            2 => text.prop_map(|t| (t.clone(), t)),
+            3 => escape.prop_map(|e| (e.as_bytes().to_vec(), Vec::new())),
+        ];
+        prop::collection::vec(piece, 0..24).prop_map(|p| {
+            let (bytes, text): (Vec<_>, Vec<_>) = p.into_iter().unzip();
+            (bytes.concat(), text.concat())
+        })
+    }
+
+    /// `bytes` without the escapes `frame` writes: OSCs ended by BEL, and CSIs.
+    fn without_escapes(bytes: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            let end = match bytes[i..] {
+                [0x1b, b']', ..] => bytes[i..].iter().position(|&b| b == 0x07),
+                [0x1b, b'[', ..] => bytes[i..].iter().position(u8::is_ascii_alphabetic),
+                _ => None,
+            };
+            match end {
+                Some(n) => i += n + 1,
+                None => {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+        }
+        out
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn found_urls_are_whole_characters_and_start_with_the_scheme(text in text_with_urls()) {
+            let found = find_urls(&text);
+            for pair in found.windows(2) {
+                prop_assert!(pair[0].end <= pair[1].start, "{:?}", found);
+            }
+            for r in found {
+                prop_assert!(text.is_char_boundary(r.start) && text.is_char_boundary(r.end));
+                let url = &text[r.clone()];
+                let lower = url.to_ascii_lowercase();
+                let scheme = ["https://", "http://"].into_iter().find(|s| lower.starts_with(s));
+                prop_assert!(scheme.is_some_and(|s| url.len() > s.len()), "{:?}", url);
+                prop_assert!(url.len() <= MAX_URL && url.chars().all(url_char), "{:?}", url);
+                prop_assert_eq!(trimmed(url), url.len(), "{:?}", url);
+            }
+        }
+
+        #[test]
+        fn trimming_only_takes_off_the_end(url in "[a-z/().,;:!?'*\\[\\]日]{0,24}") {
+            let n = trimmed(&url);
+            prop_assert!(n <= url.len() && url.is_char_boundary(n));
+            prop_assert_eq!(n, trimmed_slowly(&url));
+        }
+
+        #[test]
+        fn joining_runs_keeps_the_text_and_only_leaves_escapes_out((input, text) in frame()) {
+            let mut out = Vec::new();
+            join_runs(&input, &mut out);
+            prop_assert_eq!(without_escapes(&out), text);
+            prop_assert!(left_out_of(&out, &input), "{:?} from {:?}", out, input);
+            // Joined once, nothing is left to join.
+            let mut again = Vec::new();
+            join_runs(&out, &mut again);
+            prop_assert_eq!(again, out);
+        }
+
+        #[test]
+        fn joining_runs_takes_any_bytes(
+            input in prop::collection::vec(
+                prop_oneof![
+                    prop::sample::select(vec![
+                        &b"\x1b"[..], b"]8;", b";", b"\x07", CLOSE.as_bytes(), b"\x1b[", b"1;2H",
+                        b"m", b"\x1b]8;;https://example.com/a\x07",
+                    ]).prop_map(<[u8]>::to_vec),
+                    prop::collection::vec(any::<u8>(), 1..4),
+                ],
+                0..24,
+            ).prop_map(|p| p.concat()),
+        ) {
+            let mut out = Vec::new();
+            join_runs(&input, &mut out);
+            prop_assert!(left_out_of(&out, &input), "{:?} from {:?}", out, input);
+        }
     }
 }

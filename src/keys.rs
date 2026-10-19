@@ -236,6 +236,7 @@ fn ctrl_byte(c: char) -> Option<u8> {
 mod tests {
     use super::*;
     use crossterm::event::KeyEvent;
+    use proptest::prelude::*;
 
     fn k(code: KeyCode, m: KeyModifiers) -> Vec<u8> {
         encode(&KeyEvent::new(code, m), false).unwrap()
@@ -323,5 +324,263 @@ mod tests {
             assert_eq!(encode(&KeyEvent::new(KeyCode::Char('Z'), m), false), None);
         }
         assert_eq!(k(KeyCode::Char('z'), KeyModifiers::NONE), b"z");
+    }
+
+    /// Each set of modifiers and the parameter xterm sends for it (ctlseqs, "PC-Style Function
+    /// Keys"), written out rather than worked out, so a broken formula fails here.
+    fn modifier_sets() -> [(KeyModifiers, u8); 8] {
+        let (s, a, c) = (KeyModifiers::SHIFT, KeyModifiers::ALT, KeyModifiers::CONTROL);
+        [
+            (KeyModifiers::NONE, 1),
+            (s, 2),
+            (a, 3),
+            (s | a, 4),
+            (c, 5),
+            (s | c, 6),
+            (a | c, 7),
+            (s | a | c, 8),
+        ]
+    }
+
+    #[test]
+    fn encodes_cursor_editing_and_function_keys_as_xterm_does() {
+        use KeyCode::*;
+        // The key; what it sends unmodified, in normal and in application cursor mode; and the
+        // number and final byte of its CSI with a modifier: CSI 1;<mod> A-D/H/F, CSI <n>;<mod> ~,
+        // and SS3 P-S for F1-F4 becoming CSI 1;<mod> P-S.
+        let table: [(KeyCode, &str, &str, u8, char); 22] = [
+            (Up, "\x1b[A", "\x1bOA", 1, 'A'),
+            (Down, "\x1b[B", "\x1bOB", 1, 'B'),
+            (Right, "\x1b[C", "\x1bOC", 1, 'C'),
+            (Left, "\x1b[D", "\x1bOD", 1, 'D'),
+            (Home, "\x1b[H", "\x1bOH", 1, 'H'),
+            (End, "\x1b[F", "\x1bOF", 1, 'F'),
+            (Insert, "\x1b[2~", "\x1b[2~", 2, '~'),
+            (Delete, "\x1b[3~", "\x1b[3~", 3, '~'),
+            (PageUp, "\x1b[5~", "\x1b[5~", 5, '~'),
+            (PageDown, "\x1b[6~", "\x1b[6~", 6, '~'),
+            (F(1), "\x1bOP", "\x1bOP", 1, 'P'),
+            (F(2), "\x1bOQ", "\x1bOQ", 1, 'Q'),
+            (F(3), "\x1bOR", "\x1bOR", 1, 'R'),
+            (F(4), "\x1bOS", "\x1bOS", 1, 'S'),
+            (F(5), "\x1b[15~", "\x1b[15~", 15, '~'),
+            (F(6), "\x1b[17~", "\x1b[17~", 17, '~'),
+            (F(7), "\x1b[18~", "\x1b[18~", 18, '~'),
+            (F(8), "\x1b[19~", "\x1b[19~", 19, '~'),
+            (F(9), "\x1b[20~", "\x1b[20~", 20, '~'),
+            (F(10), "\x1b[21~", "\x1b[21~", 21, '~'),
+            (F(11), "\x1b[23~", "\x1b[23~", 23, '~'),
+            (F(12), "\x1b[24~", "\x1b[24~", 24, '~'),
+        ];
+        for (code, normal, application, n, last) in table {
+            for (mods, m) in modifier_sets() {
+                for app_cursor in [false, true] {
+                    let want = match (m, app_cursor) {
+                        (1, false) => normal.to_string(),
+                        (1, true) => application.to_string(),
+                        _ => format!("\x1b[{n};{m}{last}"),
+                    };
+                    let got = encode(&KeyEvent::new(code, mods), app_cursor);
+                    assert_eq!(got, Some(want.into_bytes()), "{code:?} {mods:?} app {app_cursor}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn encodes_keys_that_send_a_byte_or_two() {
+        use KeyCode::*;
+        let (none, s, a, c) =
+            (KeyModifiers::NONE, KeyModifiers::SHIFT, KeyModifiers::ALT, KeyModifiers::CONTROL);
+        let table: &[(KeyCode, KeyModifiers, &[u8])] = &[
+            (Enter, none, b"\r"),
+            (Enter, s, b"\x1b\r"),
+            (Enter, a, b"\x1b\r"),
+            (Enter, s | a, b"\x1b\r"),
+            (Enter, c, b"\r"),
+            (Backspace, none, b"\x7f"),
+            (Backspace, s, b"\x7f"),
+            (Backspace, a, b"\x1b\x7f"),
+            (Backspace, c, b"\x08"),
+            (Backspace, c | a, b"\x1b\x08"),
+            (Tab, none, b"\t"),
+            (Tab, a, b"\x1b\t"),
+            // crossterm reports Shift+Tab as BackTab, with SHIFT or without.
+            (BackTab, none, b"\x1b[Z"),
+            (BackTab, s, b"\x1b[Z"),
+            (Esc, none, b"\x1b"),
+            (Esc, a, b"\x1b\x1b"),
+            (Char('x'), none, b"x"),
+            (Char('X'), none, b"X"),
+            (Char('x'), a, b"\x1bx"),
+            (Char('é'), none, "é".as_bytes()),
+            (Char('日'), a, "\x1b日".as_bytes()),
+            (Char('c'), c, b"\x03"),
+            (Char('c'), c | a, b"\x1b\x03"),
+        ];
+        for &(code, mods, want) in table {
+            for app_cursor in [false, true] {
+                let got = encode(&KeyEvent::new(code, mods), app_cursor);
+                assert_eq!(got.as_deref(), Some(want), "{code:?} {mods:?} app {app_cursor}");
+            }
+        }
+        for code in [F(0), F(13), F(255), Null, CapsLock, Menu, KeypadBegin] {
+            assert_eq!(encode(&KeyEvent::new(code, none), false), None, "{code:?}");
+        }
+    }
+
+    #[test]
+    fn encodes_ctrl_with_each_key_that_has_a_control_byte() {
+        let table: &[(&str, Option<u8>)] = &[
+            ("@ 2", Some(0)),
+            ("[3", Some(0x1b)),
+            ("\\4", Some(0x1c)),
+            ("]5", Some(0x1d)),
+            ("^6", Some(0x1e)),
+            ("_-/7", Some(0x1f)),
+            ("?8", Some(0x7f)),
+            ("aA", Some(0x01)),
+            ("mM", Some(0x0d)),
+            ("yY", Some(0x19)),
+            ("019!{é", None),
+        ];
+        for &(chars, want) in table {
+            for ch in chars.chars() {
+                let got = encode(&KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL), false);
+                assert_eq!(got, want.map(|b| vec![b]), "ctrl+{ch:?}");
+            }
+        }
+    }
+
+    fn key_code() -> impl Strategy<Value = KeyCode> {
+        use KeyCode::*;
+        prop_oneof![
+            2 => any::<char>().prop_map(Char),
+            2 => (0x20u8..0x7f).prop_map(|b| Char(b as char)),
+            1 => any::<u8>().prop_map(F),
+            2 => prop::sample::select(vec![
+                Backspace, Enter, Left, Right, Up, Down, Home, End, PageUp, PageDown, Tab,
+                BackTab, Delete, Insert, Null, Esc, CapsLock, ScrollLock, NumLock, PrintScreen,
+                Pause, Menu, KeypadBegin,
+            ]),
+        ]
+    }
+
+    /// Any modifiers, SUPER, HYPER and META included.
+    fn modifiers() -> impl Strategy<Value = KeyModifiers> {
+        any::<u8>().prop_map(KeyModifiers::from_bits_truncate)
+    }
+
+    fn key_event() -> impl Strategy<Value = KeyEvent> {
+        use crossterm::event::{KeyEventKind, KeyEventState};
+        let kind = prop::sample::select(vec![
+            KeyEventKind::Press,
+            KeyEventKind::Repeat,
+            KeyEventKind::Release,
+        ]);
+        let state = any::<u8>().prop_map(KeyEventState::from_bits_truncate);
+        (key_code(), modifiers(), kind, state).prop_map(|(code, m, kind, state)| {
+            KeyEvent::new_with_kind_and_state(code, m, kind, state)
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn the_modifier_parameter_is_xterms(
+            code in prop::sample::select(vec![
+                KeyCode::Up, KeyCode::Down, KeyCode::Right, KeyCode::Left, KeyCode::Home,
+                KeyCode::End, KeyCode::Insert, KeyCode::Delete, KeyCode::PageUp,
+                KeyCode::PageDown, KeyCode::F(1), KeyCode::F(4), KeyCode::F(5), KeyCode::F(12),
+            ]),
+            m in modifiers(),
+            app_cursor in any::<bool>(),
+        ) {
+            let want = 1
+                + u8::from(m.contains(KeyModifiers::SHIFT))
+                + 2 * u8::from(m.contains(KeyModifiers::ALT))
+                + 4 * u8::from(m.contains(KeyModifiers::CONTROL));
+            let out = encode(&KeyEvent::new(code, m), app_cursor).unwrap();
+            let out = String::from_utf8(out).unwrap();
+            match out.strip_prefix("\x1b[").and_then(|p| p.split_once(';')) {
+                Some((_, param)) => {
+                    let param = param[..param.len() - 1].parse::<u8>().ok();
+                    prop_assert_eq!(param, Some(want), "{:?}", out);
+                }
+                None => prop_assert_eq!(want, 1, "{:?}", out),
+            }
+        }
+
+        #[test]
+        fn encode_never_sends_nothing(key in key_event(), app_cursor in any::<bool>()) {
+            if let Some(bytes) = encode(&key, app_cursor) {
+                prop_assert!(!bytes.is_empty(), "{:?}", key);
+            }
+        }
+
+        #[test]
+        fn ctrl_and_a_letter_is_the_letter_masked(
+            c in prop::sample::select(('a'..='z').chain('A'..='Z').collect::<Vec<_>>()),
+            alt in any::<bool>(),
+        ) {
+            let alt_held = if alt { KeyModifiers::ALT } else { KeyModifiers::NONE };
+            let m = KeyModifiers::CONTROL | alt_held;
+            let got = encode(&KeyEvent::new(KeyCode::Char(c), m), false);
+            if c.eq_ignore_ascii_case(&'z') {
+                prop_assert_eq!(got, None);
+            } else {
+                let byte = c as u8 & 0x1f;
+                prop_assert_eq!(got, Some(if alt { vec![0x1b, byte] } else { vec![byte] }));
+            }
+        }
+
+        #[test]
+        fn normalize_is_idempotent_and_leaves_no_shift_on_a_character(key in key_event()) {
+            let once = normalize(key);
+            prop_assert_eq!(normalize(once), once);
+            if let KeyCode::Char(_) = once.code {
+                prop_assert!(!once.modifiers.contains(KeyModifiers::SHIFT));
+            } else {
+                prop_assert_eq!(once, key);
+            }
+        }
+
+        #[test]
+        fn a_kitty_shifted_letter_sends_what_the_capital_sends(
+            c in prop::char::range('a', 'z'),
+            m in modifiers(),
+        ) {
+            // Shift+c as a kitty terminal reports it: c with SHIFT, beside whatever else is held.
+            let kitty = normalize(KeyEvent::new(KeyCode::Char(c), m | KeyModifiers::SHIFT));
+            let legacy = normalize(KeyEvent::new(KeyCode::Char(c.to_ascii_uppercase()), m));
+            prop_assert_eq!(kitty, legacy);
+        }
+
+        #[test]
+        fn a_prefix_parses_back_however_it_is_spelled(
+            p in prop::sample::select(Prefix::ALL.to_vec()),
+            lead in prop::sample::select(vec!["ctrl+", "ctrl-", "c-", "^"]),
+            upper in prop::collection::vec(any::<bool>(), 16),
+            pad in ("[ \t]{0,2}", "[ \t\n]{0,2}"),
+        ) {
+            let spelled: String = format!("{lead}{}", &p.name()["ctrl+".len()..])
+                .chars()
+                .zip(&upper)
+                .map(|(c, &up)| if up { c.to_ascii_uppercase() } else { c })
+                .collect();
+            prop_assert_eq!(Prefix::parse(&format!("{}{spelled}{}", pad.0, pad.1)), Some(p));
+            let json = serde_json::to_string(&p).unwrap();
+            prop_assert_eq!(serde_json::from_str::<Prefix>(&json).unwrap(), p);
+        }
+
+        #[test]
+        fn a_parsed_prefix_is_named_as_it_parses(s in "(\\PC|[+\\-^ ]){0,12}") {
+            if let Some(p) = Prefix::parse(&s) {
+                prop_assert_eq!(Prefix::parse(p.name()), Some(p));
+                let rest = s.trim().to_ascii_lowercase();
+                prop_assert!(rest.ends_with(&p.name()["ctrl+".len()..]), "{:?} as {:?}", s, p);
+            }
+        }
     }
 }
