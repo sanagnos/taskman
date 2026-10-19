@@ -25,6 +25,7 @@ mod session;
 mod session_ids;
 mod stack;
 mod status;
+mod status_file;
 mod store;
 mod theme;
 mod tracker;

@@ -304,11 +304,10 @@ fn a_session_does_not_start_without_its_lock() {
 
 /// A status file record as `taskman hook` writes it, from start `launch` of the session.
 fn record(state: &str, sid: &str, launch: Option<&str>) -> String {
-    let mut v = crate::hook::status_record(state, Some(sid), None, "", 1);
-    if let Some(l) = launch {
-        v["launch"] = l.into();
-    }
-    v.to_string()
+    let state = crate::status_file::HookState::from_word(state);
+    let mut r = crate::hook::status_record(state, Some(sid), None, "", 1);
+    r.launch = launch.map(str::to_string);
+    r.to_string()
 }
 
 fn write_status(key: &str, text: &str) -> std::path::PathBuf {

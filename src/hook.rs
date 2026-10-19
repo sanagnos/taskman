@@ -2,6 +2,7 @@
 //! Records the session's state and id to the ticket's status file, which the TUI polls.
 //! It must never block or fail loudly, so every error is swallowed.
 
+use crate::status_file::{self, HookState, Reason, Record};
 use serde_json::{Value, json};
 use std::io::Read;
 use std::path::Path;
@@ -114,48 +115,29 @@ pub fn run(state_arg: &str) {
             touch(&path.with_extension("gh"));
         }
     }
-    let prev = std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or(Value::Null);
-    let Some(entry) = entry_for(state_arg, &v, &prev) else { return };
+    let prev = status_file::read(path).unwrap_or_default();
+    let Some(entry) = entry_for(HookState::from_word(state_arg), &v, &prev) else { return };
     let name = std::env::var("TASKMAN_SESSION_NAME").ok();
     let mut out = status_record(
-        &entry.state,
+        entry.state,
         v["session_id"].as_str(),
         name.as_deref(),
         &entry.message,
         crate::util::now(),
     );
-    if let Some(reason) = entry.reason {
-        out["reason"] = json!(reason);
-    }
+    out.reason = entry.reason;
     // Which start of the session this hook belongs to, so the TUI can tell a record of an
     // earlier one, written late (see `app::TicketView::takes`).
-    if let Ok(launch) = std::env::var("TASKMAN_LAUNCH")
-        && !launch.is_empty()
-    {
-        out["launch"] = json!(launch);
-    }
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    // Per process: two hooks of one session can fire at once, and a shared name lets one rename the
-    // other's half-written file.
-    let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
-    if std::fs::write(&tmp, out.to_string()).is_ok() {
-        let _ = std::fs::rename(tmp, path);
-    }
+    out.launch = std::env::var("TASKMAN_LAUNCH").ok().filter(|l| !l.is_empty());
+    let _ = status_file::write(path, &out);
 }
 
 /// What the status file says after a hook event.
 #[derive(Debug, PartialEq)]
 struct Entry {
-    state: String,
-    /// Why a "needs" session waits on the user: `permission` for a prompt that one key answers,
-    /// which the TUI may clear as soon as that key is pressed (`app::poll::prompt_key`);
-    /// `question` for questions, plans and anything else, which only a hook clears.
-    reason: Option<&'static str>,
+    state: HookState,
+    /// Why a "needs" session waits on the user (see `Reason`).
+    reason: Option<Reason>,
     message: String,
 }
 
@@ -164,22 +146,16 @@ struct Entry {
 const QUESTION_TOOLS: [&str; 3] = ["AskUserQuestion", "ExitPlanMode", "request_user_input"];
 
 /// The status a hook event writes, given the file as it stands (`prev`), or None to leave it.
-fn entry_for(state_arg: &str, v: &Value, prev: &Value) -> Option<Entry> {
+fn entry_for(state_arg: HookState, v: &Value, prev: &Record) -> Option<Entry> {
     let tool = v["tool_name"].as_str().unwrap_or("");
-    let entry = |state: &str, reason, message: &str| Entry {
-        state: state.into(),
-        reason,
-        message: message.into(),
-    };
-    let waiting = prev["state"] == "needs";
+    let entry = |state, reason, message: &str| Entry { state, reason, message: message.into() };
+    let (needs, asking) = (HookState::Needs, Some(Reason::Question));
     Some(match v["hook_event_name"].as_str().unwrap_or("") {
-        "PreToolUse" if QUESTION_TOOLS.contains(&tool) => {
-            entry("needs", Some("question"), &question(tool))
-        }
+        "PreToolUse" if QUESTION_TOOLS.contains(&tool) => entry(needs, asking, &question(tool)),
         // Claude's prompts (it fires this for its questions and plans too) and Codex's approvals,
         // at the moment the prompt appears.
         "PermissionRequest" if QUESTION_TOOLS.contains(&tool) => {
-            entry("needs", Some("question"), &question(tool))
+            entry(needs, asking, &question(tool))
         }
         "PermissionRequest" => {
             let message = match v["tool_input"]["description"].as_str() {
@@ -187,45 +163,36 @@ fn entry_for(state_arg: &str, v: &Value, prev: &Value) -> Option<Entry> {
                 None if tool.is_empty() => "Waiting for your approval".into(),
                 None => format!("Waiting for your approval to use {tool}"),
             };
-            entry("needs", Some("permission"), &message)
+            entry(needs, Some(Reason::Permission), &message)
         }
         "Notification" => {
             let message = v["message"].as_str().unwrap_or("");
             match v["notification_type"].as_str() {
                 Some("auth_success") => return None,
-                Some("idle_prompt") => entry("done", None, message),
-                _ if message.contains("waiting for your input") => entry("done", None, message),
+                Some("idle_prompt") => entry(HookState::Done, None, message),
+                _ if message.contains("waiting for your input") => {
+                    entry(HookState::Done, None, message)
+                }
                 // Claude sends this 6 s after any prompt it still waits on, questions and plans
                 // included, and versions without PermissionRequest send only this. So it keeps what
                 // an earlier hook said the session waits for.
-                Some("permission_prompt") if waiting => Entry {
-                    state: "needs".into(),
-                    reason: if prev["reason"] == "permission" {
-                        Some("permission")
-                    } else {
-                        Some("question")
-                    },
-                    message: prev["message"]
-                        .as_str()
+                Some("permission_prompt") if prev.state == HookState::Needs => Entry {
+                    state: needs,
+                    reason: prev.reason.or(asking),
+                    message: Some(prev.message.as_str())
                         .filter(|m| !m.is_empty())
                         .unwrap_or(message)
                         .into(),
                 },
-                Some("permission_prompt") => entry("needs", Some("permission"), message),
-                _ => entry("needs", Some("question"), message),
+                Some("permission_prompt") => entry(needs, Some(Reason::Permission), message),
+                _ => entry(needs, asking, message),
             }
         }
         // Claude starts its session again after compacting, also in the middle of a turn: keep
         // the state rather than calling a working session idle.
-        "SessionStart" if v["source"] == "compact" && prev["state"].is_string() => Entry {
-            state: prev["state"].as_str().unwrap_or("idle").into(),
-            reason: match prev["reason"].as_str() {
-                Some("permission") => Some("permission"),
-                Some(_) => Some("question"),
-                None => None,
-            },
-            message: prev["message"].as_str().unwrap_or("").into(),
-        },
+        "SessionStart" if v["source"] == "compact" && prev.state != HookState::Unknown => {
+            Entry { state: prev.state, reason: prev.reason, message: prev.message.clone() }
+        }
         _ => entry(state_arg, None, ""),
     })
 }
@@ -235,24 +202,23 @@ fn question(tool: &str) -> String {
     format!("{cli} is asking you a question")
 }
 
-/// The status file's contents. The TUI reading it may be an older or newer release (see
-/// `app::poll::parse_status`), so keep these fields and their meaning. `name` is the
-/// session's `--name`, which `taskman status` shows agents; sessions an older taskman started
-/// have none.
-/// `run` adds `reason` to a "needs" record (see `Entry`) and `launch`, the start of the session
-/// the hook belongs to (`TASKMAN_LAUNCH`); older readers ignore both.
+/// The status file's record (see `status_file`). `name` is the session's `--name`; `run` adds
+/// `reason` to a "needs" record and `launch`, the start of the session the hook belongs to.
 pub fn status_record(
-    state: &str,
+    state: HookState,
     session_id: Option<&str>,
     name: Option<&str>,
     message: &str,
     ts: i64,
-) -> Value {
-    let mut v = json!({ "state": state, "session_id": session_id, "message": message, "ts": ts });
-    if let Some(name) = name {
-        v["name"] = json!(name);
+) -> Record {
+    Record {
+        state,
+        session_id: session_id.map(str::to_string),
+        name: name.map(str::to_string),
+        message: message.into(),
+        ts,
+        ..Record::default()
     }
-    v
 }
 
 fn touch(path: &Path) {
@@ -305,19 +271,27 @@ mod tests {
         assert!(!touches_github("Read", ""));
     }
 
-    /// The entry a hook event writes over `prev`, as (state, reason, message).
+    /// The entry a hook event writes over the record `prev`, as (state, reason, message) the
+    /// way the file spells them.
     fn after(
         state_arg: &str,
         event: &Value,
         prev: &Value,
     ) -> Option<(String, Option<&'static str>, String)> {
-        entry_for(state_arg, event, prev).map(|e| (e.state, e.reason, e.message))
+        let prev = status_file::parse(&prev.to_string()).unwrap_or_default();
+        let e = entry_for(HookState::from_word(state_arg), event, &prev)?;
+        let state = serde_json::to_value(e.state).unwrap().as_str().unwrap().to_string();
+        let reason = e.reason.map(|r| match r {
+            Reason::Permission => "permission",
+            Reason::Question => "question",
+        });
+        Some((state, reason, e.message))
     }
 
     fn written(state_arg: &str, event: &Value, prev: &Value) -> Value {
-        let e = entry_for(state_arg, event, prev).unwrap();
-        let mut v = status_record(&e.state, None, None, &e.message, 1);
-        if let Some(r) = e.reason {
+        let (state, reason, message) = after(state_arg, event, prev).unwrap();
+        let mut v = json!({ "state": state, "message": message });
+        if let Some(r) = reason {
             v["reason"] = json!(r);
         }
         v

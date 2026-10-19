@@ -694,7 +694,8 @@ mod tests {
         let status = dir.join("status");
         let old = |key: &str| store::legacy_status_file_in(&status, key);
         let record = |sid: &str, ts: i64| {
-            crate::hook::status_record("done", Some(sid), None, "", ts).to_string()
+            crate::hook::status_record(crate::status_file::HookState::Done, Some(sid), None, "", ts)
+                .to_string()
         };
         std::fs::write(old("ENG-52"), record("sid-52-new", 20)).unwrap();
         std::fs::write(old("ENG-52").with_extension("gh"), "1").unwrap();

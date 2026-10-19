@@ -81,7 +81,12 @@ pub const HANDED_OFF: &str = "handed-off";
 
 /// The file whose lock says who runs the session of `key` in the project at `repo`.
 pub fn owner_file(repo: &Path, key: &str) -> PathBuf {
-    store::status_file(repo, key).with_extension("owner")
+    owner_file_in(&store::status_dir(), repo, key)
+}
+
+/// `owner_file` in the status folder `dir`.
+pub fn owner_file_in(dir: &Path, repo: &Path, key: &str) -> PathBuf {
+    store::status_file_in(dir, repo, key).with_extension("owner")
 }
 
 fn parse(text: &str, held: bool) -> Owner {
@@ -194,6 +199,12 @@ pub fn peek(path: &Path) -> Owner {
         std::thread::sleep(Duration::from_millis(2));
     }
     parse(&text, true)
+}
+
+/// Whether a process runs the session whose owner file is `path`: taskman's pane or `taskman
+/// resume`. What commands go by, as only the TUI knows its panes.
+pub fn runs(path: &Path) -> bool {
+    matches!(peek(path), Owner::Taskman(_) | Owner::Outside(_))
 }
 
 /// Why `taskman resume` can't take a session someone else runs.

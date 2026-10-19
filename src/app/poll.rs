@@ -7,6 +7,7 @@ use super::{App, Away, Blocked};
 use crate::background;
 use crate::session::Session;
 use crate::session_ids::{self, Claim};
+use crate::status_file::{self, HookState};
 use crate::store::{self, Cli, Ticket};
 use crate::tracker::Text;
 use crate::{local, resume};
@@ -34,6 +35,33 @@ pub enum AgentState {
     Needs,
     Done,
     Exited,
+}
+
+impl From<HookState> for AgentState {
+    fn from(s: HookState) -> Self {
+        match s {
+            HookState::Working => AgentState::Working,
+            HookState::Needs => AgentState::Needs,
+            HookState::Done => AgentState::Done,
+            HookState::Ended => AgentState::Exited,
+            HookState::Idle | HookState::Unknown => AgentState::Idle,
+        }
+    }
+}
+
+impl AgentState {
+    /// What the sidebar and the pane header call it, in the words `taskman status` uses.
+    pub fn word(self) -> &'static str {
+        let hook = match self {
+            AgentState::NotStarted => return status_file::NOT_STARTED,
+            AgentState::Idle => HookState::Idle,
+            AgentState::Working => HookState::Working,
+            AgentState::Needs => HookState::Needs,
+            AgentState::Done => HookState::Done,
+            AgentState::Exited => HookState::Ended,
+        };
+        hook.word()
+    }
 }
 
 pub struct Status {
@@ -151,40 +179,6 @@ impl Status {
     }
 }
 
-/// A session's status file, as `taskman hook` writes it. After a background update, sessions
-/// run the new binary's hook while the TUI is still the old one, so this must stay readable
-/// across releases: add fields, don't rename or remove them.
-pub(super) struct StatusRecord {
-    pub(super) state: AgentState,
-    pub(super) session_id: Option<String>,
-    pub(super) message: String,
-    ts: i64,
-    /// A permission prompt (`reason`, which older hooks don't write); absent means one only a
-    /// hook clears.
-    pub(super) permission: bool,
-    /// Which start of the session wrote it (`TASKMAN_LAUNCH`; older hooks write none).
-    pub(super) launch: Option<String>,
-}
-
-pub(super) fn parse_status(text: &str) -> Option<StatusRecord> {
-    let v: serde_json::Value = serde_json::from_str(text).ok()?;
-    let state = match v["state"].as_str().unwrap_or("") {
-        "working" => AgentState::Working,
-        "needs" => AgentState::Needs,
-        "done" => AgentState::Done,
-        "ended" => AgentState::Exited,
-        _ => AgentState::Idle,
-    };
-    Some(StatusRecord {
-        state,
-        session_id: v["session_id"].as_str().map(str::to_string),
-        message: v["message"].as_str().unwrap_or("").to_string(),
-        ts: v["ts"].as_i64().unwrap_or(0),
-        permission: v["reason"] == "permission",
-        launch: v["launch"].as_str().map(str::to_string),
-    })
-}
-
 /// What a key does to a permission prompt the session waits on (see "Inferred states" in
 /// docs/design.md).
 #[derive(Debug, PartialEq)]
@@ -280,7 +274,7 @@ pub(super) fn take_leftover_status(
         let unique = tickets.iter().filter(|o| o.key == t.key).count() == 1;
         let latest = paths[..if unique { 2 } else { 1 }]
             .iter()
-            .filter_map(|p| parse_status(&std::fs::read_to_string(p).ok()?))
+            .filter_map(|p| status_file::read(p))
             .filter(|r| r.session_id.is_some())
             .max_by_key(|r| r.ts);
         // A session running in another terminal keeps its file, so its state shows at once.
@@ -356,7 +350,7 @@ impl App {
             let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
             if mtime.is_some() && mtime != tv.status.mtime {
                 tv.status.mtime = mtime;
-                let record = std::fs::read_to_string(&path).ok().and_then(|s| parse_status(&s));
+                let record = status_file::read(&path);
                 // A hook of an earlier start can write late (see `takes`): not this session's.
                 if let Some(mut rec) = record.filter(|rec| tv.takes(rec)) {
                     tv.status.hook_fired();
@@ -500,9 +494,9 @@ mod tests {
 
     /// A session waiting on what the hook last wrote.
     fn waiting(record: &str) -> Status {
-        let rec = parse_status(record).unwrap();
+        let rec = status_file::parse(record).unwrap();
         let mut s = Status::new();
-        (s.state, s.permission) = (rec.state, rec.permission);
+        (s.state, s.permission) = (rec.state.into(), rec.permission());
         s
     }
 
@@ -673,32 +667,38 @@ mod tests {
 
     #[test]
     fn reads_status_files_across_releases() {
+        let parse_status = status_file::parse;
         // The format taskman hook has written since v0.1; a background update must not break it.
         let rec = parse_status(r#"{"state":"needs","session_id":"5f0c-11","message":"Claude needs your permission to use Bash","ts":1760000000}"#).unwrap();
-        assert_eq!(rec.state, AgentState::Needs);
+        assert_eq!(AgentState::from(rec.state), AgentState::Needs);
         assert_eq!(rec.session_id.as_deref(), Some("5f0c-11"));
         assert_eq!(rec.message, "Claude needs your permission to use Bash");
         // What this release's hook writes, and a newer hook's extra fields.
-        let ours =
-            crate::hook::status_record("done", Some("5f0c-11"), Some("beta/WP-1"), "", 1760000000)
-                .to_string();
-        assert_eq!(parse_status(&ours).unwrap().state, AgentState::Done);
+        let ours = crate::hook::status_record(
+            HookState::Done,
+            Some("5f0c-11"),
+            Some("beta/WP-1"),
+            "",
+            1760000000,
+        )
+        .to_string();
+        assert_eq!(AgentState::from(parse_status(&ours).unwrap().state), AgentState::Done);
         let newer =
             parse_status(r#"{"state":"working","session_id":null,"message":"","ts":1,"cwd":"/r"}"#)
                 .unwrap();
-        assert_eq!((newer.state, newer.session_id), (AgentState::Working, None));
+        assert_eq!((newer.state.into(), newer.session_id), (AgentState::Working, None));
         // `reason`: only a permission prompt is one a key answers.
         assert!(
             parse_status(r#"{"state":"needs","reason":"permission","message":"","ts":1}"#)
                 .unwrap()
-                .permission
+                .permission()
         );
         assert!(
             !parse_status(r#"{"state":"needs","reason":"question","message":"","ts":1}"#)
                 .unwrap()
-                .permission
+                .permission()
         );
-        assert!(!rec.permission);
+        assert!(!rec.permission());
     }
 
     #[test]

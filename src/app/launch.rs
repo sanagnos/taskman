@@ -3,10 +3,9 @@
 //! session handed to another terminal keeps all of it.
 
 use super::App;
-use super::poll::parse_status;
 use crate::session_ids::{self, Claim};
 use crate::store::{self, Cli, Config, Saved, Ticket};
-use crate::{github, local, resume, stack, untrusted, update};
+use crate::{github, local, resume, stack, status_file, untrusted, update};
 use portable_pty::CommandBuilder;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -423,30 +422,17 @@ impl App {
     pub fn resume_launch(exe: &Path, saved: Saved, config: Config, t: &Ticket) -> Option<Launch> {
         // The hooks write the latest session id here first; the TUI saves it a moment later, or
         // takes it from here at its next start.
-        let latest = std::fs::read_to_string(store::status_file(&t.repo, &t.key))
-            .ok()
-            .and_then(|s| parse_status(&s)?.session_id);
+        let latest =
+            status_file::read(&store::status_file(&t.repo, &t.key)).and_then(|r| r.session_id);
         let sid = latest.into_iter().chain(t.session_id.clone()).find(|sid| {
             session_exists(t.cli, sid) && session_ids::claim(&saved.tickets, t, sid) == Claim::Adopt
         })?;
         // The names of the sessions running now, in taskman or outside, as their hooks
         // reported them.
-        let names: Vec<String> = saved
-            .tickets
-            .iter()
-            .filter(|o| !o.is(&t.repo, &t.key))
-            .filter(|o| {
-                let owner = resume::peek(&resume::owner_file(&o.repo, &o.key));
-                matches!(owner, resume::Owner::Taskman(_) | resume::Owner::Outside(_))
-            })
-            .filter_map(|o| {
-                let v: serde_json::Value = serde_json::from_str(
-                    &std::fs::read_to_string(store::status_file(&o.repo, &o.key)).ok()?,
-                )
-                .ok()?;
-                v["name"].as_str().map(str::to_string)
-            })
-            .collect();
+        let others = saved.tickets.iter().filter(|o| !o.is(&t.repo, &t.key));
+        let names = status_file::running_names(&store::status_dir(), others, |o| {
+            resume::runs(&resume::owner_file(&o.repo, &o.key))
+        });
         let running: Vec<&str> = names.iter().map(String::as_str).collect();
         let name = store::session_name(t, &saved.projects, &saved.tickets, &running);
         let mut app = Self::from_saved(exe, saved, config, update::Updater::disabled());

@@ -18,9 +18,7 @@ use unicode_width::UnicodeWidthStr;
 /// What the header says about a session away from the pane.
 fn away_label(tv: &TicketView) -> Option<String> {
     let state = match tv.status.state {
-        AgentState::Working => "working",
-        AgentState::Needs => "needs you",
-        AgentState::Done => "your turn",
+        s @ (AgentState::Working | AgentState::Needs | AgentState::Done) => s.word(),
         _ => "",
     };
     Some(match tv.away? {
