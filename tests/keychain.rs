@@ -25,7 +25,7 @@ fn the_account_form_saves_a_token_to_the_keychain() {
     tui.wait_text("Welcome to taskman");
 
     // The keychain is looked for in the background at start: until it's found the form offers
-    // only a variable or command, so open it again until it offers the keychain. Each step waits
+    // a file or a variable or command, so open it again until it offers the keychain. Each step waits
     // for what it caused, never for something to be gone: a screen read mid-draw lacks text that
     // is about to appear, and a key sent on that belief lands in the form's Site as text, or
     // together with the Esc before it, as Alt.
@@ -34,7 +34,7 @@ fn the_account_form_saves_a_token_to_the_keychain() {
         tui.send(b"\x01A");
         // The form's last row: the rows above it, Keep in among them, are drawn by now.
         tui.wait_text("Esc back to list");
-        if tui.text().contains("Keep in") {
+        if tui.text().contains("‹ Keychain ›") {
             break;
         }
         assert!(Instant::now() < until, "no keychain offered:\n{}", tui.text());
