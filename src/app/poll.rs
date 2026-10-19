@@ -394,7 +394,13 @@ impl App {
                 tv.status.seen = i == self.sel;
             }
             // Ended in the pane: `taskman resume` may take it now.
-            if tv.session.as_ref().is_some_and(|s| s.exited()) {
+            if let Some(s) = tv.session.as_mut().filter(|s| s.exited()) {
+                // Each poll until the exit's code is known.
+                let end = s.end();
+                if end != tv.end {
+                    tv.end = end;
+                    self.dirty.store(true, Ordering::Relaxed);
+                }
                 tv.hold = None;
                 // Not from the state change: a hook may have marked it ended already. Once per
                 // ending: the screen only changes with a new session.

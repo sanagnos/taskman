@@ -1,0 +1,28 @@
+---
+source: src/ui/screens.rs
+expression: start_failed(40)
+---
+" taskman    │  ENG-70  /src/acme-ENG-…  "
+"            │                           "
+"▾ acme      │   The Claude session for  "
+" ✦lead ●    │    ENG-70 didn't start.   "
+" ✦release… ○│                           "
+" ENG-52 ✓   │ /opt/acme/bin/claude isn't"
+" ENG-53 ▲   │   installed, or isn't on  "
+" ENG-61 ⠋   │ PATH: install Claude Code,"
+"┃ENG-70 ■   │    or start taskman with  "
+"            │  TASKMAN_CLAUDE set to its"
+"▸ no… (1) ● │            path.          "
+"            │                           "
+"            │  Press Enter to try again,"
+"            │  or ctrl+a x to close the "
+"            │           ticket.         "
+"            │                           "
+"            │                           "
+"            │                           "
+"            │                           "
+"            │                           "
+"            │                           "
+"            │                           "
+"            │                           "
+" ^a menu · ^a ^a next waiting · ^a ? hel"

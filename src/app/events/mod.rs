@@ -5,8 +5,8 @@
 
 use super::sessions::HAND_OFF_WAIT;
 use super::test_support::{
-    acme_app, ago, answer_choices, attach, attach_ended, attach_slow, browser, ctrl, draw, key,
-    lay_out, long_sidebar, offline, reaped, sent, settle, toast,
+    acme_app, ago, answer_choices, attach, attach_crashed, attach_ended, attach_slow, browser,
+    ctrl, draw, key, lay_out, long_sidebar, offline, reaped, sent, settle, toast,
 };
 use super::{AgentState, App, Away, Hit, Mode, sync::Msg};
 use crate::store::{self, Saved};

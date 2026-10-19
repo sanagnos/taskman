@@ -551,7 +551,8 @@ pub fn project(dir: &Path, keys: &[&str]) -> PathBuf {
 ///
 /// - `lines N` prints `line 001` to `line N`, then `printed N`
 /// - `stream` prints `tick 0001`, `tick 0002`... every 20ms
-/// - `panic` prints `$TASKMAN_TEST_PANIC`, which makes a debug build's reader panic
+/// - `panic` prints `half-drawn` and `$TASKMAN_TEST_PANIC` in one write, which makes a debug
+///   build's reader panic after it has processed the first
 /// - `styled` prints `bold red` in bold red and `underlined on green` underlined on green
 /// - `colour` asks the terminal for its background (OSC 11) and prints `colour ` and the reply,
 ///   without its escapes
@@ -582,7 +583,7 @@ while :; do
     stream)
       (i=1; while printf 'tick %04d\n' $i; do echo $i > "$f.ticks"; i=$((i + 1)); sleep 0.02; done) &
       echo $! > "$f.stream.pid";;
-    panic) printf '%s\n' "$TASKMAN_TEST_PANIC";;
+    panic) printf 'half-drawn %s\n' "$TASKMAN_TEST_PANIC";;
     styled) printf '\033[1;31mbold red\033[0m \033[4;42munderlined on green\033[0m\n';;
     colour)
       stty -icanon -echo min 0 time 20

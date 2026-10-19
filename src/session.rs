@@ -67,6 +67,34 @@ impl vt100::Callbacks for Callbacks {
 
 pub type Parser = vt100::Parser<Callbacks>;
 
+/// Why a session ended, for its pane to say.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum End {
+    /// The CLI exited: how, once it's been waited for.
+    Exited(Option<Exit>),
+    /// The CLI didn't start: why (`start_error`).
+    StartFailed(String),
+    /// The session's reader panicked (in vt100, say), so taskman stopped its CLI.
+    ReaderCrashed,
+}
+
+/// How a CLI's process ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Exit {
+    Code(u32),
+    /// The signal's description, as `strsignal` gives it: "Killed", "Hangup".
+    Signal(String),
+}
+
+impl From<portable_pty::ExitStatus> for Exit {
+    fn from(status: portable_pty::ExitStatus) -> Self {
+        match status.signal() {
+            Some(signal) => Self::Signal(signal.to_string()),
+            None => Self::Code(status.exit_code()),
+        }
+    }
+}
+
 pub struct Session {
     pub parser: Arc<Mutex<Parser>>,
     input: Input,
@@ -74,14 +102,19 @@ pub struct Session {
     /// The CLI's process; None once `reap` has taken it.
     child: Option<Box<dyn Child + Send + Sync>>,
     exited: Arc<AtomicBool>,
+    /// The reader panicked; set before `exited`.
+    crashed: Arc<AtomicBool>,
     /// When the child last wrote output, in ms since the epoch.
     last_output: Arc<AtomicU64>,
     size: (u16, u16),
 }
 
 impl Session {
+    /// Starts `cmd` in a pty. `name` names the session's reader thread, so panics.log says whose
+    /// reader it was.
     pub fn spawn(
         cmd: CommandBuilder,
+        name: &str,
         rows: u16,
         cols: u16,
         dirty: Arc<AtomicBool>,
@@ -101,13 +134,19 @@ impl Session {
             Callbacks { colours, ..Callbacks::default() },
         )));
         let exited = Arc::new(AtomicBool::new(false));
+        let crashed = Arc::new(AtomicBool::new(false));
         let last_output = Arc::new(AtomicU64::new(now_ms()));
 
         {
-            let (parser, input, exited, last_output) =
-                (parser.clone(), input.clone(), exited.clone(), last_output.clone());
+            let (parser, input, exited, crashed, last_output) = (
+                parser.clone(),
+                input.clone(),
+                exited.clone(),
+                crashed.clone(),
+                last_output.clone(),
+            );
             let mut killer = child.clone_killer();
-            std::thread::spawn(move || {
+            std::thread::Builder::new().name(format!("reader {name}")).spawn(move || {
                 // A panic here (in vt100, say) ends this session only; the others and the TUI
                 // go on.
                 let read = std::panic::catch_unwind(AssertUnwindSafe(|| {
@@ -117,14 +156,17 @@ impl Session {
                         match reader.read(&mut buf) {
                             Ok(0) | Err(_) => break,
                             Ok(n) => {
-                                if panic_on
-                                    .as_ref()
-                                    .is_some_and(|m| buf[..n].windows(m.len()).any(|w| w == m))
-                                {
-                                    panic!("test panic in the session's reader");
-                                }
                                 let replies = {
                                     let mut p = lock(&parser);
+                                    // As vt100 would: part-way through the output, holding the
+                                    // lock, so the screen is left half-updated and the lock
+                                    // poisoned.
+                                    if let Some(at) = panic_on.as_ref().and_then(|m| {
+                                        buf[..n].windows(m.len()).position(|w| w == m)
+                                    }) {
+                                        p.process(&buf[..at]);
+                                        panic!("test panic in the session's reader");
+                                    }
                                     p.process(&buf[..n]);
                                     std::mem::take(&mut p.callbacks_mut().replies)
                                 };
@@ -138,10 +180,11 @@ impl Session {
                 if read.is_err() {
                     // Nothing reads its output any more, so the CLI would hang on its next write.
                     let _ = killer.kill();
+                    crashed.store(true, Ordering::Relaxed);
                 }
                 exited.store(true, Ordering::Relaxed);
                 dirty.store(true, Ordering::Relaxed);
-            });
+            })?;
         }
 
         Ok(Self {
@@ -150,6 +193,7 @@ impl Session {
             master: pair.master,
             child: Some(child),
             exited,
+            crashed,
             last_output,
             size: (rows, cols),
         })
@@ -213,6 +257,32 @@ impl Session {
 
     pub fn exited(&self) -> bool {
         self.exited.load(Ordering::Relaxed)
+    }
+
+    /// Why the session ended; None while it runs. An exit's code may come a moment after its
+    /// output closed, once the CLI's process has ended too.
+    pub fn end(&mut self) -> Option<End> {
+        if !self.exited() {
+            return None;
+        }
+        if self.crashed.load(Ordering::Relaxed) {
+            return Some(End::ReaderCrashed);
+        }
+        let status = self.child.as_mut().and_then(|c| c.try_wait().ok().flatten());
+        Some(End::Exited(status.map(Exit::from)))
+    }
+
+    /// The screen as it is at the bottom, without its history: what an ended session's pane goes
+    /// on showing once the session is let go.
+    pub fn last_screen(&self) -> Parser {
+        let mut p = lock(&self.parser);
+        let back = p.screen().scrollback();
+        p.screen_mut().set_scrollback(0);
+        let (rows, cols) = p.screen().size();
+        let mut copy = vt100::Parser::new_with_callbacks(rows, cols, 0, Callbacks::default());
+        copy.process(&p.screen().contents_formatted());
+        p.screen_mut().set_scrollback(back);
+        copy
     }
 
     /// Asks the CLI to quit as closing its terminal would, and lets it finish on its own time
@@ -320,6 +390,32 @@ impl Session {
 
     pub fn take_clipboard(&self) -> Vec<String> {
         std::mem::take(&mut lock(&self.parser).callbacks_mut().clipboard)
+    }
+}
+
+/// Why `cmd` didn't start, for the pane: what to do when its program isn't there (as with no
+/// Claude Code installed, or a `TASKMAN_CLAUDE` that names nothing), else portable_pty's words.
+pub fn start_error(
+    cmd: &CommandBuilder,
+    error: &anyhow::Error,
+    install: &str,
+    var: &str,
+) -> String {
+    let program = cmd.get_argv().first().map(|p| p.to_string_lossy().into_owned());
+    let text = format!("{error:#}");
+    // portable_pty's words for a program it found nowhere (`search_path`), rather than one on
+    // PATH that "exists but" can't be run.
+    let missing = ["No viable candidates found in PATH", "doesn't exist", "does not exist"];
+    match program {
+        Some(program)
+            if missing.iter().any(|m| text.contains(m)) && !text.contains("exists but") =>
+        {
+            format!(
+                "{program} isn't installed, or isn't on PATH: install {install}, or start taskman \
+                 with {var} set to its path."
+            )
+        }
+        _ => text,
     }
 }
 
@@ -502,11 +598,13 @@ pub mod fake {
         }
     }
 
-    /// The fake CLI's process: running until it's waited for. Given `exit`, waiting lasts until
-    /// the test sends on it or drops it, as a CLI slow to quit makes the reaper wait.
+    /// The fake CLI's process: running until it's waited for, or until it exits with `code`.
+    /// Given `exit`, waiting lasts until the test sends on it or drops it, as a CLI slow to quit
+    /// makes the reaper wait.
     #[derive(Debug)]
     struct Process {
         exit: Option<Mutex<std::sync::mpsc::Receiver<()>>>,
+        code: Option<u32>,
     }
 
     impl ChildKiller for Process {
@@ -514,13 +612,13 @@ pub mod fake {
             Ok(())
         }
         fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
-            Box::new(Process { exit: None })
+            Box::new(Process { exit: None, code: None })
         }
     }
 
     impl Child for Process {
         fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
-            Ok(None)
+            Ok(self.code.map(ExitStatus::with_exit_code))
         }
         fn wait(&mut self) -> std::io::Result<ExitStatus> {
             if let Some(exit) = &self.exit {
@@ -578,17 +676,30 @@ pub mod fake {
                 parser: Arc::new(Mutex::new(parser)),
                 input,
                 master: Box::new(Master),
-                child: Some(Box::new(Process { exit: exit.map(Mutex::new) })),
+                child: Some(Box::new(Process { exit: exit.map(Mutex::new), code: None })),
                 exited: Arc::new(AtomicBool::new(false)),
+                crashed: Arc::new(AtomicBool::new(false)),
                 last_output: Arc::new(AtomicU64::new(now_ms())),
                 size: (rows, cols),
             };
             (session, sent)
         }
 
-        /// The CLI ended, as the reader noticing its output closed would say.
-        pub fn end(&self) {
-            self.exited.store(true, std::sync::atomic::Ordering::Relaxed);
+        /// The CLI's output closed, as the reader would find it; its process isn't waited for.
+        pub fn close(&self) {
+            self.exited.store(true, Ordering::Relaxed);
+        }
+
+        /// The CLI exited with `code`.
+        pub fn exit(&mut self, code: u32) {
+            self.child = Some(Box::new(Process { exit: None, code: Some(code) }));
+            self.close();
+        }
+
+        /// The reader panicked, and stopped the CLI.
+        pub fn crash(&self) {
+            self.crashed.store(true, Ordering::Relaxed);
+            self.close();
         }
 
         /// Shows `bytes` as if the CLI had written them.
@@ -654,6 +765,49 @@ mod tests {
                 std::thread::yield_now();
             }
             assert_eq!(lock(&sent.bytes).as_slice(), b"hello");
+        }
+    }
+
+    /// A program that isn't there, by path or on PATH, is told apart from other failures,
+    /// against portable_pty's own errors.
+    #[test]
+    fn a_missing_program_says_what_to_do() {
+        let dir = crate::store::scratch::dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut on_path = CommandBuilder::new("taskman-no-such-cli");
+        on_path.env("PATH", &dir);
+        let not_executable = dir.join("claude");
+        std::fs::write(&not_executable, "").unwrap();
+        let mut not_executable_on_path = CommandBuilder::new("claude");
+        not_executable_on_path.env("PATH", &dir);
+        let cases = [
+            (CommandBuilder::new("/opt/acme/bin/claude"), Some("/opt/acme/bin/claude")),
+            (on_path, Some("taskman-no-such-cli")),
+            (CommandBuilder::new(&not_executable), None),
+            (not_executable_on_path, None),
+        ];
+        for (cmd, missing) in cases {
+            let e = Session::spawn(
+                cmd.clone(),
+                "ENG-1",
+                24,
+                80,
+                Default::default(),
+                Default::default(),
+            )
+            .err()
+            .expect("it started");
+            let why = start_error(&cmd, &e, "Claude Code", "TASKMAN_CLAUDE");
+            match missing {
+                Some(program) => assert_eq!(
+                    why,
+                    format!(
+                        "{program} isn't installed, or isn't on PATH: install Claude Code, or \
+                         start taskman with TASKMAN_CLAUDE set to its path."
+                    )
+                ),
+                None => assert!(why.contains("not executable"), "{why}"),
+            }
         }
     }
 

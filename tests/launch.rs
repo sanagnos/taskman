@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{Tui, scratch_dir, script, stubbed};
+use common::{Tui, scratch_dir, script, stub_tools, stubbed};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -228,16 +228,22 @@ fn a_session_starts_the_same_in_the_pane_and_outside_and_nothing_nested_reaches_
     assert!(tui.wait_exit().success());
 }
 
+/// A CLI that isn't there doesn't pass for a session that ended: the pane says it didn't start
+/// and what to do, and once it's installed Enter starts it.
 #[test]
 fn a_cli_that_cannot_start_says_so() {
     let dir = scratch_dir("launch-missing");
     fixture(&dir);
     let mut cmd = stubbed(&dir);
-    cmd.env("TASKMAN_CLAUDE", dir.join("no-such-claude"));
+    // Looked for on PATH, which starts with the stub tools' folder.
+    cmd.env("TASKMAN_CLAUDE", "acme-cli");
     let mut tui = Tui::start("launch-missing", &dir, cmd, Duration::from_secs(60));
-    tui.wait_text("Could not start claude:");
-    tui.send(b"\x01q");
-    tui.wait_text("Quit taskman?");
+    tui.wait_text("The Claude session for ENG-1 didn't start.");
+    tui.wait_text("acme-cli isn't installed");
+    assert!(!tui.text().contains("has ended"), "{}", tui.text());
+
+    std::fs::copy(dir.join("claude"), stub_tools(&dir).join("acme-cli")).unwrap();
     tui.send(b"\r");
-    assert!(tui.wait_exit().success());
+    tui.wait_text("stub ready for ENG-1");
+    tui.quit();
 }

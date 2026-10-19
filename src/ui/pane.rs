@@ -4,6 +4,7 @@
 use super::{dim, selection_bg, spinner, yellow};
 use crate::app::{AgentState, App, Away, Mode, TicketView};
 use crate::keys::prefix;
+use crate::session::{End, Exit};
 use crate::store::{Cli, tilde};
 use crate::untrusted;
 use crate::util::truncate;
@@ -162,46 +163,13 @@ pub(super) fn draw_claude(f: &mut Frame, app: &App, area: Rect) {
         );
         return;
     }
+    if let Some(parser) = tv.screen() {
+        draw_session(f, app, tv, parser, area);
+        return;
+    }
     let failed =
         tv.t.pending_worktree.as_ref().and_then(|w| w.error.as_ref()).filter(|_| !tv.creating);
     match (&tv.session, failed) {
-        (Some(s), _) if !s.exited() || tv.status.state != AgentState::Exited => {
-            // While text is selected, the session as it was then, so output can't move it.
-            if let Some(snapshot) = app.selection.as_ref().and_then(|sel| sel.snapshot.as_ref()) {
-                let view = snapshot.view();
-                f.render_widget(
-                    PseudoTerminal::new(&view).cursor(Cursor::default().visibility(false)),
-                    area,
-                );
-                return;
-            }
-            let parser = crate::session::lock(&s.parser);
-            let screen = parser.screen();
-            let scrolled = screen.scrollback();
-            let show_cursor = scrolled == 0 && matches!(app.mode, Mode::Normal) && !app.prefix;
-            let term =
-                PseudoTerminal::new(screen).cursor(Cursor::default().visibility(show_cursor));
-            f.render_widget(term, area);
-            // From here on, whatever is drawn over the pane must render `Clear` first, or its
-            // cells keep the links and their forced widths (see `links::mark`).
-            crate::links::mark(f.buffer_mut(), area, screen);
-            if scrolled > 0 {
-                let msg = format!(" ↑ {scrolled} lines back · type to return ");
-                let w = msg.chars().count() as u16;
-                let r = Rect {
-                    x: area.right().saturating_sub(w + 1),
-                    y: area.y,
-                    width: w.min(area.width),
-                    height: 1,
-                };
-                // Clear drops the links marked under it.
-                f.render_widget(Clear, r);
-                f.render_widget(
-                    Paragraph::new(msg).style(Style::new().fg(Color::Black).bg(Color::Yellow)),
-                    r,
-                );
-            }
-        }
         (None, Some(error)) => {
             let text = vec![
                 Line::from(""),
@@ -262,8 +230,8 @@ pub(super) fn draw_claude(f: &mut Frame, app: &App, area: Rect) {
                 text.push(Line::from(format!("{} Stopping it in the background…", spinner())));
             } else {
                 text.push(Line::from(format!(
-                    "Press Enter to stop it there and resume it here, or {} x to close the ticket.",
-                    prefix()
+                    "Press Enter to stop it there and resume it here, or {}.",
+                    close_hint(tv)
                 )));
             }
             if let Some(e) = &b.error {
@@ -276,21 +244,162 @@ pub(super) fn draw_claude(f: &mut Frame, app: &App, area: Rect) {
             );
         }
         _ => {
-            let text = vec![
-                Line::from(""),
-                Line::from(
-                    format!("The {} session for {} has ended.", tv.t.cli.label(), tv.t.display())
-                        .bold(),
-                ),
-                Line::from(""),
-                Line::from(format!(
-                    "Press Enter to resume it, or {} x to close the ticket.",
-                    prefix()
-                )),
-            ];
-            f.render_widget(Paragraph::new(text).alignment(Alignment::Center), area);
+            let (cli, name) = (tv.t.cli.label(), tv.t.display());
+            let text = match &tv.end {
+                Some(End::StartFailed(e)) => {
+                    let mut text = vec![
+                        Line::from(""),
+                        Line::from(format!("The {cli} session for {name} didn't start.").bold()),
+                        Line::from(""),
+                    ];
+                    // portable_pty's words, which can name what's on PATH.
+                    text.extend(untrusted::clean(e).lines().map(|l| {
+                        Line::from(Span::styled(l.to_string(), Style::new().fg(Color::Red)))
+                    }));
+                    text.push(Line::from(""));
+                    text.push(Line::from(format!(
+                        "Press Enter to try again, or {}.",
+                        close_hint(tv)
+                    )));
+                    text
+                }
+                _ => vec![
+                    Line::from(""),
+                    Line::from(format!("The {cli} session for {name} has ended.").bold()),
+                    Line::from(""),
+                    Line::from(format!("Press Enter to resume it, or {}.", close_hint(tv))),
+                ],
+            };
+            f.render_widget(
+                Paragraph::new(text).alignment(Alignment::Center).wrap(Wrap { trim: true }),
+                area,
+            );
         }
     }
+}
+
+/// `ctrl+a x to close the ticket`, or the agent.
+fn close_hint(tv: &TicketView) -> String {
+    let what = if tv.t.agent.is_some() { "agent" } else { "ticket" };
+    format!("{} x to close the {what}", prefix())
+}
+
+/// The session's screen in the pane: running, or ended with a banner saying why.
+fn draw_session(
+    f: &mut Frame,
+    app: &App,
+    tv: &TicketView,
+    parser: &std::sync::Arc<std::sync::Mutex<crate::session::Parser>>,
+    area: Rect,
+) {
+    let ended = tv.ended();
+    // While text is selected, the session as it was then, so output can't move it.
+    if let Some(snapshot) = app.selection.as_ref().and_then(|sel| sel.snapshot.as_ref()) {
+        let view = snapshot.view();
+        f.render_widget(
+            PseudoTerminal::new(&view).cursor(Cursor::default().visibility(false)),
+            area,
+        );
+    } else {
+        let parser = crate::session::lock(parser);
+        let screen = parser.screen();
+        let scrolled = screen.scrollback();
+        let show_cursor =
+            !ended && scrolled == 0 && matches!(app.mode, Mode::Normal) && !app.prefix;
+        let term = PseudoTerminal::new(screen).cursor(Cursor::default().visibility(show_cursor));
+        f.render_widget(term, area);
+        // From here on, whatever is drawn over the pane must render `Clear` first, or its
+        // cells keep the links and their forced widths (see `links::mark`).
+        crate::links::mark(f.buffer_mut(), area, screen);
+        if scrolled > 0 {
+            let msg = format!(" ↑ {scrolled} lines back · type to return ");
+            let w = msg.chars().count() as u16;
+            let r = Rect {
+                x: area.right().saturating_sub(w + 1),
+                y: area.y,
+                width: w.min(area.width),
+                height: 1,
+            };
+            // Clear drops the links marked under it.
+            f.render_widget(Clear, r);
+            f.render_widget(
+                Paragraph::new(msg).style(Style::new().fg(Color::Black).bg(Color::Yellow)),
+                r,
+            );
+        }
+    }
+    if ended {
+        // Under the last of its output, so the banner hides none of it while there's room.
+        let parser = crate::session::lock(parser);
+        let screen = parser.screen();
+        let used = screen
+            .rows(0, screen.size().1)
+            .take(usize::from(area.height))
+            .enumerate()
+            .filter(|(_, row)| !row.trim().is_empty())
+            .last()
+            .map_or(0, |(last, _)| last as u16 + 1);
+        draw_ended(f, tv, area, used);
+    }
+}
+
+/// Why the session ended and what to do now, over the pane below row `used`, or at its top when
+/// the output reaches further down: there it hides the oldest of it, not the last words.
+fn draw_ended(f: &mut Frame, tv: &TicketView, area: Rect, used: u16) {
+    let next = format!("Enter to resume · {}", close_hint(tv));
+    let cli = tv.t.cli.label();
+    let (lines, style) = match &tv.end {
+        Some(End::ReaderCrashed) => (
+            vec![
+                Line::from(
+                    format!(
+                        "taskman stopped reading this session after an error; details in {}",
+                        panics_log()
+                    )
+                    .bold(),
+                ),
+                Line::from(next),
+            ],
+            Style::new().fg(Color::White).bg(Color::Red),
+        ),
+        end => {
+            let how = match end {
+                Some(End::Exited(Some(Exit::Code(code)))) if *code != 0 => {
+                    format!("{cli} exited with code {code}")
+                }
+                Some(End::Exited(Some(Exit::Signal(signal)))) => {
+                    format!("{cli} ended on a signal ({signal})")
+                }
+                _ => format!("{cli} exited"),
+            };
+            (
+                vec![Line::from(format!("{how} · {next}"))],
+                Style::new().fg(Color::Black).bg(Color::Yellow),
+            )
+        }
+    };
+    let banner = Paragraph::new(lines).style(style).wrap(Wrap { trim: true });
+    let h = (banner.line_count(area.width) as u16).min(area.height);
+    // A row between them when there's room, so it doesn't read as the CLI's last line.
+    let y = match used {
+        0 => area.y,
+        _ if used + 1 + h <= area.height => area.y + used + 1,
+        _ if used + h <= area.height => area.y + used,
+        _ => area.y,
+    };
+    let r = Rect { x: area.x, y, width: area.width, height: h };
+    // Clear drops the links marked under it.
+    f.render_widget(Clear, r);
+    f.render_widget(banner, r);
+}
+
+/// Where a reader's panic is written (see `set_panic_hook` in main.rs). Unit tests' state folder
+/// is a scratch folder, so they draw the default, the same wherever they run.
+fn panics_log() -> String {
+    if cfg!(test) {
+        return "~/.local/state/taskman/panics.log".into();
+    }
+    tilde(&crate::store::state_dir().join("panics.log"))
 }
 
 /// "selecting · Esc to resume" in a corner of the pane holding a selection, away from it.

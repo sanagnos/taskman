@@ -1,7 +1,8 @@
 //! How taskman starts and ends, against the binary in a pty with stub sessions: SIGTERM and SIGHUP
 //! quit as `prefix q` does, restoring the terminal, stopping the sessions and waiting for a
 //! worktree still being removed, which a second signal cuts short; ctrl+z never reaches a session;
-//! a panic in one session's reader ends that session alone; a second taskman on the same state,
+//! a panic in one session's reader ends that session alone, and its pane says so; a second taskman
+//! on the same state,
 //! or a tickets.json this release can't read, is refused and nothing is overwritten. Losing the
 //! terminal is tests/hangup.rs.
 
@@ -167,16 +168,34 @@ fn a_panic_in_one_session_ends_only_that_session() {
     tui.wait_text("stub ready for ENG-1");
 
     tui.send(b"panic\r");
-    tui.wait_text("The Claude session for ENG-1 has ended.");
+    let crashed = "taskman stopped reading this session after an error";
+    tui.wait_text(crashed);
+    // The screen as the reader left it, part-way through the output, under the crash line.
+    let text = tui.text();
+    assert!(text.contains("stub ready for ENG-1") && text.contains("half-drawn"), "{text}");
     let log = dir.join("state/taskman/panics.log");
     tui.wait_until("nothing in panics.log", || {
         std::fs::read_to_string(&log).is_ok_and(|l| l.contains("test panic"))
     });
+    let logged = std::fs::read_to_string(&log).unwrap();
+    assert!(logged.contains("thread 'reader ENG-1'"), "the thread isn't named:\n{logged}");
     assert!(
         !tui.text().contains("panicked"),
         "the panic was printed over the screen:\n{}",
         tui.text()
     );
+
+    // Its screen, left behind by a reader that panicked holding it, still resizes and draws.
+    tui.resize(30, 100);
+    tui.wait_until("not drawn again at 30 rows", || {
+        tui.text().lines().nth(29).is_some_and(|l| l.contains("menu"))
+    });
+    tui.wait_text(crashed);
+    tui.send(b"\x01]");
+    tui.wait_text("stub ready for ENG-2");
+    tui.send(b"\x01[");
+    tui.wait_text(crashed);
+    tui.wait_text("stub ready for ENG-1");
 
     // The other session and the TUI go on.
     tui.send(b"\x01]");
@@ -184,6 +203,7 @@ fn a_panic_in_one_session_ends_only_that_session() {
     tui.send(b"still here\r");
     tui.wait_text("got: still here");
     assert_eq!(tui.child.try_wait().unwrap(), None);
+    tui.quit();
 }
 
 #[test]

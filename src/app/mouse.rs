@@ -4,7 +4,7 @@
 //! text goes to the clipboard.
 
 use super::sync::Msg;
-use super::{AgentState, App, Hit, Mode, Piece};
+use super::{App, Hit, Mode, Piece};
 use crate::selection::{self, Grab, Pane, Selection, Snapshot};
 use crate::ui::SIDEBAR_STEP;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
@@ -229,10 +229,8 @@ impl App {
     /// A still view of the session the Claude pane shows, for a selection to be made on.
     fn snapshot_session(&self) -> Option<Snapshot> {
         let tv = self.selected()?;
-        // The same test `ui::pane::draw_claude` makes to show the session rather than a message.
-        let s =
-            tv.session.as_ref().filter(|s| !s.exited() || tv.status.state != AgentState::Exited)?;
-        Some(Snapshot::new(s.parser.clone()))
+        // What `ui::pane::draw_claude` shows, ended or not, rather than a message.
+        Some(Snapshot::new(tv.screen()?.clone()))
     }
 
     /// How far a panel is scrolled, in wrapped rows. The agents' board scrolls as the

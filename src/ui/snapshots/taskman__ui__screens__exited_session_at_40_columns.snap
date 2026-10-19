@@ -1,0 +1,28 @@
+---
+source: src/ui/screens.rs
+expression: exited(40)
+---
+" taskman    │  ENG-70  /src/acme-ENG-…  "
+"            │ ✻ Welcome to Claude Code  "
+"▾ acme      │                           "
+" ✦lead ●    │ > Add the magic link sign-"
+" ✦release… ○│ in                        "
+" ENG-52 ✓   │                           "
+" ENG-53 ▲   │ API Error: 401 OAuth token"
+" ENG-61 ⠋   │  has expired. Please run /"
+"┃ENG-70 ■   │ login.                    "
+"            │                           "
+"▸ no… (1) ● │ Claude exited with code 1 "
+"            │ · Enter to resume · ctrl+a"
+"            │ x to close the ticket     "
+"            │                           "
+"            │                           "
+"            │                           "
+"            │                           "
+"            │                           "
+"            │                           "
+"            │                           "
+"            │                           "
+"            │                           "
+"            │                           "
+" ^a menu · ^a ^a next waiting · ^a ? hel"

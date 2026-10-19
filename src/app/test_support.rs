@@ -345,11 +345,22 @@ pub(crate) fn attach(app: &mut App, key: &str, screen: &str) -> Sent {
     sent
 }
 
-/// Gives ticket `key` a session that printed `screen` and ended, and lets the poll notice.
-pub(crate) fn attach_ended(app: &mut App, key: &str, screen: &str) {
+/// Gives ticket `key` a session that printed `screen` and exited with `code`, and lets the poll
+/// notice.
+pub(crate) fn attach_ended(app: &mut App, key: &str, screen: &str, code: u32) {
     attach(app, key, screen);
     let tv = app.tickets.iter_mut().find(|tv| tv.t.key == key).unwrap();
-    tv.session.as_ref().unwrap().end();
+    tv.session.as_mut().unwrap().exit(code);
+    tv.launch = Some("launch-1".into());
+    app.poll_status();
+}
+
+/// Gives ticket `key` a session that printed `screen` before its reader panicked, and lets the
+/// poll notice.
+pub(crate) fn attach_crashed(app: &mut App, key: &str, screen: &str) {
+    attach(app, key, screen);
+    let tv = app.tickets.iter_mut().find(|tv| tv.t.key == key).unwrap();
+    tv.session.as_ref().unwrap().crash();
     tv.launch = Some("launch-1".into());
     app.poll_status();
 }

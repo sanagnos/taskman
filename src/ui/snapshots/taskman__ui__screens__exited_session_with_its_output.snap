@@ -1,0 +1,28 @@
+---
+source: src/ui/screens.rs
+expression: exited(80)
+---
+" taskman    │  ENG-70                            /src/acme-ENG-70 eng-70-work   "
+"            │ ✻ Welcome to Claude Code                                          "
+"▾ acme      │                                                                   "
+" ✦lead ●    │ > Add the magic link sign-in                                      "
+" ✦release… ○│                                                                   "
+" ENG-52 ✓   │ API Error: 401 OAuth token has expired. Please run /login.        "
+" ENG-53 ▲   │                                                                   "
+" ENG-61 ⠋   │ Claude exited with code 1 · Enter to resume · ctrl+a x to close   "
+"┃ENG-70 ■   │ the ticket                                                        "
+"            │                                                                   "
+"▸ no… (1) ● │                                                                   "
+"            │                                                                   "
+"            │                                                                   "
+"            │                                                                   "
+"            │                                                                   "
+"            │                                                                   "
+"            │                                                                   "
+"            │                                                                   "
+"            │                                                                   "
+"            │                                                                   "
+"            │                                                                   "
+"            │                                                                   "
+"            │                                                                   "
+" ^a menu · ^a ^a next waiting · ^a ? help                    ● 3 waiting on you "

@@ -6,7 +6,7 @@
 //! need a wider screen, 160 by 40.
 
 use crate::app::test_support::{
-    acme_app, attach, attach_ended, draw, draw_colours, key, long_sidebar, offline,
+    acme_app, attach, attach_crashed, attach_ended, draw, draw_colours, key, long_sidebar, offline,
 };
 use crate::app::{AgentAsk, Mode, SettingsItem};
 use crate::store::Saved;
@@ -105,6 +105,78 @@ fn ended_session() {
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 
+/// What a CLI printed before it exited, with why it ended over the pane, under the output.
+const EXITED: &str = "\x1b[1m✻ Welcome to Claude Code\x1b[0m\n\n> Add the magic link sign-in\n\n\
+\x1b[31mAPI Error: 401 OAuth token has expired. Please run /login.\x1b[0m\n";
+
+fn exited(width: u16) -> String {
+    let mut app = acme_app();
+    select(&mut app, "ENG-70");
+    draw(&mut app, width, 24);
+    attach_ended(&mut app, "ENG-70", EXITED, 1);
+    draw(&mut app, width, 24)
+}
+
+#[test]
+fn exited_session_with_its_output() {
+    assert_snapshot!(exited(80));
+}
+
+#[test]
+fn exited_session_at_40_columns() {
+    assert_snapshot!(exited(40));
+}
+
+/// Its CLI isn't installed: the pane says what to do, in the words a real failed start gives.
+fn start_failed(width: u16) -> String {
+    let mut app = acme_app();
+    select(&mut app, "ENG-70");
+    let cmd = portable_pty::CommandBuilder::new("/opt/acme/bin/claude");
+    let e = crate::session::Session::spawn(
+        cmd.clone(),
+        "ENG-70",
+        24,
+        80,
+        Default::default(),
+        Default::default(),
+    )
+    .err()
+    .unwrap();
+    let why = crate::session::start_error(&cmd, &e, "Claude Code", "TASKMAN_CLAUDE");
+    let tv = app.tickets.iter_mut().find(|tv| tv.t.key == "ENG-70").unwrap();
+    tv.end = Some(crate::session::End::StartFailed(why));
+    draw(&mut app, width, 24)
+}
+
+#[test]
+fn session_that_did_not_start() {
+    assert_snapshot!(start_failed(80));
+}
+
+#[test]
+fn session_that_did_not_start_at_40_columns() {
+    assert_snapshot!(start_failed(40));
+}
+
+/// Its reader panicked part-way through the output: the screen as it was left, and the crash.
+fn crashed(width: u16) -> String {
+    let mut app = acme_app();
+    select(&mut app, "ENG-70");
+    draw(&mut app, width, 24);
+    attach_crashed(&mut app, "ENG-70", SESSION);
+    draw(&mut app, width, 24)
+}
+
+#[test]
+fn session_whose_reader_crashed() {
+    assert_snapshot!(crashed(80));
+}
+
+#[test]
+fn session_whose_reader_crashed_at_40_columns() {
+    assert_snapshot!(crashed(40));
+}
+
 /// A resume refused because Claude runs the conversation in the background.
 #[test]
 fn session_running_in_claudes_background() {
@@ -112,7 +184,7 @@ fn session_running_in_claudes_background() {
     select(&mut app, "ENG-70");
     draw(&mut app, 80, 24);
     let said = "That session is running in the background (a1b2c3d4). Run `claude attach a1b2c3d4` to open it, or `claude stop a1b2c3d4` first to resume it here.";
-    attach_ended(&mut app, "ENG-70", said);
+    attach_ended(&mut app, "ENG-70", said, 1);
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 

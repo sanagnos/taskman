@@ -6,12 +6,13 @@ use super::sync::STALE;
 use super::{AgentState, Remote, Status};
 use crate::github::{self, Pr};
 use crate::resume;
-use crate::session::{Reaper, Session};
+use crate::session::{End, Parser, Reaper, Session};
 use crate::status_file::Record;
 use crate::store::{self, Ticket, UiPrefs};
 use crate::tracker::Issue;
 use crate::worktree;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime};
 
 /// A session that runs, or ran, in another terminal instead of the pane (`ctrl+a t`, `taskman
@@ -78,6 +79,11 @@ pub struct TicketView {
     pub background: Option<Blocked>,
     /// The ended session's screen was looked at for `background`.
     pub(super) screen_read: bool,
+    /// Why its last session ended, or didn't start, for the pane; None once another is started or
+    /// it's stopped.
+    pub end: Option<End>,
+    /// The ended session's last screen, once the session itself is let go (`release_ended`).
+    pub(super) last_screen: Option<Arc<Mutex<Parser>>>,
     /// Another session's conversation id its hooks reported and it wasn't given, once told.
     pub(super) switched: Option<String>,
     /// Stopped to save memory (`sleep`), its state as it was; selecting it starts it again. Not
@@ -132,6 +138,8 @@ impl TicketView {
             away: None,
             background: None,
             screen_read: false,
+            end: None,
+            last_screen: None,
             switched: None,
             asleep: false,
             watch: Watch::new(Instant::now()),
@@ -151,8 +159,41 @@ impl TicketView {
         self.rouse();
         self.background = None;
         self.screen_read = false;
+        self.end = None;
+        self.last_screen = None;
         if let Some(reaper) = self.session.take().and_then(Session::stop) {
             self.reaper = Some(reaper);
+        }
+    }
+
+    /// Lets go of its ended session but for its last screen, which the pane goes on showing with
+    /// why it ended: the history is most of a session's memory, tens of MB in a long one.
+    pub(super) fn release_ended(&mut self) {
+        let Some(s) = self.session.take() else { return };
+        self.last_screen = Some(Arc::new(Mutex::new(s.last_screen())));
+        if let Some(reaper) = s.stop() {
+            self.reaper = Some(reaper);
+        }
+    }
+
+    /// What the pane shows of the session: its screen while it runs and once it has ended (the
+    /// last one, once it's let go). None when a message stands in for it.
+    pub fn screen(&self) -> Option<&Arc<Mutex<Parser>>> {
+        if self.background.is_some() {
+            return None;
+        }
+        match &self.session {
+            Some(s) => Some(&s.parser),
+            None => self.last_screen.as_ref(),
+        }
+    }
+
+    /// Its session has ended (`end` says why, once the poll has seen it), and the pane shows its
+    /// last screen.
+    pub fn ended(&self) -> bool {
+        match &self.session {
+            Some(s) => s.exited(),
+            None => self.last_screen.is_some(),
         }
     }
 

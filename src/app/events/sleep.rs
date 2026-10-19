@@ -229,3 +229,43 @@ fn settings_save_the_sleep_time_and_the_cap() {
     app.on_key(key(KeyCode::Enter));
     assert_eq!(app.config.sleep_after, Some(5));
 }
+
+/// An ended session is let go but for its last screen once its ending was seen and it was then
+/// left unselected for the time: it isn't asleep, its pane still shows that screen and why it
+/// ended, and Enter starts it again.
+#[test]
+fn an_ended_session_lets_go_of_its_history_but_keeps_its_last_screen() {
+    let mut app = acme_app();
+    draw(&mut app, 80, 24);
+    let start = Instant::now();
+    let i = index(&app, "ENG-53");
+    let history: String = (1..=200).map(|n| format!("line {n}\n")).collect();
+    attach_ended(&mut app, "ENG-53", &format!("{history}Error: the login expired"), 1);
+    // Not until its ending was seen.
+    app.sleep_tick(start + minutes(120));
+    assert!(app.tickets[i].session.is_some());
+    app.select(i);
+    app.sleep_tick(start + minutes(121));
+    app.select(index(&app, "ENG-52"));
+    app.sleep_tick(start + minutes(180));
+    assert!(app.tickets[i].session.is_some(), "let go before the hour was up");
+    app.sleep_tick(start + minutes(182));
+
+    let tv = &app.tickets[i];
+    assert!(tv.session.is_none() && !tv.asleep, "not let go, or asleep");
+    assert_eq!(tv.status.state, AgentState::Exited);
+    let kept = tv.last_screen.clone().unwrap();
+    let mut screen = crate::session::lock(&kept);
+    screen.screen_mut().set_scrollback(10);
+    assert_eq!(screen.screen().scrollback(), 0, "the history was kept");
+    drop(screen);
+    app.select(i);
+    let drawn = draw(&mut app, 80, 24);
+    assert!(drawn.contains("Error: the login expired"), "{drawn}");
+    assert!(drawn.contains("Claude exited with code 1"), "{drawn}");
+
+    app.on_key(key(KeyCode::Enter));
+    let tv = &app.tickets[i];
+    assert_eq!(tv.status.state, AgentState::NotStarted, "Enter doesn't resume it");
+    assert!(tv.last_screen.is_none() && tv.end.is_none());
+}

@@ -479,7 +479,7 @@ fn a_ticket_running_outside_does_not_stop_an_agent_starting_the_others() {
 const BACKGROUND: &str = "That session is running in the background (a1b2c3d4). Run `claude attach a1b2c3d4` to open it, or `claude stop a1b2c3d4` first to resume it here.";
 
 fn ended_with(app: &mut App, screen: &str) -> usize {
-    attach_ended(app, "ENG-52", screen);
+    attach_ended(app, "ENG-52", screen, 1);
     app.sel
 }
 
@@ -535,4 +535,49 @@ fn other_endings_offer_no_stop() {
     let (mut app, _) = at_eng_52();
     let i = ended_with(&mut app, "running in the background (a; rm -rf ~)");
     assert!(app.tickets[i].background.is_none());
+}
+
+// ---- a session that ended -------------------------------------------------------------------
+
+/// An exited session's pane keeps its screen, with how it ended under it; its words can still be
+/// selected and copied, and Enter starts it again.
+#[test]
+fn an_exited_session_keeps_its_screen_and_says_how_it_ended() {
+    use crate::session::{End, Exit};
+    let (mut app, _) = at_eng_52();
+    attach_ended(&mut app, "ENG-52", "Error: the login expired", 2);
+    let i = app.sel;
+    assert_eq!(app.tickets[i].end, Some(End::Exited(Some(Exit::Code(2)))));
+    assert_eq!(app.tickets[i].status.state, AgentState::Exited);
+    let drawn = draw(&mut app, 80, 24);
+    assert!(drawn.contains("Error: the login expired"), "{drawn}");
+    assert!(drawn.contains("Claude exited with code 2 · Enter to resume"), "{drawn}");
+
+    select_top_row(&mut app, 5);
+    draw(&mut app, 80, 24);
+    settle(&mut app);
+    assert_eq!(decoded(&app.clipboard_out), ["Error"]);
+    app.on_key(key(KeyCode::Esc));
+
+    app.on_key(key(KeyCode::Enter));
+    let tv = &app.tickets[i];
+    assert_eq!(tv.status.state, AgentState::NotStarted, "Enter doesn't resume it");
+    assert!(tv.session.is_none() && tv.end.is_none());
+}
+
+/// A session whose reader panicked says so, not that its CLI exited, and keeps drawing the screen
+/// as the reader left it; an agent's says it's an agent that closes.
+#[test]
+fn a_session_whose_reader_crashed_says_so() {
+    let mut app = acme_app();
+    let i = index(&app, "acme-lead");
+    app.select(i);
+    draw(&mut app, 80, 24);
+    attach_crashed(&mut app, "acme-lead", "half a screen");
+    assert_eq!(app.tickets[i].end, Some(crate::session::End::ReaderCrashed));
+    let drawn = draw(&mut app, 120, 24);
+    assert!(drawn.contains("half a screen"), "{drawn}");
+    assert!(drawn.contains("taskman stopped reading this session after an error"), "{drawn}");
+    assert!(drawn.contains("ctrl+a x to close the agent"), "{drawn}");
+    assert!(!drawn.contains("Claude exited"), "{drawn}");
 }

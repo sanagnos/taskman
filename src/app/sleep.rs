@@ -69,6 +69,10 @@ pub(super) struct Facts {
     pub reaping: bool,
     /// Its process tree has a baseline, so what's new under it can be told.
     pub settled: bool,
+    /// Its CLI ended, and the session is still held with all its history.
+    pub ended: bool,
+    /// Its state was seen since it changed.
+    pub seen: bool,
     /// Since it started or was last selected.
     pub idle: Duration,
 }
@@ -86,14 +90,31 @@ impl Facts {
             && !self.reaping
             && matches!(self.state, AgentState::Idle | AgentState::Done)
     }
+
+    /// Whether an ended session may be let go but for its last screen: its ending was seen, and
+    /// it isn't in front of you. It isn't put to sleep: it stays ended.
+    fn spent(&self) -> bool {
+        self.ended && self.seen && !self.selected && !self.away && !self.reaping
+    }
 }
 
-/// The sessions (by place in `facts`) to put to sleep: the restful ones unselected for `after`,
-/// and, past `cap` sessions running, the longest-unselected restful ones until it's met.
-pub(super) fn due(facts: &[Facts], after: Option<Duration>, cap: Option<usize>) -> Vec<usize> {
-    let mut out: Vec<usize> = (0..facts.len())
-        .filter(|&i| facts[i].restful() && after.is_some_and(|a| facts[i].idle >= a))
-        .collect();
+/// What `due` found, by place in its `facts`.
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct Due {
+    /// To put to sleep.
+    pub sleep: Vec<usize>,
+    /// Ended, to let go of all but their last screen (`TicketView::release_ended`).
+    pub release: Vec<usize>,
+}
+
+/// The sessions to put to sleep: the restful ones unselected for `after`, and, past `cap`
+/// sessions running, the longest-unselected restful ones until it's met. And the ended ones to
+/// let go of, once seen and then unselected for `after`.
+pub(super) fn due(facts: &[Facts], after: Option<Duration>, cap: Option<usize>) -> Due {
+    let long = |f: &Facts| after.is_some_and(|a| f.idle >= a);
+    let release = (0..facts.len()).filter(|&i| facts[i].spent() && long(&facts[i])).collect();
+    let mut out: Vec<usize> =
+        (0..facts.len()).filter(|&i| facts[i].restful() && long(&facts[i])).collect();
     if let Some(cap) = cap {
         let excess = facts.iter().filter(|f| f.running).count().saturating_sub(cap);
         let mut oldest: Vec<usize> = (0..facts.len()).filter(|&i| facts[i].restful()).collect();
@@ -103,7 +124,7 @@ pub(super) fn due(facts: &[Facts], after: Option<Duration>, cap: Option<usize>) 
     }
     out.sort_unstable();
     out.dedup();
-    out
+    Due { sleep: out, release }
 }
 
 /// How long after it starts a session's process tree is taken as its own.
@@ -186,7 +207,12 @@ impl App {
                 }
             }
         }
-        for i in due(&self.facts(now), after, cap) {
+        let due = due(&self.facts(now), after, cap);
+        for &i in &due.release {
+            self.tickets[i].release_ended();
+            self.dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        for i in due.sleep {
             let tv = &self.tickets[i];
             let recent =
                 tv.watch.busy.is_some_and(|at| now.saturating_duration_since(at) < recheck(after));
@@ -212,6 +238,9 @@ impl App {
                 away: tv.away.is_some(),
                 reaping: tv.reaping(),
                 settled: tv.watch.baseline.is_some(),
+                ended: tv.session.as_ref().is_some_and(|s| s.exited())
+                    && tv.status.state == AgentState::Exited,
+                seen: tv.status.seen,
                 idle: now.saturating_duration_since(tv.watch.selected),
             })
             .collect()
@@ -255,7 +284,7 @@ impl App {
             Scan::Check => {
                 // Asked again now: it may have been selected, or started working, meanwhile.
                 let after = self.config.sleep_after.map(Duration::from_secs);
-                if due(&self.facts(now), after, self.config.max_awake).contains(&i) {
+                if due(&self.facts(now), after, self.config.max_awake).sleep.contains(&i) {
                     self.put_to_sleep(i);
                 }
             }
@@ -277,6 +306,13 @@ mod tests {
 
     const HOUR: Duration = Duration::from_secs(3600);
 
+    /// The sessions `due` puts to sleep.
+    fn sleeps(facts: &[Facts], after: Option<Duration>, cap: Option<usize>) -> Vec<usize> {
+        let due = due(facts, after, cap);
+        assert!(due.release.is_empty(), "{due:?}");
+        due.sleep
+    }
+
     fn idle_for(mins: u64) -> Facts {
         Facts {
             state: Idle,
@@ -286,18 +322,43 @@ mod tests {
             away: false,
             reaping: false,
             settled: true,
+            ended: false,
+            seen: false,
             idle: Duration::from_secs(mins * 60),
+        }
+    }
+
+    /// A session whose CLI ended, unselected for `mins`.
+    fn ended_for(mins: u64) -> Facts {
+        Facts { state: Exited, running: false, ended: true, seen: true, ..idle_for(mins) }
+    }
+
+    /// An ended session is let go but for its last screen, never put to sleep: once its ending
+    /// was seen, after the time, and not while it's in front of you.
+    #[test]
+    fn an_ended_session_is_released_once_seen_and_unselected_for_the_time() {
+        let s = [ended_for(59), ended_for(60), idle_for(90), ended_for(300)];
+        assert_eq!(due(&s, Some(HOUR), None), Due { sleep: vec![2], release: vec![1, 3] });
+        assert_eq!(due(&s, None, Some(1)), Due::default(), "never, whatever the cap");
+        let not = [
+            Facts { seen: false, ..ended_for(600) },
+            Facts { selected: true, ..ended_for(600) },
+            Facts { away: true, ..ended_for(600) },
+            Facts { reaping: true, ..ended_for(600) },
+        ];
+        for f in not {
+            assert_eq!(due(&[f], Some(HOUR), Some(1)), Due::default(), "{f:?}");
         }
     }
 
     #[test]
     fn an_idle_session_sleeps_once_unselected_for_the_time() {
         let sessions = [idle_for(59), idle_for(60), idle_for(300)];
-        assert_eq!(due(&sessions, Some(HOUR), None), [1, 2]);
-        assert!(due(&sessions, None, None).is_empty(), "never");
+        assert_eq!(sleeps(&sessions, Some(HOUR), None), [1, 2]);
+        assert!(sleeps(&sessions, None, None).is_empty(), "never");
         // Both a finished turn and nothing yet are restful.
         let done = Facts { state: Done, ..idle_for(90) };
-        assert_eq!(due(&[done], Some(HOUR), None), [0]);
+        assert_eq!(sleeps(&[done], Some(HOUR), None), [0]);
     }
 
     #[test]
@@ -316,7 +377,7 @@ mod tests {
             Facts { running: false, ..long },
         ];
         for f in not {
-            assert!(due(&[f], Some(HOUR), Some(1)).is_empty(), "{f:?}");
+            assert!(sleeps(&[f], Some(HOUR), Some(1)).is_empty(), "{f:?}");
         }
     }
 
@@ -324,25 +385,25 @@ mod tests {
     fn past_the_cap_the_longest_unselected_sleep_first() {
         // Five running; three allowed: the two idle longest go, whatever the time.
         let s = [idle_for(5), idle_for(40), idle_for(10), idle_for(20), idle_for(1)];
-        assert_eq!(due(&s, None, Some(3)), [1, 3]);
-        assert!(due(&s, None, Some(5)).is_empty());
-        assert!(due(&s, None, None).is_empty());
+        assert_eq!(sleeps(&s, None, Some(3)), [1, 3]);
+        assert!(sleeps(&s, None, Some(5)).is_empty());
+        assert!(sleeps(&s, None, None).is_empty());
         // The time and the cap together are one list, each session once.
-        assert_eq!(due(&s, Some(Duration::from_secs(30 * 60)), Some(3)), [1, 3]);
-        assert_eq!(due(&s, Some(Duration::from_secs(15 * 60)), Some(4)), [1, 3]);
+        assert_eq!(sleeps(&s, Some(Duration::from_secs(30 * 60)), Some(3)), [1, 3]);
+        assert_eq!(sleeps(&s, Some(Duration::from_secs(15 * 60)), Some(4)), [1, 3]);
         // Sessions that can't sleep count as running but are never picked.
         let mut s = s.to_vec();
         s[1].state = Working;
         s[3].selected = true;
-        assert_eq!(due(&s, None, Some(3)), [0, 2]);
+        assert_eq!(sleeps(&s, None, Some(3)), [0, 2]);
     }
 
     #[test]
     fn the_cap_counts_only_what_runs() {
         let mut s = vec![idle_for(5), idle_for(40), idle_for(10)];
         s[2].running = false;
-        assert_eq!(due(&s, None, Some(2)), [] as [usize; 0]);
-        assert_eq!(due(&s, None, Some(1)), [1]);
+        assert_eq!(sleeps(&s, None, Some(2)), [] as [usize; 0]);
+        assert_eq!(sleeps(&s, None, Some(1)), [1]);
     }
 
     #[test]

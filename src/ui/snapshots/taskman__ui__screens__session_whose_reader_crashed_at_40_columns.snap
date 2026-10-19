@@ -1,0 +1,28 @@
+---
+source: src/ui/screens.rs
+expression: crashed(40)
+---
+" taskman    │  ENG-70  /src/acme-ENG-…  "
+"            │ ✻ Welcome to Claude Code  "
+"▾ acme      │                           "
+" ✦lead ●    │ > Add the magic link sign-"
+" ✦release… ○│ in                        "
+" ENG-52 ✓   │                           "
+" ENG-53 ▲   │ ● I'll start with the toke"
+" ENG-61 ⠋   │ n table.                  "
+"┃ENG-70 ■   │                           "
+"            │   ⎿  Wrote src/auth/link.r"
+"▸ no… (1) ● │ s                         "
+"            │                           "
+"            │ >                         "
+"            │                           "
+"            │ taskman stopped reading   "
+"            │ this session after an     "
+"            │ error; details in         "
+"            │ ~/.local/state/taskman/pan"
+"            │ ics.log                   "
+"            │ Enter to resume · ctrl+a x"
+"            │ to close the ticket       "
+"            │                           "
+"            │                           "
+" ^a menu · ^a ^a next waiting · ^a ? hel"

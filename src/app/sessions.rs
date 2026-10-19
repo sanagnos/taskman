@@ -7,7 +7,7 @@ use super::sync::Msg;
 use super::{AgentState, App, Away, Id, Mode};
 use crate::background;
 use crate::resume;
-use crate::session::Session;
+use crate::session::{self, End, Session};
 use crate::store::{self, Cli, Ticket};
 use std::ffi::OsString;
 use std::time::{Duration, Instant};
@@ -133,20 +133,34 @@ impl App {
         // for the session's latest conversation (`take_leftover_status`).
         remove_status_at(&store::status_file(&self.tickets[i].t.repo, &self.tickets[i].t.key));
         let dirty = self.dirty.clone();
-        match Session::spawn(cmd, area.height, area.width, dirty, self.theme.colours) {
+        match Session::spawn(cmd.clone(), &name, area.height, area.width, dirty, self.theme.colours)
+        {
             Ok(s) => {
                 let tv = &mut self.tickets[i];
                 tv.session = Some(s);
+                tv.end = None;
+                tv.last_screen = None;
                 tv.hold = Some(hold);
                 tv.name = Some(name);
                 tv.launch = Some(launch);
                 tv.watch = super::sleep::Watch::new(Instant::now());
                 tv.status.started();
             }
+            // The pane says why; the toast only points there from another ticket.
             Err(e) => {
-                self.tickets[i].status.state = AgentState::Exited;
-                let program = self.tickets[i].t.cli.label().to_lowercase();
-                self.toast(format!("Could not start {program}: {e}"));
+                let tv = &mut self.tickets[i];
+                let (install, var) = match tv.t.cli {
+                    Cli::Claude => ("Claude Code", "TASKMAN_CLAUDE"),
+                    Cli::Codex => ("Codex", "TASKMAN_CODEX"),
+                };
+                tv.end = Some(End::StartFailed(session::start_error(&cmd, &e, install, var)));
+                tv.status.state = AgentState::Exited;
+                tv.status.seen = i == self.sel;
+                if i != self.sel {
+                    let msg =
+                        format!("{}'s {} session didn't start", tv.t.display(), tv.t.cli.label());
+                    self.toast(msg);
+                }
             }
         }
     }
