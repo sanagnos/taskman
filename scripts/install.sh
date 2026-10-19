@@ -30,6 +30,10 @@ main() {
   # the public repository; older ones have none and still fall back. Empty would let any release
   # fall back. REQUIRE_ATTESTATION_FROM in src/update.rs is the same switch.
   require_from=v0.1.0
+  # The refs the release workflow may have run from when it signed an attestation, as a regular
+  # expression: a version tag, or main, where release.sh starts it by hand for a tag. SIGNER_REFS in
+  # src/update.rs is the same.
+  signer_refs='refs/(tags/v[0-9]+\.[0-9]+\.[0-9]+|heads/main)'
   base="${TASKMAN_RELEASES_URL:-https://github.com/$repo/releases}"
   base="${base%/}"
   bin_dir="${TASKMAN_BIN_DIR:-$HOME/.local/bin}"
@@ -178,9 +182,12 @@ main() {
   if [ -n "$skip" ] && [ "$skip" != 0 ]; then
     say "Warning: TASKMAN_INSECURE_SKIP_ATTESTATION is set, so its attestation wasn't verified: only its checksum was."
   elif command -v gh >/dev/null 2>&1; then
+    # Signed by the release workflow, run from a version tag or main on a GitHub-hosted runner.
+    workflow_re="$(printf '%s' "https://github.com/$repo/.github/workflows/release.yml" | sed 's/[.]/\\./g')"
     status=0
     err="$(gh attestation verify "$tmp/$archive" --repo "$repo" \
-      --signer-workflow "$repo/.github/workflows/release.yml" 2>&1 >/dev/null)" || status=$?
+      --cert-identity-regex "^$workflow_re@$signer_refs\$" --deny-self-hosted-runners 2>&1 >/dev/null)" \
+      || status=$?
     if [ "$status" -ne 0 ]; then
       case "$status/$err" in
         4/* | *"HTTP 401"*) unchecked="gh isn't logged in (gh auth login) to verify its attestation" ;;

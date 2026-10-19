@@ -85,7 +85,6 @@ From the pre-open-source review; the install and integrity fixes shipped, these 
 
 - **On the public repository:** turn on immutable releases and tag protection for `v*`, so a published release's assets can't be replaced, then check the curl install and `taskman update` against a real release with no `gh` installed.
 - **Linux arm64 and musl builds** (`aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`) and their `install.sh` cases. Try them in a test release first: GitHub's arm64 Linux runners are free for public repositories, and a failing build holds up every other target's release.
-- **Check attestations against a real release.** From v0.1.0 a release without an attestation is refused when `gh` can check, and `scripts/test-install.sh` covers that with a fake `gh`; once v0.1.0 is out, run `gh attestation verify` against its archives, and the install script and `taskman update` with `gh` logged in, to see a real one verify.
 - **cargo-dist,** evaluated and not adopted for now: it would replace `release.yml`, the install script and the asset names that `taskman update` and older releases' updaters rely on, for Homebrew, binstall and installer extras the launch doesn't need. Reconsider for a Homebrew tap. cargo-binstall needs only `[package.metadata.binstall]` pointing at the existing archives, which Cargo.toml has; untried until the repository is public. taskman isn't on crates.io (the `vt100` fork can't be a published dependency), so it would be `cargo binstall --git`.
 
 ## Known gaps
