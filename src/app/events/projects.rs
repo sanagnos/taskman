@@ -315,3 +315,17 @@ fn saving_a_project_keeps_fields_this_build_doesnt_know() {
     assert_eq!(saved["tickets"][2]["priority"], 2);
     assert_eq!(saved["ui"]["theme"], "light");
 }
+
+/// The Branch hint names whose branch names it takes, written as English does.
+#[test]
+fn the_branch_hint_names_the_trackers_own_names() {
+    let mut app = acme_app();
+    let local =
+        serde_json::json!({ "provider": "local", "site": "", "folder": "workplan", "key": "WP" });
+    app.projects[1].tracker = Some(serde_json::from_value(local).unwrap());
+    for (p, own) in [(0, "(Linear's own)"), (1, "(Local files' own)")] {
+        app.open_settings(crate::app::SettingsItem::Project(p), false);
+        let hint = hint_of(&app, "Branch");
+        assert!(hint.contains(own), "{hint}");
+    }
+}

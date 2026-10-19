@@ -608,9 +608,42 @@ fn rev(dir: &Path, rev: &str) -> Option<String> {
 /// The default branch's name, like `main`, as git last saw `origin/HEAD`; `main` when unknown.
 /// Quick: no network.
 pub fn default_branch_name(repo: &Path) -> String {
-    local_default_branch(repo)
-        .and_then(|b| b.strip_prefix("origin/").map(str::to_string))
-        .unwrap_or_else(|| "main".into())
+    default_branch_of(repo).name
+}
+
+/// The branch a ticket's worktree starts from when it stacks on no other (see `create`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DefaultBranch {
+    /// Its name, like `main`: origin's default as git last saw `origin/HEAD`, else `main`, or
+    /// without a remote the main checkout's own branch. `main` too where git can't tell.
+    pub name: String,
+    /// Where a new worktree starts, for the Add form to say: `origin/main`, or the local HEAD.
+    pub start: String,
+}
+
+/// As `DefaultBranch` says. Quick: no network.
+pub fn default_branch_of(repo: &Path) -> DefaultBranch {
+    if let Some(b) = local_default_branch(repo) {
+        let name = b.strip_prefix("origin/").unwrap_or(&b).to_string();
+        return DefaultBranch { name, start: b };
+    }
+    let unknown = || DefaultBranch { name: "main".into(), start: "origin/main".into() };
+    if !ok(&git(repo, &["rev-parse", "--git-dir"])) {
+        return unknown();
+    }
+    if ok(&git(repo, &["remote", "get-url", "origin"])) {
+        // `create` asks the remote, which the form can't wait for.
+        return DefaultBranch { start: "origin's default branch".into(), ..unknown() };
+    }
+    let head = git(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|b| !b.is_empty());
+    match head {
+        Some(b) => DefaultBranch { start: format!("HEAD ({b}): no remote"), name: b },
+        None => DefaultBranch { start: "HEAD: no remote".into(), ..unknown() },
+    }
 }
 
 /// `origin/HEAD` as git last saw it, like `origin/main`, without asking the remote.
@@ -903,6 +936,26 @@ mod tests {
         create(&repo, &folder_path(INSIDE, &repo, "ENG-54"), "ENG-54", None).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), want);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Origin's default as git last saw it; without a remote, the branch the main checkout is on,
+    /// which is where `create` starts a worktree then.
+    #[test]
+    fn names_where_a_new_worktree_starts() {
+        let (root, repo) = scratch_repo("default");
+        let main = DefaultBranch { name: "main".into(), start: "origin/main".into() };
+        assert_eq!(default_branch_of(&repo), main);
+        let o = Command::new("sh")
+            .arg("-c")
+            .arg("git init -q -b master local && git -C local remote add upstream ../origin.git")
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let local =
+            DefaultBranch { name: "master".into(), start: "HEAD (master): no remote".into() };
+        assert_eq!(default_branch_of(&root.join("local")), local);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

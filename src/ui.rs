@@ -16,7 +16,6 @@ pub use sidebar::{SIDEBAR_STEP, SidebarScroll};
 use crate::app::{AgentState, App, Away, Mode, TicketView};
 use crate::github::CheckState;
 use crate::store::UiPrefs;
-use crate::untrusted;
 use pane::{draw_claude, draw_footer, draw_header, draw_prefix_menu, draw_selecting};
 use panels::{draw_board, draw_gh, draw_jira};
 use ratatui::Frame;
@@ -224,7 +223,7 @@ fn badge(state: AgentState, seen: bool, new: bool) -> Span<'static> {
         }
         // Added by `taskman add` and not looked at yet.
         AgentState::Idle | AgentState::NotStarted if new => {
-            Span::styled("✦ new", Style::new().fg(Color::Magenta).bold())
+            Span::styled("+ new", Style::new().fg(Color::Magenta).bold())
         }
         // Quiet states get a glyph only, so the ones that need a look stand out.
         AgentState::Idle | AgentState::NotStarted => Span::styled("○", dim()),
@@ -241,10 +240,10 @@ fn selection_bg() -> Color {
 }
 
 /// The PR's summary in a line; `target` is `App::pr_target`, shown after the number so it's the
-/// checks that get cut when the line is short. Without GitHub, the branch, if any.
+/// checks that get cut when the line is short. Without GitHub, nothing.
 fn pr_spans(app: &App, tv: &TicketView) -> Vec<Span<'static>> {
     if app.gh(&tv.t.repo) != crate::github::Gh::Ready {
-        return tv.t.branch.iter().map(|b| Span::styled(untrusted::line(b), dim())).collect();
+        return Vec::new();
     }
     let target = app.pr_target(tv);
     let target = target.map(|(label, merged)| match merged {

@@ -476,7 +476,8 @@ impl App {
             f.hint = "only when creating a worktree".into();
             return;
         }
-        let default = self.default_branch(&self.projects[p].repo);
+        let crate::worktree::DefaultBranch { name: default, start } =
+            self.default_branch_of(&self.projects[p].repo);
         let bases = self.base_candidates(p, key.as_deref());
         f.choices =
             std::iter::once(default.clone()).chain(bases.iter().map(|b| b.key.clone())).collect();
@@ -488,9 +489,9 @@ impl App {
                 format!("stacked: starts from {}'s branch {}", b.key, untrusted::line(&b.branch))
             }
             None if bases.is_empty() => {
-                format!("from origin/{default}; stacking needs another ticket with a branch")
+                format!("from {start}; stacking needs another ticket with a branch")
             }
-            None => format!("from origin/{default}; ←/→ to stack on another ticket"),
+            None => format!("from {start}; ←/→ to stack on another ticket"),
         };
     }
 

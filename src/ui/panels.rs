@@ -351,9 +351,11 @@ pub(super) fn draw_board(f: &mut Frame, app: &mut App, area: Rect) {
             ]));
         }
         let pr = tv.pr.data.as_ref().and_then(|p| p.as_ref());
-        let mut summary = vec![indent()];
-        summary.extend(pr_spans(app, tv));
-        lines.push(Line::from(summary));
+        // Without GitHub there's none; the branch is on the line above.
+        let summary = pr_spans(app, tv);
+        if !summary.is_empty() {
+            lines.push(Line::from([vec![indent()], summary].concat()));
+        }
         if let Some(pr) = pr {
             // Checks that need attention, by name: failing first, then still running.
             let mut checks = vec![indent()];

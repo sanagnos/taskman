@@ -362,7 +362,14 @@ fn sidebar_rows(
                             Style::new().fg(yellow()).bold(),
                         ));
                     }
-                    pr.extend(pr_spans(app, tv));
+                    let summary = pr_spans(app, tv);
+                    match &tv.t.branch {
+                        // Without GitHub, the branch in its place.
+                        Some(b) if summary.is_empty() => {
+                            pr.push(Span::styled(untrusted::line(b), dim()));
+                        }
+                        _ => pr.extend(summary),
+                    }
                     lines.push(Line::from(pr));
                 }
             }

@@ -193,6 +193,34 @@ fn prefix_g_toggles_the_pr_panel_and_says_why_it_does_not_show() {
     assert_eq!(toast(&app), Some("No PR panel: gh isn't logged in; run gh auth login"));
 }
 
+/// On an agent, the panel keys say what they change for tickets, as its board shows in its
+/// panels' place; with no board, they refuse rather than flip what can't be seen.
+#[test]
+fn panel_keys_on_an_agent_say_what_they_change() {
+    let mut app = acme_app();
+    lay_out(&mut app, 160, 40);
+    app.select(index(&app, "acme-lead"));
+    prefix(&mut app, KeyCode::Char('j'));
+    assert!(!app.prefs.show_jira && saved().ui.show_gh);
+    assert_eq!(toast(&app), Some("Tracker panels off for tickets"));
+    prefix(&mut app, KeyCode::Char('g'));
+    assert_eq!(toast(&app), Some("PR panels off for tickets; the board hides while both are off"));
+    prefix(&mut app, KeyCode::Char('g'));
+    assert_eq!(toast(&app), Some("PR panels on for tickets; the board shows here"));
+    prefix(&mut app, KeyCode::Char('c'));
+    assert!(!app.prefs.show_comments);
+    assert_eq!(toast(&app), Some("Comments in tracker panels off for tickets"));
+
+    // notes has no tracker and no tickets, so no board.
+    app.select(index(&app, "notes-writer"));
+    let before = (app.prefs.show_jira, app.prefs.show_comments, app.prefs.show_gh);
+    for c in ['j', 'c', 'g'] {
+        prefix(&mut app, KeyCode::Char(c));
+        assert_eq!(toast(&app), Some("Agents have no panels"));
+    }
+    assert_eq!((app.prefs.show_jira, app.prefs.show_comments, app.prefs.show_gh), before);
+}
+
 #[test]
 fn prefix_o_opens_the_tickets_issue() {
     let mut app = acme_app();
@@ -204,6 +232,10 @@ fn prefix_o_opens_the_tickets_issue() {
     app.select(index(&app, "acme-lead"));
     prefix(&mut app, KeyCode::Char('o'));
     assert_eq!(toast(&app), Some("Agents have no ticket to open"));
+    prefix(&mut app, KeyCode::Char('p'));
+    assert_eq!(toast(&app), Some("Agents have no PR to open"));
+    prefix(&mut app, KeyCode::Char('m'));
+    assert_eq!(toast(&app), Some("Agents have no comments to mark as read"));
     app.select(index(&app, "ENG-52"));
     app.projects[0].tracker = None;
     prefix(&mut app, KeyCode::Char('o'));

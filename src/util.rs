@@ -112,6 +112,38 @@ pub fn fit_label(label: &str, room: usize) -> String {
     out
 }
 
+/// `s` broken into lines at most `width` columns wide, between words; a word longer than that is
+/// broken where it reaches the edge. For text whose rows must be counted before it's drawn, or
+/// that wraps under an indent of its own (Help).
+pub fn wrap_words(s: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in s.split_whitespace() {
+        let gap = usize::from(!line.is_empty());
+        if line.width() + gap + word.width() <= width {
+            if gap == 1 {
+                line.push(' ');
+            }
+            line.push_str(word);
+            continue;
+        }
+        if !line.is_empty() {
+            lines.push(std::mem::take(&mut line));
+        }
+        for c in word.chars() {
+            if line.width() + c.width().unwrap_or(0) > width && !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
+            }
+            line.push(c);
+        }
+    }
+    if !line.is_empty() || lines.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
 pub fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -168,6 +200,32 @@ mod tests {
         }
         assert_eq!(fit_label("abc", 1), "…");
         assert_eq!(fit_label("abc", 0), "");
+    }
+
+    #[test]
+    fn wraps_between_words() {
+        assert_eq!(wrap_words("move the card; Enter ends", 14), ["move the card;", "Enter ends"]);
+        assert_eq!(wrap_words("a  b", 10), ["a b"]);
+        assert_eq!(wrap_words("", 10), [""]);
+        // A word longer than the line is broken at the edge, a wide character kept whole.
+        assert_eq!(wrap_words("see ~/.local/state", 8), ["see", "~/.local", "/state"]);
+        assert_eq!(wrap_words("日本語", 5), ["日本", "語"]);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(200))]
+
+        /// Every line fits, and the words come back in order.
+        #[test]
+        fn wrapped_lines_fit_and_keep_the_text(s in "[a-z日 ]{0,60}", width in 2usize..30) {
+            let lines = wrap_words(&s, width);
+            for l in &lines {
+                prop_assert!(l.width() <= width, "{l:?} wider than {width}");
+            }
+            let joined: String = lines.concat().split_whitespace().collect();
+            let words: String = s.split_whitespace().collect();
+            prop_assert_eq!(joined, words);
+        }
     }
 
     #[test]

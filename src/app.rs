@@ -193,8 +193,9 @@ pub struct App {
     form_worktrees: std::cell::RefCell<Option<(PathBuf, github::Worktrees)>>,
     /// Each project's open issues for the Add form, by folder, with when they were asked for.
     open_issues: std::collections::HashMap<PathBuf, (Instant, add_form::OpenIssues)>,
-    /// Each project's default branch name, read from git once.
-    default_branches: std::cell::RefCell<std::collections::HashMap<PathBuf, String>>,
+    /// Each project's default branch, read from git once.
+    default_branches:
+        std::cell::RefCell<std::collections::HashMap<PathBuf, crate::worktree::DefaultBranch>>,
     /// Whether each project's folder can show PRs (`github::probe`), by folder: as saved last
     /// time until the check at start answers, and missing for a folder not checked yet.
     github: std::collections::BTreeMap<PathBuf, github::Gh>,
@@ -501,6 +502,21 @@ impl App {
         false
     }
 
+    /// The tickets whose worktrees a quit would wait for now (see `may_quit`), for the quit
+    /// dialog to name.
+    pub fn quit_would_wait_for(&self) -> Vec<&str> {
+        let creating = self
+            .closed_creating
+            .values()
+            .filter(|c| !c.keep && c.thread.as_ref().is_some_and(|t| !t.is_finished()));
+        let removing = self.removing.iter().filter(|(_, removal)| !removal.is_finished());
+        removing
+            .flat_map(|(n, _)| n)
+            .map(String::as_str)
+            .chain(creating.map(|c| c.key.as_str()))
+            .collect()
+    }
+
     pub fn selected(&self) -> Option<&TicketView> {
         self.tickets.get(self.sel)
     }
@@ -562,14 +578,20 @@ impl App {
         let Some(tv) = self.selected() else { return (false, false) };
         let tracker = self.project_of(&tv.t).is_some_and(|p| self.projects[p].tracker.is_some());
         if tv.t.agent.is_some() {
-            let tickets = self.tickets.iter().any(|x| x.t.repo == tv.t.repo && x.t.agent.is_none());
-            let board = tracker || tickets;
+            let board = self.agent_board(tv);
             return (board && self.prefs.show_jira, board && self.prefs.show_gh);
         }
         (
             tracker && self.prefs.show_jira,
             self.github.get(&tv.t.repo) == Some(&github::Gh::Ready) && self.prefs.show_gh,
         )
+    }
+
+    /// Whether agent `tv`'s project has a board to show in its panels' place: a tracker, or
+    /// tickets.
+    pub fn agent_board(&self, tv: &TicketView) -> bool {
+        let tracker = self.project_of(&tv.t).is_some_and(|p| self.projects[p].tracker.is_some());
+        tracker || self.tickets.iter().any(|x| x.t.repo == tv.t.repo && x.t.agent.is_none())
     }
 
     /// Selects ticket `i`: by key, number or click, so the sidebar shows its card even when it's

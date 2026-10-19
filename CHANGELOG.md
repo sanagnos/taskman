@@ -4,6 +4,14 @@ What changed in each release; a release's notes on GitHub are its section here. 
 
 ## Unreleased
 
+- Help (`ctrl+a ?`) wraps its lines instead of cutting them at 80 columns, so each key's description is whole (`ctrl+a {` / `}` ends with Enter), and lists the sidebar's badges in columns that no longer run together. It scrolls by its wrapped rows. The legend adds `✦`, which marks an agent; a card added by `taskman add` is now marked `+ new` rather than `✦ new`.
+- The footer counts sessions waiting on you with `▲` when one of them asks you something, and leaves the count out rather than run it into the keys on a narrow window.
+- Deleting a project counts its tickets and agents apart (`Its 4 tickets and 2 agents close too`), and the quit dialog says when quitting waits for a closed ticket's worktree to be removed.
+- In a repository with no remote, the Add form's Base says the worktree starts from your local `HEAD` and names its branch, instead of `origin/main`.
+- On an agent, `ctrl+a j`, `c` and `g` say what they change for tickets, or, in a project with no board to show, that agents have no panels, instead of silently flipping a setting; `p` and `m` say agents have no PR or comments instead of calling the agent a ticket.
+- The project board no longer shows a ticket's branch twice when the project has no GitHub, and Project settings' Branch hint reads "Local files' own".
+- The Welcome screen and the messages in a session's pane keep a margin, so wrapped lines don't run into the pane's edges.
+
 ## 0.1.13 - 2026-10-19
 
 - `taskman add` adds a key unchecked when the account's token command isn't installed, as it does whenever the tracker can't be asked, instead of refusing it as not found. A tracker error that merely mentions "not found" (a name that didn't resolve, say) no longer reads as a missing ticket either, and Codex's sandbox hint follows the kind of failure rather than the HTTP library's wording.

@@ -83,7 +83,7 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 | `src/keychain.rs` | the OS keychain the account form saves tokens to: `security` on macOS (`security -i`, the command on stdin), `secret-tool` on Linux (the token on stdin); `probe` for whether there's one, `store` (read back to check), `read`, `delete`; the `keychain:NAME` source and its naming; in unit tests, a stub in the scratch folder (`stub`) |
 | `src/proc.rs` | `proc::run`: git, gh and token commands with a time limit, no terminal and prompts off; `run_with_input` feeds a command's stdin (the updater pipes the download into `tar`) |
 | `src/untrusted.rs` | tracker and PR text printed as data: `clean` strips terminal control characters and the characters that hide text from a reader (bidirectional controls, Unicode tags), `line` and `block` keep it in its own line or indented block, `branch` passes only a branch name a brief may carry, `labelled` adds the note `taskman status` prints above it |
-| `src/util.rs` | timestamps, relative ages, opening URLs, and cutting text to fit: `truncate` (keeps the start), `truncate_start`, `truncate_middle` (account labels), `fit_label` (display width; sidebar names) |
+| `src/util.rs` | timestamps, relative ages, opening URLs, and cutting text to fit: `truncate` (keeps the start), `truncate_start`, `truncate_middle` (account labels), `fit_label` (display width; sidebar names), `wrap_words` (lines counted before they're drawn; Help) |
 
 ### Tests
 
@@ -91,12 +91,13 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 |---|---|
 | `src/app/test_support.rs` | for tests: `offline`, an `App` from saved state with nothing read or started; `acme_app`, a mock project with sessions in every state and fetched panels; `attach` (a `Session::fake`), `browser` (records the URLs opened), `draw` (into a `TestBackend`, as text), `settle` (a thread's message) |
 | `src/app/events/` | tests: the App driven by keys, mouse reports, pastes and `Msg`s, checking modes, selection, the bytes a session gets, dialogs, toasts and what's saved; a file for each `app/` file it exercises (`input.rs`, `mouse.rs`, `sessions.rs`, `add_form.rs` and so on), with the helpers they share in `mod.rs` |
-| `src/ui/screens.rs`, `src/ui/snapshots/` | tests: the main screens, dialogs and forms drawn from `acme_app` at 80x24 (160x40 for the panels and the board), compared with `insta` snapshots |
+| `src/ui/screens.rs`, `src/ui/snapshots/` | tests: the main screens, dialogs and forms drawn from `acme_app` at 80x24 (160x40 for the panels and the board, taller for Help so all of it is compared), compared with `insta` snapshots |
 | `src/replay.rs` | tests only: a local HTTP server answering with recorded responses (`tests/fixtures/`), so the Jira and Linear clients are tested without reaching a tracker |
 | `tests/hangup.rs` | the binary in a pty, its terminal closed while idle (a clean quit, as `prefix q`) and mid-input (the watchdog): taskman and its session must end |
 | `tests/resize.rs` | the binary in a pty, resized: the next key arrives on its own (a byte echoed by the stub session, a lone prefix key opening the menu), and taskman uses little processor time while nothing is typed |
 | `tests/paste.rs` | the binary in a pty, a 100 KB paste to a stub CLI that reads it slowly and asks for the cursor after each read: switching cards still works within 5 s, and `prefix q` quits |
 | `tests/links.rs` | a session's links reach the outer terminal as OSC 8, and `prefix l` opens one through a stub `$BROWSER` |
+| `tests/prefix.rs` | the binary in a pty with the prefix set to ctrl+b in the config: the footer, the prefix menu and Help, scrolled to its end, never name ctrl+a |
 | `tests/close.rs` | `taskman close` against the binary in a pty, with real git worktrees and an origin |
 | `tests/ownership.rs` | one copy of a session: `prefix R` restarts it under the same claim, killing `taskman resume` leaves it claimed by its CLI, and a lock that can't be taken stops the session starting until Enter once it can |
 | `tests/hooks.rs` | a SessionEnd hook that fires after taskman dropped its CLI (a stub whose hook outlives the kill): closed and added again, the ticket doesn't take the old session's end or resume its conversation; restarted, the new session doesn't show as ended |

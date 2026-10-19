@@ -293,6 +293,11 @@ fn no_project(t: &Tracker) -> String {
     )
 }
 
+/// `Jira's`, but `Local files'`.
+fn possessive(name: &str) -> String {
+    if name.ends_with('s') { format!("{name}'") } else { format!("{name}'s") }
+}
+
 const BESIDE: &str = "Beside the repo";
 const INSIDE: &str = "Inside, like Claude";
 const CREATE_FOR_NEW: &str = "Create one";
@@ -309,7 +314,7 @@ pub(super) fn worktree_hints(form: &mut Form, repo: &Path) {
             let own_name = provider.map(|p| p.example_branch(&key)).unwrap_or_default();
             let example = worktree::branch_name(&branch, provider, &key, "Fix login", &own_name);
             let own = if branch.contains(worktree::TRACKER) {
-                format!(" ({}'s own)", provider.map_or("tracker", |p| p.label()))
+                format!(" ({} own)", possessive(provider.map_or("tracker", |p| p.label())))
             } else {
                 String::new()
             };
