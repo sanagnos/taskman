@@ -32,6 +32,7 @@ use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use sync::{Msg, STALE};
 use tickets::ClosedCreating;
+pub use toasts::{Level, LogView, Toast};
 
 mod accounts;
 mod add_form;
@@ -55,6 +56,7 @@ mod sync;
 pub(crate) mod test_support;
 mod ticket;
 mod tickets;
+pub mod toasts;
 
 pub use add_form::parse_key;
 pub use forms::{Field, Form, FormKind, List};
@@ -100,6 +102,8 @@ pub enum Mode {
     Queue(queue::Queue),
     /// Moving the selected card, or its project, in the sidebar (`prefix {` and `}`).
     Move(Box<reorder::Moving>),
+    /// Every toast shown (`prefix L`), newest first.
+    Log(LogView),
 }
 
 pub struct LinkList {
@@ -159,7 +163,9 @@ pub struct App {
     /// The project whose header was last clicked or dragged, until a card is selected; see
     /// `current_project`. Its folder, so a reorder or a removal can't point it at another one.
     pub header_project: Option<PathBuf>,
-    pub toast: Option<(String, Instant)>,
+    pub toast: Option<Toast>,
+    /// Every toast shown, newest first, up to `toasts::LOG_CAP`; see `prefix L`.
+    pub toast_log: toasts::Log,
     pub quit: bool,
     /// A file to open in the user's editor; the event loop hands it the terminal meanwhile.
     pub edit: Option<PathBuf>,
@@ -298,6 +304,7 @@ impl App {
             drag: None,
             header_project: None,
             toast: None,
+            toast_log: Default::default(),
             quit: false,
             edit: None,
             bell: false,
@@ -379,9 +386,9 @@ impl App {
     /// single one, and changes are being lost meanwhile.
     fn show_save_error(&mut self) {
         let shown =
-            self.toast.as_ref().is_some_and(|(t, _)| self.save_errors.contains(&Some(t.clone())));
+            self.toast.as_ref().is_some_and(|t| self.save_errors.contains(&Some(t.msg.clone())));
         if !shown && let Some(e) = self.save_errors.iter().flatten().next().cloned() {
-            self.toast(e);
+            self.error(e);
         }
     }
 
@@ -432,10 +439,6 @@ impl App {
         let (agents, tickets): (Vec<usize>, Vec<usize>) =
             mine.into_iter().partition(|&i| self.tickets[i].t.agent.is_some());
         agents.into_iter().chain(tickets).collect()
-    }
-
-    pub fn toast(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), Instant::now()));
     }
 
     /// Quits as Enter on the quit dialog does, and as a signal does: the selected ticket's news
@@ -554,10 +557,7 @@ impl App {
             tv.status.seen = true;
             tv.new = false;
         }
-        if self.toast.as_ref().is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(4)) {
-            self.toast = None;
-            self.show_save_error();
-        }
+        self.expire_toast();
     }
 
     /// Lays the screen out and fits the selected session to its pane. From `tick`, with the

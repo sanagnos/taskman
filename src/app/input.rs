@@ -74,7 +74,7 @@ impl App {
         } else {
             format!("No PR panel: {}", self.gh(&tv.t.repo).why())
         };
-        self.toast(msg);
+        self.warn(msg);
     }
 
     /// Says why the sidebar (or the panels) just turned on doesn't show: the screen is too narrow
@@ -88,7 +88,7 @@ impl App {
         }
         let what = if panels { "The panels show" } else { "The sidebar unfolds" };
         if let Some(w) = (f.width..=1000).find(|&w| !squeezed(&at(w))) {
-            self.toast(format!(
+            self.warn(format!(
                 "{what} beside the session from {w} columns wide; this window is {}",
                 f.width
             ));
@@ -111,6 +111,7 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
+        self.dismiss_error();
         // A key ends a drag under way; Esc is all it does.
         if self.cancel_drag(key.code == KeyCode::Esc) {
             return;
@@ -134,6 +135,24 @@ impl App {
                 };
                 match top {
                     Some(top) => h.top = top.min(h.max),
+                    None => self.mode = Mode::Normal,
+                }
+                return;
+            }
+            Mode::Log(v) => {
+                // Keys scroll the log when it doesn't fit; any other key closes it.
+                let top = match key.code {
+                    _ if v.max == 0 => None,
+                    KeyCode::Up | KeyCode::Char('k') => Some(v.top.saturating_sub(1)),
+                    KeyCode::Down | KeyCode::Char('j') => Some(v.top + 1),
+                    KeyCode::PageUp => Some(v.top.saturating_sub(v.page)),
+                    KeyCode::PageDown | KeyCode::Char(' ') => Some(v.top + v.page),
+                    KeyCode::Home => Some(0),
+                    KeyCode::End => Some(v.max),
+                    _ => None,
+                };
+                match top {
+                    Some(top) => v.top = top.min(v.max),
                     None => self.mode = Mode::Normal,
                 }
                 return;
@@ -163,7 +182,7 @@ impl App {
                 // Closing stops the session first, and `remove` checks again: it may have
                 // committed, or written ignored files the dialog didn't list, while it was open.
                 match (check, id, self.close_at(self.sel)) {
-                    (_, _, Err(o)) => self.toast(left_open(&name, &o)),
+                    (_, _, Err(o)) => self.warn(left_open(&name, &o)),
                     (Some(check), Some((repo, _)), Ok(Closed { hold: Ok(hold), reaper })) => {
                         let tx = self.tx.clone();
                         let removal = std::thread::spawn(move || {
@@ -181,7 +200,7 @@ impl App {
                     // Closed, but nothing reserves the folder: it stays, as `close_at` says.
                     (Some(_), Some(id), Ok(Closed { hold: Err(why), reaper })) => {
                         self.keep_reaper(id, reaper);
-                        self.toast(format!("Kept the worktree: {why}"));
+                        self.warn(format!("Kept the worktree: {why}"));
                     }
                     (_, Some(id), Ok(Closed { reaper, .. })) => self.keep_reaper(id, reaper),
                     (_, None, Ok(_)) => {}
@@ -254,7 +273,7 @@ impl App {
                     let name = tv.map(|tv| tv.t.display().to_string()).unwrap_or_default();
                     let id = tv.map(|tv| (tv.t.repo.clone(), tv.t.key.clone()));
                     match (id, self.close_at(self.sel)) {
-                        (_, Err(o)) => self.toast(left_open(&name, &o)),
+                        (_, Err(o)) => self.warn(left_open(&name, &o)),
                         (Some(id), Ok(closed)) => self.keep_reaper(id, closed.reaper),
                         (None, Ok(_)) => {}
                     }
@@ -333,7 +352,7 @@ impl App {
                 if let Some(bytes) = keys::encode(&key, s.application_cursor())
                     && !s.write(&bytes)
                 {
-                    self.toast(NOT_SENT);
+                    self.warn(NOT_SENT);
                 }
             }
             _ if key.code == KeyCode::Enter && tv.t.pending_worktree.is_some() => {
@@ -381,7 +400,7 @@ impl App {
                 let text = self.selection_text();
                 self.selection = None;
                 if text.is_empty() {
-                    self.toast("Nothing to copy: the selection is blank");
+                    self.warn("Nothing to copy: the selection is blank");
                 } else {
                     self.copy_text(text);
                 }
@@ -400,7 +419,7 @@ impl App {
                 if let Some(s) = self.tickets.get(self.sel).and_then(|tv| tv.session.as_ref())
                     && !s.write(&[prefix.byte()])
                 {
-                    self.toast(NOT_SENT);
+                    self.warn(NOT_SENT);
                 }
             }
             KeyCode::Char(d @ '1'..='9') => {
@@ -457,7 +476,7 @@ impl App {
             KeyCode::Char('R') if !self.tickets.is_empty() => {
                 match self.tickets[self.sel].away {
                     Some(Away::Outside | Away::Leaving(_)) => {
-                        self.toast("It's running in another terminal: quit it there, then press Enter here");
+                        self.warn("It's running in another terminal: quit it there, then press Enter here");
                     }
                     Some(Away::HandedOff | Away::Back) => self.bring_back(),
                     None => {
@@ -470,13 +489,14 @@ impl App {
             KeyCode::Char('t') if !self.tickets.is_empty() => self.hand_off(),
             KeyCode::Char('v') => self.open_history(),
             KeyCode::Char('l') => self.open_links(),
+            KeyCode::Char('L') => self.open_log(),
             KeyCode::PageUp => self.page_claude(true),
             KeyCode::PageDown => self.page_claude(false),
             KeyCode::Char('?' | 'h') => self.mode = Mode::Help(HelpView::default()),
             KeyCode::Char('q') => self.mode = Mode::ConfirmQuit,
             KeyCode::Esc => {}
             other => {
-                self.toast(format!("{prefix} {other} isn't a command · {prefix} ? lists them"));
+                self.warn(format!("{prefix} {other} isn't a command · {prefix} ? lists them"));
             }
         }
     }
@@ -486,7 +506,7 @@ impl App {
     fn agent_has_no(&mut self, what: &str) -> bool {
         let agent = self.selected().is_some_and(|tv| tv.t.agent.is_some());
         if agent {
-            self.toast(format!("Agents have no {what}"));
+            self.warn(format!("Agents have no {what}"));
         }
         agent
     }
@@ -555,7 +575,7 @@ impl App {
         let Some(s) = self.tickets.get(self.sel).and_then(|tv| tv.session.as_ref()) else { return };
         if s.wants_mouse() {
             if !s.write(if up { b"\x1b[5~" } else { b"\x1b[6~" }) {
-                self.toast(NOT_SENT);
+                self.warn(NOT_SENT);
             }
         } else {
             s.scroll(if up { half } else { -half });
@@ -570,17 +590,17 @@ impl App {
         if let Some(board) = self.access(&tv.t).board() {
             match local::find(board, &tv.t.key) {
                 Ok(file) => self.edit = Some(file.path),
-                Err(e) => self.toast(e),
+                Err(e) => self.error(e),
             }
             return;
         }
         match self.issue_url(&tv.t) {
             Some(url) => {
                 if !(self.open_url)(&url) {
-                    self.toast(format!("Could not open {url}"));
+                    self.warn(format!("Could not open {url}"));
                 }
             }
-            None => self.toast("This ticket's project has no tracker set"),
+            None => self.warn("This ticket's project has no tracker set"),
         }
     }
 
@@ -593,10 +613,10 @@ impl App {
             Some(pr) => {
                 let url = pr.url.clone();
                 if !(self.open_url)(&url) {
-                    self.toast(format!("Could not open {url}"));
+                    self.warn(format!("Could not open {url}"));
                 }
             }
-            None => self.toast("No PR found for this ticket yet"),
+            None => self.warn("No PR found for this ticket yet"),
         }
     }
 
@@ -613,7 +633,7 @@ impl App {
                 if let Some(s) = self.tickets.get(self.sel).and_then(|tv| tv.session.as_ref()) {
                     s.reset_scroll();
                     if !s.paste(text) {
-                        self.toast(NOT_SENT);
+                        self.warn(NOT_SENT);
                     }
                 }
             }
@@ -643,8 +663,8 @@ impl App {
             }
         }
         match (links.is_empty(), &tv.session) {
-            (true, None) => self.toast("No links yet, and no session: press Enter to start it"),
-            (true, Some(_)) => self.toast("No links in this session"),
+            (true, None) => self.warn("No links yet, and no session: press Enter to start it"),
+            (true, Some(_)) => self.warn("No links in this session"),
             (false, _) => {
                 self.mode = Mode::Links(Box::new(LinkList { links, sel: 0, panel, top: 0 }));
             }
@@ -662,14 +682,14 @@ impl App {
             KeyCode::Enter => {
                 let url = list.links[list.sel].url.clone();
                 if !links::openable(&url) {
-                    self.toast("Only http(s) links open: c copies it");
+                    self.warn("Only http(s) links open: c copies it");
                     return;
                 }
                 self.mode = Mode::Normal;
                 if (self.open_url)(&url) {
                     self.toast(format!("Opened {}", util::truncate(&untrusted::line(&url), 80)));
                 } else {
-                    self.toast("No browser found: set $BROWSER, or c copies the link");
+                    self.warn("No browser found: set $BROWSER, or c copies the link");
                 }
             }
             KeyCode::Char('c') => {
@@ -687,7 +707,7 @@ impl App {
     fn open_history(&mut self) {
         let Some(tv) = self.selected() else { return };
         let Some(s) = tv.session.as_ref() else {
-            self.toast("No session to open: press Enter to start it");
+            self.warn("No session to open: press Enter to start it");
             return;
         };
         let (text, alternate) = {
@@ -705,7 +725,7 @@ impl App {
                     ));
                 }
             }
-            Err(e) => self.toast(format!("Couldn't write {}: {e}", path.display())),
+            Err(e) => self.error(format!("Couldn't write {}: {e}", path.display())),
         }
     }
 }

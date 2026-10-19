@@ -38,6 +38,7 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 | `src/app/launch.rs` | how a session's CLI starts (`Launch`, `App::launch`): arguments, environment, the ticket's and agent's briefs |
 | `src/app/input.rs` | keys: the modes, the prefix commands, paste, the links list, the session's history in `$EDITOR` |
 | `src/app/queue.rs` | `prefix w`: the waiting-on-you queue (`Queue`, `Mode::Queue`): the sessions in `Needs`, oldest first by when their hook said they began waiting (`oldest_first`), and its keys; the popover is `draw_queue` in `ui/dialogs.rs`, and `Status::waiting_since`, `tool` and `input` come from the hook's record |
+| `src/app/toasts.rs` | the footer's toast and its log: `Level` (info, warning, error), `App::toast`/`warn`/`error`, how long each stays (an error until the next key, and a later toast doesn't replace it), the 200-entry ring `prefix L` lists (`Mode::Log`) |
 | `src/app/jump.rs` | `prefix /`: the jump box (`Jump`, `Mode::Jump`), its keys, and the pure match of a card against what's typed (`matches`); the sidebar draws only the matches meanwhile |
 | `src/app/mouse.rs` | the wheel, drag-selecting text in a pane (double and triple clicks pick a word or line), copying it, and the press that may become a sidebar drag |
 | `src/app/reorder.rs` | reordering the sidebar: `place` (the one move), the valid places (`slot_for_gap`, `nearest_gap`), move mode (`Mode::Move`) and mouse drags (`Drag`); the order is the order of `App::tickets` and `App::projects`, saved as they are |
@@ -55,7 +56,7 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 | `src/ui/pane.rs` | the session's pane: its header, the session's terminal, with a banner once it ended (`draw_ended`), or what shows instead (handed off, a failed worktree, a start that failed), "selecting", the footer and the prefix menu |
 | `src/term.rs` | a vt100 screen as tui-term's `PseudoTerminal` draws it: tui-term's `Screen` and `Cell` traits implemented over vt100's types (`Screen`, `Cell`), with tui-term's `vt100` feature off, so vt100's version isn't tied to the one tui-term asks for |
 | `src/ui/panels.rs` | the right column: the tracker and GitHub panels, the agents' project board, and how a panel draws with its links (`render_panel`) |
-| `src/ui/dialogs.rs` | what draws over the screen: confirm dialogs, the links list, forms, settings and help |
+| `src/ui/dialogs.rs` | what draws over the screen: confirm dialogs, the links list, the messages list, forms, settings and help |
 
 ### Sessions
 

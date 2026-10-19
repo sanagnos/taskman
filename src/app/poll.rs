@@ -445,7 +445,7 @@ impl App {
                 Claim::Conflict { other } if self.tickets[i].switched.as_ref() != Some(&sid) => {
                     let msg = session_ids::switched(&self.tickets[i].t, other, &sid);
                     self.tickets[i].switched = Some(sid);
-                    self.toast(msg);
+                    self.warn(msg);
                 }
                 Claim::Conflict { .. } => {}
             }

@@ -61,6 +61,14 @@ impl App {
             }
             return;
         }
+        if let Mode::Log(v) = &mut self.mode {
+            match ev.kind {
+                MouseEventKind::ScrollUp => v.top = v.top.saturating_sub(3),
+                MouseEventKind::ScrollDown => v.top = (v.top + 3).min(v.max),
+                _ => {}
+            }
+            return;
+        }
         if !matches!(self.mode, Mode::Normal) {
             return;
         }
@@ -354,7 +362,7 @@ impl App {
         let Some(s) = self.tickets.get(self.sel).and_then(|tv| tv.session.as_ref()) else { return };
         if s.wants_mouse() {
             if !s.send_wheel(pos.x.saturating_sub(area.x), pos.y.saturating_sub(area.y), up) {
-                self.toast(super::input::NOT_SENT);
+                self.warn(super::input::NOT_SENT);
             }
         } else {
             s.scroll(if up { 3 } else { -3 });

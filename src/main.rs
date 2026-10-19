@@ -428,9 +428,9 @@ fn shutdown(mut app: app::App, signals: &Signals) {
     while !app.may_quit() && Instant::now() < until && !signals.again() {
         // `may_quit`'s toast says what it waits for; the terminal is the shell's again.
         if !std::mem::replace(&mut said, true)
-            && let Some((what, _)) = &app.toast
+            && let Some(t) = &app.toast
         {
-            let _ = writeln!(std::io::stdout(), "taskman: {what}");
+            let _ = writeln!(std::io::stdout(), "taskman: {}", t.msg);
         }
         std::thread::sleep(Duration::from_millis(50));
         app.drain_messages();
@@ -559,7 +559,7 @@ fn run(
         }
         if let Some(path) = app.edit.take() {
             if let Err(e) = edit(terminal, &path, enhanced) {
-                app.toast(e);
+                app.error(e);
             }
             signals.interrupts.store(0, Ordering::Relaxed);
             app.dirty.store(true, Ordering::Relaxed);

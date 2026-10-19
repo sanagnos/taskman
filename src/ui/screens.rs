@@ -830,3 +830,48 @@ fn sidebar_badge_with_the_waiting_age_in_the_narrowest_sidebar() {
     let mut app = waiting_app();
     assert_snapshot!(draw(&mut app, 64, 24));
 }
+
+/// An error toast is red and keeps the waiting count beside it.
+#[test]
+fn error_toast_with_the_waiting_count() {
+    let mut app = acme_app();
+    app.error("Couldn't write ~/.cache/taskman/ENG-52/history.txt: disk full");
+    let screen = draw(&mut app, 80, 24);
+    assert!(screen.contains("waiting on you"), "{screen}");
+    assert_snapshot!(screen);
+}
+
+/// A long error wraps onto the blank row above the footer, and the count stays on the last row.
+#[test]
+fn long_error_toast_wraps_above_the_footer() {
+    let mut app = acme_app();
+    app.error(LONG_ERROR);
+    let screen = draw(&mut app, 80, 40);
+    assert!(screen.contains("waiting on you"), "{screen}");
+    assert_snapshot!(screen);
+}
+
+/// Where there is no blank row to wrap onto, the message is cut and says where to read it whole.
+#[test]
+fn long_error_toast_on_a_short_screen_points_to_the_list() {
+    let mut app = acme_app();
+    app.error(LONG_ERROR);
+    let screen = draw(&mut app, 80, 24);
+    assert!(screen.contains(" L lists it"), "{screen}");
+    assert_snapshot!(screen);
+}
+
+const LONG_ERROR: &str = "Couldn't create ENG-70's worktree: fatal: a branch named \
+    'eng-70-fix-login' already exists, and git refused to check it out in /src/acme-ENG-70 \
+    because another worktree has it checked out";
+
+/// The list of every toast shown (`ctrl+a L`), newest first, errors red.
+#[test]
+fn messages_list() {
+    let mut app = acme_app();
+    app.toast("Marked as read");
+    app.warn("No PR found for this ticket yet");
+    app.error(LONG_ERROR);
+    app.mode = Mode::Log(Default::default());
+    assert_snapshot!(draw(&mut app, 80, 24));
+}

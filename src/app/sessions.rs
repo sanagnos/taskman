@@ -4,7 +4,7 @@
 use super::launch::session_exists;
 use super::poll::remove_status_at;
 use super::sync::Msg;
-use super::{AgentState, App, Away, Id, Mode};
+use super::{AgentState, App, Away, Id, Level, Mode};
 use crate::background;
 use crate::resume;
 use crate::session::{self, End, Session};
@@ -101,7 +101,7 @@ impl App {
                 // Enter tries again (`restart_session`) once the removal is done.
                 let msg = resume::closing(self.tickets[i].t.display());
                 self.tickets[i].status.state = AgentState::Exited;
-                self.toast(msg);
+                self.warn(msg);
                 return;
             }
             Ok(Err(_)) => {
@@ -121,7 +121,7 @@ impl App {
                     "Couldn't take {}'s session lock: {e}; fix it, then press Enter to retry",
                     tv.t.display()
                 );
-                self.toast(msg);
+                self.error(msg);
                 return;
             }
         };
@@ -167,7 +167,7 @@ impl App {
                 if i != self.sel {
                     let msg =
                         format!("{}'s {} session didn't start", tv.t.display(), tv.t.cli.label());
-                    self.toast(msg);
+                    self.error(msg);
                 }
             }
         }
@@ -263,14 +263,14 @@ impl App {
         match tv.away {
             Some(Away::Leaving(_)) => return,
             Some(Away::Outside) => {
-                return self.toast(format!("{name} is already running in another terminal"));
+                return self.warn(format!("{name} is already running in another terminal"));
             }
             Some(Away::HandedOff | Away::Back) => return self.offer_resume(self.sel),
             None => {}
         }
         let unstarted = format!("{name}'s session hasn't started: there's nothing to hand off yet");
         if tv.waiting() {
-            return self.toast(unstarted);
+            return self.warn(unstarted);
         }
         match &tv.session {
             Some(s) if !s.exited() => {
@@ -280,7 +280,7 @@ impl App {
             _ if tv.t.session_id.as_deref().is_some_and(|sid| session_exists(tv.t.cli, sid)) => {
                 self.handed_off(self.sel);
             }
-            _ => self.toast(unstarted),
+            _ => self.warn(unstarted),
         }
     }
 
@@ -354,7 +354,7 @@ impl App {
                 Ok(out) => String::from_utf8_lossy(&out.stderr).trim().to_string(),
                 Err(e) => e.to_string(),
             };
-            let _ = tx.send(Msg::Toast(format!("Couldn't open a tmux window: {why}")));
+            let _ = tx.send(Msg::Toast(Level::Warn, format!("Couldn't open a tmux window: {why}")));
         });
     }
 }

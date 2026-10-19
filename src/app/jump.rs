@@ -58,9 +58,9 @@ impl App {
     pub(super) fn open_jump(&mut self) {
         if self.prefs.sidebar_collapsed {
             let msg = format!("Unfold the sidebar to jump ({} b)", keys::prefix());
-            self.toast(msg);
+            self.warn(msg);
         } else if self.areas.sidebar_folded {
-            self.toast("The window is too narrow for the sidebar: widen it to jump");
+            self.warn("The window is too narrow for the sidebar: widen it to jump");
         } else {
             self.mode = Mode::Jump(Jump::default());
             self.sidebar_scroll = Default::default();

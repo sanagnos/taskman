@@ -28,6 +28,7 @@ mod settings;
 mod sleep;
 mod sync;
 mod tickets;
+mod toasts;
 
 const SCREEN: &str = "✻ Welcome to Claude Code\n\n> Add the magic link sign-in\n\n> ";
 

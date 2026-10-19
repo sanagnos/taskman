@@ -31,7 +31,7 @@ expression: "draw_colours(&mut app, 100, 30)"
 "                             │                                                                      "
 "                             │                                                                      "
 "                                                                                                    "
-" Copied 12 characters                                                                               "
+" Copied 12 characters                                                            ▲ 4 waiting on you "
 
 "........aaaaaaa..............a.bbbbbbbb.............................aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.."
 ".............................a......................................................................"
@@ -62,7 +62,7 @@ expression: "draw_colours(&mut app, 100, 30)"
 ".............................a......................................................................"
 ".............................a......................................................................"
 "...................................................................................................."
-"mmmmmmmmmmmmmmmmmmmmmfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+"mmmmmmmmmmmmmmmmmmmmmffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffmmmmmmmmmmmmmmmmmmm"
 a: Indexed(243) on Reset
 b: Black on Cyan
 c: Green on Reset

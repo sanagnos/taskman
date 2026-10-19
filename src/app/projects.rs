@@ -988,7 +988,7 @@ impl App {
             all.sort_by_key(|(n, _)| *n);
             self.tickets = all.into_iter().map(|(_, tv)| tv).collect();
             self.sel = sel;
-            return self.toast(format!("Kept project {}: {e}", self.projects[p].name));
+            return self.error(format!("Kept project {}: {e}", self.projects[p].name));
         }
         // A list still loading for it is dropped when it lands (`Listing`).
         self.open_issues.remove(&repo);

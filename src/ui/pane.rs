@@ -2,7 +2,7 @@
 //! and the prefix menu over it.
 
 use super::{dim, selection_bg, spinner, yellow};
-use crate::app::{AgentState, App, Away, Mode, TicketView};
+use crate::app::{AgentState, App, Away, Level, Mode, TicketView, Toast};
 use crate::keys::prefix;
 use crate::session::{End, Exit};
 use crate::store::{Cli, tilde};
@@ -433,6 +433,71 @@ pub(super) fn draw_selecting(f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new(msg).style(Style::new().fg(Color::Black).bg(Color::Yellow)), r);
 }
 
+/// The sidebar's badge and count of sessions waiting on you, for the footer's right side: ▲ when
+/// one of them asks you something, else ● for finished turns. None when none is.
+fn waiting_on_you(app: &App) -> Option<String> {
+    let waiting: Vec<_> = app
+        .tickets
+        .iter()
+        .enumerate()
+        .filter(|(i, tv)| *i != app.sel && tv.needs_attention())
+        .collect();
+    let needs = waiting.iter().any(|(_, tv)| tv.status.state == AgentState::Needs);
+    let glyph = if needs { '▲' } else { '●' };
+    (!waiting.is_empty()).then(|| format!("{glyph} {} waiting on you ", waiting.len()))
+}
+
+/// A toast in the footer's row, the waiting count beside it. A message too long for the row wraps
+/// onto the blank row above the footer where there is one; what still doesn't fit ends with where
+/// to read it whole.
+fn draw_toast(f: &mut Frame, app: &App, toast: &Toast, area: Rect) {
+    let style = match toast.level {
+        Level::Info | Level::Warn => Style::new().fg(yellow()),
+        Level::Error => Style::new().fg(Color::Red).bold(),
+    };
+    let width = usize::from(area.width);
+    let right = waiting_on_you(app).filter(|r| r.width() + 8 <= width);
+    // Room left of the count, with a space between.
+    let room = width - right.as_ref().map_or(0, |r| r.width() + 1);
+    let msg = untrusted::line(&toast.msg);
+    let p = prefix().short();
+    let more = format!(" · {p} L lists it");
+    let mut lines = vec![format!(" {msg}")];
+    if lines[0].width() > room {
+        let above = area.y > 0 && f.area().height >= super::FOOTER_GAP_MIN_H;
+        let first = if above { width } else { room };
+        let mut wrapped = crate::util::wrap_words(&msg, first.saturating_sub(1)).into_iter();
+        lines = vec![format!(" {}", wrapped.next().unwrap_or_default())];
+        let rest = wrapped.collect::<Vec<_>>().join(" ");
+        if above && !rest.is_empty() {
+            let rest = format!(" {rest}");
+            lines.push(if rest.width() > room {
+                truncate(&rest, room.saturating_sub(more.width() + 1)) + &more
+            } else {
+                rest
+            });
+        } else if lines[0].width() > room || !rest.is_empty() {
+            let cut = truncate(&lines[0], room.saturating_sub(more.width() + 1));
+            lines[0] = cut + &more;
+        }
+    }
+    let bar = Style::new().bg(selection_bg());
+    let last = lines.len() - 1;
+    for (i, line) in lines.into_iter().enumerate() {
+        let y = area.y - u16::try_from(last - i).unwrap_or(0);
+        let mut spans = vec![Span::styled(line.clone(), style)];
+        if i == last
+            && let Some(r) = &right
+        {
+            let pad = width.saturating_sub(line.width() + r.width());
+            spans.push(Span::raw(" ".repeat(pad)));
+            spans.push(Span::styled(r.clone(), Style::new().fg(yellow()).bold()));
+        }
+        let row = Rect { y, height: 1, ..area };
+        f.render_widget(Paragraph::new(Line::from(spans)).style(bar), row);
+    }
+}
+
 pub(super) fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     let line = if app.prefix {
         Line::from(vec![
@@ -444,8 +509,8 @@ pub(super) fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         ])
     } else if let Some(hint) = app.reorder_hint() {
         Line::from(Span::styled(format!(" {hint}"), Style::new().fg(Color::Cyan)))
-    } else if let Some((msg, _)) = &app.toast {
-        Line::from(Span::styled(format!(" {msg}"), Style::new().fg(yellow())))
+    } else if let Some(toast) = &app.toast {
+        return draw_toast(f, app, toast, area);
     } else {
         let key = Style::new().bold();
         let p = prefix().short();
@@ -457,20 +522,12 @@ pub(super) fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(format!("{p} ?"), key),
             Span::styled(" help", dim()),
         ];
-        let waiting: Vec<_> = app
-            .tickets
-            .iter()
-            .enumerate()
-            .filter(|(i, tv)| *i != app.sel && tv.needs_attention())
-            .collect();
-        // The sidebar's badge: ▲ when one of them asks you something, else ● for finished turns.
-        let needs = waiting.iter().any(|(_, tv)| tv.status.state == AgentState::Needs);
-        let glyph = if needs { '▲' } else { '●' };
-        let right = format!("{glyph} {} waiting on you ", waiting.len());
         let used: usize = v.iter().map(|s| s.content.width()).sum();
         // Right-aligned, like a status line's right side, and left out rather than run into
         // the keys.
-        if !waiting.is_empty() && used + 1 + right.width() <= usize::from(area.width) {
+        if let Some(right) = waiting_on_you(app)
+            && used + 1 + right.width() <= usize::from(area.width)
+        {
             v.push(Span::raw(" ".repeat(usize::from(area.width) - used - right.width())));
             v.push(Span::styled(right, Style::new().fg(yellow()).bold()));
         }
@@ -523,6 +580,7 @@ pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
                 ("PgUp", "scroll"),
                 ("v", "history in $EDITOR"),
                 ("l", "links"),
+                ("L", "messages"),
                 ("a", &send),
             ],
         ),

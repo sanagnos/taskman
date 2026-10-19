@@ -516,7 +516,7 @@ pub(crate) fn answer_choices(app: &mut App, got: Result<&[(&str, &str)], &str>) 
 
 /// The toast showing, if any.
 pub(crate) fn toast(app: &App) -> Option<&str> {
-    app.toast.as_ref().map(|(t, _)| t.as_str())
+    app.toast.as_ref().map(|t| t.msg.as_str())
 }
 
 /// The URLs the App opened, in order.

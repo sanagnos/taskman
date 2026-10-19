@@ -2,7 +2,7 @@
 //! and the messages threads send back (`Msg`), which `drain_messages` applies on each tick.
 
 use super::forms::Check;
-use super::{App, Id, Mode};
+use super::{App, Id, Level, Mode};
 use crate::store::{self, Base, Ticket};
 use crate::tracker::{Access, Issue, Text};
 use crate::{add, github, selection, worktree};
@@ -126,7 +126,7 @@ pub(super) enum Msg {
     Checked(u64, Check),
     /// Text went to the clipboard, or no command could take it; with what the toast calls it.
     Copied(String, selection::Copied, Option<String>),
-    Toast(String),
+    Toast(Level, String),
     /// What a project form's account can see to pick the ticket prefix from: the listing's id
     /// (`Choices`), and the list.
     Choices(u64, Result<Vec<crate::tracker::Choice>, String>),
@@ -162,7 +162,7 @@ impl App {
     /// waits for a worktree without the event loop (`main::shutdown`).
     pub fn drain_messages(&mut self) {
         let mut changed = false;
-        let mut toast = None;
+        let mut toasts = Vec::new();
         while let Ok(msg) = self.rx.try_recv() {
             self.dirty.store(true, Ordering::Relaxed);
             match msg {
@@ -206,7 +206,7 @@ impl App {
                         if let Ok(c) = res
                             && let Some(t) = self.created_after_close(repo, key, c, keep)
                         {
-                            toast = Some(t);
+                            toasts.push((Level::Warn, t));
                         }
                         continue;
                     };
@@ -215,8 +215,9 @@ impl App {
                     tv.creating = false;
                     tv.creation = None;
                     changed = true;
-                    toast = Some(match res {
+                    toasts.push(match res {
                         Ok(c) => {
+                            let level = if c.note.is_some() { Level::Warn } else { Level::Info };
                             let note = c.note.map(|n| format!("; {n}")).unwrap_or_default();
                             let on = base
                                 .as_ref()
@@ -237,39 +238,45 @@ impl App {
                             // else's, which closing the ticket must leave.
                             tv.t.created_worktree = c.made;
                             tv.t.pending_worktree = None;
-                            msg
+                            (level, msg)
                         }
                         // The session waits rather than editing the shared checkout;
                         // see `draw_claude`.
                         Err(e) => {
                             let msg = format!("Couldn't create {key}'s worktree: {e}");
                             tv.t.pending_worktree.get_or_insert_default().error = Some(e);
-                            msg
+                            (Level::Error, msg)
                         }
                     });
                 }
                 Msg::Removed(res) => {
-                    toast = Some(res.unwrap_or_else(|e| format!("Kept the worktree: {e}")));
+                    toasts.push(match res {
+                        Ok(done) => (Level::Info, done),
+                        Err(e) => (Level::Warn, format!("Kept the worktree: {e}")),
+                    });
                 }
                 Msg::Close(id, req) => self.closing.push_back((id, req)),
-                Msg::Closed(text) => toast = Some(text),
+                Msg::Closed(text) => toasts.push((Level::Info, text)),
                 Msg::Copied(text, copied, label) => {
                     if copied == selection::Copied::Osc52 {
                         use base64::Engine;
                         self.clipboard_out
                             .push(base64::engine::general_purpose::STANDARD.encode(&text));
                     }
-                    toast = Some(match label {
-                        Some(what) => selection::described(&copied, &what),
-                        None => selection::toast(&copied, &text),
-                    });
+                    toasts.push((
+                        Level::Info,
+                        match label {
+                            Some(what) => selection::described(&copied, &what),
+                            None => selection::toast(&copied, &text),
+                        },
+                    ));
                 }
-                Msg::Toast(msg) => toast = Some(msg),
+                Msg::Toast(level, msg) => toasts.push((level, msg)),
                 Msg::PrefixTip(tip) => {
                     self.prefs.prefix_tip_shown = true;
                     self.save();
                     // Shown once, at start, so it stays longer than a toast's 4s.
-                    self.toast = Some((tip, Instant::now() + Duration::from_secs(8)));
+                    self.toast_for(tip, Duration::from_secs(8));
                 }
                 // Saved, for the next start's first frame.
                 Msg::Gh(repo, gh) => changed |= self.github.insert(repo, gh) != Some(gh),
@@ -314,8 +321,8 @@ impl App {
         if changed {
             self.save();
         }
-        if let Some(t) = toast {
-            self.toast(t);
+        for (level, t) in toasts {
+            self.toast_at(level, t);
         }
     }
 

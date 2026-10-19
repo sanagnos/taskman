@@ -309,7 +309,7 @@ impl App {
         }
         let (lines, toast) = self.add_requested(req);
         match lines.iter().find(|l| !l.ok) {
-            Some(err) => self.toast(format!("✦ {name}: {}", err.text)),
+            Some(err) => self.error(format!("✦ {name}: {}", untrusted::line(&err.text))),
             None => {
                 self.toast(toast.unwrap_or_else(|| {
                     format!("✦ {name}'s new role applies when its session next starts")

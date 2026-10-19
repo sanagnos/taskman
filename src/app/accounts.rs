@@ -4,7 +4,7 @@
 
 use super::forms::Check;
 use super::sync::Msg;
-use super::{App, Field, Form, FormKind, Mode, SettingsItem};
+use super::{App, Field, Form, FormKind, Level, Mode, SettingsItem};
 use crate::keychain::{self, Keychain};
 use crate::store::{self, Account, Config, Provider};
 use crate::{token_file, tracker};
@@ -208,14 +208,20 @@ impl App {
             let tx = self.tx.clone();
             let k = self.keychain.clone().unwrap_or_else(Keychain::os);
             std::thread::spawn(move || {
-                let _ = tx.send(Msg::Toast(match k.delete(&name) {
-                    Ok(()) => format!(
-                        "Deleted account {} and its token in your {}",
-                        gone.label(),
-                        k.label()
+                let _ = tx.send(match k.delete(&name) {
+                    Ok(()) => Msg::Toast(
+                        Level::Info,
+                        format!(
+                            "Deleted account {} and its token in your {}",
+                            gone.label(),
+                            k.label()
+                        ),
                     ),
-                    Err(e) => format!("Deleted account {}, but {e}", gone.label()),
-                }));
+                    Err(e) => Msg::Toast(
+                        Level::Warn,
+                        format!("Deleted account {}, but {e}", gone.label()),
+                    ),
+                });
             });
         }
     }

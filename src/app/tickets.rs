@@ -6,7 +6,7 @@ use super::launch::session_exists;
 use super::poll::{remove_status_at, remove_status_files};
 use super::sync::Msg;
 use super::ticket::{Added, merged_head, own_worktree};
-use super::{AgentState, App, Away, Field, Form, FormKind, Mode, TicketView};
+use super::{AgentState, App, Away, Field, Form, FormKind, Level, Mode, TicketView};
 use crate::session::Reaper;
 use crate::store::{self, Base, Cli, Ticket};
 use crate::{close, github, keys, resume, stack, untrusted, util, worktree};
@@ -221,7 +221,7 @@ impl App {
     pub(super) fn use_main_checkout(&mut self) {
         let Some(tv) = self.tickets.get_mut(self.sel) else { return };
         if tv.creating || tv.t.pending_worktree.as_ref().is_none_or(|w| w.error.is_none()) {
-            self.toast(format!(
+            self.warn(format!(
                 "{} M is for a ticket whose worktree couldn't be created",
                 keys::prefix()
             ));
@@ -342,7 +342,7 @@ impl App {
         let removal = std::thread::spawn(move || {
             let w = close::remove_worktree(&repo, &path, None, &hold);
             drop(hold);
-            let _ = tx.send(Msg::Toast(closed_while_created(&key, &w)));
+            let _ = tx.send(Msg::Toast(Level::Warn, closed_while_created(&key, &w)));
         });
         self.removing.push((vec![name], removal));
         None
@@ -352,7 +352,7 @@ impl App {
     /// created for it could go too.
     pub(super) fn confirm_close(&mut self) {
         if let Some(e) = self.close_refusal(self.sel) {
-            return self.toast(e);
+            return self.warn(e);
         }
         // Not a worktree of taskman's, or one git couldn't check: the dialog offers nothing,
         // and says why when it's the latter, as `taskman close` does.
@@ -460,7 +460,7 @@ impl App {
     pub(super) fn open_rename_form(&mut self) {
         let Some(tv) = self.tickets.get(self.sel) else { return };
         let Some(name) = tv.t.agent.clone() else {
-            self.toast("Only agents can be renamed; a ticket is named by its key");
+            self.warn("Only agents can be renamed; a ticket is named by its key");
             return;
         };
         let mut form = Form::new(

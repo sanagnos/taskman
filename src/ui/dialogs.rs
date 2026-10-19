@@ -2,7 +2,7 @@
 
 use super::sidebar::{more_line, scroll_to_show, shown_rows};
 use super::{asleep, badge, dim, selection_bg, spinner};
-use crate::app::{AgentAsk, AgentState, App, Form, Mode, SettingsItem};
+use crate::app::{AgentAsk, AgentState, App, Form, Level, Mode, SettingsItem, toasts};
 use crate::keys::prefix;
 use crate::store::tilde;
 use crate::untrusted;
@@ -22,6 +22,7 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &mut App) {
         Mode::Help(_) => draw_help(f, app),
         Mode::Links(_) => draw_links(f, app),
         Mode::Queue(_) => draw_queue(f, app),
+        Mode::Log(_) => draw_log(f, app),
         Mode::Form(_) => draw_form(f, app),
         Mode::Settings(_) => draw_settings(f, app),
         Mode::ConfirmDeleteAccount(i) => {
@@ -315,6 +316,55 @@ fn draw_queue(f: &mut Frame, app: &mut App) {
         Paragraph::new(text).block(dialog("Waiting on you, oldest first").padding(DIALOG_PAD)),
         r,
     );
+}
+
+/// Every toast shown, newest first (`prefix L`): how long ago, then the text, wrapped under
+/// itself. Errors are red and warnings yellow.
+fn draw_log(f: &mut Frame, app: &mut App) {
+    let Mode::Log(view) = &mut app.mode else { return };
+    let w = (100 + DIALOG_PAD_W).min(f.area().width.saturating_sub(2));
+    let inner = usize::from(w.saturating_sub(2 + DIALOG_PAD_W)).max(1);
+    let age_w = 5;
+    let mut text = Vec::new();
+    for entry in &app.toast_log {
+        let style = match entry.level {
+            Level::Info => Style::new(),
+            Level::Warn => Style::new().fg(super::yellow()),
+            Level::Error => Style::new().fg(Color::Red).bold(),
+        };
+        let msg = untrusted::line(&entry.msg);
+        for (i, l) in wrap_words(&msg, inner.saturating_sub(age_w).max(1)).into_iter().enumerate() {
+            let left = if i == 0 {
+                format!("{:<age_w$}", toasts::age(entry.ts))
+            } else {
+                " ".repeat(age_w)
+            };
+            text.push(Line::from(vec![Span::styled(left, dim()), Span::styled(l, style)]));
+        }
+    }
+    let n = text.len();
+    // Rows for the entries: what the screen leaves, less the border, padding, a blank row and the
+    // note.
+    let room = usize::from(f.area().height.saturating_sub(2 + 2 + DIALOG_PAD_H + 2)).max(1);
+    let rows = n.min(room);
+    let rect = centered(f, w, u16::try_from(rows).unwrap_or(u16::MAX) + 2 + DIALOG_PAD_H + 2);
+    view.max = n.saturating_sub(rows);
+    view.page = rows.saturating_sub(1).max(1);
+    view.top = view.top.min(view.max);
+    let note = if view.max == 0 {
+        "Press any key to close.".to_string()
+    } else {
+        format!(
+            "↑/↓ PgUp/PgDn scroll · {}-{} of {n} · other keys close",
+            view.top + 1,
+            (view.top + rows).min(n)
+        )
+    };
+    let mut shown: Vec<Line> = text.into_iter().skip(view.top).take(rows).collect();
+    shown.push(Line::from(""));
+    shown.push(Line::from(Span::styled(note, dim())));
+    f.render_widget(Clear, rect);
+    f.render_widget(Paragraph::new(shown).block(dialog("Messages").padding(DIALOG_PAD)), rect);
 }
 
 /// The most of a role the dialog shows; a longer one says how much is left out.
@@ -914,6 +964,7 @@ fn draw_help(f: &mut Frame, app: &mut App) {
         ("PgUp/PgDn", "scroll the session's history"),
         ("v", "open the session's history in $EDITOR"),
         ("l", "list links (ticket, PR, session) to open or copy"),
+        ("L", "the recent messages, newest first"),
         ("a", send.as_str()),
         ("q", "quit"),
     ];
