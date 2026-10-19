@@ -9,7 +9,7 @@ use crate::store::{Cli, tilde};
 use crate::untrusted;
 use crate::util::truncate;
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::{Alignment, Margin, Rect};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
@@ -86,7 +86,7 @@ pub(super) fn draw_claude(f: &mut Frame, app: &App, area: Rect) {
         ];
         f.render_widget(
             Paragraph::new(text).alignment(Alignment::Center).wrap(Wrap { trim: true }),
-            area,
+            margins(area),
         );
         return;
     };
@@ -272,10 +272,16 @@ pub(super) fn draw_claude(f: &mut Frame, app: &App, area: Rect) {
             };
             f.render_widget(
                 Paragraph::new(text).alignment(Alignment::Center).wrap(Wrap { trim: true }),
-                area,
+                margins(area),
             );
         }
     }
+}
+
+/// The pane less two columns each side, so centred text that wraps doesn't run into its edges;
+/// all of it on a narrow pane, which needs every column.
+fn margins(area: Rect) -> Rect {
+    if area.width < 40 { area } else { area.inner(Margin::new(2, 0)) }
 }
 
 /// `ctrl+a x to close the ticket`, or the agent.
@@ -451,19 +457,21 @@ pub(super) fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(format!("{p} ?"), key),
             Span::styled(" help", dim()),
         ];
-        let waiting = app
+        let waiting: Vec<_> = app
             .tickets
             .iter()
             .enumerate()
             .filter(|(i, tv)| *i != app.sel && tv.needs_attention())
-            .count();
-        if waiting > 0 {
-            // Right-aligned, like a status line's right side.
-            let right = format!("● {waiting} waiting on you ");
-            let used: usize = v.iter().map(|s| s.content.chars().count()).sum();
-            v.push(Span::raw(
-                " ".repeat((area.width as usize).saturating_sub(used + right.chars().count())),
-            ));
+            .collect();
+        // The sidebar's badge: ▲ when one of them asks you something, else ● for finished turns.
+        let needs = waiting.iter().any(|(_, tv)| tv.status.state == AgentState::Needs);
+        let glyph = if needs { '▲' } else { '●' };
+        let right = format!("{glyph} {} waiting on you ", waiting.len());
+        let used: usize = v.iter().map(|s| s.content.width()).sum();
+        // Right-aligned, like a status line's right side, and left out rather than run into
+        // the keys.
+        if !waiting.is_empty() && used + 1 + right.width() <= usize::from(area.width) {
+            v.push(Span::raw(" ".repeat(usize::from(area.width) - used - right.width())));
             v.push(Span::styled(right, Style::new().fg(yellow()).bold()));
         }
         Line::from(v)

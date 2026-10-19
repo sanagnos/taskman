@@ -127,10 +127,15 @@ impl App {
 
     /// The project's default branch name, like `main`.
     pub fn default_branch(&self, repo: &Path) -> String {
+        self.default_branch_of(repo).name
+    }
+
+    /// As `worktree::default_branch_of`, asked once a project.
+    pub fn default_branch_of(&self, repo: &Path) -> worktree::DefaultBranch {
         self.default_branches
             .borrow_mut()
             .entry(repo.to_path_buf())
-            .or_insert_with(|| worktree::default_branch_name(repo))
+            .or_insert_with(|| worktree::default_branch_of(repo))
             .clone()
     }
 

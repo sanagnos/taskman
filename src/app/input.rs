@@ -427,6 +427,11 @@ impl App {
                 self.toggle(|p| &mut p.sidebar_collapsed);
                 self.explain_narrow(false);
             }
+            KeyCode::Char(c @ ('j' | 'c' | 'g'))
+                if self.selected().is_some_and(|tv| tv.t.agent.is_some()) =>
+            {
+                self.toggle_on_agent(c);
+            }
             KeyCode::Char('j') => {
                 self.toggle(|p| &mut p.show_jira);
                 self.explain_panel(true);
@@ -471,7 +476,56 @@ impl App {
         }
     }
 
+    /// When the selected session is an agent, which has no ticket, PR, comments or panels of its
+    /// own, says it has no `what` and returns true.
+    fn agent_has_no(&mut self, what: &str) -> bool {
+        let agent = self.selected().is_some_and(|tv| tv.t.agent.is_some());
+        if agent {
+            self.toast(format!("Agents have no {what}"));
+        }
+        agent
+    }
+
+    /// `j`, `c` or `g` on an agent: they change the panels tickets show, and the board shows in
+    /// an agent's while either panel is on. Without a board, they'd change nothing in view.
+    fn toggle_on_agent(&mut self, c: char) {
+        let Some(tv) = self.selected() else { return };
+        if !self.agent_board(tv) {
+            self.agent_has_no("panels");
+            return;
+        }
+        let board = |p: &UiPrefs| p.show_jira || p.show_gh;
+        let before = board(&self.prefs);
+        let (what, on) = match c {
+            'j' => {
+                self.toggle(|p| &mut p.show_jira);
+                ("Tracker panels", self.prefs.show_jira)
+            }
+            'g' => {
+                self.toggle(|p| &mut p.show_gh);
+                ("PR panels", self.prefs.show_gh)
+            }
+            _ => {
+                self.toggle(|p| &mut p.show_comments);
+                ("Comments in tracker panels", self.prefs.show_comments)
+            }
+        };
+        let now = board(&self.prefs);
+        let after = match (before, now) {
+            (true, false) => "; the board hides while both are off",
+            (false, true) => "; the board shows here",
+            _ => "",
+        };
+        self.toast(format!("{what} {} for tickets{after}", if on { "on" } else { "off" }));
+        if !before && now {
+            self.explain_narrow(true);
+        }
+    }
+
     fn mark_read(&mut self) {
+        if self.agent_has_no("comments to mark as read") {
+            return;
+        }
         let prefs = self.prefs.clone();
         let Some(tv) = self.tickets.get_mut(self.sel) else { return };
         let before = tv.new_count();
@@ -504,11 +558,10 @@ impl App {
     }
 
     fn open_ticket(&mut self) {
-        let Some(tv) = self.tickets.get(self.sel) else { return };
-        if tv.t.agent.is_some() {
-            self.toast("Agents have no ticket to open");
+        if self.agent_has_no("ticket to open") {
             return;
         }
+        let Some(tv) = self.tickets.get(self.sel) else { return };
         if let Some(board) = self.access(&tv.t).board() {
             match local::find(board, &tv.t.key) {
                 Ok(file) => self.edit = Some(file.path),
@@ -527,6 +580,9 @@ impl App {
     }
 
     fn open_pr(&mut self) {
+        if self.agent_has_no("PR to open") {
+            return;
+        }
         let Some(tv) = self.tickets.get(self.sel) else { return };
         match tv.pr.data.as_ref().and_then(|p| p.as_ref()) {
             Some(pr) => {

@@ -389,6 +389,14 @@ pub(crate) fn reaped(app: &mut App) {
 /// Draws the App on a screen `w` by `h` and returns it as text, one quoted line per row. The
 /// spinner shows its first frame and the version 0.0.0, so neither changes a snapshot, and links
 /// (OSC 8, see `links::mark`) are left out to keep it readable.
+/// A worktree removal for tickets `names` that runs until the sender returned is dropped.
+pub(crate) fn removing(app: &mut App, names: &[&str]) -> std::sync::mpsc::Sender<()> {
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let thread = std::thread::spawn(move || while rx.recv().is_ok() {});
+    app.removing.push((names.iter().map(|n| n.to_string()).collect(), thread));
+    tx
+}
+
 pub(crate) fn draw(app: &mut App, w: u16, h: u16) -> String {
     lay_out(app, w, h);
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();

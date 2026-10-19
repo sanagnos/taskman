@@ -6,7 +6,7 @@ use crate::app::{AgentAsk, AgentState, App, Form, Mode, SettingsItem};
 use crate::keys::prefix;
 use crate::store::tilde;
 use crate::untrusted;
-use crate::util::{truncate, truncate_middle, truncate_start};
+use crate::util::{truncate, truncate_middle, truncate_start, wrap_words};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
@@ -104,33 +104,35 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &mut App) {
             }
         }
         Mode::ConfirmDeleteProject(p) => {
-            let (name, n) = app
+            let (name, agents, tickets) = app
                 .projects
                 .get(*p)
                 .map(|proj| {
-                    (
-                        proj.name.clone(),
-                        app.tickets.iter().filter(|tv| tv.t.repo == proj.repo).count(),
-                    )
+                    let open = app.tickets.iter().filter(|tv| tv.t.repo == proj.repo);
+                    let agents = open.clone().filter(|tv| tv.t.agent.is_some()).count();
+                    (proj.name.clone(), agents, open.count() - agents)
                 })
                 .unwrap_or_default();
-            let tickets = match n {
-                0 => "It has no tickets.".to_string(),
-                1 => "Its ticket is closed too and its session stops.".to_string(),
-                n => format!("Its {n} tickets are closed too and their sessions stop."),
-            };
             draw_confirm(
                 f,
                 &format!("Delete project {name}?"),
-                &format!("{tickets} The repo, worktrees, branches and accounts are kept."),
+                &format!(
+                    "{} The repo, worktrees, branches and accounts are kept.",
+                    closes_too(agents, tickets)
+                ),
             );
         }
         Mode::ConfirmQuit => {
-            draw_confirm(
-                f,
-                "Quit taskman?",
-                "Running sessions stop; they resume when you reopen taskman.",
-            );
+            let resume = "Running sessions stop; they resume when you reopen taskman.";
+            let detail = match app.quit_would_wait_for().as_slice() {
+                [] => resume.to_string(),
+                [one] => format!("{resume} It quits once {one}'s worktree is removed."),
+                many => format!(
+                    "{resume} It quits once the worktrees of {} are removed.",
+                    join_and(&many.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                ),
+            };
+            draw_confirm(f, "Quit taskman?", &detail);
         }
         Mode::ConfirmAgent(ask) => {
             let (question, body) = agent_ask_text(ask);
@@ -395,6 +397,23 @@ fn removal_lines(
         }
     }
     lines
+}
+
+/// What deleting a project with `agents` agents and `tickets` tickets closes with it.
+fn closes_too(agents: usize, tickets: usize) -> String {
+    let count = |n: usize, what: &str| format!("{n} {what}{}", if n == 1 { "" } else { "s" });
+    let what = match (agents, tickets) {
+        (0, 0) => return "It has no tickets or agents.".into(),
+        (0, 1) => "ticket".to_string(),
+        (1, 0) => "agent".to_string(),
+        (0, t) => count(t, "ticket"),
+        (a, 0) => count(a, "agent"),
+        (a, t) => format!("{} and {}", count(t, "ticket"), count(a, "agent")),
+    };
+    match agents + tickets {
+        1 => format!("Its {what} closes too, and its session stops."),
+        _ => format!("Its {what} close too, and their sessions stop."),
+    }
 }
 
 /// `a`, `a and b`, `a, b and c`.
@@ -787,6 +806,9 @@ fn draw_settings(f: &mut Frame, app: &mut App) {
     }
 }
 
+/// Help's widest text, inside its border and padding: wider than this, lines wrap.
+const HELP_W: usize = 78;
+
 fn draw_help(f: &mut Frame, app: &mut App) {
     let Mode::Help(view) = &mut app.mode else { return };
     let p = prefix();
@@ -794,16 +816,16 @@ fn draw_help(f: &mut Frame, app: &mut App) {
     let keys = [
         ("1-9", "switch to ticket"),
         ("[ / ]", "previous / next ticket"),
-        ("{ / }", "move the card; ↑/↓ go on, p moves its project, Enter done"),
+        ("{ / }", "move the card; ↑/↓ go on, p moves its project, Enter ends"),
         (again.as_str(), "next ticket waiting on you (also tab)"),
         ("/", "jump to a ticket, agent or project by typing"),
         ("n", "add a ticket, or an agent with no ticket"),
         (",", "settings: prefix key, updates, projects, accounts"),
         ("P / A", "settings, on a new project / account"),
         ("z", "fold / unfold the current project"),
-        ("x", "close the current ticket"),
+        ("x", "close the current ticket or agent"),
         ("b", "collapse / expand the sidebar"),
-        ("j / c / g", "toggle tracker / comments / GitHub panels"),
+        ("j / c / g", "toggle the tracker panel, its comments, the PR panel"),
         ("o / p", "open ticket / PR in your browser"),
         ("r", "refresh tracker and GitHub now"),
         ("m", "mark new comments on this ticket as read"),
@@ -816,34 +838,7 @@ fn draw_help(f: &mut Frame, app: &mut App) {
         ("a", send.as_str()),
         ("q", "quit"),
     ];
-    let width = keys.iter().map(|(k, _)| p.name().len() + 1 + k.len()).max().unwrap_or(0) + 2;
-    // Indented under the heading, unless that would make Help wider than an 80-column screen.
-    let indent = if p.name().len() > "ctrl+a".len() { "" } else { "  " };
-    let mut text = vec![
-        Line::from(format!("Every key goes to the session, except after the {p} prefix:").bold()),
-        Line::from(""),
-    ];
-    text.extend(keys.iter().map(|(k, what)| {
-        Line::from(vec![
-            Span::styled(
-                format!("{indent}{:<width$}", format!("{p} {k}")),
-                Style::new().fg(Color::Cyan),
-            ),
-            Span::raw(*what),
-        ])
-    }));
-    text.extend([
-        Line::from(""),
-        Line::from("Mouse: the wheel scrolls the pane under the pointer; click a ticket or".bold()),
-        Line::from(
-            "a project header. Drag to copy text, past an edge or with the wheel for".bold(),
-        ),
-        Line::from("more; ctrl+c copies it again, Esc clears it. Drag a card or a project".bold()),
-        Line::from("header in the sidebar to reorder it; Esc cancels.".bold()),
-        Line::from(""),
-    ]);
-    // The legend, drawn with the sidebar's own badges, two to a row so Help fits 40 rows (it
-    // scrolls on shorter screens).
+    // The legend, drawn with the sidebar's own badges.
     let legend = [
         (badge(AgentState::Needs, false, false), "asking you something"),
         (badge(AgentState::Working, true, false), "working on something"),
@@ -854,36 +849,108 @@ fn draw_help(f: &mut Frame, app: &mut App) {
         (badge(AgentState::Idle, true, true), "added by taskman add"),
         (badge(AgentState::Idle, true, false), "idle or not started"),
         (asleep(), "asleep; selecting wakes it"),
+        (Span::styled("✦ lead", Style::new().bold()), "an agent: no ticket"),
         (Span::styled("↗ outside", Style::new().fg(Color::Cyan)), "in another terminal"),
         (Span::styled("↩ back", Style::new().fg(Color::Cyan).bold()), "Enter resumes it here"),
     ];
-    for pair in legend.chunks(2) {
-        let mut row = vec![Span::raw("  ")];
-        for (n, (b, what)) in pair.iter().enumerate() {
-            let b = b.clone();
-            let pad = " ".repeat(13usize.saturating_sub(b.content.width()));
-            let what = if n == 0 { format!("{what:<23}") } else { what.to_string() };
-            row.extend([b, Span::raw(pad), Span::raw(what)]);
+    // Indented under the heading, unless the prefix's name is long enough to need the room.
+    let indent = if p.name().len() > "ctrl+a".len() { 0 } else { 2 };
+    let key_w = keys.iter().map(|(k, _)| format!("{p} {k}").width()).max().unwrap_or(0) + 2;
+    let badge_w = legend.iter().map(|(b, _)| b.content.width()).max().unwrap_or(0) + 2;
+    // Two to a row, each column as wide as its own words.
+    let words = |skip: usize| {
+        legend.iter().skip(skip).step_by(2).map(|(_, what)| what.width()).max().unwrap_or(0)
+    };
+    let what_w = words(0) + 3;
+    let keys_w = keys.iter().map(|(_, what)| indent + key_w + what.width()).max().unwrap_or(0);
+    let pairs_w = 2 + 2 * badge_w + what_w + words(1);
+    let room = usize::from(f.area().width.saturating_sub(2 + 2 + DIALOG_PAD_W));
+    let inner = keys_w.max(pairs_w).min(HELP_W).min(room).max(1);
+
+    let mut text = Vec::new();
+    let heading = format!("Every key goes to the session, except after the {p} prefix:");
+    text.extend(wrap_words(&heading, inner).into_iter().map(|l| Line::from(l.bold())));
+    text.push(Line::from(""));
+    // Each key's description wraps under its own column, or under the key when that column
+    // would be too narrow to read.
+    let cyan = Style::new().fg(Color::Cyan);
+    let stacked = inner < indent + key_w + 20;
+    for (k, what) in &keys {
+        let key = format!("{p} {k}");
+        if stacked {
+            text.push(Line::from(Span::styled(format!("{:indent$}{key}", ""), cyan)));
+            let under = indent + 4;
+            for l in wrap_words(what, inner.saturating_sub(under)) {
+                text.push(Line::from(format!("{:under$}{l}", "")));
+            }
+            continue;
         }
-        text.push(Line::from(row));
+        let col = indent + key_w;
+        for (i, l) in wrap_words(what, inner - col).into_iter().enumerate() {
+            let left =
+                if i == 0 { format!("{:indent$}{key:<key_w$}", "") } else { " ".repeat(col) };
+            text.push(Line::from(vec![Span::styled(left, cyan), Span::raw(l)]));
+        }
+    }
+    text.push(Line::from(""));
+    let mouse = "Mouse: the wheel scrolls the pane under the pointer; click a ticket or a project \
+                 header. Drag to copy text, past an edge or with the wheel for more; ctrl+c copies \
+                 it again, Esc clears it. Drag a card or a project header in the sidebar to reorder \
+                 it; Esc cancels.";
+    text.extend(wrap_words(mouse, inner).into_iter().map(|l| Line::from(l.bold())));
+    text.push(Line::from(""));
+    // Two to a row where they fit, else one, its words wrapping beside the badge.
+    if pairs_w <= inner {
+        for pair in legend.chunks(2) {
+            let mut row = vec![Span::raw("  ")];
+            for (n, (b, what)) in pair.iter().enumerate() {
+                let pad = " ".repeat(badge_w - b.content.width());
+                let what = if n == 0 { format!("{what:<what_w$}") } else { what.to_string() };
+                row.extend([b.clone(), Span::raw(pad), Span::raw(what)]);
+            }
+            text.push(Line::from(row));
+        }
+    } else {
+        let col = 2 + badge_w;
+        for (b, what) in &legend {
+            for (i, l) in wrap_words(what, inner.saturating_sub(col)).into_iter().enumerate() {
+                let mut row = vec![Span::raw("  ")];
+                if i == 0 {
+                    row.extend([b.clone(), Span::raw(" ".repeat(badge_w - b.content.width()))]);
+                } else {
+                    row.push(Span::raw(" ".repeat(badge_w)));
+                }
+                row.push(Span::raw(l));
+                text.push(Line::from(row));
+            }
+        }
     }
     // Below the text, a blank row and what keys do, which says where you are when it scrolls.
-    let w = text.iter().map(Line::width).max().unwrap_or(0) as u16;
+    // Sized for its longest form, so the rows left for the text stay put as it scrolls; without
+    // PgUp/PgDn where that keeps it to a row.
     let n = text.len() as u16;
-    let r = centered(f, w + 2 + DIALOG_PAD_W, n + 2 + 2 + DIALOG_PAD_H);
-    let rows = r.height.saturating_sub(2 + DIALOG_PAD_H + 2);
+    let close = "Press any key to close.";
+    let full = format!("↑/↓ PgUp/PgDn scroll · {n}-{n} of {n} · other keys close").width() <= inner;
+    let scrolling = |top: u16, last: u16| {
+        let keys = if full { "↑/↓ PgUp/PgDn" } else { "↑/↓" };
+        format!("{keys} scroll · {top}-{last} of {n} · other keys close")
+    };
+    let fits = n + 2 + 2 + DIALOG_PAD_H <= f.area().height.saturating_sub(2);
+    let note_h = if fits { 1 } else { wrap_words(&scrolling(n, n), inner).len() as u16 };
+    let r = centered(f, inner as u16 + 2 + DIALOG_PAD_W, n + 1 + note_h + 2 + DIALOG_PAD_H);
+    let rows = r.height.saturating_sub(2 + DIALOG_PAD_H + 1 + note_h);
     view.max = n.saturating_sub(rows);
     view.page = rows.saturating_sub(1).max(1);
     view.top = view.top.min(view.max);
     let note = if view.max == 0 {
-        "Press any key to close.".to_string()
+        close.to_string()
     } else {
-        let last = (view.top + rows).min(n);
-        format!("↑/↓ PgUp/PgDn scroll · {}-{last} of {n} · other keys close", view.top + 1)
+        scrolling(view.top + 1, (view.top + rows).min(n))
     };
     let mut shown: Vec<Line> =
         text.into_iter().skip(view.top as usize).take(rows as usize).collect();
-    shown.extend([Line::from(""), Line::from(Span::styled(note, dim()))]);
+    shown.push(Line::from(""));
+    shown.extend(wrap_words(&note, inner).into_iter().map(|l| Line::from(Span::styled(l, dim()))));
     f.render_widget(Clear, r);
     f.render_widget(Paragraph::new(shown).block(dialog("Help").padding(DIALOG_PAD)), r);
 }
@@ -897,6 +964,17 @@ mod tests {
         let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
         assert_eq!(join_and(&s(&["1 untracked file"])), "1 untracked file");
         assert_eq!(join_and(&s(&["a", "b", "c"])), "a, b and c");
+    }
+
+    #[test]
+    fn counts_agents_and_tickets_apart() {
+        assert_eq!(closes_too(0, 0), "It has no tickets or agents.");
+        assert_eq!(closes_too(0, 1), "Its ticket closes too, and its session stops.");
+        assert_eq!(closes_too(4, 0), "Its 4 agents close too, and their sessions stop.");
+        assert_eq!(
+            closes_too(1, 3),
+            "Its 3 tickets and 1 agent close too, and their sessions stop."
+        );
     }
 
     #[test]

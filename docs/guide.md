@@ -146,7 +146,7 @@ The Add form opens on Type, set to Agent; ←/→ switches it to Ticket. What yo
 | `ctrl+a n` / `x` | add / close a ticket |
 | `ctrl+a ,` | settings: prefix key, updates, projects and accounts |
 | `ctrl+a P` / `A` / `z` | new project / new account / fold the current project |
-| `ctrl+a j` / `c` / `g` / `b` | toggle tracker, comments, GitHub, collapse sidebar |
+| `ctrl+a j` / `c` / `g` / `b` | toggle the tracker panel, its comments, the PR panel; collapse the sidebar. On an agent, `j`, `c` and `g` change the panels tickets show, and say so; its board shows while the tracker or PR panel is on |
 | `ctrl+a o` / `p` | open the ticket / PR in your browser (a Local files ticket opens in `$EDITOR`) |
 | `ctrl+a r` / `m` | refresh now (and check GitHub again) / mark new comments read |
 | `ctrl+a v` | open the session's history in `$EDITOR` |
@@ -237,7 +237,7 @@ When you add a ticket that has no worktree yet, taskman creates one: it fetches 
 
 - **Already has one:** a worktree whose branch has the key (`ENG-52-…`, or `change/ENG-52` from a workflow that makes its own) is used as it is; the Add form shows it. Once taskman has created a ticket's worktree, that one stays the ticket's, even if another with its key appears later.
 - **Don't want one:** set Worktree to "Don't create" on the Add form; the session runs in the main checkout, as do agents.
-- **No remote, or the fetch fails** (or takes over 30 seconds): the branch starts from your local `HEAD`, and a message says so.
+- **No remote, or the fetch fails** (or takes over 30 seconds): the branch starts from your local `HEAD`, and a message says so. Without a remote, the Add form's Base says so before you add the ticket (`from HEAD (master): no remote`).
 - **The folder already exists** and isn't the ticket's worktree, or git fails: nothing is touched and the session doesn't start; its pane says why. Fix it and press Enter to try again, or press `ctrl+a M` to run the session in the main checkout instead. If taskman quits before the worktree is made, it carries on at the next start.
 
 ### Stacked tickets
@@ -325,7 +325,7 @@ Added ENG-61 "Rate-limit uploads" to acme-web; creating worktree ~/acme-web-ENG-
 - **Agents adding agents:** `taskman add --agent tester --role "Run the TUI in tmux and check PRs against their tickets' 'Done when'."` adds a helper whose startup instructions carry the role. taskman shows you the agent and its role first, and adds it when you press Enter: sessions run `taskman add` without asking, and an issue or PR comment could talk one into it. Once you approve, its session starts, so the agent that asked can message it; it does nothing until someone does. `--role` on an agent that's already open replaces its role from its next session start (`ctrl+a R` restarts it), also after you approve it. Tickets are added without asking.
 - **Creating the ticket:** `taskman add --new "Fix login"` creates it in the project's tracker with the project's account, the one taskman reads it with, then adds it as above. Linear: in the team the ticket prefix names, in the state the team starts issues in. Jira: in the project the prefix names, as a Task (or the project's first standard issue type when it has no Task); a project that requires fields taskman doesn't fill, such as a sprint or a team, is refused with Jira's reasons, so create that ticket in Jira and add its key. GitHub Issues: in the project's repository, through `gh`'s login. Local files: a file in the board's `todo/` (see [Local files](#local-files-tickets-without-an-account)). `--description TEXT` gives the one new ticket a description, in Markdown; `--new` can be repeated, and each key is printed as it's created. A create that fails isn't tried again, and one that timed out or got a broken answer says the ticket may exist anyway: look in the tracker before running it again. If the tickets were created but couldn't be added, it names them, to add with `taskman add KEY`.
 - **Which project:** the session's, else the one whose folder you're in, else the one whose ticket prefix the key has. `--project NAME` picks one by its name, ignoring case, or its name with dashes for spaces; when that could mean several projects it asks for the exact name. A project without a tracker takes `--agent` only.
-- **It doesn't take your focus.** The ticket appears in the sidebar marked `✦ new` until you select it, and a message says who added it ("✦ planner added ENG-61"). While a project's agent runs, the new ticket's session starts so the agent can message it.
+- **It doesn't take your focus.** The ticket appears in the sidebar marked `+ new` until you select it, and a message says who added it ("✦ planner added ENG-61"). While a project's agent runs, the new ticket's session starts so the agent can message it.
 - **It checks the key** with the project's tracker account, so a typo isn't added; if the tracker can't be reached, the key is added unchecked.
 - **taskman closed?** The ticket is added when it starts: "taskman isn't running; ENG-61 is added when it starts."
 - **Scriptable:** a ticket that's already open does nothing; one line per key, and exit 0 unless a key failed.

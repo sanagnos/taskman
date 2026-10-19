@@ -280,11 +280,92 @@ fn prefix_menu() {
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 
+/// Help whole, tall enough not to scroll: every key and the whole legend, its lines wrapped
+/// rather than cut at 80 columns.
 #[test]
 fn help() {
     let mut app = acme_app();
     app.mode = Mode::Help(Default::default());
+    let screen = draw(&mut app, 80, 60);
+    assert!(screen.contains("Press any key to close."), "{screen}");
+    assert_snapshot!(screen);
+}
+
+/// Wide enough, the legend is two to a row.
+#[test]
+fn help_on_a_wide_screen() {
+    let mut app = acme_app();
+    app.mode = Mode::Help(Default::default());
+    let screen = draw(&mut app, 120, 50);
+    assert!(screen.contains("Press any key to close."), "{screen}");
+    assert_snapshot!(screen);
+}
+
+/// On a short screen Help scrolls; End shows its last rows, the legend's end among them.
+#[test]
+fn help_scrolled_to_its_end() {
+    let mut app = acme_app();
+    app.mode = Mode::Help(Default::default());
+    draw(&mut app, 80, 24);
+    app.on_key(key(KeyCode::End));
     assert_snapshot!(draw(&mut app, 80, 24));
+}
+
+/// Narrower than its text, Help wraps each key's words under its own column and puts the legend
+/// one to a row.
+#[test]
+fn help_at_60_columns() {
+    let mut app = acme_app();
+    app.mode = Mode::Help(Default::default());
+    assert_snapshot!(draw(&mut app, 60, 24));
+}
+
+#[test]
+fn quit_dialog() {
+    let mut app = acme_app();
+    app.mode = Mode::ConfirmQuit;
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
+/// A closed ticket's worktree is still being removed: quitting waits for it, and says so.
+#[test]
+fn quit_dialog_waiting_for_a_worktree_removal() {
+    let mut app = acme_app();
+    let _removal = crate::app::test_support::removing(&mut app, &["ENG-48"]);
+    app.mode = Mode::ConfirmQuit;
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
+/// acme has tickets and agents both, counted apart.
+#[test]
+fn delete_project_dialog() {
+    let mut app = acme_app();
+    app.mode = Mode::ConfirmDeleteProject(0);
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
+/// Inside tmux, a hand-off offers a new window with the command that resumes the session.
+#[test]
+fn tmux_offer() {
+    let mut app = acme_app();
+    app.mode = Mode::OfferTmux(("/src/acme".into(), "ENG-52".into()));
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
+/// `prefix l`: the ticket's links from its panels, then the session's, newest first; a link
+/// that doesn't open in a browser is dimmed and says it can be copied.
+#[test]
+fn links_list() {
+    let mut app = acme_app();
+    draw(&mut app, 100, 40);
+    let output = "> Deploy the preview\n\n● Deployed to https://preview.example.com/eng-52\n\n  \
+                  Logs: \x1b]8;;file:///src/acme-ENG-52/deploy.log\x1b\\deploy.log\x1b]8;;\x1b\\\n\n  \
+                  See \x1b]8;;https://docs.example.com/deploys\x1b\\the deploy guide\x1b]8;;\x1b\\\n";
+    attach(&mut app, "ENG-52", output);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(key(KeyCode::Char('l')));
+    assert!(matches!(app.mode, Mode::Links(_)));
+    assert_snapshot!(draw(&mut app, 100, 40));
 }
 
 #[test]
