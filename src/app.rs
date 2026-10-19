@@ -151,6 +151,9 @@ pub struct App {
     pub sidebar_scroll: ui::SidebarScroll,
     /// A press in the sidebar that may become a drag to reorder it; see `reorder.rs`.
     pub drag: Option<reorder::Drag>,
+    /// The project whose header was last clicked or dragged, until a card is selected; see
+    /// `current_project`. Its folder, so a reorder or a removal can't point it at another one.
+    pub header_project: Option<PathBuf>,
     pub toast: Option<(String, Instant)>,
     pub quit: bool,
     /// A file to open in the user's editor; the event loop hands it the terminal meanwhile.
@@ -286,6 +289,7 @@ impl App {
             sidebar_hits: Vec::new(),
             sidebar_scroll: ui::SidebarScroll::default(),
             drag: None,
+            header_project: None,
             toast: None,
             quit: false,
             edit: None,
@@ -564,6 +568,7 @@ impl App {
         if i >= self.tickets.len() {
             return;
         }
+        self.header_project = None;
         self.sidebar_scroll.asked = true;
         if i != self.sel {
             self.selection = None;
@@ -595,6 +600,15 @@ impl App {
             None => 0,
         };
         self.select(order[i as usize]);
+    }
+
+    /// The project `ctrl+a n` and `ctrl+a ,` open on: the one whose header was last clicked or
+    /// dragged, so an empty project can be picked too, else the selected card's.
+    pub fn current_project(&self) -> Option<usize> {
+        let header = self.header_project.as_ref();
+        header
+            .and_then(|repo| self.projects.iter().position(|p| &p.repo == repo))
+            .or_else(|| self.tickets.get(self.sel).and_then(|tv| self.project_of(&tv.t)))
     }
 
     pub fn toggle_project(&mut self, p: usize) {
@@ -680,7 +694,8 @@ mod tests {
         let status = dir.join("status");
         let old = |key: &str| store::legacy_status_file_in(&status, key);
         let record = |sid: &str, ts: i64| {
-            crate::hook::status_record("done", Some(sid), None, "", ts).to_string()
+            crate::hook::status_record(crate::status_file::HookState::Done, Some(sid), None, "", ts)
+                .to_string()
         };
         std::fs::write(old("ENG-52"), record("sid-52-new", 20)).unwrap();
         std::fs::write(old("ENG-52").with_extension("gh"), "1").unwrap();

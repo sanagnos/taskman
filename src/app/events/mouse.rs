@@ -173,6 +173,78 @@ fn clicks_in_the_sidebar_select_tickets_and_fold_projects() {
     assert!(!saved().projects[1].collapsed);
 }
 
+/// Presses and releases the mouse on project `p`'s header.
+fn click_header(app: &mut App, p: usize) {
+    let r = app.sidebar_hits.iter().find(|(_, h)| *h == Hit::Project(p)).unwrap().0;
+    mouse(app, MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
+    mouse(app, MouseEventKind::Up(MouseButton::Left), r.x + 1, r.y);
+}
+
+/// The project Settings shows.
+fn settings_project(app: &App) -> crate::app::SettingsItem {
+    let Mode::Settings(s) = &app.mode else { panic!("Settings closed") };
+    s.items[s.cursor]
+}
+
+#[test]
+fn a_clicked_header_is_the_current_project_until_a_card_is_selected() {
+    let mut app = acme_app();
+    draw(&mut app, 160, 40);
+    app.select(index(&app, "ENG-52"));
+    prefix(&mut app, KeyCode::Char('n'));
+    assert_eq!(field(&app, "Project"), "acme");
+    app.on_key(key(KeyCode::Esc));
+    // A click on notes' header unfolds it, as before, and makes notes current, the card staying
+    // selected.
+    click_header(&mut app, 1);
+    assert!(!app.projects[1].collapsed);
+    assert_eq!(selected(&app), "ENG-52");
+    prefix(&mut app, KeyCode::Char('n'));
+    assert_eq!(field(&app, "Project"), "notes");
+    app.on_key(key(KeyCode::Esc));
+    prefix(&mut app, KeyCode::Char(','));
+    assert_eq!(settings_project(&app), crate::app::SettingsItem::Project(1));
+    app.on_key(key(KeyCode::Esc));
+    // A second click folds it again; notes stays current.
+    draw(&mut app, 160, 40);
+    click_header(&mut app, 1);
+    assert!(app.projects[1].collapsed);
+    prefix(&mut app, KeyCode::Char('n'));
+    assert_eq!(field(&app, "Project"), "notes");
+    app.on_key(key(KeyCode::Esc));
+    // Selecting a card in acme again, even the one already selected, makes acme current.
+    draw(&mut app, 160, 40);
+    let r = card(&app, "ENG-52").unwrap();
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), r.x + 3, r.y + 1);
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), r.x + 3, r.y + 1);
+    prefix(&mut app, KeyCode::Char('n'));
+    assert_eq!(field(&app, "Project"), "acme");
+    app.on_key(key(KeyCode::Esc));
+    prefix(&mut app, KeyCode::Char(','));
+    assert_eq!(settings_project(&app), crate::app::SettingsItem::Project(0));
+}
+
+#[test]
+fn an_empty_projects_header_makes_it_current() {
+    let mut app = acme_app();
+    let web = serde_json::json!({ "name": "web", "repo": "/src/web" });
+    app.projects.push(serde_json::from_value(web).unwrap());
+    draw(&mut app, 160, 40);
+    click_header(&mut app, 2);
+    prefix(&mut app, KeyCode::Char('n'));
+    assert_eq!(field(&app, "Project"), "web");
+    app.on_key(key(KeyCode::Esc));
+    prefix(&mut app, KeyCode::Char(','));
+    assert_eq!(settings_project(&app), crate::app::SettingsItem::Project(2));
+    app.on_key(key(KeyCode::Esc));
+    // With no cards at all, `n` alone opens the form, on the clicked project too.
+    app.tickets.clear();
+    draw(&mut app, 160, 40);
+    click_header(&mut app, 2);
+    app.on_key(key(KeyCode::Char('n')));
+    assert_eq!(field(&app, "Project"), "web");
+}
+
 /// Where the sidebar draws `key`'s card, if it does.
 fn card(app: &App, key: &str) -> Option<ratatui::layout::Rect> {
     let hit = Hit::Ticket(index(app, key));

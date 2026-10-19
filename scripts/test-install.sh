@@ -3,10 +3,11 @@
 # $CARGO_TARGET_DIR), against fake releases served from a local web server laid out like GitHub's
 # release pages (TASKMAN_RELEASES_URL): a good release, an older one with only <archive>.sha256,
 # and broken ones that must install nothing. Then install.sh through a fake gh, the way in while
-# the repository is private, which must skip a draft. Attestations are checked with a fake gh too:
-# verified, failed, signed by another workflow, unreachable, missing (both where a release may have
-# none and where it must have one), a gh too old for them, a logged-out gh, none at all, and skipped
-# on request.
+# the repository is private, which must skip a draft. Attestations are checked with a fake gh too,
+# which insists on the release workflow's identity, GitHub-hosted runners and a private folder for
+# the archive: verified, failed, signed by another workflow, unreachable, missing (both where a
+# release may have none and where it must have one), a gh too old for them, a logged-out gh, none at
+# all, and skipped on request. Then a breaking release, which `taskman update` installs when asked.
 #
 # Usage: scripts/test-install.sh   (needs python3; run from anywhere)
 set -euo pipefail
@@ -103,15 +104,26 @@ chmod 755 "$work/fakebin/gh"
 export PATH="$work/fakebin:$PATH"
 repo="$(sed -n 's/^ *repo=//p' "$root/scripts/install.sh")"
 
-# A logged-in gh's `gh attestation verify ARCHIVE --repo REPO --signer-workflow REPO/WORKFLOW`,
-# answering as $FAKE_ATTEST says, in gh's own words.
+# A logged-in gh's `gh attestation verify ARCHIVE --repo REPO --cert-identity-regex IDENTITY
+# --deny-self-hosted-runners`, answering as $FAKE_ATTEST says, in gh's own words. The identity is
+# the release workflow run from a version tag or main; the archive must be in a folder only its
+# owner can open.
+repo_re="$(printf '%s' "$repo" | sed 's/[.]/\\./g')"
+printf '%s\n' "^https://github\\.com/$repo_re/\\.github/workflows/release\\.yml@refs/(tags/v[0-9]+\\.[0-9]+\\.[0-9]+|heads/main)\$" \
+  > "$work/identity"
 mkdir -p "$work/attestbin"
-printf '#!/bin/sh\nrepo="%s"\n' "$repo" > "$work/attestbin/gh"
+printf '#!/bin/sh\nrepo="%s"\nidentity_file="%s"\n' "$repo" "$work/identity" > "$work/attestbin/gh"
 cat >> "$work/attestbin/gh" <<'GH'
 if [ "$1 $2" != "attestation verify" ] || [ ! -f "$3" ] || [ "$4 $5" != "--repo $repo" ] \
-  || [ "$6 $7" != "--signer-workflow $repo/.github/workflows/release.yml" ] || [ $# -ne 7 ]; then
+  || [ "$6" != "--cert-identity-regex" ] || [ "$7" != "$(cat "$identity_file")" ] \
+  || [ "$8" != "--deny-self-hosted-runners" ] || [ $# -ne 8 ]; then
   echo "fake gh: unexpected arguments: $*" >&2; exit 1
 fi
+# install.sh verifies in its own mktemp -d folder, taskman in one it makes for the archive.
+case "$(ls -ld "$(dirname "$3")")" in
+  drwx------*) ;;
+  *) echo "fake gh: $3 isn't in a private folder: $(ls -ld "$(dirname "$3")")" >&2; exit 1 ;;
+esac
 case "$FAKE_ATTEST" in
   verified) printf 'Loaded digest sha256:0 for file://%s\n✓ Verification succeeded!\n' "$3" ;;
   failed) printf '✗ Verification failed\n\nError: verifying with issuer "sigstore.dev"\n' >&2; exit 1 ;;
@@ -366,6 +378,15 @@ if [ -x "$exe" ]; then
     said "the GitHub CLI (gh) isn't installed to verify its attestation"
     from "$tag"
   fi
+
+  # A new minor version is a breaking release: taskman update installs it when asked, and says so.
+  x="${tag#v}"; minor="${x#*.}"; minor="${minor%%.*}"
+  next="v${x%%.*}.$((minor + 1)).0"
+  release "$next" "echo \"taskman ${next#v}\""; sums "$next"
+  latest "$next"
+  check "taskman update installs a breaking release when asked" 0 "taskman ${next#v}" upd_attest verified "$work/attestbin:$PATH"
+  said "$next has breaking changes: see its notes,"
+  latest "$tag"; cp "$exe" "$bin/taskman"
 
   # A copy in cargo's bin folder is cargo's to update, unless --force.
   bin="$work/cargo/bin"; mkdir -p "$bin"

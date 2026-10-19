@@ -212,14 +212,15 @@ fn asleep() -> Span<'static> {
 /// Every symbol differs, not just its colour, so the collapsed sidebar, which shows the symbol
 /// alone, still tells the states apart.
 fn badge(state: AgentState, seen: bool, new: bool) -> Span<'static> {
+    let word = state.word();
     match state {
-        AgentState::Needs => Span::styled("▲ needs you", Style::new().fg(yellow()).bold()),
+        AgentState::Needs => Span::styled(format!("▲ {word}"), Style::new().fg(yellow()).bold()),
         AgentState::Done if !seen => {
-            Span::styled("● your turn", Style::new().fg(Color::Green).bold())
+            Span::styled(format!("● {word}"), Style::new().fg(Color::Green).bold())
         }
-        AgentState::Done => Span::styled("✓ your turn", Style::new().fg(Color::Green)),
+        AgentState::Done => Span::styled(format!("✓ {word}"), Style::new().fg(Color::Green)),
         AgentState::Working => {
-            Span::styled(format!("{} working", spinner()), Style::new().fg(Color::Cyan))
+            Span::styled(format!("{} {word}", spinner()), Style::new().fg(Color::Cyan))
         }
         // Added by `taskman add` and not looked at yet.
         AgentState::Idle | AgentState::NotStarted if new => {
@@ -227,7 +228,9 @@ fn badge(state: AgentState, seen: bool, new: bool) -> Span<'static> {
         }
         // Quiet states get a glyph only, so the ones that need a look stand out.
         AgentState::Idle | AgentState::NotStarted => Span::styled("○", dim()),
-        AgentState::Exited if !seen => Span::styled("■ exited", Style::new().fg(Color::Red)),
+        AgentState::Exited if !seen => {
+            Span::styled(format!("■ {word}"), Style::new().fg(Color::Red))
+        }
         AgentState::Exited => Span::styled("■", dim()),
     }
 }

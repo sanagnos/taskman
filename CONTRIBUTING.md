@@ -73,6 +73,7 @@ Seed `$S/state/taskman/tickets.json` and `$S/config.json` to set up a scenario. 
 - One change per pull request, with a description of what changed and why, and how you checked it (tests, or what you saw in the TUI).
 - Commit messages: a summary line, then what changed and why.
 - CI must pass: fmt, clippy, tests, the install script's tests, MSRV and cargo-deny.
+- Dependabot opens weekly pull requests for the crates and the actions, each release a week old at least. `LICENSE-THIRD-PARTY` names crates, not versions, so one that only changes versions passes CI as it is. One that adds or drops a crate, or brings a changed license text, fails the notices check: check out its branch, regenerate the file with the `cargo about` command above and push it.
 - By contributing you agree that your contribution is dual licensed under MIT OR Apache-2.0, as the README says.
 
 Coding agents are welcome to help; you remain responsible for the change, so review what they write and run it.

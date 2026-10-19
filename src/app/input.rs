@@ -300,10 +300,13 @@ impl App {
         }
         if self.tickets.is_empty() {
             match key.code {
-                KeyCode::Char('n') => self.open_ticket_form(None),
+                KeyCode::Char('n') => self.open_ticket_form(self.current_project()),
                 KeyCode::Char('P') => self.open_settings(SettingsItem::NewProject, true),
                 KeyCode::Char('A') => self.open_settings(SettingsItem::NewAccount, true),
-                KeyCode::Char(',') => self.open_settings(SettingsItem::Project(0), false),
+                KeyCode::Char(',') => {
+                    let p = self.current_project().unwrap_or(0);
+                    self.open_settings(SettingsItem::Project(p), false);
+                }
                 KeyCode::Char('q') => self.request_quit(),
                 _ => {}
             }
@@ -394,16 +397,12 @@ impl App {
             KeyCode::Char('}') => self.start_move(1),
             KeyCode::Up | KeyCode::Char('[') => self.step(-1),
             KeyCode::Down | KeyCode::Char(']') => self.step(1),
-            KeyCode::Char('n') => {
-                let p = self.tickets.get(self.sel).and_then(|tv| self.project_of(&tv.t));
-                self.open_ticket_form(p);
-            }
+            KeyCode::Char('n') => self.open_ticket_form(self.current_project()),
             KeyCode::Char('/') => self.open_jump(),
             KeyCode::Char('P') => self.open_settings(SettingsItem::NewProject, true),
             KeyCode::Char(',') => {
                 self.check_github(self.projects.iter().map(|p| p.repo.clone()).collect());
-                let p =
-                    self.tickets.get(self.sel).and_then(|tv| self.project_of(&tv.t)).unwrap_or(0);
+                let p = self.current_project().unwrap_or(0);
                 self.open_settings(SettingsItem::Project(p), false);
             }
             KeyCode::Char('A') => self.open_settings(SettingsItem::NewAccount, true),

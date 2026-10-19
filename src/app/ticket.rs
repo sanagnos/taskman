@@ -1,13 +1,13 @@
 //! One ticket or agent as the TUI holds it (`TicketView`): its session, its state, its fetched
 //! tracker and PR panels, and which of their comments are new.
 
-use super::poll::StatusRecord;
 use super::sleep::Watch;
 use super::sync::STALE;
 use super::{AgentState, Remote, Status};
 use crate::github::{self, Pr};
 use crate::resume;
 use crate::session::{Reaper, Session};
+use crate::status_file::Record;
 use crate::store::{self, Ticket, UiPrefs};
 use crate::tracker::Issue;
 use crate::worktree;
@@ -275,7 +275,7 @@ impl TicketView {
     /// write the start they belong to (`TASKMAN_LAUNCH`), and the pane takes only its own start's
     /// records. Outside (`taskman resume`), or back from there, whatever the hooks write is the
     /// session's; with no session anywhere, nothing is.
-    pub(super) fn takes(&self, rec: &StatusRecord) -> bool {
+    pub(super) fn takes(&self, rec: &Record) -> bool {
         match (&self.session, &rec.launch) {
             (Some(_), Some(launch)) => self.launch.as_ref() == Some(launch),
             // An older hook writes no start.
@@ -286,8 +286,8 @@ impl TicketView {
 
     /// What the session's hook reported, `selected` saying whether the user is looking at it.
     /// Returns whether to ring the bell: it waits on the user, out of sight.
-    pub(super) fn hook_reported(&mut self, rec: StatusRecord, selected: bool) -> bool {
-        let state = rec.state;
+    pub(super) fn hook_reported(&mut self, rec: Record, selected: bool) -> bool {
+        let state = AgentState::from(rec.state);
         let mut bell = false;
         if state != self.status.state {
             // Claude finished a turn: whatever it did may have changed the ticket or PR.
@@ -301,8 +301,8 @@ impl TicketView {
             }
             self.status.state = state;
         }
+        self.status.permission = rec.permission();
         self.status.message = rec.message;
-        self.status.permission = rec.permission;
         bell
     }
 
@@ -438,9 +438,9 @@ pub(super) fn merged_head(tv: &TicketView) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::poll::parse_status;
     use crate::app::test_support::{ago, ticket};
     use crate::github::Lookup;
+    use crate::status_file::parse;
     use std::path::Path;
     use std::time::Duration;
 
@@ -632,8 +632,7 @@ mod tests {
     #[test]
     fn hooks_set_the_state_and_who_should_look() {
         let rec = |state: &str| {
-            parse_status(&format!(r#"{{"state":"{state}","message":"Run the build","ts":1}}"#))
-                .unwrap()
+            parse(&format!(r#"{{"state":"{state}","message":"Run the build","ts":1}}"#)).unwrap()
         };
         // Out of sight, waiting on the user: unseen, and the bell rings.
         let mut tv = TicketView::new(ticket());
@@ -663,7 +662,7 @@ mod tests {
         assert!(!tv.jira.due(hour) && tv.pr.due(hour));
         // Only a permission prompt is one a key answers.
         let permission =
-            parse_status(r#"{"state":"needs","reason":"permission","message":"","ts":1}"#).unwrap();
+            parse(r#"{"state":"needs","reason":"permission","message":"","ts":1}"#).unwrap();
         tv.hook_reported(permission, false);
         assert!(tv.status.permission);
     }

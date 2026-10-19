@@ -8,7 +8,7 @@ Include what you found, how to reproduce it, the taskman version (`taskman --ver
 
 ## Supported versions
 
-Only the latest release gets fixes. taskman updates itself (see below), so most installs are on it within an hour of a release.
+Only the latest release gets fixes. taskman installs a release with the same minor version itself when `gh` can verify it (see below), so those installs are on a fix within an hour of its release; others get a notice to run `taskman update`.
 
 ## What taskman trusts
 
@@ -48,19 +48,30 @@ The config file (`~/.config/taskman/config.json`, or `TASKMAN_CONFIG`) and the s
 
 taskman updates itself: at every start and every hour it looks up the latest GitHub release of its repository, downloads it over HTTPS, and installs it beside the running binary. A download is installed only if:
 
-- it matches its entry in the release's `SHA256SUMS` (a release without one installs nothing), and
+- it matches its entry in the release's `SHA256SUMS` (a release without one installs nothing),
+- its attestation verifies (below), and
 - the new binary runs and reports the release's version.
 
-Only then is it renamed over the old one, so a failed or broken download leaves the working copy in place. It applies at the next start; taskman never restarts itself. The checksum comes from the same release, so it catches broken and truncated downloads, not a compromised release; the release workflow guards that, with pinned actions and a write token only in the job that runs no project code. The install script (`scripts/install.sh`) makes the same checks.
+Only then is it renamed over the old one, so a failed or broken download leaves the working copy in place. It applies at the next start; taskman never restarts itself. The checksum comes from the same release, so it catches broken and truncated downloads, not a compromised release; the release workflow guards that, with pinned actions and a write token only in the job that runs no project code.
 
-What a checksum can't show, an attestation can: each release's archives and `SHA256SUMS` carry a GitHub artifact attestation, a signed record that this repository's release workflow built the file from the release's tag. When the GitHub CLI (`gh`) is installed and logged in, taskman and the install script verify it (`gh attestation verify`, pinned to the release workflow) and install nothing if it fails. Every release from v0.1.0 on has one, so one from then on without an attestation is refused, as a replaced archive would have none. Without `gh`, or for a v0.0.x release, from before the repository was public, the checksum is the only check, and `taskman update` and the install script say so. You can verify a file you downloaded yourself:
+What a checksum can't show, an attestation can: each release's archives and `SHA256SUMS` carry a GitHub artifact attestation, a signed record that this repository's release workflow built the file. taskman and the install script verify it with the GitHub CLI (`gh attestation verify`), which must find it signed by `.github/workflows/release.yml` run from a version tag or `main`, on a GitHub-hosted runner, and install nothing if it fails. gh reads the archive from a new folder only you can open. Every release from v0.1.0 on has an attestation, so one from then on without one is refused, as a replaced archive would have none. You can verify a file you downloaded yourself:
 
 ```bash
 gh attestation verify taskman-vX.Y.Z-<target>.tar.gz --repo sanagnos/taskman \
-  --signer-workflow sanagnos/taskman/.github/workflows/release.yml
+  --cert-identity-regex '^https://github\.com/sanagnos/taskman/\.github/workflows/release\.yml@refs/(tags/v[0-9]+\.[0-9]+\.[0-9]+|heads/main)$' \
+  --deny-self-hosted-runners
 ```
 
-**`TASKMAN_INSECURE_SKIP_ATTESTATION=1`** skips that verification, for the install script, `taskman update` and the background updates. It's for a network that blocks GitHub's API or Sigstore, where the check can't run at all: an install then rests on the checksum alone, as it does without `gh`; `taskman update` and the install script warn each time, and Settings → Updates says so while it's set. A verification that fails because the attestation is wrong (its signature, its signer or the file's digest) never suggests it; only one that could be the network does.
+The background install takes nothing less:
+
+- **Only a verified attestation.** Without `gh`, with `gh` logged out or too old for attestations, or with the check skipped, it doesn't install: the sidebar says to run `taskman update`, and Settings → Updates says why. Otherwise anyone able to publish a release, with a stolen token say, would have their binary installed on every such copy within the hour.
+- **Only the same minor version.** Before 1.0 a new minor version is a breaking release (CHANGELOG.md), so v0.2.0 is announced, never installed in the background: Settings → Updates links its notes, and `taskman update` installs it.
+
+`taskman update` and the install script, which you run, install on the checksum alone where `gh` can't check (without it, logged out, too old, or for a v0.0.x release, from before the repository was public), and say so.
+
+**`TASKMAN_INSECURE_SKIP_ATTESTATION=1`** skips the verification for the install script and `taskman update`, and stops background installs. It's for a network that blocks GitHub's API or Sigstore, where the check can't run at all: an install then rests on the checksum alone, as it does without `gh`; `taskman update` and the install script warn each time, and Settings → Updates says so while it's set. A verification that fails because the attestation is wrong (its signature, its signer or the file's digest) never suggests it; only one that could be the network does.
+
+To go back to an earlier release, set "Only notify" (below) and run the install script with `TASKMAN_VERSION=vX.Y.Z`.
 
 To turn updates off:
 

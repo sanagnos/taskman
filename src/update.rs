@@ -4,7 +4,8 @@
 //! pages, falling back to `gh` while the repository is private, check it against the release's
 //! SHA256SUMS and, when gh can, its attestation, check the new binary runs, then rename it over the
 //! running binary's file. The running TUI keeps its own copy of the old binary; the new one applies
-//! when taskman restarts.
+//! when taskman restarts. The TUI installs only a release with the same minor version (a new minor
+//! is a breaking one) whose attestation gh verified; anything else it only announces.
 
 use crate::{proc, store, util};
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,9 @@ const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(60);
 /// The workflow that builds releases, in the repository: the only signer an attestation may have.
 const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
+/// The refs it may have run from, as a regular expression: a version tag, or main, where
+/// release.sh starts it by hand for a tag. install.sh's `signer_refs` is the same.
+const SIGNER_REFS: &str = r"refs/(tags/v[0-9]+\.[0-9]+\.[0-9]+|heads/main)";
 /// The first release that must have an attestation: one without is refused rather than installed
 /// on its checksum, as a replaced archive would have none. v0.1.0 is the first built on the public
 /// repository; older ones have none and still fall back. install.sh's `require_from` is the same
@@ -103,7 +107,10 @@ pub fn run(force: bool) -> Result<(), String> {
         }
     }
     println!("Updating taskman {current} → {latest} in {}", bin_dir.display());
-    install(&exe, &latest, false)?;
+    if newer(&latest, &current) && !same_minor(&latest, &current) {
+        println!("{latest} has breaking changes: see its notes, {REPO_URL}/releases/tag/{latest}");
+    }
+    install(&exe, &latest, By::Command)?;
     // A running TUI reads this and says the update applies when it restarts.
     state.installed = Some(Installed { version: latest.clone(), dir: bin_dir.to_path_buf() });
     save(&state);
@@ -123,6 +130,12 @@ fn parse(tag: &str) -> Option<(u64, u64, u64)> {
 /// Whether release `a` is newer than `b`; false when either isn't a version.
 fn newer(a: &str, b: &str) -> bool {
     matches!((parse(a), parse(b)), (Some(a), Some(b)) if a > b)
+}
+
+/// Whether releases `a` and `b` share their major and minor numbers: before 1.0 a new minor is a
+/// breaking release (CHANGELOG.md), which the TUI announces rather than installs.
+fn same_minor(a: &str, b: &str) -> bool {
+    matches!((parse(a), parse(b)), (Some(a), Some(b)) if (a.0, a.1) == (b.0, b.1))
 }
 
 /// `owner/name`, for gh.
@@ -299,20 +312,57 @@ fn checksum(via: Via, tag: &str, archive: &str) -> Result<String, String> {
     })
 }
 
+/// Who installs a release.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum By {
+    /// `taskman update`: says what it checked, and installs on the checksum alone when gh can't
+    /// check the attestation.
+    Command,
+    /// The TUI, in the background: prints nothing (the TUI owns the terminal), and installs only
+    /// what gh verified.
+    Background,
+}
+
+/// Whether an install by `by` goes on after the attestation check, or why not.
+fn accepts(by: By, attestation: &Attestation) -> Result<(), String> {
+    match (by, attestation) {
+        (_, Attestation::Verified) | (By::Command, _) => Ok(()),
+        (By::Background, Attestation::Unchecked(why)) => Err(why.clone()),
+        (By::Background, Attestation::Skipped) => {
+            Err(format!("{SKIP_ATTESTATION} is set, so its attestation isn't verified"))
+        }
+    }
+}
+
+/// Why the background can't install without downloading the archive first: what `accepts` would
+/// refuse anyway.
+fn unverifiable() -> Option<Attestation> {
+    if skip_attestation() {
+        return Some(Attestation::Skipped);
+    }
+    let gh = proc::run(Command::new("gh").arg("--version"), CHECK_TIMEOUT);
+    gh.is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        .then(|| Attestation::Unchecked(NO_GH.into()))
+}
+
 /// Installs release `tag` over the binary at `exe` (the running one, links resolved): downloads
-/// this platform's build, checks it against the release's checksum and, when gh can, its
-/// attestation, and checks the new binary runs and is that release before it replaces the old one.
-/// `quiet` prints nothing (the TUI owns the terminal).
-fn install(exe: &Path, tag: &str, quiet: bool) -> Result<(), String> {
+/// this platform's build, checks it against the release's checksum and its attestation, and checks
+/// the new binary runs and is that release before it replaces the old one.
+fn install(exe: &Path, tag: &str, by: By) -> Result<(), String> {
     let target = TARGET.ok_or(
         "there's no prebuilt taskman for this platform; build it from source (see the README)",
     )?;
     let archive = format!("taskman-{tag}-{target}.tar.gz");
     let say = |line: String| {
-        if !quiet {
+        if by == By::Command {
             println!("{line}");
         }
     };
+    if by == By::Background
+        && let Some(a) = unverifiable()
+    {
+        accepts(by, &a)?;
+    }
     let (data, via) = either(download_https(tag, &archive), || download_gh(tag, &archive))
         .map_err(|e| format!("couldn't download {archive}: {e}"))?;
     if sha256_hex(&data) != checksum(via, tag, &archive)? {
@@ -320,22 +370,23 @@ fn install(exe: &Path, tag: &str, quiet: bool) -> Result<(), String> {
     }
     let through = if via == Via::Gh { " through gh" } else { "" };
     say(format!("Downloaded {archive}{through}; its checksum matches."));
-    if skip_attestation() {
-        say(format!(
-            "Warning: {SKIP_ATTESTATION} is set, so its attestation wasn't verified: only its checksum was."
-        ));
+    let attestation = if skip_attestation() {
+        Attestation::Skipped
     } else {
-        match verify(&data, &archive, tag).map_err(|r| r.text(&archive))? {
-            Attestation::Verified => {
-                say(format!(
-                    "Verified its attestation with gh: {}'s release workflow built it.",
-                    repo()
-                ));
-            }
-            Attestation::Unchecked(why) => {
-                say(format!("Checked against its checksum alone: {why}."));
-            }
+        verify(&data, &archive, tag).map_err(|r| r.text(&archive))?
+    };
+    accepts(by, &attestation)?;
+    match attestation {
+        Attestation::Verified => {
+            say(format!(
+                "Verified its attestation with gh: {}'s release workflow built it.",
+                repo()
+            ));
         }
+        Attestation::Unchecked(why) => say(format!("Checked against its checksum alone: {why}.")),
+        Attestation::Skipped => say(format!(
+            "Warning: {SKIP_ATTESTATION} is set, so its attestation wasn't verified: only its checksum was."
+        )),
     }
     // The archive holds just the binary.
     let binary = stdout_of(proc::run_with_input(
@@ -371,7 +422,11 @@ enum Attestation {
     Verified,
     /// Nothing to verify with, or nothing to verify; the checksum stands alone. Why, as a clause.
     Unchecked(String),
+    /// Not checked, as TASKMAN_INSECURE_SKIP_ATTESTATION asks.
+    Skipped,
 }
+
+const NO_GH: &str = "the GitHub CLI (gh) isn't installed to verify its attestation";
 
 fn skip_attestation() -> bool {
     std::env::var(SKIP_ATTESTATION).is_ok_and(|v| !v.is_empty() && v != "0")
@@ -403,22 +458,80 @@ impl Refusal {
 /// Checks the downloaded archive's attestation with `gh attestation verify`, which needs it in a
 /// file. An error is a verification that failed, and refuses the install.
 fn verify(data: &[u8], archive: &str, tag: &str) -> Result<Attestation, Refusal> {
-    let path = std::env::temp_dir().join(format!(".taskman-{}-{archive}", std::process::id()));
-    let written = std::fs::write(&path, data);
-    written.map_err(|e| Refusal {
-        why: format!("couldn't write {}: {e}", path.display()),
+    let copy = Private::write(&std::env::temp_dir(), archive, data).map_err(|e| Refusal {
+        why: format!("couldn't write {archive} to a temporary folder: {e}"),
         network: false,
     })?;
-    let out = proc::run(&mut attest_command(&path), VERIFY_TIMEOUT);
-    let _ = std::fs::remove_file(&path);
+    let out = proc::run(&mut attest_command(&copy.file), VERIFY_TIMEOUT);
+    drop(copy);
     attestation(out, tag, REQUIRE_ATTESTATION_FROM)
+}
+
+/// A file in a new folder only this user can open, both removed when it's dropped: another user
+/// can't swap the archive between the check and gh reading it, or plant a link at a name it
+/// could guess.
+struct Private {
+    dir: PathBuf,
+    file: PathBuf,
+}
+
+impl Private {
+    fn write(parent: &Path, name: &str, data: &[u8]) -> std::io::Result<Self> {
+        use std::io::Write;
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+        let mut tries = 0;
+        let dir = loop {
+            let dir = parent.join(format!(
+                ".taskman-{}-{}-{tries}",
+                std::process::id(),
+                nanos.as_nanos()
+            ));
+            // Not recursive, so a folder (or link) already there is an error, never reused.
+            match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && tries < 10 => tries += 1,
+                Err(e) => return Err(e),
+                Ok(()) => break dir,
+            }
+        };
+        let copy = Self { file: dir.join(name), dir };
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&copy.file)?;
+        f.write_all(data)?;
+        Ok(copy)
+    }
+}
+
+impl Drop for Private {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
 }
 
 fn attest_command(path: &Path) -> Command {
     let mut cmd = Command::new("gh");
     cmd.args(["attestation", "verify"]).arg(path).args(["--repo", repo()]);
-    cmd.arg("--signer-workflow").arg(format!("{}/{RELEASE_WORKFLOW}", repo()));
+    cmd.arg("--cert-identity-regex").arg(signer_identity());
+    cmd.arg("--deny-self-hosted-runners");
     cmd
+}
+
+/// What an attestation's certificate must name as its signer: the release workflow, run from a
+/// version tag or main. `--signer-workflow`, which gh won't take with this, accepts any ref, so a
+/// workflow run on any branch could sign.
+fn signer_identity() -> String {
+    let workflow = format!("https://github.com/{}/{RELEASE_WORKFLOW}", repo());
+    let escaped: String = workflow
+        .chars()
+        .flat_map(|c| {
+            let special = r"\.+*?()|[]{}^$".contains(c);
+            special.then_some('\\').into_iter().chain([c])
+        })
+        .collect();
+    format!("^{escaped}@{SIGNER_REFS}$")
 }
 
 /// Reads gh's answer. Without gh, logged out, with a gh too old to have the command, or for a
@@ -433,9 +546,7 @@ fn attestation(
     let unchecked = |why: String| Ok(Attestation::Unchecked(why));
     let out = match out {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return unchecked(
-                "the GitHub CLI (gh) isn't installed to verify its attestation".into(),
-            );
+            return unchecked(NO_GH.into());
         }
         Err(e) => {
             let network = e.kind() == std::io::ErrorKind::TimedOut;
@@ -642,13 +753,15 @@ fn writable(dir: &Path) -> bool {
     ok
 }
 
-/// The release to install into `dir`: the latest, when it's newer than the running one, not
-/// installed there yet, and hasn't failed to install since taskman started.
+/// The release to install into `dir`: the latest, when it's newer than the running one but not a
+/// breaking release (`same_minor`), not installed there yet, and hasn't failed to install since
+/// taskman started.
 fn to_install(s: &State, running: &str, dir: &Path, failed: &[String]) -> Option<String> {
     let latest = s.latest.as_ref()?;
     let there =
         s.installed.as_ref().filter(|i| i.dir == dir).is_some_and(|i| !newer(latest, &i.version));
-    (newer(latest, running) && !there && !failed.contains(latest)).then(|| latest.clone())
+    let compatible = newer(latest, running) && same_minor(latest, running);
+    (compatible && !there && !failed.contains(latest)).then(|| latest.clone())
 }
 
 /// At startup the binary in `dir` is the one running, so a record of installing another
@@ -667,6 +780,9 @@ pub enum Action {
     Restart,
     /// Not installed: `taskman update` installs it.
     Update,
+    /// A breaking release, never installed in the background: read its notes, then
+    /// `taskman update`.
+    Breaking,
     /// A cargo install: running `cargo install` again installs it.
     Cargo,
     /// A development build: rebuild from source.
@@ -694,6 +810,7 @@ fn notice(s: &State, running: &str, dir: Option<&Path>, installs: Installs) -> O
         Installs::DevBuild => Action::Rebuild,
         Installs::Homebrew => Action::Brew,
         Installs::Cargo => Action::Cargo,
+        _ if !same_minor(latest, running) => Action::Breaking,
         _ => Action::Update,
     };
     Some(Notice { version: latest.clone(), action })
@@ -707,6 +824,8 @@ pub fn notice_text(n: &Notice, width: usize) -> String {
         Action::Restart => vec![format!("↑ restart to get {v}")],
         // One column more than the sidebar has once the version is 7 characters (v0.4.10).
         Action::Update => vec![format!("↑ {v}: run taskman update"), "↑ run taskman update".into()],
+        // Settings says what to do: read the release's notes, then run taskman update.
+        Action::Breaking => vec![format!("↑ {v}: breaking changes")],
         Action::Rebuild | Action::Cargo => vec![format!("↑ {v} available")],
         Action::Brew => vec![format!("↑ {v} · brew upgrade")],
     };
@@ -716,7 +835,8 @@ pub fn notice_text(n: &Notice, width: usize) -> String {
 /// Finished background work.
 struct Done {
     state: State,
-    failed: Option<String>,
+    /// A release that didn't install, and why.
+    failed: Option<(String, String)>,
 }
 
 /// The TUI's background updates: checks for a release at startup and every hour, installs a
@@ -736,6 +856,8 @@ pub struct Updater {
     retry_at: Option<Instant>,
     /// Releases that failed to install since taskman started.
     failed: Vec<String>,
+    /// Why the last of them failed, for Settings.
+    why_failed: Option<String>,
     mtime: Option<SystemTime>,
     reloaded: Instant,
     tx: mpsc::Sender<Done>,
@@ -767,6 +889,7 @@ impl Updater {
             checked: false,
             retry_at: None,
             failed: Vec::new(),
+            why_failed: None,
             mtime: modified(),
             reloaded: Instant::now(),
             tx,
@@ -786,6 +909,7 @@ impl Updater {
             checked: false,
             retry_at: None,
             failed: Vec::new(),
+            why_failed: None,
             mtime: None,
             reloaded: Instant::now(),
             tx,
@@ -803,7 +927,10 @@ impl Updater {
         while let Ok(done) = self.rx.try_recv() {
             self.busy = false;
             self.state = done.state;
-            self.failed.extend(done.failed);
+            if let Some((tag, why)) = done.failed {
+                self.failed.push(tag);
+                self.why_failed = Some(why);
+            }
             self.mtime = modified();
             changed = true;
         }
@@ -875,13 +1002,23 @@ impl Updater {
             let when = if ago == "now" { "just now".into() } else { format!("{ago} ago") };
             out.push_str(&format!(" · latest release {l}, checked {when}"));
         }
-        if let Some(n) = notice(&self.state, &running(), self.dir(), self.installs)
-            && n.action == Action::Restart
-        {
-            out.push_str(&format!(
-                "\n{} is installed: it runs when taskman restarts (sessions resume).",
-                n.version
-            ));
+        match notice(&self.state, &running(), self.dir(), self.installs) {
+            Some(Notice { version, action: Action::Restart }) => out.push_str(&format!(
+                "\n{version} is installed: it runs when taskman restarts (sessions resume)."
+            )),
+            Some(Notice { version, action: Action::Breaking }) => out.push_str(&format!(
+                "\n{version} has breaking changes, so it isn't installed in the background. Read its notes ({REPO_URL}/releases/tag/{version}), then run taskman update."
+            )),
+            Some(Notice { version, action: Action::Update }) => {
+                if self.failed.contains(&version)
+                    && let Some(why) = &self.why_failed
+                {
+                    out.push_str(&format!(
+                        "\n{version} wasn't installed in the background: {why}. taskman update installs it, or says why it can't."
+                    ));
+                }
+            }
+            _ => {}
         }
         let why = match self.installs {
             Installs::Yes => None,
@@ -904,7 +1041,7 @@ impl Updater {
         }
         if skip_attestation() {
             out.push_str(&format!(
-                "\n{SKIP_ATTESTATION} is set: updates are checked against their checksum only, not their attestation."
+                "\n{SKIP_ATTESTATION} is set: taskman update checks releases against their checksum only, not their attestation, and none is installed in the background."
             ));
         }
         out
@@ -924,9 +1061,9 @@ fn work(mut state: State, check: bool, exe: Option<PathBuf>, failed: &[String]) 
         && let Some(dir) = exe.parent().map(Path::to_path_buf)
         && let Some(tag) = to_install(&state, &running(), &dir, failed)
     {
-        match install(&exe, &tag, true) {
+        match install(&exe, &tag, By::Background) {
             Ok(()) => state.installed = Some(Installed { version: tag, dir }),
-            Err(_) => failed_tag = Some(tag),
+            Err(why) => failed_tag = Some((tag, why)),
         }
     }
     if state != before {
@@ -1225,7 +1362,10 @@ mod tests {
         let cmd = attest_command(Path::new("/tmp/taskman-v1.2.3-x.tar.gz"));
         assert_eq!(cmd.get_program(), "gh");
         let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
-        let workflow = format!("{}/.github/workflows/release.yml", repo());
+        let identity = format!(
+            r"^https://github\.com/{}/\.github/workflows/release\.yml@refs/(tags/v[0-9]+\.[0-9]+\.[0-9]+|heads/main)$",
+            repo().replace('.', r"\.")
+        );
         assert_eq!(
             args,
             [
@@ -1234,10 +1374,42 @@ mod tests {
                 "/tmp/taskman-v1.2.3-x.tar.gz",
                 "--repo",
                 repo(),
-                "--signer-workflow",
-                &workflow
+                "--cert-identity-regex",
+                &identity,
+                "--deny-self-hosted-runners",
             ]
         );
+        // install.sh asks for the same refs, and the same flags.
+        let script = include_str!("../scripts/install.sh");
+        let refs = script.lines().find_map(|l| l.trim().strip_prefix("signer_refs="));
+        assert_eq!(refs, Some(format!("'{SIGNER_REFS}'").as_str()));
+        assert!(
+            script.contains("--cert-identity-regex")
+                && script.contains("--deny-self-hosted-runners")
+        );
+        assert!(!script.contains("--signer-workflow"));
+    }
+
+    #[test]
+    fn writes_the_archive_to_verify_into_a_private_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let parent = store::state_dir();
+        std::fs::create_dir_all(&parent).unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let a = Private::write(&parent, "taskman-v1.2.3-x.tar.gz", b"archive").unwrap();
+        assert_eq!(a.file.parent(), Some(a.dir.as_path()));
+        assert_eq!(a.dir.parent(), Some(parent.as_path()));
+        assert_eq!(a.file.file_name().unwrap(), "taskman-v1.2.3-x.tar.gz");
+        assert_eq!(mode(&a.dir), 0o700);
+        assert_eq!(mode(&a.file), 0o600);
+        assert_eq!(std::fs::read(&a.file).unwrap(), b"archive");
+        // A new folder each time, and gone with the copy.
+        let b = Private::write(&parent, "taskman-v1.2.3-x.tar.gz", b"archive").unwrap();
+        assert_ne!(a.dir, b.dir);
+        let dir = a.dir.clone();
+        drop(a);
+        assert!(!dir.exists());
+        assert!(b.file.exists());
     }
 
     mod attestations {
@@ -1261,6 +1433,43 @@ mod tests {
                 prop_assert_eq!(verified, Ok(Attestation::Verified));
             }
         }
+    }
+
+    #[test]
+    fn background_installs_only_verified_releases() {
+        let unchecked = Attestation::Unchecked(NO_GH.into());
+        assert_eq!(accepts(By::Background, &Attestation::Verified), Ok(()));
+        assert_eq!(accepts(By::Background, &unchecked), Err(NO_GH.into()));
+        assert_eq!(
+            accepts(By::Background, &Attestation::Skipped),
+            Err(format!("{SKIP_ATTESTATION} is set, so its attestation isn't verified"))
+        );
+        // taskman update installs on the checksum alone, and says so.
+        assert_eq!(accepts(By::Command, &Attestation::Verified), Ok(()));
+        assert_eq!(accepts(By::Command, &unchecked), Ok(()));
+        assert_eq!(accepts(By::Command, &Attestation::Skipped), Ok(()));
+    }
+
+    #[test]
+    fn background_installs_stay_within_the_minor_version() {
+        assert!(same_minor("v0.1.10", "v0.1.2"));
+        assert!(!same_minor("v0.2.0", "v0.1.10"));
+        assert!(!same_minor("v1.1.0", "v0.1.0"));
+        assert!(!same_minor("garbage", "v0.1.0"));
+        let dir = Path::new("/home/me/.local/bin");
+        // A patch release installs; a new minor or major doesn't.
+        assert_eq!(to_install(&state("v0.4.9", None), "v0.4.2", dir, &[]), Some("v0.4.9".into()));
+        assert_eq!(to_install(&state("v0.5.0", None), "v0.4.2", dir, &[]), None);
+        assert_eq!(to_install(&state("v1.4.3", None), "v0.4.2", dir, &[]), None);
+        // It's announced as breaking instead, whether or not this copy installs.
+        let n = |s: &State, installs| notice(s, "v0.4.2", Some(dir), installs).map(|n| n.action);
+        assert_eq!(n(&state("v0.5.0", None), Installs::Yes), Some(Action::Breaking));
+        assert_eq!(n(&state("v0.5.0", None), Installs::ReadOnly), Some(Action::Breaking));
+        assert_eq!(n(&state("v0.4.3", None), Installs::Yes), Some(Action::Update));
+        assert_eq!(n(&state("v0.5.0", None), Installs::Cargo), Some(Action::Cargo));
+        // Once taskman update has installed it, the restart.
+        let ready = state("v0.5.0", Some(("v0.5.0", "/home/me/.local/bin")));
+        assert_eq!(n(&ready, Installs::Yes), Some(Action::Restart));
     }
 
     #[test]
@@ -1376,6 +1585,9 @@ mod tests {
             notice_text(&Notice { version: "v0.4.3".into(), action: Action::Brew }, 28),
             "↑ v0.4.3 · brew upgrade"
         );
+        let breaking = Notice { version: "v0.10.0".into(), action: Action::Breaking };
+        assert_eq!(notice_text(&breaking, 28), "↑ v0.10.0: breaking changes");
+        assert_eq!(notice_text(&breaking, 20), "↑ v0.10.0");
     }
 
     #[test]

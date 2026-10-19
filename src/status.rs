@@ -8,9 +8,10 @@
 
 use crate::app::parse_key;
 use crate::github::{self, CheckState, Lookup, Pr, Worktree, Worktrees};
+use crate::status_file::{self, Record};
 use crate::store::{self, Config, Project, Provider, Saved, Ticket};
 use crate::tracker::{Client, Issue, Text};
-use crate::{cli, local, stack, untrusted, util, worktree};
+use crate::{cli, local, resume, stack, untrusted, util, worktree};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -398,11 +399,10 @@ const ASLEEP: &str = "asleep";
 
 /// A session's state, from the status file its hooks write.
 struct SessionState {
-    state: String,
-    message: String,
-    ts: i64,
-    /// Its `--name`; sessions an older taskman started don't say.
-    name: Option<String>,
+    record: Record,
+    /// Put to sleep (`TicketView::sleep`): the record says only what the stopped CLI's last hook
+    /// wrote ("ended" most likely).
+    asleep: bool,
 }
 
 fn session_state(t: &Ticket, saved: &Saved) -> Option<SessionState> {
@@ -413,18 +413,8 @@ fn session_state(t: &Ticket, saved: &Saved) -> Option<SessionState> {
 /// its file by key alone, which counts for a key only one project has.
 fn session_state_in(dir: &Path, t: &Ticket, saved: &Saved) -> Option<SessionState> {
     let read = |path: PathBuf| {
-        // Asleep, the hooks' file only says what the stopped CLI's last hook wrote ("ended" most
-        // likely): the marker `TicketView::sleep` left says what it is.
         let asleep = path.with_extension("asleep").exists();
-        let v: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
-        let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
-        let name = v["name"].as_str().map(str::to_string);
-        Some(SessionState {
-            state: if asleep { ASLEEP.into() } else { s("state") },
-            message: s("message"),
-            ts: v["ts"].as_i64().unwrap_or(0),
-            name,
-        })
+        Some(SessionState { record: status_file::read(&path)?, asleep })
     };
     read(store::status_file_in(dir, &t.repo, &t.key)).or_else(|| {
         let unique = saved.tickets.iter().filter(|o| o.key == t.key).count() == 1;
@@ -439,15 +429,14 @@ fn session_name(t: &Ticket, state: Option<&SessionState>, saved: &Saved) -> Stri
 }
 
 fn session_name_in(dir: &Path, t: &Ticket, state: Option<&SessionState>, saved: &Saved) -> String {
-    state.and_then(|s| s.name.clone()).unwrap_or_else(|| {
-        // The names running sessions reported, which the TUI won't give again.
-        let running: Vec<String> = saved
-            .tickets
-            .iter()
-            .filter_map(|o| session_state_in(dir, o, saved))
-            .filter(|s| s.state != "ended" && s.state != ASLEEP)
-            .filter_map(|s| s.name)
-            .collect();
+    state.and_then(|s| s.record.name.clone()).unwrap_or_else(|| {
+        // The names running sessions reported, which the TUI won't give again. A session counts
+        // while a process holds it, as for `taskman resume`: a record says "working" still after
+        // its CLI was killed before the end hook ran.
+        let others = saved.tickets.iter().filter(|o| !o.is(&t.repo, &t.key));
+        let running = status_file::running_names(dir, others, |o| {
+            resume::runs(&resume::owner_file_in(dir, &o.repo, &o.key))
+        });
         let running: Vec<&str> = running.iter().map(String::as_str).collect();
         store::session_name(t, &saved.projects, &saved.tickets, &running)
     })
@@ -455,14 +444,10 @@ fn session_name_in(dir: &Path, t: &Ticket, state: Option<&SessionState>, saved: 
 
 /// The sidebar's words for a session state.
 fn state_label(s: Option<&SessionState>) -> &'static str {
-    match s.map(|s| s.state.as_str()) {
-        None => "not started",
-        Some("working") => "working",
-        Some("needs") => "needs you",
-        Some("done") => "your turn",
-        Some("ended") => "exited",
-        Some(ASLEEP) => "asleep",
-        Some(_) => "idle",
+    match s {
+        None => status_file::NOT_STARTED,
+        Some(s) if s.asleep => ASLEEP,
+        Some(s) => s.record.state.word(),
     }
 }
 
@@ -683,10 +668,10 @@ fn by(author: &str, when: &str) -> String {
 fn session_line(s: Option<&SessionState>) -> String {
     let mut line = format!("Session: {}", state_label(s));
     if let Some(s) = s {
-        let age = util::ago(s.ts);
+        let age = util::ago(s.record.ts);
         line += &if age == "now" { ", just now".to_string() } else { format!(", {age} ago") };
-        if !s.message.is_empty() {
-            line += &format!(" ({})", s.message);
+        if !s.record.message.is_empty() {
+            line += &format!(" ({})", s.record.message);
         }
     }
     line
@@ -1092,8 +1077,8 @@ fn pr_json(pr: &Pr) -> Value {
 fn session_json(s: Option<&SessionState>) -> Value {
     json!({
         "state": state_label(s),
-        "message": s.map(|s| s.message.as_str()).filter(|m| !m.is_empty()),
-        "updated": s.map(|s| s.ts),
+        "message": s.map(|s| s.record.message.as_str()).filter(|m| !m.is_empty()),
+        "updated": s.map(|s| s.record.ts),
     })
 }
 
@@ -1271,6 +1256,7 @@ impl All {
 mod tests {
     use super::*;
     use crate::github::{Check, PrComment, Review, Thread, Threads};
+    use crate::status_file::HookState;
     use crate::tracker::Comment;
 
     fn saved() -> Saved {
@@ -1664,37 +1650,66 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("taskman-status-layout-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let write = |path: PathBuf, record: Value| {
+        let write = |path: PathBuf, record: String| {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, record.to_string()).unwrap();
+            std::fs::write(path, record).unwrap();
         };
         let s = boards();
         let (alpha_wp1, beta_wp1, wp2) = (&s.tickets[0], &s.tickets[1], &s.tickets[2]);
         // A session this release started: its project's folder, with its name.
-        let record =
-            crate::hook::status_record("working", Some("sid-a"), Some("alpha/WP-1"), "", 1);
-        write(store::status_file_in(&dir, &alpha_wp1.repo, "WP-1"), record);
+        let record = crate::hook::status_record(
+            HookState::Working,
+            Some("sid-a"),
+            Some("alpha/WP-1"),
+            "",
+            1,
+        );
+        write(store::status_file_in(&dir, &alpha_wp1.repo, "WP-1"), record.to_string());
         let state = session_state_in(&dir, alpha_wp1, &s).unwrap();
-        assert_eq!((state.state.as_str(), state.name.as_deref()), ("working", Some("alpha/WP-1")));
+        assert_eq!(
+            (state.record.state, state.record.name.as_deref()),
+            (HookState::Working, Some("alpha/WP-1"))
+        );
         assert_eq!(session_name_in(&dir, alpha_wp1, Some(&state), &s), "alpha/WP-1");
         assert!(session_state_in(&dir, beta_wp1, &s).is_none());
         // One an older taskman started, still running after an update: by key alone, without a
         // name. It counts for WP-2, which one project has, never for WP-1, which two have.
         write(
             store::legacy_status_file_in(&dir, "WP-2"),
-            json!({ "state": "done", "session_id": "sid-2", "message": "", "ts": 2 }),
+            json!({ "state": "done", "session_id": "sid-2", "message": "", "ts": 2 }).to_string(),
         );
         write(
             store::legacy_status_file_in(&dir, "WP-1"),
-            json!({ "state": "needs", "session_id": "sid-x", "message": "", "ts": 3 }),
+            json!({ "state": "needs", "session_id": "sid-x", "message": "", "ts": 3 }).to_string(),
         );
         let state = session_state_in(&dir, wp2, &s).unwrap();
-        assert_eq!((state.state.as_str(), state.name), ("done", None));
+        assert_eq!((state.record.state, state.record.name), (HookState::Done, None));
         assert_eq!(session_name_in(&dir, wp2, None, &s), "WP-2");
         assert!(session_state_in(&dir, beta_wp1, &s).is_none());
         // Not running: the name it would start with.
         assert_eq!(session_name_in(&dir, beta_wp1, None, &s), "beta/WP-1");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A name counts as taken while a process holds its session, as for `taskman resume`, not
+    /// while its record says it runs: one killed before its end hook still says "working".
+    #[test]
+    fn a_name_is_taken_while_its_session_runs() {
+        let dir = store::scratch::dir().join("status-names");
+        let s = boards();
+        let (alpha_wp1, wp2) = (&s.tickets[0], &s.tickets[2]);
+        // A name WP-2 would start with, left from before a project was renamed.
+        let record = crate::hook::status_record(HookState::Working, None, Some("WP-2"), "", 1);
+        let file = store::status_file_in(&dir, &alpha_wp1.repo, &alpha_wp1.key);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, record.to_string()).unwrap();
+        assert_eq!(session_name_in(&dir, wp2, None, &s), "WP-2", "nothing runs it");
+        let owner = resume::owner_file_in(&dir, &alpha_wp1.repo, &alpha_wp1.key);
+        let hold = resume::take(&owner).unwrap().unwrap().taskman();
+        let name = session_name_in(&dir, wp2, None, &s);
+        assert!(name.ends_with("/WP-2"), "{name}");
+        drop(hold);
+        assert_eq!(session_name_in(&dir, wp2, None, &s), "WP-2");
     }
 
     /// A session put to sleep says so, whatever the stopped CLI's last hook wrote, and its name is
@@ -1708,11 +1723,12 @@ mod tests {
         let t = &s.tickets[0];
         let file = store::status_file_in(&dir, &t.repo, &t.key);
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        let ended = crate::hook::status_record("ended", Some("sid"), Some("alpha/WP-1"), "", 1);
+        let ended =
+            crate::hook::status_record(HookState::Ended, Some("sid"), Some("alpha/WP-1"), "", 1);
         std::fs::write(&file, ended.to_string()).unwrap();
         let state = session_state_in(&dir, t, &s).unwrap();
         assert_eq!(
-            (state_label(Some(&state)), state.name.as_deref()),
+            (state_label(Some(&state)), state.record.name.as_deref()),
             ("exited", Some("alpha/WP-1"))
         );
         std::fs::write(file.with_extension("asleep"), "").unwrap();
@@ -1816,10 +1832,13 @@ mod tests {
             pr,
             tracked: true,
             session: Some(SessionState {
-                state: "needs".into(),
-                message: "Claude is asking you a question".into(),
-                ts: util::now(),
-                name: None,
+                record: Record {
+                    state: HookState::Needs,
+                    message: "Claude is asking you a question".into(),
+                    ts: util::now(),
+                    ..Record::default()
+                },
+                asleep: false,
             }),
             name: "ENG-52".into(),
             stack: None,
@@ -2102,10 +2121,8 @@ mod tests {
                     session: "acme-web-review".into(),
                     role: Some("Review PRs against their tickets".into()),
                     state: Some(SessionState {
-                        state: "done".into(),
-                        message: String::new(),
-                        ts: 0,
-                        name: None,
+                        record: Record { state: HookState::Done, ..Record::default() },
+                        asleep: false,
                     }),
                 },
             ],
@@ -2206,8 +2223,10 @@ mod tests {
         let mut ops =
             report(Err(no_account.into()), Err("gh isn't logged in; run gh auth login".into()));
         ops.key = "OPS-3".into();
-        ops.session =
-            Some(SessionState { state: "done".into(), message: String::new(), ts: 0, name: None });
+        ops.session = Some(SessionState {
+            record: Record { state: HookState::Done, ..Record::default() },
+            asleep: false,
+        });
         let overview = |project: &str, tickets, tracker_error: Option<&str>| Overview {
             project: project.into(),
             repo: format!("/src/{project}").into(),

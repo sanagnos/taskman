@@ -4,6 +4,12 @@ What changed in each release; a release's notes on GitHub are its section here. 
 
 ## Unreleased
 
+- `taskman --licenses` and the release archives' `LICENSE-THIRD-PARTY` list the crates without their versions.
+- A click on a project's header, or a drag of it, makes it the current project: `ctrl+a n` and `ctrl+a ,` open on it until you select a card, instead of on the selected card's project. An empty project's header counts too, so the Add form can open on a project with no cards.
+- taskman installs an update in the background only when `gh` verified its attestation, and only within the same minor version. Without `gh`, logged out, or with `TASKMAN_INSECURE_SKIP_ATTESTATION` set, the sidebar says `↑ vX.Y.Z: run taskman update` and Settings → Updates says why. A new minor version, such as 0.2.0, is a breaking release: the sidebar says `↑ v0.2.0: breaking changes`, Settings links its notes, and `taskman update` installs it. To go back to an earlier release, set Settings → Updates to "Only notify" and run the install script with `TASKMAN_VERSION=vX.Y.Z` (see the guide).
+- The install script, `taskman update` and the background updates accept an attestation only from the release workflow run from a version tag or `main`, on a GitHub-hosted runner, and `taskman update` hands gh the archive in a new folder only you can open.
+- `taskman status` no longer avoids the name of a session that was killed before it could say it ended, when it says what a session that isn't running would be called: like `taskman resume`, it counts a session as running while taskman or `taskman resume` runs it.
+
 ## 0.1.10 - 2026-10-18
 
 - Typing in the Add form (`ctrl+a n`) while it's on Type, or on another choice, now goes to the Ticket or Name field instead of being dropped: a number, a key of the project or a link switches Type to Ticket, so `ctrl+a n` then `52` adds ENG-52, and anything else names an agent. A paste lands there too.

@@ -16,7 +16,7 @@ On macOS or Linux, including Windows with WSL:
 curl -fsSL https://raw.githubusercontent.com/sanagnos/taskman/main/scripts/install.sh | bash
 ```
 
-It installs the latest release into `~/.local/bin`, and taskman keeps itself up to date from then on; the install and every update are checked against the release's `SHA256SUMS` and, when the GitHub CLI (`gh`) is installed and logged in, against the release's attestation, which every release from v0.1.0 on has. To update only when you choose, set Settings → Updates to "Only notify", or set `TASKMAN_NO_AUTOUPDATE=1` to stop checking too ([Updates](docs/guide.md#updates)). Or build it with Rust 1.88 or newer:
+It installs the latest release into `~/.local/bin`, and taskman keeps itself up to date from then on; the install and every update are checked against the release's `SHA256SUMS` and, when the GitHub CLI (`gh`) is installed and logged in, against the release's attestation, which every release from v0.1.0 on has. taskman installs an update in the background only when `gh` verified that attestation and it isn't a breaking release (a new minor version, such as 0.2.0); otherwise the sidebar says to run `taskman update`. To update only when you choose, set Settings → Updates to "Only notify", or set `TASKMAN_NO_AUTOUPDATE=1` to stop checking too ([Updates](docs/guide.md#updates)). Or build it with Rust 1.88 or newer:
 
 ```bash
 cargo install --locked --git https://github.com/sanagnos/taskman
