@@ -33,7 +33,7 @@ pub struct Field {
     pub hidden: bool,
     /// Lines listed under the hint, each cut to fit: the Add form's open issues.
     pub list: List,
-    /// A secret being typed (a token for the keychain): drawn as dots, never as itself.
+    /// A secret being typed (a token for the keychain or a file): drawn as dots, never as itself.
     pub masked: bool,
     /// Lines under the hint that link somewhere: the text before the link, and the link's text
     /// and URL.
@@ -188,8 +188,8 @@ pub struct Form {
     /// What that check found, kept until a value changes: "Enter again to save anyway" uses it
     /// rather than checking again.
     pub(super) checked: Option<Check>,
-    /// The source of a token this form put in the keychain and cleared from its Token field, so
-    /// the form can save without it being pasted again.
+    /// The source of a token this form put in the keychain or a file and cleared from its Token
+    /// field, so the form can save without it being pasted again.
     pub(super) stored: Option<String>,
     /// A project form's list of what its account can see, to pick the ticket prefix from.
     pub(super) choices: Option<Box<Choices>>,
@@ -277,8 +277,8 @@ pub(super) enum Check {
     /// A new account's check for a project form, with a Jira prefix typed by hand: who the token
     /// belongs to, and whether that project exists.
     Signed(Result<(String, String), String>, Result<bool, String>),
-    /// A token was put in the keychain, and not tested (a Jira account with no site); or why it
-    /// couldn't be, which no "save anyway" gets past.
+    /// A token was put in the keychain or a file, and not tested (a Jira account with no site); or
+    /// why it couldn't be, which no "save anyway" gets past.
     Stored(Result<(), String>),
 }
 

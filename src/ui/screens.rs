@@ -562,7 +562,7 @@ fn first_run_2_listing_the_projects() {
     assert_snapshot!(draw(&mut app, 120, 40));
 }
 
-/// Where there's no keychain (WSL, a server): an empty source to fill, and the guide's ways.
+/// Where there's no keychain (WSL, a server): the token goes in a file only the user can read.
 #[test]
 fn first_run_2_without_a_keychain() {
     let mut app = first_run(false);

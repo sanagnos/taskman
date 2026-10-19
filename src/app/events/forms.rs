@@ -425,6 +425,7 @@ fn the_account_form_never_saves_a_token_it_has_no_site_to_test() {
     app.open_settings(crate::app::SettingsItem::NewAccount, true);
     assert_eq!(field(&app, "Provider"), "Jira");
     fill(&mut app, "Email", "dana@example.com");
+    choose(&mut app, "Keep in", "Variable or command");
     fill(&mut app, "Read from", "jira-raw-secret");
     submit(&mut app);
     assert_eq!(settings_form(&app).error.as_deref(), Some(RAW_TOKEN_HINT));
@@ -445,6 +446,7 @@ fn a_shell_variable_saves_as_env() {
     let mut app = acme_app();
     app.open_settings(crate::app::SettingsItem::NewAccount, true);
     fill(&mut app, "Email", "dana@example.com");
+    choose(&mut app, "Keep in", "Variable or command");
     fill(&mut app, "Read from", " $JIRA_API_TOKEN ");
     submit(&mut app);
     assert_eq!(toast(&app), Some("Saved the Jira account (add a site to test it)"));
@@ -454,6 +456,7 @@ fn a_shell_variable_saves_as_env() {
     // Anything but a plain name is refused, not run, and the form keeps it as typed.
     app.open_settings(crate::app::SettingsItem::NewAccount, true);
     fill(&mut app, "Email", "dana@example.com");
+    choose(&mut app, "Keep in", "Variable or command");
     fill(&mut app, "Read from", "$(printf jira-raw-secret)");
     submit(&mut app);
     assert_eq!(settings_form(&app).error.as_deref(), Some(RAW_TOKEN_HINT));
@@ -469,6 +472,7 @@ fn a_shell_variable_shows_as_env_in_the_form() {
     let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
     fill(&mut app, "Site", &closed.to_string());
     fill(&mut app, "Email", "dana@example.com");
+    choose(&mut app, "Keep in", "Variable or command");
     fill(&mut app, "Read from", "${JIRA_API_TOKEN}");
     submit(&mut app);
     assert!(settings_form(&app).error.is_some());

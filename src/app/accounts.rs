@@ -1,29 +1,47 @@
 //! Accounts: the fields a new one is filled in with (in Settings' account forms, and inline in the
-//! project forms), putting a pasted token in the keychain, testing the connection before saving,
-//! and deleting one no project uses.
+//! project forms), putting a pasted token in the keychain or, where there's none, a private file,
+//! testing the connection before saving, and deleting one no project uses.
 
 use super::forms::Check;
 use super::sync::Msg;
 use super::{App, Field, Form, FormKind, SettingsItem};
 use crate::keychain::{self, Keychain};
 use crate::store::{self, Account, Config, Provider};
-use crate::tracker;
+use crate::{token_file, tracker};
 
-/// The Keep in choices: the OS keychain, or a source the user gives.
+/// The Keep in choices: the OS keychain, or where there's none a private file (`token_file`); or a
+/// source the user gives.
 const KEYCHAIN: &str = "Keychain";
+const FILE: &str = "File";
 const ELSEWHERE: &str = "Variable or command";
 
-/// The note atop a new account's form, and under a project form's Account when it adds one.
-pub(super) const NOT_SAVED: &str =
-    "taskman never saves your token in its files, only where to read it from.";
+/// The note atop a new account's form, and under a project form's Account when it adds one: with
+/// a keychain, and without one, where File puts a token in a file of taskman's.
+pub(super) fn not_saved(keychain: Option<&Keychain>) -> &'static str {
+    match keychain {
+        Some(_) => "taskman never saves your token in its files, only where to read it from.",
+        None => "taskman never saves your token in config.json, only where to read it from.",
+    }
+}
 
 /// The guide's ways of keeping a token, for a form with no keychain or one that failed.
 const GUIDE: &str =
     concat!(env!("CARGO_PKG_REPOSITORY"), "/blob/main/docs/guide.md#storing-a-token");
 
-/// Whether the account form keeps its token in the keychain: Keep in is shown and says so.
-pub(super) fn keeps_in_keychain(form: &Form) -> bool {
-    form.field("Keep in").is_some_and(|f| !f.hidden && f.value == KEYCHAIN)
+/// Whether the account form takes a pasted token, for the keychain or a file: Keep in is shown
+/// and says so.
+pub(super) fn takes_pasted(form: &Form) -> bool {
+    form.field("Keep in").is_some_and(|f| !f.hidden && [KEYCHAIN, FILE].contains(&&*f.value))
+}
+
+/// Whether the account form puts a pasted token in a file rather than the keychain.
+fn in_file(form: &Form) -> bool {
+    form.value("Keep in") == FILE
+}
+
+/// The keychain item or token file `source` reads, in the place the form picked (`file`).
+fn pasted_name(source: &str, file: bool) -> Option<&str> {
+    if file { token_file::name_of(source) } else { keychain::name_of(source) }
 }
 
 /// The provider an account form is for.
@@ -66,10 +84,11 @@ pub(super) fn account_defaults(
     let is_default = source.is_empty()
         || source == format!("env:{}", Provider::Jira.token_var())
         || source.starts_with(&format!("env:{}", Provider::Linear.token_var()));
-    // Without a keychain the field starts empty, so a value there was typed.
     let picked = form.field("Keep in").is_some_and(|f| !f.hidden && f.value == ELSEWHERE);
+    // A project form comes here on every key: a field cleared to type in stays clear.
+    let typing = form.fields.get(form.focus).is_some_and(|f| f.label == "Read from");
     let var = default_var(provider, site, config);
-    if is_default && picked {
+    if is_default && picked && !typing {
         form.set("Read from", format!("env:{var}"));
     }
     account_rows(form, provider, site, None, keychain);
@@ -100,11 +119,23 @@ pub(super) fn account_rows(
     account: Option<&Account>,
     keychain: Option<&Keychain>,
 ) {
+    // A form opened before the keychain was found offers it from then on.
+    if let Some(f) = form.field_mut("Keep in")
+        && keychain.is_some()
+        && f.choices[0] == FILE
+    {
+        f.choices[0] = KEYCHAIN.into();
+        if f.value == FILE {
+            f.value = KEYCHAIN.into();
+        }
+    }
     // A project form's site field is its own, with its own hint.
     let account_form = matches!(form.kind, FormKind::Account | FormKind::AccountSettings(_));
     let label = keychain.map_or_else(|| Keychain::os().label(), Keychain::label);
-    let keychain = keeps_in_keychain(form);
-    let saved_there = account.is_some_and(|a| keychain::name_of(&a.token).is_some());
+    let pasted = takes_pasted(form);
+    let file = in_file(form);
+    let saved_there = account.is_some_and(|a| pasted_name(&a.token, file).is_some());
+    let files = token_file::shown_dir();
     // The URL shown whole, for terminals that don't open links but spot URLs (see `form_lines`).
     let page = provider.token_page(site).map(|url| ("Get a token:".to_string(), url.clone(), url));
     let guide = ("Other ways: ".to_string(), "Storing a token".to_string(), GUIDE.to_string());
@@ -121,20 +152,28 @@ pub(super) fn account_rows(
                 f.hidden = !provider.signs_in_with_email();
                 f.hint = "the email you sign in to Atlassian with".into();
             }
+            "Keep in" if f.choices.iter().any(|c| c == FILE) => {
+                f.hint = "←/→: a file only you can read, or a variable or command of yours".into();
+            }
             "Keep in" => {
                 f.hint = format!("←/→: your {label}, or a variable or command of yours");
             }
             "Token" => {
-                f.hidden = !keychain;
-                f.hint = if saved_there {
-                    format!("in your {label}; paste a new one to replace it")
-                } else {
-                    format!("paste it here; taskman puts it in your {label}")
+                f.hidden = !pasted;
+                f.hint = match (file, saved_there) {
+                    (true, true) => format!("in a file in {files}; paste a new one to replace it"),
+                    (true, false) => {
+                        format!(
+                            "paste it here; taskman saves it in a file only you can read, in {files}"
+                        )
+                    }
+                    (false, true) => format!("in your {label}; paste a new one to replace it"),
+                    (false, false) => format!("paste it here; taskman puts it in your {label}"),
                 };
                 f.links = page.clone().into_iter().collect();
             }
             "Read from" => {
-                f.hidden = keychain;
+                f.hidden = pasted;
                 f.hint = read_from_hint(var);
                 f.links = page.clone().into_iter().chain([guide.clone()]).collect();
             }
@@ -185,16 +224,11 @@ impl App {
         }
     }
 
-    /// The Keep in field: shown where there's a keychain, or the account's token is in one.
+    /// The Keep in field, its first choice the default: the keychain where there's one, or the
+    /// account's token is in one; else a private file.
     pub(super) fn keep_in(&self, in_keychain: bool) -> Field {
-        let mut f = Field::choice(
-            "Keep in",
-            vec![KEYCHAIN.into(), ELSEWHERE.into()],
-            if in_keychain || self.keychain.is_some() { KEYCHAIN } else { ELSEWHERE },
-            "",
-        );
-        f.hidden = self.keychain.is_none() && !in_keychain;
-        f
+        let first = if in_keychain || self.keychain.is_some() { KEYCHAIN } else { FILE };
+        Field::choice("Keep in", vec![first.into(), ELSEWHERE.into()], first, "")
     }
 
     /// A new account's own fields: Email, Keep in, Token and Read from, shown as its provider
@@ -224,10 +258,10 @@ impl App {
         ];
         fields.extend(self.new_account_fields());
         let mut form = Form::new(FormKind::Account, "New account", fields);
-        form.note = Some(NOT_SAVED.into());
+        form.note = Some(not_saved(self.keychain.as_ref()).into());
         let site = form.value("Site");
         account_defaults(&mut form, provider, &site, &self.config, self.keychain.as_ref());
-        let token = if keeps_in_keychain(&form) { "Token" } else { "Read from" };
+        let token = if takes_pasted(&form) { "Token" } else { "Read from" };
         form.focus_on(if form.value("Site").is_empty() {
             "Site"
         } else if provider == Provider::Jira && form.value("Email").is_empty() {
@@ -242,10 +276,12 @@ impl App {
         let a = &self.config.accounts[i];
         let site = a.provider.site_for_input(&a.site);
         let in_keychain = keychain::name_of(&a.token).is_some();
+        let in_file = token_file::name_of(&a.token).is_some();
         let mut keep_in = self.keep_in(in_keychain);
-        if !in_keychain {
+        if !in_keychain && !(in_file && keep_in.choices.iter().any(|c| c == FILE)) {
             keep_in.value = ELSEWHERE.into();
         }
+        let pasted = keep_in.value != ELSEWHERE;
         let fields = vec![
             Field::choice(
                 "Provider",
@@ -257,7 +293,7 @@ impl App {
             Field::text("Email", a.email.clone(), ""),
             keep_in,
             Field { masked: true, ..Field::text("Token", "", "") },
-            Field::text("Read from", if in_keychain { "" } else { a.token.as_str() }, ""),
+            Field::text("Read from", if pasted { "" } else { a.token.as_str() }, ""),
         ];
         let mut form = Form::new(FormKind::AccountSettings(i), "Account", fields);
         let site = form.value("Site");
@@ -322,8 +358,8 @@ impl App {
     }
 
     /// The account a form's fields describe for `provider` and `site` (the Jira site or Linear
-    /// workspace typed), its id left empty; and the token pasted to put in the keychain first, as
-    /// its item's name and the token. `existing` is the account being edited.
+    /// workspace typed), its id left empty; and the token pasted to put in the keychain or a file
+    /// first, as its item's or file's name and the token. `existing` is the account being edited.
     pub(super) fn draft_account(
         &self,
         form: &mut Form,
@@ -339,14 +375,15 @@ impl App {
         if provider.signs_in_with_email() && email.is_empty() {
             return Err(format!("Enter the email you sign in to {} with", provider.label()));
         }
-        // The token to put in the keychain first, if one was pasted: its item and value.
+        // The token to put in the keychain or a file first, if one was pasted: its name and value.
         let mut write = None;
-        let token = if keeps_in_keychain(form) {
-            let saved = existing.and_then(|i| keychain::name_of(&self.config.accounts[i].token));
+        let file = in_file(form);
+        let token = if takes_pasted(form) {
+            let saved = existing.and_then(|i| pasted_name(&self.config.accounts[i].token, file));
             let pasted = form.value("Token");
             if !pasted.is_empty() {
                 keychain::check_token(&pasted)?;
-                if self.keychain.is_none() {
+                if !file && self.keychain.is_none() {
                     return Err(
                         "No keychain was found: pick Variable or command under Keep in".into()
                     );
@@ -355,17 +392,22 @@ impl App {
                 let id = existing.map(|i| self.config.accounts[i].id.clone());
                 let name = saved
                     .map(String::from)
-                    .or(id.filter(|id| keychain::is_name(id)))
+                    .or(id.filter(|id| token_file::is_name(id)))
                     .unwrap_or_else(|| self.config.next_id(provider));
-                let source = keychain::source(&name);
+                let source = if file { token_file::source(&name) } else { keychain::source(&name) };
                 write = Some((name, pasted));
                 source
             } else if let Some(source) = form
                 .stored
                 .clone()
                 // Put there before the provider changed, under the other provider's id.
-                .filter(|s| s.starts_with(&keychain::source(&provider.label().to_lowercase())))
-                .or_else(|| saved.map(keychain::source))
+                .filter(|s| {
+                    pasted_name(s, file)
+                        .is_some_and(|n| n.starts_with(&provider.label().to_lowercase()))
+                })
+                .or_else(|| {
+                    saved.map(|n| if file { token_file::source(n) } else { keychain::source(n) })
+                })
             {
                 source
             } else {
@@ -392,9 +434,10 @@ impl App {
     }
 
     /// Checks `account` in the background for `form`: puts a pasted token (`write`) in the
-    /// keychain first, then, if `tested`, reads the token as the clients will and tests it against
-    /// `site` (Jira's; Linear's key knows its workspace), and with `project` checks that Jira
-    /// project exists too. The clients use the token it read rather than reading it again.
+    /// keychain or its file (as the account's source says) first, then, if `tested`, reads the
+    /// token as the clients will and tests it against `site` (Jira's; Linear's key knows its
+    /// workspace), and with `project` checks that Jira project exists too. The clients use the
+    /// token it read rather than reading it again.
     pub(super) fn check_account(
         &mut self,
         form: &mut Form,
@@ -406,9 +449,15 @@ impl App {
     ) {
         let (a, site) = (account.clone(), site.unwrap_or_default());
         let k = self.keychain.clone().unwrap_or_else(Keychain::os);
+        // Taken here, as a unit test's background thread has a scratch folder of its own.
+        let files = token_file::name_of(&a.token).map(|_| token_file::dir());
         self.start_check(form, move |tx| {
+            let store = |name: &str, token: &str| match &files {
+                Some(dir) => token_file::store_in(dir, name, token),
+                None => k.store(name, token),
+            };
             if let Some((name, token)) = write
-                && let Err(e) = k.store(&name, &token)
+                && let Err(e) = store(&name, &token)
             {
                 return Check::Stored(Err(e));
             }
@@ -434,8 +483,8 @@ impl App {
         });
     }
 
-    /// After a check that got past the keychain: a token it put there is out of the form, which
-    /// saves without it.
+    /// After a check that got past the keychain or file: a token it put there is out of the form,
+    /// which saves without it.
     pub(super) fn stored(&self, form: &mut Form, account: &Account, wrote: bool) {
         if wrote {
             form.set("Token", "");
@@ -453,11 +502,12 @@ impl App {
         site: Option<&str>,
         verdict: Result<(String, String), String>,
     ) -> Result<String, String> {
-        // A variable that isn't set: the keychain is the way that needs no restart.
-        let offer = if account.token.starts_with("env:") && self.keychain.is_some() {
-            " Or pick Keychain under Keep in and paste the token there."
-        } else {
-            ""
+        // A variable that isn't set: the keychain, or else a file, is the way that needs no
+        // restart.
+        let offer = match &self.keychain {
+            _ if !account.token.starts_with("env:") => "",
+            Some(_) => " Or pick Keychain under Keep in and paste the token there.",
+            None => " Or pick File under Keep in and paste the token there.",
         };
         // A Linear key must belong to the workspace entered.
         let problem = match &verdict {
@@ -529,7 +579,7 @@ impl App {
     }
 }
 
-/// A keychain that couldn't take the token: no "save anyway" gets past it.
+/// A keychain or file that couldn't take the token: no "save anyway" gets past it.
 pub(super) fn stored_error(e: &str) -> String {
     format!("{e}. Fix it, or pick Variable or command under Keep in.")
 }

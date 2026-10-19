@@ -29,6 +29,7 @@ mod status_file;
 mod store;
 mod term;
 mod theme;
+mod token_file;
 mod tracker;
 mod ui;
 mod untrusted;

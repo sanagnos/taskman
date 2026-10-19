@@ -11,6 +11,7 @@ What changed in each release; a release's notes on GitHub are its section here. 
 - On an agent, `ctrl+a j`, `c` and `g` say what they change for tickets, or, in a project with no board to show, that agents have no panels, instead of silently flipping a setting; `p` and `m` say agents have no PR or comments instead of calling the agent a ticket.
 - The project board no longer shows a ticket's branch twice when the project has no GitHub, and Project settings' Branch hint reads "Local files' own".
 - The Welcome screen and the messages in a session's pane keep a margin, so wrapped lines don't run into the pane's edges.
+- Where there's no keychain (WSL, a server), the account form's Keep in starts on File: paste the token and taskman writes it to a file only you can read, `~/.config/taskman/tokens/<account id>`, and saves only the command that reads it. No variable to set and no restart. Where there's a keychain, nothing changes. The guide also shows how to add a token variable to your startup file without the token showing on screen or in your shell history.
 
 ## 0.1.13 - 2026-10-19
 

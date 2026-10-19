@@ -23,7 +23,7 @@ fn adds_a_jira_account_and_saves_where_its_token_comes_from_not_the_token() {
     prefix(&mut app, KeyCode::Char('A'));
     assert_eq!(field(&app, "Provider"), "Jira");
     // Nothing that reads as done already.
-    assert_eq!(field(&app, "Read from"), "");
+    assert_eq!(field(&app, "Token"), "");
     fill(&mut app, "Email", "");
     app.on_key(key(KeyCode::Enter));
     assert_eq!(form_error(&app).as_deref(), Some("Enter the email you sign in to Jira with"));
@@ -32,6 +32,7 @@ fn adds_a_jira_account_and_saves_where_its_token_comes_from_not_the_token() {
     let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
     fill(&mut app, "Site", &closed.to_string());
     fill(&mut app, "Email", "you@example.com");
+    choose(&mut app, "Keep in", "Variable or command");
     fill(&mut app, "Read from", "cmd:printf %s-%s jira mock");
     app.on_key(key(KeyCode::Enter));
     while matches!(&app.mode, Mode::Settings(s) if s.form.checking.is_some()) {
@@ -66,13 +67,14 @@ fn adds_a_linear_account_once_its_key_is_the_workspaces() {
     app.on_key(key(KeyCode::Up));
     app.on_key(key(KeyCode::Right));
     assert_eq!(field(&app, "Provider"), "Linear");
-    assert_eq!(field(&app, "Read from"), "");
+    assert_eq!(field(&app, "Token"), "");
     app.on_key(key(KeyCode::Enter));
     assert_eq!(
         form_error(&app).as_deref(),
         Some("Enter the Linear workspace (the part after linear.app/)")
     );
     fill(&mut app, "Site", "globex");
+    choose(&mut app, "Keep in", "Variable or command");
     fill(&mut app, "Read from", "env:TASKMAN_TEST_UNSET_KEY");
 
     // The key is another workspace's: said, and not saved until a second Enter.
@@ -82,7 +84,7 @@ fn adds_a_linear_account_once_its_key_is_the_workspaces() {
     assert_eq!(
         form_error(&app).as_deref(),
         Some(
-            "This key belongs to the workspace initech, not globex. Fix it, or press Enter again to save anyway."
+            "This key belongs to the workspace initech, not globex. Or pick File under Keep in and paste the token there. Fix it, or press Enter again to save anyway."
         )
     );
     assert_eq!(store::load_config().map(|c| c.accounts.len()).unwrap_or(0), 0);
@@ -104,6 +106,7 @@ fn adds_a_linear_account_once_its_key_is_the_workspaces() {
     app.on_key(key(KeyCode::Up));
     app.on_key(key(KeyCode::Right));
     fill(&mut app, "Site", "globex");
+    choose(&mut app, "Keep in", "Variable or command");
     fill(&mut app, "Read from", "env:TASKMAN_TEST_UNSET_KEY_2");
     app.on_key(key(KeyCode::Enter));
     answer_check(&mut app, Ok(("Dana Reyes", "globex")));
@@ -142,7 +145,7 @@ fn a_second_linear_workspace_gets_a_key_of_its_own() {
 }
 
 #[test]
-fn without_a_keychain_the_variable_is_only_suggested() {
+fn without_a_keychain_a_file_comes_first_then_a_variable() {
     let mut app = acme_app();
     app.config.accounts[0].token = "env:LINEAR_API_KEY".into();
     prefix(&mut app, KeyCode::Char('A'));
@@ -150,9 +153,30 @@ fn without_a_keychain_the_variable_is_only_suggested() {
     app.on_key(key(KeyCode::Right));
     fill(&mut app, "Site", "globex");
     let form = settings_form(&app);
-    assert!(form.field("Keep in").unwrap().hidden && form.field("Token").unwrap().hidden);
-    let read_from = form.field("Read from").unwrap();
-    assert_eq!(read_from.value, "");
+    assert_eq!(
+        form.note.as_deref(),
+        Some("taskman never saves your token in config.json, only where to read it from.")
+    );
+    let keep_in = form.field("Keep in").unwrap();
+    assert!(!keep_in.hidden);
+    assert_eq!(
+        (keep_in.value.as_str(), &keep_in.choices[..]),
+        ("File", &["File".to_string(), "Variable or command".into()][..])
+    );
+    assert_eq!(keep_in.hint, "←/→: a file only you can read, or a variable or command of yours");
+    let token = form.field("Token").unwrap();
+    assert!(token.masked && !token.hidden && form.field("Read from").unwrap().hidden);
+    assert_eq!(
+        token.hint,
+        format!(
+            "paste it here; taskman saves it in a file only you can read, in {}",
+            crate::token_file::shown_dir()
+        )
+    );
+    // Picking a variable suggests one of its own.
+    choose(&mut app, "Keep in", "Variable or command");
+    let read_from = settings_form(&app).field("Read from").unwrap();
+    assert_eq!(read_from.value, "env:LINEAR_API_KEY_GLOBEX");
     assert!(read_from.hint.starts_with("env:LINEAR_API_KEY_GLOBEX reads"), "{}", read_from.hint);
     // Where to get a key, and the guide's other ways.
     let links: Vec<&str> = read_from.links.iter().map(|(_, l, _)| l.as_str()).collect();
@@ -226,6 +250,92 @@ fn saves_a_pasted_token_to_the_keychain_and_only_its_name_to_config() {
     assert_eq!(k.read("jira-1"), Ok("ATATT-mock-2".into()));
     assert_eq!(store::load_config().unwrap().accounts[1].token, "keychain:jira-1");
     assert_eq!(app.config.accounts.len(), 2);
+}
+
+#[test]
+fn without_a_keychain_saves_a_pasted_token_to_a_private_file_and_the_command_to_config() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut app = acme_app();
+    prefix(&mut app, KeyCode::Char('A'));
+    assert_eq!(field(&app, "Keep in"), "File");
+    fill(&mut app, "Site", &closed_site());
+    fill(&mut app, "Email", "dana@example.com");
+
+    // Not a token: refused before anything is written.
+    fill(&mut app, "Token", "two words");
+    submit(&mut app);
+    let error = form_error(&app).unwrap();
+    assert!(error.starts_with("That doesn't look like a token") && !error.contains("two"));
+    assert!(!crate::token_file::dir().exists());
+
+    // Saved to the file and tested, reading it as the clients will; the test fails, and the form
+    // forgets the token.
+    fill(&mut app, "Token", "ATATT-mock-1");
+    submit(&mut app);
+    let error = form_error(&app).unwrap();
+    assert!(error.ends_with(". Fix it, or press Enter again to save anyway."), "{error}");
+    assert!(!error.contains("Or pick"), "a file needs no other way: {error}");
+    assert_eq!(field(&app, "Token"), "");
+    assert!(store::load_config().unwrap().accounts.is_empty(), "saved before the second Enter");
+    let path = crate::token_file::path("jira-1");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "ATATT-mock-1\n");
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    submit(&mut app);
+    let a = &store::load_config().unwrap().accounts[1];
+    assert_eq!(
+        (a.id.as_str(), a.token.as_str()),
+        ("jira-1", crate::token_file::source("jira-1").as_str())
+    );
+    assert!(a.token.starts_with("cmd:cat '"), "{}", a.token);
+    assert!(!config_file().contains("ATATT"));
+
+    // Its settings say where the token is; a new one replaces it, in the same file.
+    let form = settings_form(&app);
+    assert_eq!(field(&app, "Keep in"), "File");
+    assert!(form.field("Read from").unwrap().hidden);
+    assert_eq!(
+        form.field("Token").unwrap().hint,
+        "in a file in ~/.config/taskman/tokens/; paste a new one to replace it"
+    );
+    app.on_key(key(KeyCode::Enter));
+    fill(&mut app, "Token", "ATATT-mock-2");
+    submit(&mut app);
+    submit(&mut app);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "ATATT-mock-2\n");
+    assert_eq!(
+        store::load_config().unwrap().accounts[1].token,
+        crate::token_file::source("jira-1")
+    );
+    assert_eq!(app.config.accounts.len(), 2);
+}
+
+#[test]
+fn with_a_keychain_no_file_is_offered() {
+    let mut app = acme_app();
+    with_keychain(&mut app);
+    prefix(&mut app, KeyCode::Char('A'));
+    let keep_in = settings_form(&app).field("Keep in").unwrap();
+    assert_eq!(keep_in.choices, ["Keychain", "Variable or command"]);
+    assert_eq!(keep_in.value, "Keychain");
+}
+
+#[test]
+fn an_unset_variable_offers_a_file_where_there_is_no_keychain() {
+    let mut app = acme_app();
+    prefix(&mut app, KeyCode::Char('A'));
+    fill(&mut app, "Site", &closed_site());
+    fill(&mut app, "Email", "dana@example.com");
+    choose(&mut app, "Keep in", "Variable or command");
+    fill(&mut app, "Read from", "env:TASKMAN_TEST_UNSET_TOKEN");
+    submit(&mut app);
+    let error = form_error(&app).unwrap();
+    assert!(
+        error.starts_with("TASKMAN_TEST_UNSET_TOKEN isn't set in the shell taskman started from")
+            && error.ends_with(
+                ". Or pick File under Keep in and paste the token there. Fix it, or press Enter again to save anyway."
+            ),
+        "{error}"
+    );
 }
 
 #[test]

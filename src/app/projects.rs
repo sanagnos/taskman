@@ -4,7 +4,7 @@
 //! account's fields are part of them, and once the account can sign in, the form lists what it can
 //! see to pick the ticket prefix from (`Choices`).
 
-use super::accounts::{NOT_SAVED, account_defaults, keeps_in_keychain, stored_error};
+use super::accounts::{account_defaults, not_saved, stored_error, takes_pasted};
 use super::add_form::{NO_WORKTREE, example_key};
 use super::forms::{Check, List};
 use super::poll::remove_status_files;
@@ -21,7 +21,7 @@ const NEW_ACCOUNT: &str = "+ new account";
 
 /// The fields a sign-in is typed in: the list waits until focus leaves them, so it isn't asked
 /// for on every key.
-const SIGN_IN_FIELDS: [&str; 5] = ["Site", "Workspace", "Email", "Token", "Read from"];
+const SIGN_IN_FIELDS: [&str; 6] = ["Site", "Workspace", "Email", "Keep in", "Token", "Read from"];
 
 /// Choices listed under the Project or Team field while it's focused.
 const CHOICES_SHOWN: usize = 5;
@@ -98,7 +98,7 @@ pub(super) fn show_project_rows(
             "Site" | "Workspace" => site_field != Some(f.label),
             "Account" => !account,
             "Email" | "Token" | "Read from" => !new,
-            "Keep in" => !new || keychain.is_none(),
+            "Keep in" => !new,
             "Tickets folder" => !board,
             "Project" | "Team" | "Ticket prefix" => prefix_field != Some(f.label),
             "New tickets" | "Branch" | "Folder" => !(tracker && git),
@@ -119,8 +119,10 @@ pub(super) fn show_project_rows(
                 // Hidden unless it's typed.
                 f.hint = provider.unwrap_or(Provider::Local).prefix_hint().into();
             }
-            "Account" if new && saved => f.hint = format!("{NOT_SAVED} ←/→ for a saved account."),
-            "Account" if new => f.hint = NOT_SAVED.into(),
+            "Account" if new && saved => {
+                f.hint = format!("{} ←/→ for a saved account.", not_saved(keychain));
+            }
+            "Account" if new => f.hint = not_saved(keychain).into(),
             "Account" => f.hint = "←/→ to pick, or + new account".into(),
             _ => {}
         }
@@ -569,7 +571,7 @@ impl App {
         if provider.signs_in_with_email() && email.is_empty() {
             return None;
         }
-        let (source, pasted) = if keeps_in_keychain(form) {
+        let (source, pasted) = if takes_pasted(form) {
             match form.value("Token") {
                 t if t.is_empty() => (form.stored.clone()?, None),
                 t => {
@@ -1017,11 +1019,18 @@ mod tests {
             shown(form)
         };
         assert_eq!(rows(&mut form, true, None), ["Tracker"]);
-        // Linear, with no saved account: its workspace, a new account's fields and the team.
+        // Linear, with no saved account: its workspace, a new account's fields and the team; with
+        // no keychain, the token goes in a file.
         form.set("Tracker", "Linear");
+        assert_eq!(form.value("Keep in"), "File");
         assert_eq!(
             rows(&mut form, true, None),
-            ["Tracker", "Workspace", "Account", "Read from", "Team", "Branch"]
+            ["Tracker", "Workspace", "Account", "Keep in", "Token", "Team", "Branch"]
+        );
+        form.set("Keep in", "Variable or command");
+        assert_eq!(
+            rows(&mut form, true, None),
+            ["Tracker", "Workspace", "Account", "Keep in", "Read from", "Team", "Branch"]
         );
         // Jira asks for an email too; with a keychain, the token goes there.
         form.set("Tracker", "Jira");
