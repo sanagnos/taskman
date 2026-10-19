@@ -7,6 +7,7 @@
 //! when taskman restarts. The TUI installs only a release with the same minor version (a new minor
 //! is a breaking one) whose attestation gh verified; anything else it only announces.
 
+use crate::cli::{Arg, Lexer};
 use crate::{proc, store, util};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -57,7 +58,38 @@ pub fn running() -> String {
     format!("v{}", env!("CARGO_PKG_VERSION"))
 }
 
-pub fn run(force: bool) -> Result<(), String> {
+const USAGE: &str = "Usage: taskman update [--force]
+
+Installs the latest release over this taskman, after checking it against the release's SHA256SUMS
+and, when gh is installed and logged in, its attestation. A running taskman keeps its version until
+you restart it. A copy installed with Homebrew or cargo, or built from source, is updated the way
+it was installed.
+
+  --force  install the latest release even when it's the one running, or over a copy cargo
+           installed";
+
+pub fn run(args: &[String]) -> i32 {
+    crate::cli::run("update", USAGE, args, |args| {
+        update(parse_args(args)?)?;
+        Ok(0)
+    })
+}
+
+/// Whether to `--force` the update.
+fn parse_args(args: &[String]) -> Result<bool, String> {
+    let mut force = false;
+    let mut lex = Lexer::new(args, USAGE);
+    while let Some(arg) = lex.next()? {
+        match arg {
+            Arg::Option("--force") => force = true,
+            Arg::Option(_) => return Err(lex.unknown()),
+            Arg::Word(w) => return Err(format!("unknown argument {w}\n\n{USAGE}")),
+        }
+    }
+    Ok(force)
+}
+
+fn update(force: bool) -> Result<(), String> {
     let current = running();
     let exe = std::env::current_exe()
         .map_err(|e| format!("can't tell where taskman is installed: {e}"))?;
@@ -1075,6 +1107,17 @@ fn work(mut state: State, check: bool, exe: Option<PathBuf>, failed: &[String]) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_arguments() {
+        let args = |a: &[&str]| parse_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(args(&[]), Ok(false));
+        assert_eq!(args(&["--force"]), Ok(true));
+        // A misspelt --force, or anything else, is refused rather than ignored.
+        assert_eq!(args(&["--frce"]), Err(format!("unknown option --frce\n\n{USAGE}")));
+        assert_eq!(args(&["now"]), Err(format!("unknown argument now\n\n{USAGE}")));
+        assert_eq!(args(&["--force=no"]), Err("--force takes no value".into()));
+    }
 
     #[test]
     fn compares_versions_numerically() {

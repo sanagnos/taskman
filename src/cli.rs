@@ -1,10 +1,91 @@
-//! What the CLI commands share: the project a command means, and the ticket key an input names
-//! in it (`taskman add`, `move`, `close`, `status` and `resume`).
+//! What the CLI commands share: how they run and read their arguments, the project a command
+//! means, and the ticket key an input names in it (`taskman add`, `move`, `close`, `status`,
+//! `resume` and `update`).
 
 use crate::app::parse_key;
 use crate::status::{self, Here, real};
 use crate::store::{self, Project, Saved, Ticket};
+use crate::untrusted;
 use std::path::Path;
+
+/// Runs `taskman NAME`: prints `usage` for `-h` or `--help` anywhere in `args`, before anything is
+/// read or fetched, else returns the exit code `command` gives, or prints its error and returns 1.
+pub(crate) fn run(
+    name: &str,
+    usage: &str,
+    args: &[String],
+    command: impl FnOnce(&[String]) -> Result<i32, String>,
+) -> i32 {
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        println!("{usage}");
+        return 0;
+    }
+    match command(args) {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("taskman {name}: {}", untrusted::clean(&e));
+            1
+        }
+    }
+}
+
+/// One of a command's arguments, as `Lexer` reads it.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Arg<'a> {
+    /// `--name`, or `--name` of `--name=value` with the value kept for `Lexer::value`, or `-x`.
+    Option(&'a str),
+    /// Anything else, as typed.
+    Word(&'a str),
+}
+
+/// Reads a command's arguments one at a time, so every command takes `--x`, `--x VALUE` and
+/// `--x=VALUE` and refuses an empty value, a value given to an option that takes none and an
+/// unknown option alike. Each command matches only the options it knows.
+pub(crate) struct Lexer<'a> {
+    args: std::slice::Iter<'a, String>,
+    usage: &'a str,
+    /// The option last read.
+    option: &'a str,
+    /// The value it came with after `=`, until `value` takes it.
+    inline: Option<&'a str>,
+}
+
+impl<'a> Lexer<'a> {
+    /// `usage` goes with the error for an unknown option.
+    pub fn new(args: &'a [String], usage: &'a str) -> Self {
+        Self { args: args.iter(), usage, option: "", inline: None }
+    }
+
+    pub fn next(&mut self) -> Result<Option<Arg<'a>>, String> {
+        // The command matched the option without asking for its value.
+        if self.inline.take().is_some() {
+            return Err(format!("{} takes no value", self.option));
+        }
+        let Some(arg) = self.args.next() else { return Ok(None) };
+        if !arg.starts_with('-') {
+            return Ok(Some(Arg::Word(arg)));
+        }
+        (self.option, self.inline) = match arg.split_once('=') {
+            Some((option, value)) if option.starts_with("--") => (option, Some(value)),
+            _ => (arg.as_str(), None),
+        };
+        Ok(Some(Arg::Option(self.option)))
+    }
+
+    /// The value of the option just read: after its `=`, else the next argument, whatever it is.
+    pub fn value(&mut self) -> Result<&'a str, String> {
+        self.inline
+            .take()
+            .or_else(|| self.args.next().map(String::as_str))
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| format!("{} needs a value", self.option))
+    }
+
+    /// The error for the option just read, which the command doesn't know.
+    pub fn unknown(&self) -> String {
+        format!("unknown option {}\n\n{}", self.option, self.usage)
+    }
+}
 
 /// The project a command means: the one named, else the session's (`me`), else the folder's, else
 /// the one whose ticket prefix the first key has.
@@ -199,6 +280,55 @@ pub(crate) mod tests {
         }
     }
 
+    /// A command with a flag (`--json`) and an option with a value (`--project`), as the
+    /// commands read theirs: options as `Err` or their value, words as typed.
+    fn lexed(args: &[&str]) -> Result<Vec<String>, String> {
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        let mut lex = Lexer::new(&args, "Usage: taskman test");
+        let mut out = vec![];
+        while let Some(arg) = lex.next()? {
+            out.push(match arg {
+                Arg::Option("--json") => "json".into(),
+                Arg::Option("--project") => format!("project {}", lex.value()?),
+                Arg::Option(_) => return Err(lex.unknown()),
+                Arg::Word(w) => w.into(),
+            });
+        }
+        Ok(out)
+    }
+
+    #[test]
+    fn lexes_options_values_and_words() {
+        let ok = |v: &[&str]| Ok(v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(lexed(&[]), ok(&[]));
+        assert_eq!(
+            lexed(&["ENG-52", "--json", "--project", "web", "53"]),
+            ok(&["ENG-52", "json", "project web", "53"])
+        );
+        // A value after `=` keeps any `=` of its own, and the next argument is the value whatever
+        // it looks like.
+        assert_eq!(lexed(&["--project=a=b"]), ok(&["project a=b"]));
+        assert_eq!(lexed(&["--project", "--json"]), ok(&["project --json"]));
+        // A link with a query string is a word.
+        assert_eq!(lexed(&["https://example.com/?a=b"]), ok(&["https://example.com/?a=b"]));
+        // An empty value, given either way, or none.
+        for args in [&["--project="][..], &["--project", ""], &["--project"], &["52", "--project"]]
+        {
+            assert_eq!(lexed(args), Err("--project needs a value".into()), "{args:?}");
+        }
+        assert_eq!(lexed(&["--json=no"]), Err("--json takes no value".into()));
+        assert_eq!(lexed(&["--json=", "52"]), Err("--json takes no value".into()));
+        // An unknown option is named without its value, and shown with the usage.
+        assert_eq!(lexed(&["--jsn"]), Err("unknown option --jsn\n\nUsage: taskman test".into()));
+        assert_eq!(
+            lexed(&["--frce=yes"]),
+            Err("unknown option --frce\n\nUsage: taskman test".into())
+        );
+        // A single dash is never split at `=`.
+        assert_eq!(lexed(&["-p=web"]), Err("unknown option -p=web\n\nUsage: taskman test".into()));
+        assert_eq!(lexed(&["-"]), Err("unknown option -\n\nUsage: taskman test".into()));
+    }
+
     #[test]
     fn resolves_numbers_keys_and_links() {
         let s = saved();
@@ -334,6 +464,62 @@ pub(crate) mod tests {
                  Gamma Site"
                 .into())
         );
+    }
+
+    mod lexer {
+        use super::lexed;
+        use proptest::prelude::*;
+
+        /// Words, options with and without `=`, empty values, and dashes alone.
+        fn arg() -> impl Strategy<Value = String> {
+            prop_oneof![
+                "[a-zA-Z0-9/:.?#=-]{0,8}",
+                "--(json|project|other)(=[a-z=-]{0,4})?",
+                Just("-".to_string()),
+                Just("--".to_string()),
+            ]
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(256))]
+
+            /// `--project=VALUE` and `--project VALUE` mean the same, wherever they come.
+            #[test]
+            fn a_value_after_equals_is_the_next_argument(
+                before in prop::collection::vec("[a-z0-9]{1,6}", 0..3),
+                after in prop::collection::vec("[a-z0-9]{1,6}", 0..3),
+                value in "\\PC{1,12}",
+            ) {
+                let joined = format!("--project={value}");
+                let (b, a) = (before.iter().map(String::as_str), after.iter().map(String::as_str));
+                let inline: Vec<&str> = b.clone().chain([joined.as_str()]).chain(a.clone()).collect();
+                let apart: Vec<&str> = b.chain(["--project", &value]).chain(a).collect();
+                prop_assert_eq!(lexed(&inline), lexed(&apart));
+                prop_assert!(lexed(&apart).is_ok());
+            }
+
+            /// Any arguments lex to the words in order, or to one of the lexer's errors.
+            #[test]
+            fn arguments_lex_or_say_why_not(args in prop::collection::vec(arg(), 0..8)) {
+                let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+                let words: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
+                match lexed(&refs) {
+                    Ok(out) => {
+                        // Each argument is read once: as an option, an option's value or a word.
+                        prop_assert!(out.len() <= args.len());
+                        if words.len() == args.len() {
+                            prop_assert_eq!(&out, &args);
+                        }
+                    }
+                    Err(e) => prop_assert!(
+                        e == "--project needs a value"
+                            || e == "--json takes no value"
+                            || e.starts_with("unknown option -"),
+                        "{e}"
+                    ),
+                }
+            }
+        }
     }
 
     mod names {

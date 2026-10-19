@@ -9,9 +9,9 @@
 //! holds the lock too (`Hold::share`): killing this command must not free a session still running.
 
 use crate::app::{self, parse_key};
+use crate::cli::{self, Arg, Lexer};
 use crate::status::{self, Here, Scope};
 use crate::store::{self, Saved, Ticket};
-use crate::{cli, untrusted};
 use std::io::{Read, Seek, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
@@ -271,17 +271,7 @@ pub fn quote(s: &str) -> String {
 }
 
 pub fn run(args: &[String]) -> i32 {
-    if args.iter().any(|a| a == "-h" || a == "--help") {
-        println!("{}", usage());
-        return 0;
-    }
-    match resume(args) {
-        Ok(code) => code,
-        Err(e) => {
-            eprintln!("taskman resume: {}", untrusted::clean(&e));
-            1
-        }
-    }
+    cli::run("resume", &usage(), args, resume)
 }
 
 /// Which kind of session the name means, from `--ticket` or `--agent`.
@@ -300,32 +290,25 @@ struct Args {
 
 fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut a = Args::default();
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        match arg.split_once('=') {
-            Some(("--project", v)) => a.project = Some(v.to_string()),
-            _ if arg == "--project" => {
-                a.project = Some(it.next().cloned().ok_or("--project needs a value")?);
-            }
-            _ if arg == "--ticket" || arg == "--agent" => {
-                let kind = if arg == "--ticket" { Kind::Ticket } else { Kind::Agent };
+    let text = usage();
+    let mut lex = Lexer::new(args, &text);
+    while let Some(arg) = lex.next()? {
+        match arg {
+            Arg::Option("--project") => a.project = Some(lex.value()?.to_string()),
+            Arg::Option(o @ ("--ticket" | "--agent")) => {
+                let kind = if o == "--ticket" { Kind::Ticket } else { Kind::Agent };
                 if a.kind.is_some_and(|k| k != kind) {
                     return Err("pass --ticket or --agent, not both".into());
                 }
                 a.kind = Some(kind);
             }
-            _ if arg.starts_with('-') => {
-                return Err(format!("unknown option {arg}\n\n{}", usage()));
-            }
-            _ if a.key.is_empty() => a.key = arg.clone(),
-            _ => return Err(format!("one session at a time; got {arg} too")),
+            Arg::Option(_) => return Err(lex.unknown()),
+            Arg::Word(w) if a.key.is_empty() => a.key = w.to_string(),
+            Arg::Word(w) => return Err(format!("one session at a time; got {w} too")),
         }
     }
     if a.key.is_empty() {
-        return Err(format!(
-            "which session? Pass a ticket's key or an agent's name\n\n{}",
-            usage()
-        ));
+        return Err(format!("which session? Pass a ticket's key or an agent's name\n\n{text}"));
     }
     Ok(a)
 }
@@ -797,6 +780,8 @@ mod tests {
         assert!(args(&["tester-1", "--ticket", "--agent"]).is_err());
         assert!(args(&[]).is_err());
         assert!(args(&["ENG-1", "ENG-2"]).is_err());
-        assert!(args(&["--json", "ENG-1"]).is_err());
+        assert!(args(&["--json", "ENG-1"]).unwrap_err().starts_with("unknown option --json\n\n"));
+        assert_eq!(args(&["lead", "--project="]), Err("--project needs a value".into()));
+        assert_eq!(args(&["lead", "--agent=yes"]), Err("--agent takes no value".into()));
     }
 }

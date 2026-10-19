@@ -278,14 +278,7 @@ fn main() -> anyhow::Result<()> {
         Some("close") => std::process::exit(close::run(&args[2..])),
         Some("move") => std::process::exit(local::run(&args[2..])),
         Some("resume") => std::process::exit(resume::run(&args[2..])),
-        Some("update") => {
-            let force = args.iter().skip(2).any(|a| a == "--force");
-            if let Err(e) = update::run(force) {
-                eprintln!("taskman update: {e}");
-                std::process::exit(1);
-            }
-            return Ok(());
-        }
+        Some("update") => std::process::exit(update::run(&args[2..])),
         Some("-V" | "--version") => {
             println!("taskman {}", env!("CARGO_PKG_VERSION"));
             return Ok(());

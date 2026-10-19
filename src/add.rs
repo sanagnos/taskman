@@ -4,7 +4,7 @@
 //! code on its next pass and writes a reply, and the command prints the reply. With no TUI running
 //! the request waits there, and the next start adds it.
 
-use crate::cli::{pick_project, resolve_key};
+use crate::cli::{self, Arg, Lexer, pick_project, resolve_key};
 use crate::status::{self, Here};
 use crate::store::{self, Cli, Saved, Ticket};
 use crate::tracker::{Client, Text};
@@ -349,17 +349,7 @@ pub fn queued(req: &Request, now: i64) -> bool {
 // ---- the command ------------------------------------------------------------------------
 
 pub fn run(args: &[String]) -> i32 {
-    if args.iter().any(|a| a == "-h" || a == "--help") {
-        println!("{USAGE}");
-        return 0;
-    }
-    match add(args) {
-        Ok(ok) => i32::from(!ok),
-        Err(e) => {
-            eprintln!("taskman add: {}", untrusted::clean(&e));
-            1
-        }
-    }
+    cli::run("add", USAGE, args, |args| add(args).map(|ok| i32::from(!ok)))
 }
 
 /// Prints a line per ticket; returns whether every one was added, queued or already open.
@@ -549,32 +539,23 @@ struct Args {
 
 fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut a = Args::default();
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        let (flag, inline) = match arg.split_once('=') {
-            Some((f, v)) if f.starts_with("--") => (f, Some(v.to_string())),
-            _ => (arg.as_str(), None),
-        };
-        let mut value = || {
-            inline
-                .clone()
-                .or_else(|| it.next().cloned())
-                .filter(|v| !v.is_empty())
-                .ok_or_else(|| format!("{flag} needs a value"))
-        };
-        match flag {
-            "--codex" => a.cli = Cli::Codex,
-            "--claude" => a.cli = Cli::Claude,
-            "--worktree" => a.worktree = Some(true),
-            "--no-worktree" => a.worktree = Some(false),
-            "--agent" => a.agent = Some(value()?),
-            "--role" => a.role = Some(value()?.trim().to_string()).filter(|r| !r.is_empty()),
-            "--project" => a.project = Some(value()?),
-            "--on" => a.on = Some(value()?),
-            "--new" => a.new.push(value()?.trim().to_string()),
-            "--description" => a.description = Some(value()?),
-            s if s.starts_with('-') => return Err(format!("unknown option {s}\n\n{USAGE}")),
-            s => a.inputs.push(s.to_string()),
+    let mut lex = Lexer::new(args, USAGE);
+    while let Some(arg) = lex.next()? {
+        match arg {
+            Arg::Option("--codex") => a.cli = Cli::Codex,
+            Arg::Option("--claude") => a.cli = Cli::Claude,
+            Arg::Option("--worktree") => a.worktree = Some(true),
+            Arg::Option("--no-worktree") => a.worktree = Some(false),
+            Arg::Option("--agent") => a.agent = Some(lex.value()?.to_string()),
+            Arg::Option("--role") => {
+                a.role = Some(lex.value()?.trim().to_string()).filter(|r| !r.is_empty());
+            }
+            Arg::Option("--project") => a.project = Some(lex.value()?.to_string()),
+            Arg::Option("--on") => a.on = Some(lex.value()?.to_string()),
+            Arg::Option("--new") => a.new.push(lex.value()?.trim().to_string()),
+            Arg::Option("--description") => a.description = Some(lex.value()?.to_string()),
+            Arg::Option(_) => return Err(lex.unknown()),
+            Arg::Word(w) => a.inputs.push(w.to_string()),
         }
     }
     if a.agent.is_some() && !(a.inputs.is_empty() && a.new.is_empty()) {
@@ -750,6 +731,8 @@ mod tests {
         assert!(args("").unwrap_err().starts_with("name a ticket"));
         assert!(args("52 --force").unwrap_err().starts_with("unknown option --force"));
         assert_eq!(args("52 --project"), Err("--project needs a value".into()));
+        assert_eq!(args("52 --project="), Err("--project needs a value".into()));
+        assert_eq!(args("52 --codex=no"), Err("--codex takes no value".into()));
         assert!(args("--agent reviewer 52").is_err());
         assert!(args("--agent reviewer --no-worktree").is_err());
         // --on creates the worktree it stacks.
@@ -1048,5 +1031,32 @@ mod tests {
         // The TUI answers only while the command still waits; after that, the add was queued.
         assert!(!queued(&req, 100));
         assert!(queued(&req, 101));
+    }
+
+    mod options {
+        use super::parse_args;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(128))]
+
+            /// Every option with a value reads `--x=VALUE` as `--x VALUE`, valid or not.
+            #[test]
+            fn values_after_equals_read_the_same(
+                option in prop::sample::select(
+                    &["--agent", "--role", "--project", "--on", "--new", "--description"][..],
+                ),
+                value in "\\PC{0,12}",
+                inputs in prop::collection::vec("[0-9]{1,3}|ENG-[0-9]{1,3}|--codex|--no-worktree", 0..3),
+            ) {
+                let words = |option: Vec<String>| {
+                    inputs.iter().cloned().chain(option).collect::<Vec<_>>()
+                };
+                prop_assert_eq!(
+                    parse_args(&words(vec![format!("{option}={value}")])),
+                    parse_args(&words(vec![option.to_string(), value.clone()]))
+                );
+            }
+        }
     }
 }

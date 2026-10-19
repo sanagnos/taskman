@@ -2,6 +2,7 @@
 //! and the subfolder a file sits in is its column. Everything here reads and writes the board in
 //! the project's own folder; callers pass that folder, never a worktree's copy.
 
+use crate::cli::{Arg, Lexer};
 use crate::tracker::{Issue, Listed};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -574,42 +575,43 @@ committed.
   --project NAME  the project, when the folder or session doesn't say which";
 
 pub fn run(args: &[String]) -> i32 {
-    if args.iter().any(|a| a == "-h" || a == "--help") {
-        println!("{MOVE_USAGE}");
-        return 0;
-    }
-    match move_command(args) {
+    crate::cli::run("move", MOVE_USAGE, args, |args| {
         // File and column names come from the repository.
-        Ok(line) => {
-            println!("{}", crate::untrusted::clean(&line));
-            0
-        }
-        Err(e) => {
-            eprintln!("taskman move: {}", crate::untrusted::clean(&e));
-            1
-        }
-    }
+        println!("{}", crate::untrusted::clean(&move_command(args)?));
+        Ok(0)
+    })
 }
 
-fn move_command(args: &[String]) -> Result<String, String> {
+/// `taskman move`'s arguments: the ticket and the column, as typed, and `--project`.
+#[derive(Debug, PartialEq)]
+struct MoveArgs {
+    input: String,
+    column: String,
+    project: Option<String>,
+}
+
+fn parse_move_args(args: &[String]) -> Result<MoveArgs, String> {
     let mut project = None;
     let mut rest = Vec::new();
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        match a.split_once('=') {
-            Some(("--project", v)) => project = Some(v.to_string()),
-            _ if a == "--project" => {
-                project = Some(it.next().cloned().ok_or("--project needs a value")?);
-            }
-            _ if a.starts_with('-') => return Err(format!("unknown option {a}\n\n{MOVE_USAGE}")),
-            _ => rest.push(a.clone()),
+    let mut lex = Lexer::new(args, MOVE_USAGE);
+    while let Some(arg) = lex.next()? {
+        match arg {
+            Arg::Option("--project") => project = Some(lex.value()?.to_string()),
+            Arg::Option(_) => return Err(lex.unknown()),
+            Arg::Word(w) => rest.push(w.to_string()),
         }
     }
-    let [input, column] = &rest[..] else {
+    let Ok([input, column]) = <[String; 2]>::try_from(rest) else {
         return Err(format!(
             "name a ticket and a column, like taskman move WP-3 review\n\n{MOVE_USAGE}"
         ));
     };
+    Ok(MoveArgs { input, column, project })
+}
+
+fn move_command(args: &[String]) -> Result<String, String> {
+    let MoveArgs { input, column, project } = parse_move_args(args)?;
+    let (input, column) = (&input, &column);
     let saved = crate::store::load()?;
     let (session, session_repo) = crate::store::session_env();
     let me = session
@@ -680,6 +682,32 @@ mod tests {
             column: column.into(),
             path: PathBuf::from(format!("/b/{column}/{key}-{slug}.md")),
         }
+    }
+
+    #[test]
+    fn parses_move_arguments() {
+        let args =
+            |a: &[&str]| parse_move_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let ok = |project: Option<&str>| {
+            Ok(MoveArgs {
+                input: "3".into(),
+                column: "review".into(),
+                project: project.map(String::from),
+            })
+        };
+        assert_eq!(args(&["3", "review"]), ok(None));
+        assert_eq!(args(&["--project", "web", "3", "review"]), ok(Some("web")));
+        assert_eq!(args(&["3", "--project=web", "review"]), ok(Some("web")));
+        assert_eq!(args(&["3", "review", "--project="]), Err("--project needs a value".into()));
+        assert!(args(&["3"]).unwrap_err().starts_with("name a ticket and a column"));
+        assert!(
+            args(&["3", "review", "done"]).unwrap_err().starts_with("name a ticket and a column")
+        );
+        assert!(
+            args(&["3", "review", "--force"])
+                .unwrap_err()
+                .starts_with("unknown option --force\n\nUsage: taskman move")
+        );
     }
 
     #[test]

@@ -6,10 +6,11 @@
 
 use crate::add::{self, Close, Item, Line, Request};
 use crate::app::parse_key;
+use crate::cli::{self, Arg, Lexer};
 use crate::resume::Hold;
 use crate::status::{self, Here, Scope};
 use crate::store::{self, Cli, Saved, Ticket};
-use crate::{cli, untrusted, worktree};
+use crate::{untrusted, worktree};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -37,17 +38,7 @@ the tickets close when it starts.
 const WAIT: Duration = Duration::from_secs(30);
 
 pub fn run(args: &[String]) -> i32 {
-    if args.iter().any(|a| a == "-h" || a == "--help") {
-        println!("{USAGE}");
-        return 0;
-    }
-    match close(args) {
-        Ok(ok) => i32::from(!ok),
-        Err(e) => {
-            eprintln!("taskman close: {}", untrusted::clean(&e));
-            1
-        }
-    }
+    cli::run("close", USAGE, args, |args| close(args).map(|ok| i32::from(!ok)))
 }
 
 /// Prints a line per ticket; returns whether each was closed, or had nothing to do.
@@ -103,26 +94,15 @@ struct Args {
 
 fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut a = Args::default();
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        let (flag, inline) = match arg.split_once('=') {
-            Some((f, v)) if f.starts_with("--") => (f, Some(v.to_string())),
-            _ => (arg.as_str(), None),
-        };
-        let mut value = || {
-            inline
-                .clone()
-                .or_else(|| it.next().cloned())
-                .filter(|v| !v.is_empty())
-                .ok_or_else(|| format!("{flag} needs a value"))
-        };
-        match flag {
-            "--merged" => a.merged = true,
-            "--keep-worktree" => a.keep_worktree = true,
-            "--agent" => a.agent = Some(value()?),
-            "--project" => a.project = Some(value()?),
-            s if s.starts_with('-') => return Err(format!("unknown option {s}\n\n{USAGE}")),
-            s => a.inputs.push(s.to_string()),
+    let mut lex = Lexer::new(args, USAGE);
+    while let Some(arg) = lex.next()? {
+        match arg {
+            Arg::Option("--merged") => a.merged = true,
+            Arg::Option("--keep-worktree") => a.keep_worktree = true,
+            Arg::Option("--agent") => a.agent = Some(lex.value()?.to_string()),
+            Arg::Option("--project") => a.project = Some(lex.value()?.to_string()),
+            Arg::Option(_) => return Err(lex.unknown()),
+            Arg::Word(w) => a.inputs.push(w.to_string()),
         }
     }
     if a.agent.is_some() {
@@ -522,6 +502,9 @@ mod tests {
         assert!(args("--keep-worktree").unwrap_err().starts_with("name a ticket to close"));
         assert!(args("52 --force").unwrap_err().starts_with("unknown option --force"));
         assert_eq!(args("--agent"), Err("--agent needs a value".into()));
+        assert_eq!(args("52 --project="), Err("--project needs a value".into()));
+        // An option that takes no value refuses one, rather than reading --merged=no as --merged.
+        assert_eq!(args("--merged=no"), Err("--merged takes no value".into()));
         assert!(args("--agent planner 52").unwrap_err().starts_with("--agent closes one agent"));
         assert!(args("--agent planner --merged").unwrap_err().contains("drop --merged"));
     }

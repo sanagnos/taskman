@@ -7,6 +7,7 @@
 //! have.
 
 use crate::app::parse_key;
+use crate::cli::{Arg, Lexer};
 use crate::github::{self, CheckState, Lookup, Pr, Worktree, Worktrees};
 use crate::status_file::{self, Record};
 use crate::store::{self, Config, Project, Provider, Saved, Ticket};
@@ -42,17 +43,7 @@ const COMMENTS: usize = 3;
 pub(crate) const CODEX_NO_NETWORK: &str = "CODEX_SANDBOX_NETWORK_DISABLED";
 
 pub fn run(args: &[String]) -> i32 {
-    if args.iter().any(|a| a == "-h" || a == "--help") {
-        println!("{USAGE}");
-        return 0;
-    }
-    match status(args) {
-        Ok(ok) => i32::from(!ok),
-        Err(e) => {
-            eprintln!("taskman status: {}", untrusted::clean(&e));
-            1
-        }
-    }
+    cli::run("status", USAGE, args, |args| status(args).map(|ok| i32::from(!ok)))
 }
 
 /// Prints the report; returns whether every part of it could be fetched.
@@ -125,21 +116,19 @@ struct Args {
 
 fn parse_args(args: &[String], example: &str) -> Result<Args, String> {
     let mut a = Args::default();
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        match arg.split_once('=') {
-            Some(("--project", v)) => a.project = Some(v.to_string()),
-            _ if arg == "--project" => {
-                a.project = Some(it.next().cloned().ok_or("--project needs a value")?);
+    let mut lex = Lexer::new(args, USAGE);
+    while let Some(arg) = lex.next()? {
+        match arg {
+            Arg::Option("--project") => a.project = Some(lex.value()?.to_string()),
+            Arg::Option("--json") => a.json = true,
+            Arg::Option(_) => return Err(lex.unknown()),
+            Arg::Word(w) if a.key.is_none() => {
+                a.key =
+                    Some(parse_key(w).ok_or_else(|| {
+                        format!("{w} isn't a ticket key; pass one, like {example}")
+                    })?);
             }
-            _ if arg == "--json" => a.json = true,
-            _ if arg.starts_with('-') => return Err(format!("unknown option {arg}\n\n{USAGE}")),
-            _ if a.key.is_none() => {
-                a.key = Some(parse_key(arg).ok_or_else(|| {
-                    format!("{arg} isn't a ticket key; pass one, like {example}")
-                })?);
-            }
-            _ => return Err(format!("one ticket at a time; got {arg} too")),
+            Arg::Word(w) => return Err(format!("one ticket at a time; got {w} too")),
         }
     }
     Ok(a)
@@ -1474,7 +1463,10 @@ mod tests {
             args(&["--project", "beta"]).map(|a| (a.key, a.project)),
             Ok((None, Some("beta".into())))
         );
-        assert!(args(&["--project"]).is_err());
+        assert_eq!(args(&["--project"]), Err("--project needs a value".into()));
+        assert_eq!(args(&["--project="]), Err("--project needs a value".into()));
+        assert_eq!(args(&["--project", ""]), Err("--project needs a value".into()));
+        assert_eq!(args(&["--json=yes"]), Err("--json takes no value".into()));
         assert!(args(&["--jsn"]).unwrap_err().starts_with("unknown option --jsn"));
         assert!(args(&["login"]).unwrap_err().contains("isn't a ticket key"));
         assert!(args(&["ENG-1", "ENG-2"]).is_err());
