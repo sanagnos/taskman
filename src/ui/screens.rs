@@ -781,3 +781,52 @@ fn jump_box_without_a_match() {
     }
     assert_snapshot!(draw(&mut app, 120, 30));
 }
+
+/// ENG-53 and notes-writer wait, the second for longer: mid-bucket ages, so they draw the same on
+/// any day.
+fn waiting_app() -> crate::app::App {
+    let mut app = acme_app();
+    for (key, secs, input) in [
+        ("ENG-53", 270, Some("cargo test --all-features 2>&1 | tail -n 40")),
+        ("notes-writer", 2 * 3600 + 600, None),
+    ] {
+        let tv = app.tickets.iter_mut().find(|tv| tv.t.key == key).unwrap();
+        tv.status.waiting_since = Some(crate::util::now() - secs);
+        tv.status.permission = input.is_some();
+        tv.status.tool = input.map(|_| "Bash".into());
+        tv.status.input = input.map(str::to_string);
+        tv.status.message = "Claude has a question about the release notes".into();
+    }
+    app
+}
+
+#[test]
+fn waiting_queue_oldest_first() {
+    let mut app = waiting_app();
+    draw(&mut app, 120, 30);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char('w')));
+    app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Down));
+    assert_snapshot!(draw(&mut app, 120, 30));
+}
+
+#[test]
+fn waiting_queue_on_a_narrow_screen() {
+    let mut app = waiting_app();
+    draw(&mut app, 60, 24);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char('w')));
+    assert_snapshot!(draw(&mut app, 60, 24));
+}
+
+#[test]
+fn sidebar_badge_with_the_waiting_age() {
+    let mut app = waiting_app();
+    assert_snapshot!(draw(&mut app, 120, 30));
+}
+
+#[test]
+fn sidebar_badge_with_the_waiting_age_in_the_narrowest_sidebar() {
+    let mut app = waiting_app();
+    assert_snapshot!(draw(&mut app, 64, 24));
+}

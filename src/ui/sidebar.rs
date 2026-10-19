@@ -1,6 +1,6 @@
 //! The sidebar: the projects, their cards, and the list's scrolling.
 
-use super::{dim, pr_spans, selection_bg, state_badge, yellow};
+use super::{dim, pr_spans, selection_bg, sidebar_badge, state_badge, yellow};
 use crate::app::{App, Hit, Mode, Piece, TicketView};
 use crate::keys::prefix;
 use crate::untrusted;
@@ -324,7 +324,7 @@ fn sidebar_rows(
                     state_glyph(tv),
                 ]));
             } else {
-                let badge = state_badge(tv);
+                let badge = sidebar_badge(tv);
                 let label =
                     if agent { format!("✦ {}", tv.t.display()) } else { tv.t.key.clone() };
                 // The badge keeps its width and ends one column from the edge; the name gets

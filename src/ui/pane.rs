@@ -493,6 +493,7 @@ pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
                 ("{ }", "move"),
                 (&again, "next waiting"),
                 ("/", "jump"),
+                ("w", "waiting"),
                 ("n", "add ticket/agent"),
                 ("x", "close"),
             ],

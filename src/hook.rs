@@ -126,6 +126,8 @@ pub fn run(state_arg: &str) {
         crate::util::now(),
     );
     out.reason = entry.reason;
+    out.tool = entry.tool;
+    out.input = entry.input;
     // Which start of the session this hook belongs to, so the TUI can tell a record of an
     // earlier one, written late (see `app::TicketView::takes`).
     out.launch = std::env::var("TASKMAN_LAUNCH").ok().filter(|l| !l.is_empty());
@@ -139,6 +141,36 @@ struct Entry {
     /// Why a "needs" session waits on the user (see `Reason`).
     reason: Option<Reason>,
     message: String,
+    /// What a permission prompt asks to use and run (`Record::tool`, `Record::input`).
+    tool: Option<String>,
+    input: Option<String>,
+}
+
+/// The longest input a record keeps, in characters: enough to read what a command does.
+const INPUT_KEPT: usize = 400;
+
+/// What a tool call's input asks for, in a line: a command (Claude's string, Codex's words), else
+/// a path, URL or pattern, else the JSON itself. None when there is no input.
+fn input_text(tool_input: &Value) -> Option<String> {
+    let text = match tool_input {
+        Value::Null => return None,
+        Value::Object(o) => {
+            let field = |k: &str| match o.get(k)? {
+                Value::String(s) => Some(s.clone()),
+                Value::Array(a) => {
+                    Some(a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "))
+                }
+                _ => None,
+            };
+            ["command", "file_path", "path", "url", "pattern", "query"]
+                .iter()
+                .find_map(|k| field(k))
+                .unwrap_or_else(|| tool_input.to_string())
+        }
+        other => other.to_string(),
+    };
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!text.is_empty()).then(|| text.chars().take(INPUT_KEPT).collect())
 }
 
 /// Tools that wait on the user's answers, so they count as "needs you", not "working". Claude's
@@ -148,7 +180,13 @@ const QUESTION_TOOLS: [&str; 3] = ["AskUserQuestion", "ExitPlanMode", "request_u
 /// The status a hook event writes, given the file as it stands (`prev`), or None to leave it.
 fn entry_for(state_arg: HookState, v: &Value, prev: &Record) -> Option<Entry> {
     let tool = v["tool_name"].as_str().unwrap_or("");
-    let entry = |state, reason, message: &str| Entry { state, reason, message: message.into() };
+    let entry = |state, reason, message: &str| Entry {
+        state,
+        reason,
+        message: message.into(),
+        tool: None,
+        input: None,
+    };
     let (needs, asking) = (HookState::Needs, Some(Reason::Question));
     Some(match v["hook_event_name"].as_str().unwrap_or("") {
         "PreToolUse" if QUESTION_TOOLS.contains(&tool) => entry(needs, asking, &question(tool)),
@@ -163,7 +201,11 @@ fn entry_for(state_arg: HookState, v: &Value, prev: &Record) -> Option<Entry> {
                 None if tool.is_empty() => "Waiting for your approval".into(),
                 None => format!("Waiting for your approval to use {tool}"),
             };
-            entry(needs, Some(Reason::Permission), &message)
+            Entry {
+                tool: Some(tool).filter(|t| !t.is_empty()).map(str::to_string),
+                input: input_text(&v["tool_input"]),
+                ..entry(needs, Some(Reason::Permission), &message)
+            }
         }
         "Notification" => {
             let message = v["message"].as_str().unwrap_or("");
@@ -183,6 +225,8 @@ fn entry_for(state_arg: HookState, v: &Value, prev: &Record) -> Option<Entry> {
                         .filter(|m| !m.is_empty())
                         .unwrap_or(message)
                         .into(),
+                    tool: prev.tool.clone(),
+                    input: prev.input.clone(),
                 },
                 Some("permission_prompt") => entry(needs, Some(Reason::Permission), message),
                 _ => entry(needs, asking, message),
@@ -190,9 +234,13 @@ fn entry_for(state_arg: HookState, v: &Value, prev: &Record) -> Option<Entry> {
         }
         // Claude starts its session again after compacting, also in the middle of a turn: keep
         // the state rather than calling a working session idle.
-        "SessionStart" if v["source"] == "compact" && prev.state != HookState::Unknown => {
-            Entry { state: prev.state, reason: prev.reason, message: prev.message.clone() }
-        }
+        "SessionStart" if v["source"] == "compact" && prev.state != HookState::Unknown => Entry {
+            state: prev.state,
+            reason: prev.reason,
+            message: prev.message.clone(),
+            tool: prev.tool.clone(),
+            input: prev.input.clone(),
+        },
         _ => entry(state_arg, None, ""),
     })
 }
@@ -333,6 +381,40 @@ mod tests {
             after("working", &codex, &Value::Null),
             Some(("needs".into(), Some("question"), "Codex is asking you a question".into()))
         );
+    }
+
+    #[test]
+    fn permission_prompts_carry_the_command() {
+        let prev = Record::default();
+        let asked = |input: Value| {
+            let v = json!({ "hook_event_name": "PermissionRequest", "tool_name": "Bash",
+                "tool_input": input });
+            entry_for(HookState::Working, &v, &prev).unwrap()
+        };
+        let e = asked(json!({ "command": "rm   -rf\n target", "description": "Clean" }));
+        assert_eq!((e.tool.as_deref(), e.input.as_deref()), (Some("Bash"), Some("rm -rf target")));
+        // Codex gives the command as words.
+        let e = asked(json!({ "command": ["git", "push"] }));
+        assert_eq!(e.input.as_deref(), Some("git push"));
+        let e = asked(json!({ "file_path": "/etc/hosts" }));
+        assert_eq!(e.input.as_deref(), Some("/etc/hosts"));
+        let e = asked(json!({ "odd": 1 }));
+        assert_eq!(e.input.as_deref(), Some(r#"{"odd":1}"#));
+        assert_eq!(asked(Value::Null).input, None);
+        let long = asked(json!({ "command": "x".repeat(2 * INPUT_KEPT) }));
+        assert_eq!(long.input.unwrap().chars().count(), INPUT_KEPT);
+        // The reminder notification keeps what the prompt said.
+        let prev = Record {
+            state: HookState::Needs,
+            reason: Some(Reason::Permission),
+            tool: Some("Bash".into()),
+            input: Some("make".into()),
+            ..Record::default()
+        };
+        let note = json!({ "hook_event_name": "Notification", "notification_type": "permission_prompt",
+            "message": "Claude needs your permission" });
+        let e = entry_for(HookState::Needs, &note, &prev).unwrap();
+        assert_eq!(e.input.as_deref(), Some("make"));
     }
 
     #[test]

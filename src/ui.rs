@@ -182,6 +182,18 @@ pub fn drop_colours(buf: &mut Buffer) {
     }
 }
 
+/// The sidebar's badge: `state_badge`, with how long a session has waited on you in place of
+/// "needs you" once it's been a minute, so the oldest stands out. The age is shorter than the
+/// word, so the badge never needs more room.
+fn sidebar_badge(tv: &TicketView) -> Span<'static> {
+    let b = state_badge(tv);
+    let waiting = tv.away.is_none() && !tv.asleep && tv.status.state == AgentState::Needs;
+    match tv.status.waiting_since.map(crate::util::ago) {
+        Some(age) if waiting && age != "now" => Span::styled(format!("▲ {age}"), b.style),
+        _ => b,
+    }
+}
+
 /// The sidebar's badge. A session in another terminal shows its state with `↗`, which alone
 /// means it's there and idle; one that came back waits for Enter.
 fn state_badge(tv: &TicketView) -> Span<'static> {

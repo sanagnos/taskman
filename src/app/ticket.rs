@@ -5,12 +5,12 @@ use super::sleep::Watch;
 use super::sync::STALE;
 use super::{AgentState, Remote, Status};
 use crate::github::{self, Pr};
-use crate::resume;
 use crate::session::{End, Parser, Reaper, Session};
 use crate::status_file::Record;
 use crate::store::{self, Ticket, UiPrefs};
 use crate::tracker::Issue;
 use crate::worktree;
+use crate::{resume, util};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime};
@@ -341,8 +341,13 @@ impl TicketView {
                 bell = state == AgentState::Needs;
             }
             self.status.state = state;
+            // A repeated "needs" (Claude's reminder after a prompt) keeps the first one's time.
+            self.status.waiting_since =
+                (state == AgentState::Needs).then(|| if rec.ts > 0 { rec.ts } else { util::now() });
         }
         self.status.permission = rec.permission();
+        self.status.tool = rec.tool;
+        self.status.input = rec.input;
         self.status.message = rec.message;
         bell
     }
@@ -706,5 +711,19 @@ mod tests {
             parse(r#"{"state":"needs","reason":"permission","message":"","ts":1}"#).unwrap();
         tv.hook_reported(permission, false);
         assert!(tv.status.permission);
+        // The wait runs from the first "needs", and the prompt's command is kept.
+        let asks = |ts: i64| {
+            parse(&format!(
+                r#"{{"state":"needs","reason":"permission","tool":"Bash","input":"cargo test","message":"","ts":{ts}}}"#
+            ))
+            .unwrap()
+        };
+        let mut tv = TicketView::new(ticket());
+        tv.hook_reported(asks(100), false);
+        tv.hook_reported(asks(106), false);
+        assert_eq!(tv.status.waiting_since, Some(100));
+        assert_eq!(tv.status.input.as_deref(), Some("cargo test"));
+        tv.hook_reported(rec("working"), false);
+        assert_eq!((tv.status.waiting_since, tv.status.input), (None, None));
     }
 }

@@ -4,6 +4,8 @@ What changed in each release; a release's notes on GitHub are its section here. 
 
 ## Unreleased
 
+- `ctrl+a w` lists every session waiting on you, oldest first, with how long it has waited, why (permission or question) and what it asks for: for a permission prompt the tool and its command, as the Claude Code or Codex hook reports it. Enter goes to that session. A session that has waited a minute shows its time in the sidebar (`▲ 4m`) in place of "needs you". Sessions started by an older taskman show the prompt's message until their next prompt.
+
 ## 0.1.15 - 2026-10-19
 
 - Scrolling a session back over some emoji, such as ⚠️ (the warning sign with its emoji selector), no longer leaves stale characters on screen and pushes the pane's right edge a column out on those rows. taskman counted that emoji as one column where terminals such as Windows Terminal draw two, so everything after it on the row was drawn a column off and some of it was never redrawn.

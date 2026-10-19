@@ -150,6 +150,7 @@ The Add form opens on Type, set to Agent; ←/→ switches it to Ticket. What yo
 | `ctrl+a 1-9`, `ctrl+a [` / `]` | switch ticket |
 | `ctrl+a {` / `}` | move the selected agent or ticket up / down, then keep going (see [Sidebar](#sidebar)) |
 | `ctrl+a ctrl+a` | jump to the next ticket waiting on you |
+| `ctrl+a w` | list every session waiting on you, oldest first, with how long, why and what it asks (see below) |
 | `ctrl+a /` | jump to a ticket, agent or project by typing (see below) |
 | `ctrl+a n` / `x` | add / close a ticket |
 | `ctrl+a ,` | settings: prefix key, updates, projects and accounts |
@@ -161,6 +162,10 @@ The Add form opens on Type, set to Agent; ←/→ switches it to Ticket. What yo
 | `ctrl+a l` | the ticket's links (issue, PR, checks), then the session's, newest first: Enter opens one, `c` copies it |
 | `ctrl+a t` | continue the session in another terminal (see [taskman resume](#continuing-a-session-in-another-terminal-taskman-resume)) |
 | `ctrl+a a` | send the prefix itself to the session |
+
+### The waiting queue
+
+`ctrl+a w` lists every session that asks you something, the one that has waited longest first. A row shows the key (or the agent's name) and project, how long it has waited, why (`permission` for a permission prompt, `question` for questions and plans) and what it asks for: for a permission prompt the tool and its command, path or input (`Bash: cargo test`), cut to fit, otherwise the session's message. ↑/↓ choose a row, Enter selects that session and closes the list, Esc closes it. The list follows the sessions while it's open, and with nothing waiting `ctrl+a w` says so instead of opening. It doesn't answer prompts: Claude's prompts have more choices than yes and no, and one key approving across sessions would widen what a key approves. A session that has waited a minute shows its time in the sidebar in place of "needs you" (`▲ 4m`). `ctrl+a ctrl+a` still goes to the next one in the sidebar's order.
 
 ### Jumping by typing
 

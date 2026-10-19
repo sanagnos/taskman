@@ -37,6 +37,7 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 | `src/proctree.rs` | a process's descendants through `ps`, for telling whether a session left work running |
 | `src/app/launch.rs` | how a session's CLI starts (`Launch`, `App::launch`): arguments, environment, the ticket's and agent's briefs |
 | `src/app/input.rs` | keys: the modes, the prefix commands, paste, the links list, the session's history in `$EDITOR` |
+| `src/app/queue.rs` | `prefix w`: the waiting-on-you queue (`Queue`, `Mode::Queue`): the sessions in `Needs`, oldest first by when their hook said they began waiting (`oldest_first`), and its keys; the popover is `draw_queue` in `ui/dialogs.rs`, and `Status::waiting_since`, `tool` and `input` come from the hook's record |
 | `src/app/jump.rs` | `prefix /`: the jump box (`Jump`, `Mode::Jump`), its keys, and the pure match of a card against what's typed (`matches`); the sidebar draws only the matches meanwhile |
 | `src/app/mouse.rs` | the wheel, drag-selecting text in a pane (double and triple clicks pick a word or line), copying it, and the press that may become a sidebar drag |
 | `src/app/reorder.rs` | reordering the sidebar: `place` (the one move), the valid places (`slot_for_gap`, `nearest_gap`), move mode (`Mode::Move`) and mouse drags (`Drag`); the order is the order of `App::tickets` and `App::projects`, saved as they are |

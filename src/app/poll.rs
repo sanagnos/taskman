@@ -76,7 +76,14 @@ pub struct Status {
     esc_at: Option<Instant>,
     /// Whether the session waits on a permission prompt, which one key answers (the hook's
     /// `reason`), rather than on questions or a plan, which only a hook clears.
-    pub(super) permission: bool,
+    pub permission: bool,
+    /// When the session began waiting on the user, in seconds since the epoch, from the hook's
+    /// record; none when it waits without one having said so (`queue`).
+    pub waiting_since: Option<i64>,
+    /// What the permission prompt asks to use and run (`Record::tool`, `Record::input`):
+    /// untrusted text.
+    pub tool: Option<String>,
+    pub input: Option<String>,
     /// Whether Tab opened Claude's field for adding to the answer, where digits are text.
     amending: bool,
     /// When a key answered the permission prompt, which no hook reports (`prompt_key`).
@@ -96,6 +103,9 @@ impl Status {
             last_event: None,
             esc_at: None,
             permission: false,
+            waiting_since: None,
+            tool: None,
+            input: None,
             amending: false,
             answered_at: None,
             interrupted_lines: 0,

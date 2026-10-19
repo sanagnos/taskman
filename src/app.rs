@@ -45,6 +45,7 @@ mod launch;
 mod mouse;
 mod poll;
 mod projects;
+mod queue;
 mod reorder;
 mod sessions;
 mod settings;
@@ -95,6 +96,8 @@ pub enum Mode {
     Links(Box<LinkList>),
     /// The jump box (`prefix /`): the sidebar narrows to what's typed.
     Jump(jump::Jump),
+    /// The waiting-on-you queue (`prefix w`).
+    Queue(queue::Queue),
     /// Moving the selected card, or its project, in the sidebar (`prefix {` and `}`).
     Move(Box<reorder::Moving>),
 }

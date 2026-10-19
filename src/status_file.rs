@@ -66,6 +66,10 @@ pub enum Reason {
 /// struct, so the file is the same byte for byte.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
 pub struct Record {
+    /// What a permission prompt asks to run: the tool's command, path or input, as the CLI's
+    /// PermissionRequest hook gave it, cut short. Untrusted text; written for "needs" only.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
     /// Which start of the session wrote it (`TASKMAN_LAUNCH`), so the TUI can tell a record of an
     /// earlier one written late (`app::TicketView::takes`).
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
@@ -84,6 +88,9 @@ pub struct Record {
     pub session_id: Option<String>,
     #[serde(default, deserialize_with = "lenient")]
     pub state: HookState,
+    /// The tool a permission prompt asks to use.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
     /// When the hook wrote it, in seconds since the epoch.
     #[serde(default, deserialize_with = "lenient")]
     pub ts: i64,
@@ -180,6 +187,12 @@ mod tests {
         if let Some(launch) = &r.launch {
             v["launch"] = json!(launch);
         }
+        // Added since: fields an older release never wrote, so absent when none.
+        for (field, value) in [("tool", &r.tool), ("input", &r.input)] {
+            if let Some(value) = value {
+                v[field] = json!(value);
+            }
+        }
         v.to_string()
     }
 
@@ -193,6 +206,7 @@ mod tests {
             reason: Some(Reason::Permission),
             launch: Some("4242-1".into()),
             name: Some("alpha/WP-1".into()),
+            ..Record::default()
         };
         assert_eq!(
             r.to_string(),
@@ -216,8 +230,16 @@ mod tests {
                 reason: Some(Reason::Permission),
                 launch: Some("4242-1".into()),
                 name: Some("WP-1".into()),
+                ..Record::default()
             }
         );
+        // v0.1.14 and later: what a permission prompt asks for.
+        let r = parse(r#"{"input":"cargo test","message":"","session_id":null,"state":"needs","tool":"Bash","ts":1}"#).unwrap();
+        assert_eq!((r.tool.as_deref(), r.input.as_deref()), (Some("Bash"), Some("cargo test")));
+        assert_eq!(parse(&r.to_string()), Some(r));
+        // Odd values read as none.
+        let r = parse(r#"{"input":["a"],"tool":3,"state":"needs"}"#).unwrap();
+        assert_eq!((r.tool, r.input), (None, None));
         // The first releases' fields only.
         let r = parse(r#"{"state":"ended","session_id":"s","message":"","ts":2}"#).unwrap();
         assert_eq!((r.state, r.reason, r.launch, r.name), (HookState::Ended, None, None, None));
@@ -269,16 +291,22 @@ mod tests {
             prop::option::of(prop::sample::select(vec![Reason::Permission, Reason::Question])),
             prop::option::of(text()),
             prop::option::of(text()),
+            prop::option::of(text()),
+            prop::option::of(text()),
         )
-            .prop_map(|(state, session_id, message, ts, reason, launch, name)| Record {
-                state,
-                session_id,
-                message,
-                ts,
-                reason,
-                launch,
-                name,
-            })
+            .prop_map(
+                |(state, session_id, message, ts, reason, launch, name, tool, input)| Record {
+                    state,
+                    session_id,
+                    message,
+                    ts,
+                    reason,
+                    launch,
+                    name,
+                    tool,
+                    input,
+                },
+            )
     }
 
     /// Anything a field might hold.
@@ -310,7 +338,7 @@ mod tests {
         /// when that's its type and as its default otherwise.
         #[test]
         fn reads_any_object(fields in prop::collection::btree_map(
-            prop::sample::select(vec!["state", "session_id", "message", "ts", "reason", "launch", "name", "cwd"]),
+            prop::sample::select(vec!["state", "session_id", "message", "ts", "reason", "launch", "name", "tool", "input", "cwd"]),
             value(),
             0..8,
         )) {

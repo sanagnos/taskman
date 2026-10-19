@@ -21,6 +21,7 @@ mod input;
 mod jump;
 mod mouse;
 mod projects;
+mod queue;
 mod reorder;
 mod sessions;
 mod settings;

@@ -21,6 +21,7 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &mut App) {
         Mode::Normal | Mode::Jump(_) | Mode::Move(_) => {}
         Mode::Help(_) => draw_help(f, app),
         Mode::Links(_) => draw_links(f, app),
+        Mode::Queue(_) => draw_queue(f, app),
         Mode::Form(_) => draw_form(f, app),
         Mode::Settings(_) => draw_settings(f, app),
         Mode::ConfirmDeleteAccount(i) => {
@@ -237,6 +238,83 @@ fn draw_links(f: &mut Frame, app: &mut App) {
         _ => "Links",
     };
     f.render_widget(Paragraph::new(text).block(dialog(title).padding(DIALOG_PAD)), r);
+}
+
+/// The waiting-on-you queue: a row per session, oldest first, with how long it has waited, why,
+/// and what it asks for. Everything the CLI wrote goes through `untrusted::line`, cut to fit.
+fn draw_queue(f: &mut Frame, app: &mut App) {
+    let rows = app.queue();
+    let at = match &mut app.mode {
+        Mode::Queue(q) => {
+            q.at = q.at.min(rows.len().saturating_sub(1));
+            q.at
+        }
+        _ => return,
+    };
+    let w = (100 + DIALOG_PAD_W).min(f.area().width.saturating_sub(2));
+    let room = usize::from(w.saturating_sub(2 + DIALOG_PAD_W + 2));
+    let mut text = Vec::new();
+    // Two rows a session, as many as fit with two rows spare above and below the dialog, the
+    // blank row and the keys.
+    let view_h = usize::from(f.area().height.saturating_sub(2 + DIALOG_PAD_H + 2 + 2));
+    let shown = (view_h / 2).max(1);
+    let first = (at + 1).saturating_sub(shown);
+    if rows.is_empty() {
+        text.push(Line::from(Span::styled("Nothing is waiting on you", dim())));
+    }
+    for (n, &i) in rows.iter().enumerate().skip(first).take(shown) {
+        let tv = &app.tickets[i];
+        let chosen = n == at;
+        let label = match tv.t.agent {
+            Some(_) => format!("✦ {}", tv.t.display()),
+            None => tv.t.key.clone(),
+        };
+        let project = app.project_of(&tv.t).map(|p| app.projects[p].name.as_str()).unwrap_or("");
+        let age = tv.status.waiting_since.map_or_else(|| "?".to_string(), crate::util::ago);
+        let why = if tv.status.permission { "permission" } else { "question" };
+        let mut style = Style::new().bold();
+        if chosen {
+            style = style.add_modifier(ratatui::style::Modifier::REVERSED);
+        }
+        text.push(Line::from(vec![
+            Span::raw(if chosen { "› " } else { "  " }),
+            Span::styled(truncate(&untrusted::line(&label), 28), style),
+            Span::styled(format!("  {}", truncate(&untrusted::line(project), 20)), dim()),
+            Span::styled(format!("  {age:>3}  "), Style::new().fg(super::yellow()).bold()),
+            Span::raw(why),
+        ]));
+        let ask = match (&tv.status.tool, &tv.status.input) {
+            (Some(tool), Some(input)) => format!("{tool}: {input}"),
+            (None, Some(input)) => input.clone(),
+            _ => tv.status.message.clone(),
+        };
+        text.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(truncate(&untrusted::line(&ask), room), dim()),
+        ]));
+    }
+    if rows.len() > first + shown {
+        text.push(Line::from(Span::styled(
+            format!("↓ {} more", rows.len() - first - shown),
+            dim(),
+        )));
+    }
+    text.push(Line::from(""));
+    let mut keys = Vec::new();
+    for (i, (key, what)) in
+        [("↑/↓", "choose"), ("Enter", "go to it"), ("Esc", "close")].iter().enumerate()
+    {
+        let gap = if i < 2 { "   " } else { "" };
+        keys.extend([key.to_string().bold(), format!(" {what}{gap}").into()]);
+    }
+    text.push(Line::from(keys));
+    let h = u16::try_from(text.len()).unwrap_or(u16::MAX) + 2 + DIALOG_PAD_H;
+    let r = centered(f, w, h);
+    f.render_widget(Clear, r);
+    f.render_widget(
+        Paragraph::new(text).block(dialog("Waiting on you, oldest first").padding(DIALOG_PAD)),
+        r,
+    );
 }
 
 /// The most of a role the dialog shows; a longer one says how much is left out.
@@ -819,6 +897,7 @@ fn draw_help(f: &mut Frame, app: &mut App) {
         ("{ / }", "move the card; ↑/↓ go on, p moves its project, Enter ends"),
         (again.as_str(), "next ticket waiting on you (also tab)"),
         ("/", "jump to a ticket, agent or project by typing"),
+        ("w", "list the sessions waiting on you, oldest first, with what they ask"),
         ("n", "add a ticket, or an agent with no ticket"),
         (",", "settings: prefix key, updates, projects, accounts"),
         ("P / A", "settings, on a new project / account"),
