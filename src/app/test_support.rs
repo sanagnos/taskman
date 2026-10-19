@@ -42,6 +42,8 @@ pub(crate) fn offline(saved: Saved) -> App {
     app.clipboard = Arc::new(|_| crate::selection::Copied::Osc52);
     app.stop_background = Arc::new(|_| Err("no claude in tests".into()));
     app.open_url = Arc::new(|_| false);
+    // As if the keychain check had found none; a test of the wait before it sets this back.
+    app.keychain_probed = true;
     app
 }
 

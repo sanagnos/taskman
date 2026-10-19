@@ -101,6 +101,26 @@ fn a_saved_account_that_fits_is_picked_and_lists_at_once() {
     assert_eq!(app.config.accounts.len(), 1);
 }
 
+/// A new account in a project form waits for the keychain check too, then offers what it found.
+#[test]
+fn a_new_account_in_a_project_form_waits_for_the_keychain_check() {
+    let mut app = offline(Saved::default());
+    app.keychain_probed = false;
+    new_project(&mut app, "Jira");
+    assert_eq!(
+        shown(&app),
+        ["Path", "Tracker", "Site", "Account", "Email", "Read from", "Project"]
+    );
+    app.tx.send(Msg::Keychain(None)).unwrap();
+    app.drain_messages();
+    assert_eq!(
+        shown(&app),
+        ["Path", "Tracker", "Site", "Account", "Email", "Keep in", "Token", "Project"]
+    );
+    assert_eq!(field(&app, "Keep in"), "File");
+    assert!(hint_of(&app, "Account").starts_with("taskman never saves your token in config.json"));
+}
+
 #[test]
 fn a_saved_account_picked_brings_its_workspace() {
     let mut app = acme_app();

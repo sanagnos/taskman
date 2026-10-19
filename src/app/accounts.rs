@@ -4,7 +4,7 @@
 
 use super::forms::Check;
 use super::sync::Msg;
-use super::{App, Field, Form, FormKind, SettingsItem};
+use super::{App, Field, Form, FormKind, Mode, SettingsItem};
 use crate::keychain::{self, Keychain};
 use crate::store::{self, Account, Config, Provider};
 use crate::{token_file, tracker};
@@ -15,13 +15,19 @@ const KEYCHAIN: &str = "Keychain";
 const FILE: &str = "File";
 const ELSEWHERE: &str = "Variable or command";
 
-/// The note atop a new account's form, and under a project form's Account when it adds one: with
-/// a keychain, and without one, where File puts a token in a file of taskman's.
-pub(super) fn not_saved(keychain: Option<&Keychain>) -> &'static str {
-    match keychain {
-        Some(_) => "taskman never saves your token in its files, only where to read it from.",
-        None => "taskman never saves your token in config.json, only where to read it from.",
+/// The note atop a new account's form, and under a project form's Account when it adds one: in
+/// a form that offers File (`offers_file`), a token can go in a file of taskman's.
+pub(super) fn not_saved(file: bool) -> &'static str {
+    if file {
+        "taskman never saves your token in config.json, only where to read it from."
+    } else {
+        "taskman never saves your token in its files, only where to read it from."
     }
+}
+
+/// Whether the form's Keep in offers File: there's no keychain, and the check has said so.
+pub(super) fn offers_file(form: &Form) -> bool {
+    form.field("Keep in").is_some_and(|f| f.choices.iter().any(|c| c == FILE))
 }
 
 /// The guide's ways of keeping a token, for a form with no keychain or one that failed.
@@ -119,16 +125,6 @@ pub(super) fn account_rows(
     account: Option<&Account>,
     keychain: Option<&Keychain>,
 ) {
-    // A form opened before the keychain was found offers it from then on.
-    if let Some(f) = form.field_mut("Keep in")
-        && keychain.is_some()
-        && f.choices[0] == FILE
-    {
-        f.choices[0] = KEYCHAIN.into();
-        if f.value == FILE {
-            f.value = KEYCHAIN.into();
-        }
-    }
     // A project form's site field is its own, with its own hint.
     let account_form = matches!(form.kind, FormKind::Account | FormKind::AccountSettings(_));
     let label = keychain.map_or_else(|| Keychain::os().label(), Keychain::label);
@@ -225,10 +221,58 @@ impl App {
     }
 
     /// The Keep in field, its first choice the default: the keychain where there's one, or the
-    /// account's token is in one; else a private file.
-    pub(super) fn keep_in(&self, in_keychain: bool) -> Field {
-        let first = if in_keychain || self.keychain.is_some() { KEYCHAIN } else { FILE };
+    /// account's token is in one; else a private file, once the keychain check has said there's
+    /// none, or the account's token is in one. Until then it waits hidden, on a variable or
+    /// command, so a quick save puts a token nowhere it shouldn't (`keychain_probed`).
+    pub(super) fn keep_in(&self, in_keychain: bool, in_file: bool) -> Field {
+        let first = match () {
+            _ if in_keychain || self.keychain.is_some() => KEYCHAIN,
+            _ if in_file || self.keychain_probed => FILE,
+            _ => {
+                let f = Field::choice("Keep in", vec![ELSEWHERE.into()], ELSEWHERE, "");
+                return Field { hidden: true, ..f };
+            }
+        };
         Field::choice("Keep in", vec![first.into(), ELSEWHERE.into()], first, "")
+    }
+
+    /// The keychain check answered: `keychain`, or None where there's none. A form opened before,
+    /// whose Keep in waited, now offers what there is, its default and note with it, unless the
+    /// user has typed where to read the token already.
+    pub(super) fn keychain_probed(&mut self, keychain: Option<Keychain>) {
+        self.keychain = keychain;
+        self.keychain_probed = true;
+        let fresh = self.keep_in(false, false);
+        let Mode::Settings(s) = &mut self.mode else { return };
+        let waiting = s.form.field("Keep in").is_some_and(|f| f.choices.len() < 2);
+        let kind = matches!(
+            s.form.kind,
+            FormKind::Account | FormKind::Project | FormKind::ProjectSettings(_)
+        );
+        if !waiting || !kind {
+            return;
+        }
+        let mut form =
+            std::mem::replace(&mut s.form, Box::new(Form::new(FormKind::Ticket, "", vec![])));
+        let typed = !form.value("Read from").is_empty();
+        if let Some(f) = form.field_mut("Keep in") {
+            f.choices = fresh.choices;
+            f.hidden = false;
+            if !typed {
+                f.value = fresh.value;
+            }
+        }
+        let focus = form.focus;
+        if matches!(form.kind, FormKind::Account) {
+            form.note = Some(not_saved(offers_file(&form)).into());
+            let (provider, site) = (form_provider(&form), form.value("Site"));
+            account_defaults(&mut form, provider, &site, &self.config, self.keychain.as_ref());
+        } else {
+            self.project_form_changed(&mut form, "Keep in", focus);
+        }
+        if let Mode::Settings(s) = &mut self.mode {
+            s.form = form;
+        }
     }
 
     /// A new account's own fields: Email, Keep in, Token and Read from, shown as its provider
@@ -244,7 +288,7 @@ impl App {
             .unwrap_or_default();
         vec![
             Field::text("Email", email, ""),
-            self.keep_in(false),
+            self.keep_in(false, false),
             Field { masked: true, ..Field::text("Token", "", "") },
             Field::text("Read from", "", ""),
         ]
@@ -258,7 +302,7 @@ impl App {
         ];
         fields.extend(self.new_account_fields());
         let mut form = Form::new(FormKind::Account, "New account", fields);
-        form.note = Some(not_saved(self.keychain.as_ref()).into());
+        form.note = Some(not_saved(offers_file(&form)).into());
         let site = form.value("Site");
         account_defaults(&mut form, provider, &site, &self.config, self.keychain.as_ref());
         let token = if takes_pasted(&form) { "Token" } else { "Read from" };
@@ -277,7 +321,7 @@ impl App {
         let site = a.provider.site_for_input(&a.site);
         let in_keychain = keychain::name_of(&a.token).is_some();
         let in_file = token_file::name_of(&a.token).is_some();
-        let mut keep_in = self.keep_in(in_keychain);
+        let mut keep_in = self.keep_in(in_keychain, in_file);
         if !in_keychain && !(in_file && keep_in.choices.iter().any(|c| c == FILE)) {
             keep_in.value = ELSEWHERE.into();
         }

@@ -4,7 +4,7 @@
 //! account's fields are part of them, and once the account can sign in, the form lists what it can
 //! see to pick the ticket prefix from (`Choices`).
 
-use super::accounts::{account_defaults, not_saved, stored_error, takes_pasted};
+use super::accounts::{account_defaults, not_saved, offers_file, stored_error, takes_pasted};
 use super::add_form::{NO_WORKTREE, example_key};
 use super::forms::{Check, List};
 use super::poll::remove_status_files;
@@ -93,12 +93,14 @@ pub(super) fn show_project_rows(
     let account = provider.is_some_and(Provider::needs_account);
     let new = account && form.field("Account").is_some_and(|f| f.chosen_id().is_none());
     let saved = form.field("Account").is_some_and(|f| f.choices.len() > 1);
+    let file = offers_file(form);
     for f in &mut form.fields {
         f.hidden = match f.label {
             "Site" | "Workspace" => site_field != Some(f.label),
             "Account" => !account,
             "Email" | "Token" | "Read from" => !new,
-            "Keep in" => !new,
+            // One choice while the keychain check hasn't answered: nothing to pick.
+            "Keep in" => !new || f.choices.len() < 2,
             "Tickets folder" => !board,
             "Project" | "Team" | "Ticket prefix" => prefix_field != Some(f.label),
             "New tickets" | "Branch" | "Folder" => !(tracker && git),
@@ -120,9 +122,9 @@ pub(super) fn show_project_rows(
                 f.hint = provider.unwrap_or(Provider::Local).prefix_hint().into();
             }
             "Account" if new && saved => {
-                f.hint = format!("{} ←/→ for a saved account.", not_saved(keychain));
+                f.hint = format!("{} ←/→ for a saved account.", not_saved(file));
             }
-            "Account" if new => f.hint = not_saved(keychain).into(),
+            "Account" if new => f.hint = not_saved(file).into(),
             "Account" => f.hint = "←/→ to pick, or + new account".into(),
             _ => {}
         }

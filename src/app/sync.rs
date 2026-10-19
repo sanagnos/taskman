@@ -134,8 +134,8 @@ pub(super) enum Msg {
     OpenIssues(super::add_form::Listing, Result<Vec<crate::tracker::Listed>, String>),
     /// The multiplexer taskman runs in has the same prefix (`prefix_tip`).
     PrefixTip(String),
-    /// There's an OS keychain to save tokens to.
-    Keychain(crate::keychain::Keychain),
+    /// The OS keychain to save tokens to, or None: there's none.
+    Keychain(Option<crate::keychain::Keychain>),
     /// A session's process tree was looked at (`App::scan`): its ticket, the start it belongs to,
     /// why, and the pids under its CLI.
     Scanned(Id, String, super::sleep::Scan, Result<std::collections::HashSet<u32>, String>),
@@ -273,7 +273,7 @@ impl App {
                 }
                 // Saved, for the next start's first frame.
                 Msg::Gh(repo, gh) => changed |= self.github.insert(repo, gh) != Some(gh),
-                Msg::Keychain(k) => self.keychain = Some(k),
+                Msg::Keychain(k) => self.keychain_probed(k),
                 Msg::Scanned(id, launch, kind, found) => self.scanned(&id, &launch, kind, found),
                 Msg::BackgroundStopped(id, launch, res) => {
                     self.background_stopped(&id, &launch, res);

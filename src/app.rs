@@ -232,6 +232,9 @@ pub struct App {
     /// The OS keychain the account form can save a token to, once found (`Keychain::probe`); None
     /// where there's none, as on WSL or a server, and until the check at start is done.
     pub keychain: Option<crate::keychain::Keychain>,
+    /// Whether that check has answered: until it has, the account form offers no File, which on a
+    /// machine with a keychain would be the wrong place.
+    pub keychain_probed: bool,
     /// What the terminal said about its colours at start (`theme::ask`), and the theme drawn
     /// with: from that and `config.theme` (`apply_theme`).
     pub probe: theme::Probe,
@@ -258,9 +261,7 @@ impl App {
         let tx = app.tx.clone();
         std::thread::spawn(move || {
             let keychain = crate::keychain::Keychain::os();
-            if keychain.probe() {
-                let _ = tx.send(Msg::Keychain(keychain));
-            }
+            let _ = tx.send(Msg::Keychain(keychain.probe().then_some(keychain)));
         });
         // The first frame draws from the saved answers; gh can take a second to give its own.
         app.check_github(app.projects.iter().map(|p| p.repo.clone()).collect());
@@ -328,6 +329,7 @@ impl App {
             save_errors: Default::default(),
             checks: 0,
             keychain: None,
+            keychain_probed: false,
             probe: theme::Probe::default(),
             theme,
         }

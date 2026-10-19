@@ -338,6 +338,95 @@ fn an_unset_variable_offers_a_file_where_there_is_no_keychain() {
     );
 }
 
+/// The keychain check answers `keychain`, as the thread at start does.
+fn probe_answers(app: &mut App, keychain: Option<crate::keychain::Keychain>) {
+    app.tx.send(Msg::Keychain(keychain)).unwrap();
+    app.drain_messages();
+}
+
+/// Opened before the keychain check answers: no File to save to by mistake on a machine that has
+/// a keychain, only a source to type, as before there was File.
+#[test]
+fn before_the_keychain_check_answers_no_file_is_offered() {
+    let mut app = acme_app();
+    app.keychain_probed = false;
+    prefix(&mut app, KeyCode::Char('A'));
+    let form = settings_form(&app);
+    assert_eq!(
+        form.note.as_deref(),
+        Some("taskman never saves your token in its files, only where to read it from.")
+    );
+    let keep_in = form.field("Keep in").unwrap();
+    assert!(keep_in.hidden && keep_in.choices == ["Variable or command"]);
+    assert!(form.field("Token").unwrap().hidden);
+    assert_eq!(form.field("Read from").unwrap().value, "");
+    // A pasted token can't go anywhere yet: Enter asks for a source.
+    fill(&mut app, "Email", "dana@example.com");
+    submit(&mut app);
+    assert!(form_error(&app).unwrap().starts_with("Enter where to read the token from"));
+    assert!(!crate::token_file::dir().exists());
+}
+
+#[test]
+fn the_check_finding_no_keychain_offers_a_file_in_a_form_open_already() {
+    let mut app = acme_app();
+    app.keychain_probed = false;
+    prefix(&mut app, KeyCode::Char('A'));
+    probe_answers(&mut app, None);
+    let form = settings_form(&app);
+    assert_eq!(
+        form.note.as_deref(),
+        Some("taskman never saves your token in config.json, only where to read it from.")
+    );
+    let keep_in = form.field("Keep in").unwrap();
+    assert!(!keep_in.hidden);
+    assert_eq!(
+        (keep_in.value.as_str(), &keep_in.choices[..]),
+        ("File", &["File".to_string(), "Variable or command".into()][..])
+    );
+    assert!(!form.field("Token").unwrap().hidden && form.field("Read from").unwrap().hidden);
+}
+
+#[test]
+fn the_check_finding_a_keychain_offers_it_in_a_form_open_already() {
+    let mut app = acme_app();
+    app.keychain_probed = false;
+    crate::keychain::stub();
+    prefix(&mut app, KeyCode::Char('A'));
+    probe_answers(&mut app, Some(crate::keychain::Keychain::os()));
+    let form = settings_form(&app);
+    assert_eq!(
+        form.note.as_deref(),
+        Some("taskman never saves your token in its files, only where to read it from.")
+    );
+    let keep_in = form.field("Keep in").unwrap();
+    assert!(!keep_in.hidden);
+    assert_eq!(
+        (keep_in.value.as_str(), &keep_in.choices[..]),
+        ("Keychain", &["Keychain".to_string(), "Variable or command".into()][..])
+    );
+    assert!(!form.field("Token").unwrap().hidden && form.field("Read from").unwrap().hidden);
+}
+
+/// A source typed while the check was out stays: the answer only adds the choices.
+#[test]
+fn a_source_typed_before_the_check_answers_stays() {
+    for keychain in [false, true] {
+        let mut app = acme_app();
+        app.keychain_probed = false;
+        crate::keychain::stub();
+        prefix(&mut app, KeyCode::Char('A'));
+        fill(&mut app, "Read from", "cmd:pass show jira");
+        probe_answers(&mut app, keychain.then(crate::keychain::Keychain::os));
+        let form = settings_form(&app);
+        let keep_in = form.field("Keep in").unwrap();
+        assert_eq!(keep_in.value, "Variable or command");
+        assert_eq!(keep_in.choices.len(), 2);
+        assert!(!keep_in.hidden && form.field("Token").unwrap().hidden);
+        assert_eq!(form.field("Read from").unwrap().value, "cmd:pass show jira");
+    }
+}
+
 #[test]
 fn a_jira_account_with_no_site_is_saved_to_the_keychain_untested() {
     let mut app = acme_app();
