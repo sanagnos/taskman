@@ -306,7 +306,8 @@ fn draw_session(
         let scrolled = screen.scrollback();
         let show_cursor =
             !ended && scrolled == 0 && matches!(app.mode, Mode::Normal) && !app.prefix;
-        let term = PseudoTerminal::new(screen).cursor(Cursor::default().visibility(show_cursor));
+        let term = crate::term::Screen(screen);
+        let term = PseudoTerminal::new(&term).cursor(Cursor::default().visibility(show_cursor));
         f.render_widget(term, area);
         // From here on, whatever is drawn over the pane must render `Clear` first, or its
         // cells keep the links and their forced widths (see `links::mark`).
@@ -578,7 +579,8 @@ mod tests {
         parser.process(b"\x1b[4;44mabc\x1b[K");
         let area = Rect::new(0, 0, 8, 1);
         let mut buf = Buffer::empty(area);
-        ratatui::widgets::Widget::render(PseudoTerminal::new(parser.screen()), area, &mut buf);
+        let screen = crate::term::Screen(parser.screen());
+        ratatui::widgets::Widget::render(PseudoTerminal::new(&screen), area, &mut buf);
         for x in 0..3 {
             assert!(buf[(x, 0)].modifier.contains(Modifier::UNDERLINED), "column {x}");
         }

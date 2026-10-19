@@ -27,6 +27,7 @@ mod stack;
 mod status;
 mod status_file;
 mod store;
+mod term;
 mod theme;
 mod tracker;
 mod ui;

@@ -462,10 +462,10 @@ pub struct View {
 }
 
 impl tui_term::widget::Screen for View {
-    type C = vt100::Cell;
+    type C = crate::term::Cell;
 
-    fn cell(&self, row: u16, col: u16) -> Option<&vt100::Cell> {
-        self.rows.get(usize::from(row))?.get(usize::from(col))
+    fn cell(&self, row: u16, col: u16) -> Option<&crate::term::Cell> {
+        self.rows.get(usize::from(row))?.get(usize::from(col)).map(crate::term::Cell::wrap)
     }
 
     fn hide_cursor(&self) -> bool {

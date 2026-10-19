@@ -35,7 +35,9 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
 sha2 = "0.11.1"
 signal-hook = "0.4.5"
-tui-term = "0.3"
+# Without its vt100 feature, which ties vt100 to the version tui-term asks for: src/term.rs
+# implements its traits.
+tui-term = { version = "0.3", default-features = false }
 unicode-width = "0.2.2"
 ureq = { version = "3.4.2", features = ["json"] }
 vt100 = "0.16"
@@ -53,9 +55,9 @@ undocumented_unsafe_blocks = "warn"
 unsafe_op_in_unsafe_fn = "warn"
 
 # vt100 with OSC 8 hyperlinks kept per cell, erased cells keeping only the background colour and
-# scrollback rows stored without their trailing blank cells; tui-term uses it too. Upstream is
-# dormant, so expect the fork to stay. It's also why taskman isn't on crates.io: a published crate
-# can't depend on a git fork.
+# scrollback rows stored without their trailing blank cells. Upstream is dormant, so expect the
+# fork to stay. It's also why taskman isn't on crates.io: a published crate can't depend on a git
+# fork.
 [patch.crates-io]
 vt100 = { git = "https://github.com/sanagnos/vt100-rust", rev = "8033ed438e75a8624a0bcc337cca7ab76be2d2db" }
 

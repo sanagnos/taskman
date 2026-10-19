@@ -841,7 +841,7 @@ mod tests {
         let area = Rect::new(0, 0, 30, 3);
         let mut buf = Buffer::empty(area);
         ratatui::widgets::Widget::render(
-            tui_term::widget::PseudoTerminal::new(p.screen()),
+            tui_term::widget::PseudoTerminal::new(&crate::term::Screen(p.screen())),
             area,
             &mut buf,
         );
@@ -915,7 +915,7 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 50, 4));
         let screen = p.screen();
         ratatui::widgets::Widget::render(
-            tui_term::widget::PseudoTerminal::new(screen),
+            tui_term::widget::PseudoTerminal::new(&crate::term::Screen(screen)),
             area,
             &mut buf,
         );

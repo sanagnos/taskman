@@ -52,6 +52,7 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 | `src/ui.rs` | drawing: the layout (`layout`, `Areas`), `draw`, which calls each part of the screen in turn, NO_COLOR's `drop_colours`, and what the parts share (`dim`, `spinner`, the state badges, a card's PR summary) |
 | `src/ui/sidebar.rs` | the sidebar: the projects and their cards, laid out as rows and scrolled to keep the selection in view (`SidebarScroll`, kept on `App`); its `scroll_to_show`, `shown_rows` and `more_line` scroll the Settings and links lists too |
 | `src/ui/pane.rs` | the session's pane: its header, the session's terminal, with a banner once it ended (`draw_ended`), or what shows instead (handed off, a failed worktree, a start that failed), "selecting", the footer and the prefix menu |
+| `src/term.rs` | a vt100 screen as tui-term's `PseudoTerminal` draws it: tui-term's `Screen` and `Cell` traits implemented over vt100's types (`Screen`, `Cell`), with tui-term's `vt100` feature off, so vt100's version isn't tied to the one tui-term asks for |
 | `src/ui/panels.rs` | the right column: the tracker and GitHub panels, the agents' project board, and how a panel draws with its links (`render_panel`) |
 | `src/ui/dialogs.rs` | what draws over the screen: confirm dialogs, the links list, forms, settings and help |
 
