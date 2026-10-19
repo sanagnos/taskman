@@ -222,11 +222,37 @@ impl Drop for Watchdog {
 pub struct Terminal {
     pub parser: vt100::Parser,
     pub raw: Vec<u8>,
+    /// The same output in a terminal that, as tmux 3.4 does, widens a character to two columns on
+    /// U+FE0F without clearing the column it widens over: each U+FE0F moves the cursor on a column
+    /// instead, so the character is drawn one column wide and the next is left as it was.
+    pub tmux: vt100::Parser,
+    /// The start of a U+FE0F the last read ended in, for the next.
+    selector: Vec<u8>,
 }
 
 impl Terminal {
     pub fn screen(&self) -> &vt100::Screen {
         self.parser.screen()
+    }
+
+    fn process(&mut self, bytes: &[u8]) {
+        self.raw.extend_from_slice(bytes);
+        self.parser.process(bytes);
+        const VS16: &[u8] = "\u{fe0f}".as_bytes();
+        let bytes = std::mem::take(&mut self.selector).into_iter().chain(bytes.iter().copied());
+        let mut out = Vec::new();
+        let mut held = Vec::new();
+        for b in bytes {
+            held.push(b);
+            if held == VS16 {
+                out.extend_from_slice(b"\x1b[C");
+                held.clear();
+            } else if !VS16.starts_with(&held) {
+                out.append(&mut held);
+            }
+        }
+        self.selector = held;
+        self.tmux.process(&out);
     }
 }
 
@@ -290,6 +316,8 @@ impl Tui {
         let term = Arc::new(Mutex::new(Terminal {
             parser: vt100::Parser::new(dim(40), dim(160), 1000),
             raw: Vec::new(),
+            tmux: vt100::Parser::new(dim(40), dim(160), 1000),
+            selector: Vec::new(),
         }));
         let stop = Arc::new(AtomicBool::new(false));
         let writer = master.try_clone().unwrap();
@@ -303,8 +331,7 @@ impl Tui {
                         Ok(n) => {
                             answer(&mut master, &buf[..n]);
                             let mut t = term.lock().unwrap_or_else(|e| e.into_inner());
-                            t.raw.extend_from_slice(&buf[..n]);
-                            t.parser.process(&buf[..n]);
+                            t.process(&buf[..n]);
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             std::thread::sleep(Duration::from_millis(5));
@@ -422,12 +449,10 @@ impl Tui {
 
     /// Resizes the terminal, as dragging a window's edge does: taskman gets a SIGWINCH.
     pub fn resize(&self, rows: u16, cols: u16) {
-        self.term
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .parser
-            .screen_mut()
-            .set_size(dim(rows), dim(cols));
+        let mut t = self.term.lock().unwrap_or_else(|e| e.into_inner());
+        t.parser.screen_mut().set_size(dim(rows), dim(cols));
+        t.tmux.screen_mut().set_size(dim(rows), dim(cols));
+        drop(t);
         let size = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
         // SAFETY: TIOCSWINSZ reads one winsize, from `size`, which outlives the call.
         let r = unsafe { libc::ioctl(self.writer.as_raw_fd(), libc::TIOCSWINSZ, &size) };
@@ -563,6 +588,10 @@ pub fn project(dir: &Path, keys: &[&str]) -> PathBuf {
 /// - `lines N` prints `line 001` to `line N`, then `printed N`
 /// - `emoji N` prints N rows, `row 001 ⚠️ ✅ ❌ end` with the warning sign's emoji selector (U+FE0F)
 ///   on odd rows and without it on even ones, then `printed N`
+/// - `box N` prints N rows of `─`, as the edge of a box
+/// - `warnings N` goes back up over the N rows above the line it was typed on, as a CLI redrawing
+///   its box does, and prints `row 001 ⚠️ ⚠️ ... end` with eight warning signs, each with U+FE0F,
+///   over them, then `printed N` over the line typed
 /// - `stream` prints `tick 0001`, `tick 0002`... every 20ms
 /// - `panic` prints `half-drawn` and `$TASKMAN_TEST_PANIC` in one write, which makes a debug
 ///   build's reader panic after it has processed the first
@@ -601,6 +630,14 @@ while :; do
         i=$((i + 1))
       done
       echo "printed $n";;
+    "box "*)
+      i=1; n=${line#box }; edge='────────────────────────────────────────────────────────────'
+      while [ $i -le $n ]; do printf '%s\n' "$edge"; i=$((i + 1)); done;;
+    "warnings "*)
+      i=1; n=${line#warnings }; w='\342\232\240\357\270\217'; ws="$w $w $w $w $w $w $w $w"
+      printf '\033[%dA' $((n + 1))
+      while [ $i -le $n ]; do printf "row %03d $ws end\033[K\n" $i; i=$((i + 1)); done
+      printf '\033[Kprinted %s\n' "$n";;
     stream)
       (i=1; while printf 'tick %04d\n' $i; do echo $i > "$f.ticks"; i=$((i + 1)); sleep 0.02; done) &
       echo $! > "$f.stream.pid";;

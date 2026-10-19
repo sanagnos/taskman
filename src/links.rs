@@ -126,6 +126,15 @@ fn wrap(cell: &mut Cell, open: &str) {
     cell.set_symbol(&symbol).set_diff_option(CellDiffOption::ForcedWidth(width));
 }
 
+/// The text a cell shows: its symbol without the OSC 8 escapes `wrap` put around it.
+pub fn shown(symbol: &str) -> &str {
+    let text = match symbol.strip_prefix("\x1b]8;") {
+        Some(rest) => rest.split_once('\x07').map_or(rest, |(_, text)| text),
+        None => symbol,
+    };
+    text.strip_suffix(CLOSE).unwrap_or(text)
+}
+
 /// The terminal's writer, sending each link once per run of cells rather than once per cell:
 /// `mark` wraps every cell on its own, since ratatui counts a cell's width only that way, so a
 /// close followed by an opening of the same link, with only cursor moves and colours between them,
@@ -857,6 +866,15 @@ mod tests {
         assert_eq!(osc8, [a, CLOSE, b, CLOSE], "{out:?}");
         let run = &out[out.find(a).unwrap()..out.find(CLOSE).unwrap()];
         assert_eq!(escapes_and_text(run).1, "one two 日 three four five six seven", "{run:?}");
+    }
+
+    #[test]
+    fn a_linked_cell_shows_its_symbol() {
+        let mut cell = Cell::new("\u{26a0}\u{fe0f}");
+        wrap(&mut cell, &opening("id=x", "https://example.com/a"));
+        assert_ne!(cell.symbol(), "\u{26a0}\u{fe0f}");
+        assert_eq!(shown(cell.symbol()), "\u{26a0}\u{fe0f}");
+        assert_eq!(shown("a"), "a");
     }
 
     #[test]

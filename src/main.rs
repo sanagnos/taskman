@@ -3,6 +3,7 @@ compile_error!("taskman needs macOS or Linux (use WSL on Windows)");
 
 mod add;
 mod app;
+mod backend;
 mod background;
 mod cli;
 mod close;
@@ -396,9 +397,8 @@ fn main() -> anyhow::Result<()> {
     let enhanced = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
     ENHANCED.store(enhanced, Ordering::Relaxed);
     let result = take_terminal(enhanced).map_err(anyhow::Error::from).and_then(|()| {
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(
-            links::Runs::new(std::io::stdout()),
-        ))?;
+        let mut terminal =
+            ratatui::Terminal::new(backend::Backend::new(links::Runs::new(std::io::stdout())))?;
         let result = run(&mut terminal, &mut app, enhanced, &signals, &tty);
         if tty.wait(Duration::ZERO) == Input::Gone {
             detach_output();
@@ -493,8 +493,9 @@ fn set_panic_hook() {
     }));
 }
 
-/// The terminal, its output sending each link once per run of cells (see `links::Runs`).
-type Term = ratatui::Terminal<ratatui::backend::CrosstermBackend<links::Runs<std::io::Stdout>>>;
+/// The terminal, clearing what an emoji covers before drawing it (see `backend`), its output
+/// sending each link once per run of cells (see `links::Runs`).
+type Term = ratatui::Terminal<backend::Backend<links::Runs<std::io::Stdout>>>;
 
 fn run(
     terminal: &mut Term,

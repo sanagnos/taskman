@@ -4,6 +4,8 @@ What changed in each release; a release's notes on GitHub are its section here. 
 
 ## Unreleased
 
+- Closing an overlay (help, the quit dialog, the links list) over an emoji such as ⚠️, or a session redrawing the text beside one, no longer leaves a stale character next to the emoji or moves the text after it a column right. Seen in tmux 3.4 and Windows Terminal; terminals that draw ⚠️ one column wide show it the same way.
+
 ## 0.1.16 - 2026-10-19
 
 - `ctrl+a w` lists every session waiting on you, oldest first, with how long it has waited, why (permission or question) and what it asks for: for a permission prompt the tool and its command, as the Claude Code or Codex hook reports it. Enter goes to that session. A session that has waited a minute shows its time in the sidebar (`▲ 4m`) in place of "needs you". Sessions started by an older taskman show the prompt's message until their next prompt.
