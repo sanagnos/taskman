@@ -52,11 +52,12 @@ undocumented_unsafe_blocks = "warn"
 [lints.rust]
 unsafe_op_in_unsafe_fn = "warn"
 
-# vt100 with OSC 8 hyperlinks kept per cell and erased cells keeping only the background colour;
-# tui-term uses it too. Upstream is dormant, so expect the fork to stay. It's also why taskman
-# isn't on crates.io: a published crate can't depend on a git fork.
+# vt100 with OSC 8 hyperlinks kept per cell, erased cells keeping only the background colour and
+# scrollback rows stored without their trailing blank cells; tui-term uses it too. Upstream is
+# dormant, so expect the fork to stay. It's also why taskman isn't on crates.io: a published crate
+# can't depend on a git fork.
 [patch.crates-io]
-vt100 = { git = "https://github.com/sanagnos/vt100-rust", rev = "5da679c57b6c59b2fd54240e33b88ac7b551b64e" }
+vt100 = { git = "https://github.com/sanagnos/vt100-rust", rev = "8033ed438e75a8624a0bcc337cca7ab76be2d2db" }
 
 # What the release workflow builds (--profile dist): a fifth smaller than a release build, for a
 # build nearly twice as long, so it's a profile of its own and `cargo build --release` stays quick.

@@ -56,6 +56,32 @@ pub(super) fn prefix_hint(p: keys::Prefix) -> String {
 const AUTO_INSTALL: &str = "Install automatically";
 const NOTIFY_ONLY: &str = "Only notify";
 
+/// The scrollback setting's presets, in rows.
+const SCROLLBACK: [usize; 6] = [1_000, 2_000, 5_000, 10_000, 20_000, 50_000];
+
+fn rows_label(rows: usize) -> String {
+    let digits = rows.to_string();
+    let mut s = String::new();
+    for (i, d) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            s.push(',');
+        }
+        s.push(d);
+    }
+    format!("{s} rows")
+}
+
+/// The values the scrollback field cycles through: the presets, and `current` when it's none of
+/// them (set by hand in the config file).
+fn rows_choices(current: usize) -> Vec<usize> {
+    let mut v = SCROLLBACK.to_vec();
+    if !v.contains(&current) {
+        v.push(current);
+        v.sort_unstable();
+    }
+    v
+}
+
 fn theme_label(t: theme::Setting) -> &'static str {
     match t {
         theme::Setting::Auto => "Follow the terminal",
@@ -232,6 +258,12 @@ impl App {
                 "past it, the idle sessions unselected longest sleep, whatever the time",
             ),
             Field::choice(
+                "Scrollback",
+                rows_choices(self.config.scrollback).into_iter().map(rows_label).collect(),
+                rows_label(self.config.scrollback),
+                "per session, from its next start",
+            ),
+            Field::choice(
                 "Theme",
                 theme::Setting::ALL.iter().map(|t| theme_label(*t).to_string()).collect(),
                 theme_label(self.config.theme),
@@ -256,6 +288,10 @@ impl App {
         if let Some(c) = caps.into_iter().find(|c| cap_label(*c) == pick("Keep awake at most")) {
             self.config.max_awake = c;
         }
+        let rows = rows_choices(self.config.scrollback);
+        if let Some(r) = rows.into_iter().find(|r| rows_label(*r) == pick("Scrollback")) {
+            self.config.scrollback = r;
+        }
         if let Some(t) = theme::Setting::ALL.into_iter().find(|t| theme_label(*t) == pick("Theme"))
         {
             self.config.theme = t;
@@ -279,6 +315,18 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scrollback_choices_read_as_rows() {
+        assert_eq!(rows_label(1_000), "1,000 rows");
+        assert_eq!(rows_label(50_000), "50,000 rows");
+        assert_eq!(rows_label(1_234_567), "1,234,567 rows");
+        assert_eq!(rows_label(500), "500 rows");
+        assert_eq!(rows_label(0), "0 rows");
+        // a number set by hand in the config file is offered in its place among the presets
+        assert_eq!(rows_choices(10_000), SCROLLBACK);
+        assert_eq!(rows_choices(3_000), [1_000, 2_000, 3_000, 5_000, 10_000, 20_000, 50_000]);
+    }
 
     #[test]
     fn tips_a_prefix_shared_with_tmux_or_screen() {

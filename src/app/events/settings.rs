@@ -52,3 +52,47 @@ fn the_settings_list_scrolls_only_as_far_as_the_cursor_needs() {
     assert_eq!(top(&app), scrolled);
     assert!(screen.contains("▸ acme-28 ") && screen.contains("  acme-29 "), "{screen}");
 }
+
+// ---- Settings → General ---------------------------------------------------------------------
+
+#[test]
+fn settings_save_the_scrollback() {
+    let mut app = acme_app();
+    app.open_settings(SettingsItem::General, false);
+    app.on_key(key(KeyCode::Enter));
+    for _ in 0..4 {
+        app.on_key(key(KeyCode::Down));
+    }
+    assert_eq!(field(&app, "Scrollback"), "10,000 rows");
+    app.on_key(key(KeyCode::Left));
+    assert_eq!(field(&app, "Scrollback"), "5,000 rows");
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(toast(&app), Some("Saved"));
+    assert_eq!(app.config.scrollback, 5_000);
+    assert_eq!(store::load_config().unwrap().scrollback, 5_000);
+    // Saving the other settings leaves it be.
+    app.open_settings(SettingsItem::General, false);
+    app.on_key(key(KeyCode::Enter));
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(app.config.scrollback, 5_000);
+}
+
+/// A number set by hand in the config file is kept, and offered among the presets.
+#[test]
+fn settings_keep_a_scrollback_set_by_hand() {
+    let mut app = acme_app();
+    app.config.scrollback = 3_000;
+    app.open_settings(SettingsItem::General, false);
+    app.on_key(key(KeyCode::Enter));
+    for _ in 0..4 {
+        app.on_key(key(KeyCode::Down));
+    }
+    assert_eq!(field(&app, "Scrollback"), "3,000 rows");
+    app.on_key(key(KeyCode::Right));
+    assert_eq!(field(&app, "Scrollback"), "5,000 rows");
+    app.on_key(key(KeyCode::Left));
+    app.on_key(key(KeyCode::Left));
+    assert_eq!(field(&app, "Scrollback"), "2,000 rows");
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(app.config.scrollback, 3_000);
+}

@@ -243,7 +243,7 @@ pub fn key_action(key: &KeyEvent) -> KeyAction {
 /// What the Claude pane shows while a selection is held: the session's history above a copy of its
 /// screen as it was when the selection began. Rows in the history don't change once they've
 /// scrolled off the screen, so they're read from the live session when needed rather than copied
-/// (up to `SCROLLBACK` rows on every click); the screen's rows do change, so they're copied.
+/// (up to the scrollback setting's rows on every click); the screen's rows do change, so they're copied.
 ///
 /// Content row `r` below `history` is the session's history row `r - dropped`; from `history` on,
 /// it is row `r - history` of `screen`.
@@ -296,7 +296,7 @@ impl Snapshot {
     }
 
     /// Counts the rows the session's history dropped since the last call; call it often enough
-    /// that fewer than `SCROLLBACK` rows arrive in between. False once the session has switched
+    /// that fewer rows than the history holds arrive in between. False once the session has switched
     /// between its normal and alternate screens, whose rows these aren't.
     pub fn track(&mut self) -> bool {
         let mut p = lock(&self.parser);
@@ -478,7 +478,7 @@ impl tui_term::widget::Screen for View {
 }
 
 /// A copy of what `screen` shows (scrolled back or not), without its scrollback: cloning the live
-/// screen would copy up to `SCROLLBACK` rows on every click.
+/// screen would copy its whole history on every click.
 pub fn freeze(screen: &vt100::Screen) -> vt100::Screen {
     let (rows, cols) = screen.size();
     let mut p = vt100::Parser::new(rows, cols, 0);

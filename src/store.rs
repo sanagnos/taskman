@@ -909,6 +909,9 @@ pub struct Config {
     /// whatever the time. None for no limit.
     #[serde(default)]
     pub max_awake: Option<usize>,
+    /// The rows of history each session keeps, read when it starts. Missing means `SCROLLBACK`.
+    #[serde(default = "scrollback")]
+    pub scrollback: usize,
     /// Light or dark, or `auto` to ask the terminal.
     #[serde(default)]
     pub theme: crate::theme::Setting,
@@ -925,6 +928,14 @@ fn sleep_after() -> Option<u64> {
     Some(SLEEP_AFTER)
 }
 
+/// The rows of history a session keeps, unless the config says otherwise: what Alacritty and
+/// zellij keep. A row takes 32 bytes for each column up to its last character (vt100's cells).
+pub const SCROLLBACK: usize = 10_000;
+
+fn scrollback() -> usize {
+    SCROLLBACK
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -934,6 +945,7 @@ impl Default for Config {
             prefix: crate::keys::Prefix::default(),
             sleep_after: sleep_after(),
             max_awake: None,
+            scrollback: SCROLLBACK,
             theme: crate::theme::Setting::Auto,
             extra: Extra::new(),
         }
@@ -1657,6 +1669,17 @@ mod tests {
         assert_eq!((set.sleep_after, set.max_awake), (None, Some(4)));
         let saved = serde_json::to_string(&Config::default()).unwrap();
         assert!(saved.contains(r#""sleep_after":3600"#), "{saved}");
+    }
+
+    #[test]
+    fn scrollback_defaults_to_ten_thousand_rows() {
+        let old: Config = serde_json::from_str(r#"{"accounts":[]}"#).unwrap();
+        assert_eq!(old.scrollback, SCROLLBACK);
+        assert_eq!(Config::default().scrollback, 10_000);
+        let set: Config = serde_json::from_str(r#"{"accounts":[],"scrollback":2000}"#).unwrap();
+        assert_eq!(set.scrollback, 2000);
+        let saved = serde_json::to_string(&set).unwrap();
+        assert!(saved.contains(r#""scrollback":2000"#), "{saved}");
     }
 
     #[test]

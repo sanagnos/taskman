@@ -337,7 +337,7 @@ fn settings_theme_overrides_the_terminal() {
 
     app.open_settings(crate::app::SettingsItem::General, false);
     app.on_key(key(KeyCode::Enter));
-    for _ in 0..4 {
+    for _ in 0..5 {
         app.on_key(key(KeyCode::Down));
     }
     assert_eq!(field(&app, "Theme"), "Follow the terminal");

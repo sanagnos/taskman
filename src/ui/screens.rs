@@ -137,6 +137,7 @@ fn start_failed(width: u16) -> String {
         "ENG-70",
         24,
         80,
+        crate::store::SCROLLBACK,
         Default::default(),
         Default::default(),
     )
@@ -366,12 +367,12 @@ fn settings_scrolled_to_the_last_project() {
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 
-/// Settings → General, with the sleep settings: an hour and no limit, the defaults.
+/// Settings → General, with the defaults: sleep after an hour, no limit, 10,000 rows of scrollback.
 #[test]
 fn settings_general() {
     let mut app = acme_app();
     app.open_settings(SettingsItem::General, false);
-    assert_snapshot!(draw(&mut app, 100, 30));
+    assert_snapshot!(draw(&mut app, 100, 32));
 }
 
 /// Sleeping sessions are a quiet glyph; one that finished a turn nobody has looked at keeps

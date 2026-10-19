@@ -6,8 +6,6 @@ use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 
-const SCROLLBACK: usize = 10_000;
-
 /// How much input may wait for a session's CLI to read it. Past this, `Session::write` drops what
 /// it's given rather than queue more for a CLI that isn't reading.
 pub const QUEUE: usize = 4 << 20;
@@ -117,6 +115,7 @@ impl Session {
         name: &str,
         rows: u16,
         cols: u16,
+        scrollback: usize,
         dirty: Arc<AtomicBool>,
         colours: crate::theme::Colours,
     ) -> anyhow::Result<Self> {
@@ -130,7 +129,7 @@ impl Session {
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             rows,
             cols,
-            SCROLLBACK,
+            scrollback,
             Callbacks { colours, ..Callbacks::default() },
         )));
         let exited = Arc::new(AtomicBool::new(false));
@@ -669,7 +668,7 @@ pub mod fake {
             let parser = vt100::Parser::new_with_callbacks(
                 rows,
                 cols,
-                super::SCROLLBACK,
+                crate::store::SCROLLBACK,
                 Callbacks::default(),
             );
             let session = Self {
@@ -792,6 +791,7 @@ mod tests {
                 "ENG-1",
                 24,
                 80,
+                crate::store::SCROLLBACK,
                 Default::default(),
                 Default::default(),
             )
@@ -812,7 +812,12 @@ mod tests {
     }
 
     fn parser(rows: u16, cols: u16) -> Parser {
-        vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK, Callbacks::default())
+        vt100::Parser::new_with_callbacks(
+            rows,
+            cols,
+            crate::store::SCROLLBACK,
+            Callbacks::default(),
+        )
     }
 
     /// A narrower window cuts a wide character at the end of a line in half; erasing or printing

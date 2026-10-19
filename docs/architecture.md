@@ -79,7 +79,7 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 
 | File | What it holds |
 |---|---|
-| `src/store.rs` | saved state (projects, tickets, UI prefs, each folder's last GitHub check), config (accounts, the auto-update toggle, the prefix), paths, `write_atomic` (synced, then renamed over); in unit tests, a scratch state folder and config file per test (`scratch`) and a made-up home |
+| `src/store.rs` | saved state (projects, tickets, UI prefs, each folder's last GitHub check), config (accounts, the auto-update toggle, the prefix, the sleep and scrollback settings), paths, `write_atomic` (synced, then renamed over); in unit tests, a scratch state folder and config file per test (`scratch`) and a made-up home |
 | `src/keychain.rs` | the OS keychain the account form saves tokens to: `security` on macOS (`security -i`, the command on stdin), `secret-tool` on Linux (the token on stdin); `probe` for whether there's one, `store` (read back to check), `read`, `delete`; the `keychain:NAME` source and its naming; in unit tests, a stub in the scratch folder (`stub`) |
 | `src/proc.rs` | `proc::run`: git, gh and token commands with a time limit, no terminal and prompts off; `run_with_input` feeds a command's stdin (the updater pipes the download into `tar`) |
 | `src/untrusted.rs` | tracker and PR text printed as data: `clean` strips terminal control characters and the characters that hide text from a reader (bidirectional controls, Unicode tags), `line` and `block` keep it in its own line or indented block, `branch` passes only a branch name a brief may carry, `labelled` adds the note `taskman status` prints above it |
