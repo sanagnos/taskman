@@ -182,6 +182,8 @@ pub struct App {
     tx: mpsc::Sender<Msg>,
     rx: mpsc::Receiver<Msg>,
     last_status_poll: Instant,
+    /// When `inbox/alive` was last written, which `take_inbox` does at most once a second.
+    heartbeat_at: Option<Instant>,
     /// The Add form's project's worktrees, listed once so typing a key doesn't run git.
     form_worktrees: std::cell::RefCell<Option<(PathBuf, github::Worktrees)>>,
     /// Each project's open issues for the Add form, by folder, with when they were asked for.
@@ -306,6 +308,7 @@ impl App {
             tx,
             rx,
             last_status_poll: Instant::now().checked_sub(STATUS_EVERY).unwrap_or_else(Instant::now),
+            heartbeat_at: None,
             form_worktrees: Default::default(),
             open_issues: Default::default(),
             default_branches: Default::default(),

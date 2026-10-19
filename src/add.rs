@@ -44,7 +44,7 @@ that asked can message it.
 
 /// How long the command waits for the TUI's reply.
 const WAIT: Duration = Duration::from_secs(5);
-/// The TUI rewrites the `alive` file on every pass; one older than this means it isn't running.
+/// The TUI rewrites the `alive` file once a second; one older than this means it isn't running.
 /// So does one further than this in the future: a killed TUI leaves the file, and after the clock
 /// steps back it would otherwise look alive until the clock caught up, refusing every start.
 const ALIVE: Duration = Duration::from_secs(3);
@@ -185,11 +185,12 @@ struct Alive {
     inbox: u32,
 }
 
-/// Says the TUI is running; called on every inbox pass. Writing it also sets its time. Written
-/// whole and renamed into place, so a command never reads it empty or half written.
-pub fn heartbeat() {
+/// Says the TUI is running; called once a second from the inbox pass. Writing it also sets its
+/// time. Written whole and renamed into place, so a command never reads it empty or half written.
+/// False when it couldn't be written.
+pub fn heartbeat() -> bool {
     let alive = Alive { version: env!("CARGO_PKG_VERSION").into(), inbox: INBOX_FORMAT };
-    let _ = store::write_unsynced(&alive_file(), &serde_json::to_vec(&alive).unwrap_or_default());
+    store::write_unsynced(&alive_file(), &serde_json::to_vec(&alive).unwrap_or_default()).is_ok()
 }
 
 /// What an `alive` file says; None for one that's empty or cut short, as a read can find an

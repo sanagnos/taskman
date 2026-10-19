@@ -12,7 +12,19 @@ use crate::store::{self, Base, Cli, Ticket};
 use crate::{add, close, resume, untrusted, util, worktree};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// How often `inbox/alive` is rewritten. Commands count the TUI as running for 3 s after the last
+/// write (`add::ALIVE`), which leaves room for a slow pass; the inbox itself is still read on every
+/// status poll.
+const HEARTBEAT_EVERY: Duration = Duration::from_secs(1);
+
+/// Whether the pass at `now` rewrites `inbox/alive`, last written at `last`: the first pass does,
+/// then one at least `HEARTBEAT_EVERY` later. What it holds doesn't change while taskman runs, so
+/// the write is only for its time.
+fn heartbeat_due(last: Option<Instant>, now: Instant) -> bool {
+    last.is_none_or(|t| now.saturating_duration_since(t) >= HEARTBEAT_EVERY)
+}
 
 /// The reply for agent `t`, just added by `taskman add` to `project`: its session starts at once,
 /// named `session`.
@@ -30,7 +42,11 @@ impl App {
     /// Adds what `taskman add` asked for and answers it. Runs on every status poll, and at the
     /// first tick for requests queued while taskman was closed.
     pub(super) fn take_inbox(&mut self) {
-        add::heartbeat();
+        let now = Instant::now();
+        // A write that failed is tried again on the next pass.
+        if heartbeat_due(self.heartbeat_at, now) && add::heartbeat() {
+            self.heartbeat_at = Some(now);
+        }
         let mut toasts = Vec::new();
         for (id, req) in add::take() {
             if req.close.is_some() {
@@ -438,6 +454,28 @@ impl App {
 mod tests {
     use super::*;
     use crate::app::test_support::agent;
+
+    #[test]
+    fn the_heartbeat_is_written_at_most_once_a_second() {
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        assert!(heartbeat_due(None, start));
+        // Status polls 300 ms apart write it on the first and then once a second has passed.
+        let mut last = None;
+        let written: Vec<u64> = (0..10)
+            .map(|i| i * 300)
+            .filter(|&ms| {
+                let due = heartbeat_due(last, at(ms));
+                if due {
+                    last = Some(at(ms));
+                }
+                due
+            })
+            .collect();
+        assert_eq!(written, [0, 1200, 2400]);
+        assert!(!heartbeat_due(Some(at(0)), at(999)));
+        assert!(heartbeat_due(Some(at(0)), at(1000)));
+    }
 
     #[test]
     fn says_when_an_added_agent_can_be_messaged() {

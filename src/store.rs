@@ -653,7 +653,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 
 /// `write_atomic` without the syncs, for a file rewritten all the time whose loss costs nothing:
 /// the inbox heartbeat, of which only the time is read. Syncing it would commit the disk's
-/// journal three times a second for as long as taskman runs.
+/// journal every second for as long as taskman runs.
 pub fn write_unsynced(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     write_renamed(path, bytes, false)
 }

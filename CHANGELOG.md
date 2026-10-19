@@ -4,6 +4,8 @@ What changed in each release; a release's notes on GitHub are its section here. 
 
 ## Unreleased
 
+- taskman rewrites `inbox/alive` in its state folder once a second instead of about three times a second, so tools that watch the folder (backups, indexers, file watchers) are woken less. `taskman add` and `taskman close` still answer within a second.
+
 ## 0.1.11 - 2026-10-19
 
 - `taskman --licenses` and the release archives' `LICENSE-THIRD-PARTY` list the crates without their versions.
