@@ -1,9 +1,13 @@
 version: 2
 updates:
+  # A release waits a week before Dependabot proposes it, so one that is pulled or broken soon
+  # after it's published never reaches a pull request. Security updates don't wait.
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       cargo:
         patterns: ["*"]
@@ -11,6 +15,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       github-actions:
         patterns: ["*"]

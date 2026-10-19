@@ -4,6 +4,8 @@ What changed in each release; a release's notes on GitHub are its section here. 
 
 ## Unreleased
 
+- `taskman --licenses` and the release archives' `LICENSE-THIRD-PARTY` list the crates without their versions.
+
 ## 0.1.10 - 2026-10-18
 
 - Typing in the Add form (`ctrl+a n`) while it's on Type, or on another choice, now goes to the Ticket or Name field instead of being dropped: a number, a key of the project or a link switches Type to Ticket, so `ctrl+a n` then `52` adds ENG-52, and anything else names an agent. A paste lands there too.
