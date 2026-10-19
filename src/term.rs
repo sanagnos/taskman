@@ -4,6 +4,18 @@
 
 use ratatui::buffer;
 use ratatui::style::{Color, Modifier, Style};
+use unicode_width::UnicodeWidthStr as _;
+
+/// A screen dimension for vt100, which takes none that is zero.
+pub fn dim(n: u16) -> std::num::NonZeroU16 {
+    std::num::NonZeroU16::new(n).unwrap_or(std::num::NonZeroU16::MIN)
+}
+
+/// A screen's rows and columns as plain numbers.
+pub fn size(screen: &vt100::Screen) -> (u16, u16) {
+    let (rows, cols) = screen.size();
+    (rows.get(), cols.get())
+}
 
 /// A session's screen, scrolled back or not, for `PseudoTerminal::new`.
 pub struct Screen<'a>(pub &'a vt100::Screen);
@@ -50,7 +62,11 @@ impl tui_term::widget::Cell for Cell {
     fn apply(&self, out: &mut buffer::Cell) {
         let cell = &self.0;
         if cell.has_contents() {
-            out.set_symbol(cell.contents());
+            // vt100 draws a character unicode-width calls three columns (U+17D8) in two, and
+            // ratatui skips as many cells after a symbol as its width says: the text after it
+            // would never be drawn. Selecting and copying read vt100's cells, so they keep it.
+            let text = cell.contents();
+            out.set_symbol(if text.width() > 2 { "\u{fffd}" } else { text });
         }
         let mut modifier = Modifier::empty();
         for (on, m) in [
@@ -90,7 +106,7 @@ mod tests {
     use tui_term::widget::{Cursor, PseudoTerminal, Screen as _};
 
     fn draw(parser: &vt100::Parser, cursor: bool) -> Buffer {
-        let (rows, cols) = parser.screen().size();
+        let (rows, cols) = size(parser.screen());
         let area = Rect::new(0, 0, cols, rows);
         let mut buf = Buffer::empty(area);
         let screen = Screen(parser.screen());
@@ -102,7 +118,7 @@ mod tests {
 
     #[test]
     fn draws_text_colours_and_attributes() {
-        let mut p = vt100::Parser::new(1, 12, 0);
+        let mut p = vt100::Parser::new(dim(1), dim(12), 0);
         p.process(b"a\x1b[3;4;7;2;31;48;2;1;2;3mb\x1b[0;1;38;5;200mc\x1b[0m\xe6\x97\xa5");
         let buf = draw(&p, false);
         let a = &buf[(0, 0)];
@@ -127,7 +143,7 @@ mod tests {
         use unicode_width::UnicodeWidthStr as _;
         // The warning sign with U+FE0F is two columns, as unicode-width and terminals measure it,
         // and without it one; ✅ and ❌ are two either way.
-        let mut p = vt100::Parser::new(1, 14, 0);
+        let mut p = vt100::Parser::new(dim(1), dim(14), 0);
         p.process("a\u{26a0}\u{fe0f}b✅c❌d\u{26a0}e".as_bytes());
         let buf = draw(&p, false);
         let at = |x| buf[(x, 0)].symbol().to_string();
@@ -144,8 +160,22 @@ mod tests {
     }
 
     #[test]
+    fn a_character_unicode_widths_call_three_columns_takes_two() {
+        // vt100 draws U+17D8 in two columns, though unicode-width says three, and ratatui skips as
+        // many cells after a symbol as its width says: the text after it must not be skipped.
+        let mut p = vt100::Parser::new(dim(1), dim(8), 0);
+        p.process("a\u{17d8}bc".as_bytes());
+        let buf = draw(&p, false);
+        let symbols: Vec<String> = (0..5).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert_eq!(symbols, ["a", "\u{fffd}", " ", "b", "c"]);
+        let blank = Buffer::empty(buf.area);
+        let written: Vec<u16> = blank.diff(&buf).iter().map(|(x, _, _)| *x).collect();
+        assert_eq!(written, [0, 1, 3, 4]);
+    }
+
+    #[test]
     fn the_cursor_moves_down_by_the_history_shown() {
-        let mut p = vt100::Parser::new(4, 20, 20);
+        let mut p = vt100::Parser::new(dim(4), dim(20), 20);
         for i in 0..9 {
             p.process(format!("line {i}\r\n").as_bytes());
         }

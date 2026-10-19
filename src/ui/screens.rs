@@ -753,7 +753,7 @@ fn a_frame_smaller_than_the_layout_does_not_panic() {
     assert!(claude.right() <= 80 && claude.bottom() <= 24, "{claude:?}");
     // The session now fits its pane.
     let s = app.tickets.iter().find(|tv| tv.t.key == "ENG-52").unwrap().session.as_ref().unwrap();
-    let size = crate::session::lock(&s.parser).screen().size();
+    let size = crate::term::size(crate::session::lock(&s.parser).screen());
     assert_eq!(size, (claude.height, claude.width));
 }
 

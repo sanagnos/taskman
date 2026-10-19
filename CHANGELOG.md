@@ -7,6 +7,10 @@ What changed in each release; a release's notes on GitHub are its section here. 
 - `ctrl+a w` lists every session waiting on you, oldest first, with how long it has waited, why (permission or question) and what it asks for: for a permission prompt the tool and its command, as the Claude Code or Codex hook reports it. Enter goes to that session. A session that has waited a minute shows its time in the sidebar (`▲ 4m`) in place of "needs you". Sessions started by an older taskman show the prompt's message until their next prompt.
 - Messages in the footer have a level. Errors (a worktree that couldn't be created, a file that couldn't be written, a session that didn't start) are red and stay until your next key, and a later message doesn't replace them; warnings are yellow and, like confirmations, clear after 4 seconds. The count of sessions waiting on you stays beside the message instead of being covered, and a long message wraps onto the blank row above the footer (or ends with `ctrl+a L lists it` on a short window).
 - `ctrl+a L` lists the last 200 messages, newest first, with how long ago each came, so one that went by while you were typing into a session can be read again.
+- A session that clears its history (`ESC[3J`, which `clear` sends in most shells) now loses it in the pane too, as in a terminal. If you're selecting text while it happens, the selection ends with a toast instead of copying the wrong rows.
+- Making a session's pane shorter pushes its top rows into the history, and making it taller pulls them back, as in other terminals, rather than dropping rows at the bottom.
+- A character that Unicode counts as three columns wide (U+17D8) no longer hides the text after it on its row; it shows as `�`, and selecting and copying still give the character.
+- The terminal library, vt100, is now 0.18, with our changes on top of it.
 
 ## 0.1.15 - 2026-10-19
 

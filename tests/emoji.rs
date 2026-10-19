@@ -12,7 +12,7 @@ const LIMIT: Duration = Duration::from_secs(60);
 
 /// The screen's rows, a cell to an entry (a wide character's second cell is empty).
 fn rows(screen: &vt100::Screen) -> Vec<Vec<String>> {
-    let (rows, cols) = screen.size();
+    let (rows, cols) = common::size(screen);
     (0..rows)
         .map(|row| {
             (0..cols)

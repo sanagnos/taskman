@@ -240,10 +240,20 @@ pub fn key_action(key: &KeyEvent) -> KeyAction {
 
 // ---- the session's content ---------------------------------------------------------------
 
+/// Why a `Snapshot` can't go on (`Snapshot::track`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lost {
+    /// The session switched between its normal and alternate screens.
+    Screen,
+    /// The session cleared or reshaped its history.
+    History,
+}
+
 /// What the Claude pane shows while a selection is held: the session's history above a copy of its
 /// screen as it was when the selection began. Rows in the history don't change once they've
-/// scrolled off the screen, so they're read from the live session when needed rather than copied
-/// (up to the scrollback setting's rows on every click); the screen's rows do change, so they're copied.
+/// scrolled off the screen (until the session clears it, which `track` notices), so they're read
+/// from the live session when needed rather than copied (up to the scrollback setting's rows on
+/// every click); the screen's rows do change, so they're copied.
 ///
 /// Content row `r` below `history` is the session's history row `r - dropped`; from `history` on,
 /// it is row `r - history` of `screen`.
@@ -296,20 +306,23 @@ impl Snapshot {
     }
 
     /// Counts the rows the session's history dropped since the last call; call it often enough
-    /// that fewer rows than the history holds arrive in between. False once the session has switched
-    /// between its normal and alternate screens, whose rows these aren't.
-    pub fn track(&mut self) -> bool {
+    /// that fewer rows than the history holds arrive in between. Fails once the session has
+    /// switched between its normal and alternate screens, whose rows these aren't, or cleared or
+    /// reshaped its history (`ESC[3J`, a resize), whose rows the counts no longer describe.
+    pub fn track(&mut self) -> Result<(), Lost> {
         let mut p = lock(&self.parser);
         let live = p.screen_mut();
         if live.alternate_screen() != self.alternate {
-            return false;
+            return Err(Lost::Screen);
         }
-        let (dropped, pin) = dropped_since(live, self.pin);
+        let Some((dropped, pin)) = dropped_since(live, self.pin) else {
+            return Err(Lost::History);
+        };
         self.pin = pin;
         drop(p);
         self.dropped += dropped;
         self.top = self.top.max(self.oldest());
-        true
+        Ok(())
     }
 
     /// Moves the view `delta` rows, positive toward the newest; false when it can't go further.
@@ -323,7 +336,7 @@ impl Snapshot {
 
     /// The rows the pane shows.
     pub fn view(&self) -> View {
-        let (rows, cols) = self.screen.size();
+        let (rows, cols) = crate::term::size(&self.screen);
         let from_history = self.history.saturating_sub(self.top).min(usize::from(rows));
         let mut view = Vec::with_capacity(usize::from(rows));
         if from_history > 0 {
@@ -386,7 +399,7 @@ impl Snapshot {
             );
         }
         if end.row >= self.history {
-            let (rows, _) = self.screen.size();
+            let (rows, _) = crate::term::size(&self.screen);
             let first = start.row.max(self.history) - self.history;
             let last = (end.row - self.history).min(usize::from(rows) - 1);
             let from = if start.row >= self.history { start.col } else { 0 };
@@ -412,7 +425,11 @@ impl Drop for Snapshot {
         if live.alternate_screen() != self.alternate {
             return;
         }
-        let (dropped, (_, len)) = dropped_since(live, self.pin);
+        // The history's rows are gone or moved (see `dropped_since`): the bottom is all there is.
+        let Some((dropped, (_, len))) = dropped_since(live, self.pin) else {
+            live.set_scrollback(0);
+            return;
+        };
         let top = self.top.max((self.dropped + dropped).min(self.history));
         let back =
             if top < self.history { len.saturating_sub(top - (self.dropped + dropped)) } else { 0 };
@@ -420,13 +437,9 @@ impl Drop for Snapshot {
     }
 }
 
-/// How many rows the history has: vt100 caps the scroll position at it.
-pub fn history_len(live: &mut vt100::Screen) -> usize {
-    let back = live.scrollback();
-    live.set_scrollback(usize::MAX);
-    let len = live.scrollback();
-    live.set_scrollback(back);
-    len
+/// How many rows the history has now, not how many it holds at most (`scrollback_capacity`).
+pub fn history_len(live: &vt100::Screen) -> usize {
+    live.scrollback_len()
 }
 
 /// Scrolls the live screen back a row (when it has any history), so vt100 counts the rows the
@@ -438,18 +451,19 @@ fn pin(live: &mut vt100::Screen, len: usize) -> (usize, usize) {
 }
 
 /// The rows dropped off the top of the history since `pin` was taken (rows added minus how much
-/// the history grew), and a new pin.
+/// the history grew), and a new pin. None when the history shrank or the scroll position fell,
+/// which only a clear (`ESC[3J`) or a resize does: rows added move the position up, never down.
+/// Then the rows the snapshot counted are gone or moved, and nothing says which.
 fn dropped_since(
     live: &mut vt100::Screen,
     (was_back, was_len): (usize, usize),
-) -> (usize, (usize, usize)) {
+) -> Option<(usize, (usize, usize))> {
     let (back, len) = (live.scrollback(), history_len(live));
-    let dropped = if was_back > 0 && back >= was_back {
-        (back - was_back).saturating_sub(len.saturating_sub(was_len))
-    } else {
-        0
-    };
-    (dropped, pin(live, len))
+    if back < was_back || len < was_len {
+        return None;
+    }
+    let dropped = if was_back > 0 { (back - was_back).saturating_sub(len - was_len) } else { 0 };
+    Some((dropped, pin(live, len)))
 }
 
 fn row_cells(screen: &vt100::Screen, row: u16, cols: u16) -> Vec<vt100::Cell> {
@@ -482,13 +496,13 @@ impl tui_term::widget::Screen for View {
 pub fn freeze(screen: &vt100::Screen) -> vt100::Screen {
     let (rows, cols) = screen.size();
     let mut p = vt100::Parser::new(rows, cols, 0);
-    p.process(&screen.contents_formatted());
+    p.process(screen.contents_formatted().as_bytes());
     p.screen().clone()
 }
 
 /// Everything the session shows and has scrolled off its screen, oldest first, for `$EDITOR`.
 pub fn session_text(live: &mut vt100::Screen) -> String {
-    let rows = usize::from(live.size().0);
+    let rows = usize::from(crate::term::size(live).0);
     let len = history_len(live);
     tidy(&live_text(live, 0, len + rows - 1, 0, u16::MAX).0)
 }
@@ -506,7 +520,7 @@ fn live_text(
 ) -> (String, bool) {
     let back = live.scrollback();
     let len = history_len(live);
-    let rows = usize::from(live.size().0);
+    let rows = usize::from(crate::term::size(live).0);
     let last = last.min(len + rows - 1);
     let mut text = String::new();
     let mut wrapped = false;
@@ -544,7 +558,7 @@ fn visible_text(
     from: u16,
     to: u16,
 ) -> (String, bool) {
-    let cols = screen.size().1;
+    let cols = crate::term::size(screen).1;
     let to = to.min(cols.saturating_sub(1));
     (screen.contents_between(first, from, last, to + 1), screen.row_wrapped(last))
 }
@@ -910,8 +924,8 @@ mod tests {
     /// A session's parser with `lines` lines printed: "line 0", "line 1", ...
     fn session(rows: u16, cols: u16, scrollback: usize, lines: usize) -> Arc<Mutex<Parser>> {
         let mut p = vt100::Parser::new_with_callbacks(
-            rows,
-            cols,
+            crate::term::dim(rows),
+            crate::term::dim(cols),
             scrollback,
             crate::session::Callbacks::default(),
         );
@@ -971,7 +985,7 @@ mod tests {
         snap.scroll(-10);
         let before = view_rows(&snap);
         print(&parser, 0..7);
-        assert!(snap.track());
+        assert!(snap.track().is_ok());
         assert_eq!(view_rows(&snap), before);
         assert_eq!(snap.text(at(16, 0), at(28, 6)).lines().last(), Some("line 28"));
         assert_eq!(snap.text(at(29, 0), at(29, 19)), "line 29");
@@ -988,15 +1002,15 @@ mod tests {
         let (start, end) = (at(6, 0), at(8, 6));
         assert_eq!(snap.text(start, end), "line 22\nline 23\nline 24");
         print(&parser, 0..3);
-        assert!(snap.track());
+        assert!(snap.track().is_ok());
         print(&parser, 3..5);
-        assert!(snap.track());
+        assert!(snap.track().is_ok());
         assert_eq!(snap.dropped, 5);
         assert_eq!(view_rows(&snap), before);
         assert_eq!(snap.text(start, end), "line 22\nline 23\nline 24");
         // Once its rows are gone, the view starts at the oldest row left.
         print(&parser, 5..12);
-        assert!(snap.track());
+        assert!(snap.track().is_ok());
         assert_eq!(snap.top(), 12);
         assert_eq!(view_rows(&snap)[0], "line 28");
         assert_eq!(snap.text(start, end), "");
@@ -1008,7 +1022,7 @@ mod tests {
         let mut snap = Snapshot::new(parser.clone());
         snap.scroll(-10);
         print(&parser, 0..4);
-        snap.track();
+        assert!(snap.track().is_ok());
         drop(snap);
         let p = lock(&parser);
         assert_eq!(p.screen().scrollback(), 14);
@@ -1033,6 +1047,39 @@ mod tests {
     }
 
     #[test]
+    fn a_session_clearing_its_history_ends_the_selection() {
+        // ESC[3J empties the history and puts the scroll position at the bottom, so the rows the
+        // snapshot counted are gone, whatever is printed after.
+        for after in [0, 3, 60] {
+            let parser = session(5, 20, 100, 30);
+            let mut snap = Snapshot::new(parser.clone());
+            snap.scroll(-10);
+            assert_eq!(snap.text(at(16, 0), at(16, 19)), "line 16");
+            lock(&parser).process(b"\x1b[3J");
+            print(&parser, 0..after);
+            assert_eq!(snap.track(), Err(Lost::History), "{after} lines after");
+            // The session is left at its bottom, not scrolled to rows that aren't there.
+            drop(snap);
+            assert_eq!(lock(&parser).screen().scrollback(), 0);
+        }
+    }
+
+    #[test]
+    fn emoji_and_wide_characters_are_selected_whole() {
+        // U+FE0F makes the warning sign two columns; U+17D8 is three by unicode-width's count and
+        // two on the screen. Each comes out once, and the text after them is where it was.
+        let parser = session(4, 20, 100, 0);
+        let line = "a\u{26a0}\u{fe0f}b\u{2705}c\u{17d8}d\u{274c}e";
+        lock(&parser).process(format!("{line}\r\nnext\r\n").as_bytes());
+        let snap = Snapshot::new(parser);
+        assert_eq!(snap.text(at(0, 0), at(0, 19)), line);
+        assert_eq!(snap.text(at(0, 1), at(0, 2)), "\u{26a0}\u{fe0f}");
+        let symbols = snap.row_symbols(0).unwrap();
+        assert_eq!(symbols.concat().trim_end(), line);
+        assert_eq!(snap.text(at(0, 7), at(1, 3)), "\u{17d8}d\u{274c}e\nnext");
+    }
+
+    #[test]
     fn the_alternate_screen_has_only_its_screen() {
         let parser = session(5, 20, 100, 30);
         lock(&parser).process(b"\x1b[?1049h\x1b[Hfull screen");
@@ -1042,7 +1089,7 @@ mod tests {
         assert_eq!(snap.text(at(0, 0), at(0, 19)), "full screen");
         // Back on the normal screen, its rows aren't these.
         lock(&parser).process(b"\x1b[?1049l");
-        assert!(!snap.track());
+        assert_eq!(snap.track(), Err(Lost::Screen));
     }
 
     #[test]

@@ -263,7 +263,7 @@ fn a_selection_shows_under_no_color_with_nothing_coloured() {
         let card = card.unwrap();
         let key = (0..28).find(|&c| screen.cell(card, c).unwrap().contents() == "E").unwrap();
         assert_eq!(reversed(screen, card, key, 5), "rrrrr", "{}", screen.contents());
-        let (rows, cols) = screen.size();
+        let (rows, cols) = common::size(screen);
         for (r, c) in (0..rows).flat_map(|r| (0..cols).map(move |c| (r, c))) {
             let cell = screen.cell(r, c).unwrap();
             assert_eq!(

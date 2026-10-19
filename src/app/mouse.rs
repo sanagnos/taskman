@@ -281,8 +281,11 @@ impl App {
     /// while the button is held past the pane's edge. Runs on every tick.
     pub(super) fn follow_selection(&mut self) {
         let Some(sel) = self.selection.as_mut() else { return };
-        if sel.snapshot.as_mut().is_some_and(|s| !s.track()) {
+        if let Some(Err(lost)) = sel.snapshot.as_mut().map(Snapshot::track) {
             self.selection = None;
+            if lost == selection::Lost::History {
+                self.toast("Selection cleared: the session cleared its history");
+            }
             self.dirty.store(true, Ordering::Relaxed);
             return;
         }

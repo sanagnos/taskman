@@ -147,6 +147,27 @@ fn esc_drops_a_selection_and_other_keys_go_through() {
     assert!(app.selection.is_none());
 }
 
+#[test]
+fn a_session_clearing_its_history_ends_the_selection_with_a_toast() {
+    let (mut app, _sent) = at_eng_52();
+    let parser = {
+        let tv = app.tickets.iter().find(|tv| tv.t.key == "ENG-52").unwrap();
+        tv.session.as_ref().unwrap().parser.clone()
+    };
+    // A history to lose: with none, a clear changes nothing the selection holds.
+    for i in 0..60 {
+        crate::session::lock(&parser).process(format!("line {i}\r\n").as_bytes());
+    }
+    select_top_row(&mut app, 3);
+    assert!(app.selection.as_ref().is_some_and(|s| s.snapshot.is_some()));
+    app.follow_selection();
+    assert!(app.selection.is_some(), "nothing has changed yet");
+    crate::session::lock(&parser).process(b"\x1b[3J");
+    app.follow_selection();
+    assert!(app.selection.is_none());
+    assert!(toast(&app).is_some_and(|t| t.contains("cleared its history")), "{:?}", toast(&app));
+}
+
 // ---- the mouse -----------------------------------------------------------------------------
 
 #[test]

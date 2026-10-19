@@ -24,7 +24,8 @@ allow = [
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# vt100 with OSC 8 links kept per cell, while upstream has no release with it.
+# vt100 with OSC 8 links kept per cell (and two smaller changes; see Cargo.toml), which upstream
+# doesn't have.
 allow-git = ["https://github.com/sanagnos/vt100-rust"]
 
 [bans]

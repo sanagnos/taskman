@@ -441,7 +441,7 @@ pub fn list(screen: &mut vt100::Screen) -> Vec<Link> {
     // Each row is read once, for its links and its text.
     let mut row_text = String::new();
     each_row(screen, |screen, row| {
-        let cols = screen.size().1;
+        let cols = crate::term::size(screen).1;
         let linked = screen.row_has_hyperlinks(row);
         // The columns up to the last that isn't blank.
         let mut used = 0;
@@ -619,7 +619,7 @@ fn trimmed(url: &str) -> usize {
 fn each_row(screen: &mut vt100::Screen, mut f: impl FnMut(&vt100::Screen, u16)) {
     let back = screen.scrollback();
     let len = crate::selection::history_len(screen);
-    let rows = usize::from(screen.size().0);
+    let rows = usize::from(crate::term::size(screen).0);
     // The row to read next, counted from the oldest history row.
     let mut row = 0;
     while row < len + rows {
@@ -639,7 +639,7 @@ mod tests {
     use proptest::prelude::*;
 
     fn parser(rows: u16, cols: u16, scrollback: usize) -> vt100::Parser {
-        vt100::Parser::new(rows, cols, scrollback)
+        vt100::Parser::new(crate::term::dim(rows), crate::term::dim(cols), scrollback)
     }
 
     fn link(url: &str, label: Option<&str>) -> Link {

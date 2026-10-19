@@ -340,7 +340,7 @@ fn draw_session(
         let parser = crate::session::lock(parser);
         let screen = parser.screen();
         let used = screen
-            .rows(0, screen.size().1)
+            .rows(0, crate::term::size(screen).1)
             .take(usize::from(area.height))
             .enumerate()
             .filter(|(_, row)| !row.trim().is_empty())
@@ -642,7 +642,7 @@ mod tests {
     #[test]
     fn cleared_cells_draw_no_underline() {
         use ratatui::style::Modifier;
-        let mut parser = vt100::Parser::new(1, 8, 0);
+        let mut parser = vt100::Parser::new(crate::term::dim(1), crate::term::dim(8), 0);
         parser.process(b"\x1b[4;44mabc\x1b[K");
         let area = Rect::new(0, 0, 8, 1);
         let mut buf = Buffer::empty(area);

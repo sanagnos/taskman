@@ -288,7 +288,7 @@ impl Tui {
             stubs(&d).into_iter().for_each(kill);
         });
         let term = Arc::new(Mutex::new(Terminal {
-            parser: vt100::Parser::new(40, 160, 1000),
+            parser: vt100::Parser::new(dim(40), dim(160), 1000),
             raw: Vec::new(),
         }));
         let stop = Arc::new(AtomicBool::new(false));
@@ -427,7 +427,7 @@ impl Tui {
             .unwrap_or_else(|e| e.into_inner())
             .parser
             .screen_mut()
-            .set_size(rows, cols);
+            .set_size(dim(rows), dim(cols));
         let size = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
         // SAFETY: TIOCSWINSZ reads one winsize, from `size`, which outlives the call.
         let r = unsafe { libc::ioctl(self.writer.as_raw_fd(), libc::TIOCSWINSZ, &size) };
@@ -476,9 +476,20 @@ fn kill(pid: i32) {
     }
 }
 
+/// A screen dimension for vt100, which takes none that is zero.
+pub fn dim(n: u16) -> std::num::NonZeroU16 {
+    std::num::NonZeroU16::new(n).expect("a screen size that isn't zero")
+}
+
+/// A screen's rows and columns as plain numbers.
+pub fn size(screen: &vt100::Screen) -> (u16, u16) {
+    let (rows, cols) = screen.size();
+    (rows.get(), cols.get())
+}
+
 /// Where `text` starts on the screen: its column and row.
 pub fn find(screen: &vt100::Screen, text: &str) -> Option<(u16, u16)> {
-    let (rows, cols) = screen.size();
+    let (rows, cols) = size(screen);
     (0..rows).find_map(|row| {
         // A cell a character a column wide each, so a column is a character.
         let cell = |col| {
@@ -496,7 +507,7 @@ pub fn find(screen: &vt100::Screen, text: &str) -> Option<(u16, u16)> {
 
 /// The text of the highlighted (reversed) cells, a line a row: what a selection shows.
 pub fn highlighted(screen: &vt100::Screen) -> String {
-    let (rows, cols) = screen.size();
+    let (rows, cols) = size(screen);
     let lines: Vec<String> = (0..rows)
         .filter_map(|row| {
             let cells: String = (0..cols)

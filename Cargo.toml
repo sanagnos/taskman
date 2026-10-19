@@ -40,7 +40,7 @@ signal-hook = "0.4.5"
 tui-term = { version = "0.3", default-features = false }
 unicode-width = "0.2.2"
 ureq = { version = "3.4.2", features = ["json"] }
-vt100 = "0.16"
+vt100 = "0.18"
 
 [lints.clippy]
 cast_possible_truncation = "warn"
@@ -54,12 +54,12 @@ undocumented_unsafe_blocks = "warn"
 [lints.rust]
 unsafe_op_in_unsafe_fn = "warn"
 
-# vt100 with OSC 8 hyperlinks kept per cell, erased cells keeping only the background colour and
-# scrollback rows stored without their trailing blank cells. Upstream is dormant, so expect the
-# fork to stay. It's also why taskman isn't on crates.io: a published crate can't depend on a git
-# fork.
+# vt100 0.18 with OSC 8 hyperlinks kept per cell, erased cells keeping only the background colour
+# and scrollback rows copied, trimmed, into allocations of their own (upstream's own trimming
+# leaves the memory in use). Upstream has no OSC 8 support, so expect the fork to stay. It's also
+# why taskman isn't on crates.io: a published crate can't depend on a git fork.
 [patch.crates-io]
-vt100 = { git = "https://github.com/sanagnos/vt100-rust", rev = "ebf0f1120a0c4c6f34271de302e42b2a724e2f2e" }
+vt100 = { git = "https://github.com/sanagnos/vt100-rust", rev = "59353902703fbeca7514a21db53748c8f32e0688" }
 
 # What the release workflow builds (--profile dist): a fifth smaller than a release build, for a
 # build nearly twice as long, so it's a profile of its own and `cargo build --release` stays quick.
