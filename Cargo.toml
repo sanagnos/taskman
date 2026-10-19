@@ -59,7 +59,7 @@ unsafe_op_in_unsafe_fn = "warn"
 # fork to stay. It's also why taskman isn't on crates.io: a published crate can't depend on a git
 # fork.
 [patch.crates-io]
-vt100 = { git = "https://github.com/sanagnos/vt100-rust", rev = "8033ed438e75a8624a0bcc337cca7ab76be2d2db" }
+vt100 = { git = "https://github.com/sanagnos/vt100-rust", rev = "ebf0f1120a0c4c6f34271de302e42b2a724e2f2e" }
 
 # What the release workflow builds (--profile dist): a fifth smaller than a release build, for a
 # build nearly twice as long, so it's a profile of its own and `cargo build --release` stays quick.

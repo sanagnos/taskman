@@ -123,6 +123,27 @@ mod tests {
     }
 
     #[test]
+    fn an_emoji_takes_the_columns_the_terminal_gives_it() {
+        use unicode_width::UnicodeWidthStr as _;
+        // The warning sign with U+FE0F is two columns, as unicode-width and terminals measure it,
+        // and without it one; ✅ and ❌ are two either way.
+        let mut p = vt100::Parser::new(1, 14, 0);
+        p.process("a\u{26a0}\u{fe0f}b✅c❌d\u{26a0}e".as_bytes());
+        let buf = draw(&p, false);
+        let at = |x| buf[(x, 0)].symbol().to_string();
+        assert_eq!(
+            (0..12).map(at).collect::<Vec<_>>(),
+            ["a", "\u{26a0}\u{fe0f}", " ", "b", "✅", " ", "c", "❌", " ", "d", "\u{26a0}", "e"]
+        );
+        // Each symbol's width is the columns it holds, so ratatui skips what the emoji covers.
+        assert_eq!(at(1).width(), 2);
+        assert_eq!(at(10).width(), 1);
+        let blank = Buffer::empty(buf.area);
+        let written: Vec<u16> = blank.diff(&buf).iter().map(|(x, _, _)| *x).collect();
+        assert_eq!(written, [0, 1, 3, 4, 6, 7, 9, 10, 11]);
+    }
+
+    #[test]
     fn the_cursor_moves_down_by_the_history_shown() {
         let mut p = vt100::Parser::new(4, 20, 20);
         for i in 0..9 {

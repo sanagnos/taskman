@@ -550,6 +550,8 @@ pub fn project(dir: &Path, keys: &[&str]) -> PathBuf {
 /// it), `<KEY>.input` (each line typed) and `<KEY>.ticks` (how far `stream` got). Lines typed:
 ///
 /// - `lines N` prints `line 001` to `line N`, then `printed N`
+/// - `emoji N` prints N rows, `row 001 ⚠️ ✅ ❌ end` with the warning sign's emoji selector (U+FE0F)
+///   on odd rows and without it on even ones, then `printed N`
 /// - `stream` prints `tick 0001`, `tick 0002`... every 20ms
 /// - `panic` prints `half-drawn` and `$TASKMAN_TEST_PANIC` in one write, which makes a debug
 ///   build's reader panic after it has processed the first
@@ -579,6 +581,14 @@ while :; do
     "lines "*)
       i=1; n=${line#lines }
       while [ $i -le $n ]; do printf 'line %03d\n' $i; i=$((i + 1)); done
+      echo "printed $n";;
+    "emoji "*)
+      i=1; n=${line#emoji }
+      while [ $i -le $n ]; do
+        if [ $((i % 2)) -eq 1 ]; then printf 'row %03d \342\232\240\357\270\217 \342\234\205 \342\235\214 end\n' $i
+        else printf 'row %03d \342\232\240 \342\234\205 \342\235\214 end\n' $i; fi
+        i=$((i + 1))
+      done
       echo "printed $n";;
     stream)
       (i=1; while printf 'tick %04d\n' $i; do echo $i > "$f.ticks"; i=$((i + 1)); sleep 0.02; done) &
