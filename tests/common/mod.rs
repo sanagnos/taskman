@@ -17,15 +17,28 @@ use std::time::{Duration, Instant};
 static SPAWN: Mutex<()> = Mutex::new(());
 
 /// The taskman binary with its state and config in `dir`, and none of the environment that would
-/// make it think it runs inside a session or change how it draws, so tests pass in any shell: a
-/// test that wants NO_COLOR sets it. `spawn_in_pty` sets TERM. Its home is `dir/home`, and
-/// `stub_tools` go first on PATH, so no test reaches the developer's own gh login or keychain.
+/// make it think it runs inside a session or change how it draws or notifies, so tests pass in any
+/// shell: a test that wants NO_COLOR sets it. `spawn_in_pty` sets TERM. Its home is `dir/home`, and
+/// `stub_tools` go first on PATH, so no test reaches the developer's own gh login, keychain or
+/// desktop notifications.
 pub fn taskman(dir: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_taskman"));
     for (k, _) in std::env::vars_os() {
         if k.to_str().is_some_and(|k| {
             k.starts_with("TASKMAN_")
-                || ["TMUX", "CLAUDECODE", "NO_COLOR", "COLORFGBG", "COLORTERM"].contains(&k)
+                || [
+                    "TMUX",
+                    "CLAUDECODE",
+                    "NO_COLOR",
+                    "COLORFGBG",
+                    "COLORTERM",
+                    // Which way a notification goes (`notify::ways`).
+                    "SSH_CONNECTION",
+                    "SSH_TTY",
+                    "TERM_PROGRAM",
+                    "KITTY_WINDOW_ID",
+                ]
+                .contains(&k)
         }) {
             cmd.env_remove(k);
         }
@@ -44,8 +57,9 @@ pub fn taskman(dir: &Path) -> Command {
 }
 
 /// `dir/bin`, where tests put the commands they stub, with gh and the keychain tools (`security`,
-/// `secret-tool`) that fail saying they're stubbed, unless the test put its own there first.
-/// Returns the folder, which `taskman` puts first on PATH.
+/// `secret-tool`) that fail saying they're stubbed, and the notification commands (`NOTIFIERS`),
+/// which note their arguments in `dir/notified.<name>` (see `notified`), unless the test put its
+/// own there first. Returns the folder, which `taskman` puts first on PATH.
 pub fn stub_tools(dir: &Path) -> PathBuf {
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -58,7 +72,46 @@ pub fn stub_tools(dir: &Path) -> PathBuf {
             );
         }
     }
+    for name in NOTIFIERS {
+        if !bin.join(name).exists() {
+            let log = dir.join(format!("notified.{name}"));
+            let text = format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", log.display());
+            script(&bin, name, &text);
+        }
+    }
     bin
+}
+
+/// The commands taskman shows a desktop notification with, one of them per platform.
+pub const NOTIFIERS: [&str; 4] =
+    ["notify-send", "osascript", "terminal-notifier", "powershell.exe"];
+
+/// The arguments of each notification command run in `dir`, a line per run. powershell.exe's
+/// (WSL's) is a script, base64 in base64: the line is the text the script carries.
+pub fn notified(dir: &Path) -> String {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let mut out = String::new();
+    for name in NOTIFIERS {
+        let log = std::fs::read_to_string(dir.join(format!("notified.{name}"))).unwrap_or_default();
+        for line in log.lines() {
+            if name != "powershell.exe" {
+                out.push_str(line);
+            } else if let Some(script) = line.split(' ').next_back()
+                && let Ok(utf16) = b64.decode(script)
+            {
+                let units: Vec<u16> =
+                    utf16.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
+                let script = String::from_utf16_lossy(&units);
+                let text =
+                    script.split("FromBase64String('").nth(1).and_then(|s| s.split('\'').next());
+                let text = text.and_then(|t| b64.decode(t).ok()).unwrap_or_default();
+                out.push_str(&String::from_utf8_lossy(&text));
+            }
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// Starts `cmd` in a new pty, as its controlling terminal. Returns it and the pty's master side,

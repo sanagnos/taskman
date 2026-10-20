@@ -16,6 +16,7 @@ mod keys;
 mod linear;
 mod links;
 mod local;
+mod notify;
 mod proc;
 mod proctree;
 #[cfg(test)]
@@ -39,8 +40,9 @@ mod util;
 mod worktree;
 
 use crossterm::event::{
-    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture, Event, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::EnterAlternateScreen;
@@ -544,6 +546,9 @@ fn run(
             if std::mem::take(&mut app.bell) {
                 let _ = write!(out, "\x07");
             }
+            for escape in app.notify_out.drain(..) {
+                let _ = write!(out, "{escape}");
+            }
             let _ = out.flush();
         }
 
@@ -581,8 +586,9 @@ fn read_input(app: &mut app::App) -> std::io::Result<bool> {
             Event::Key(k) => app.on_key(keys::normalize(k)),
             Event::Paste(s) => app.on_paste(&s),
             Event::Mouse(m) => app.on_mouse(m),
+            Event::FocusGained => app.focused = Some(true),
+            Event::FocusLost => app.focused = Some(false),
             Event::Resize(..) => {}
-            _ => {}
         }
         if !event::poll(Duration::ZERO)? {
             break;
@@ -598,10 +604,16 @@ fn no_color() -> bool {
 }
 
 /// Puts the terminal in the TUI's mode: raw, on the alternate screen, with mouse reports, bracketed
-/// paste and, where the terminal has them, the kitty keyboard flags. At start and after the editor.
+/// paste, focus reports (for `notify`) and, where the terminal has them, the kitty keyboard flags. At start and after the editor.
 fn take_terminal(enhanced: bool) -> std::io::Result<()> {
     crossterm::terminal::enable_raw_mode()?;
-    execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
+    execute!(
+        std::io::stdout(),
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste,
+        EnableFocusChange
+    )?;
     if enhanced {
         execute!(
             std::io::stdout(),
@@ -619,7 +631,8 @@ fn release_terminal(enhanced: bool) {
     if enhanced {
         let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
     }
-    let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste);
+    let _ =
+        execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste, DisableFocusChange);
     // Not `ratatui::restore`: it prints its error, which panics once the terminal is gone, and in
     // the panic hook that aborts.
     let _ = ratatui::try_restore();

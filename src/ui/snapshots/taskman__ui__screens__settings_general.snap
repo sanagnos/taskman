@@ -1,6 +1,6 @@
 ---
 source: src/ui/screens.rs
-expression: "draw(&mut app, 100, 32)"
+expression: "draw(&mut app, 100, 34)"
 ---
 " taskman v0.0.0              │  ENG-52                              /src/acme-ENG-52 eng-52-login   "
 " ╭ Settings ──────────────────────────────────────────────────────────────────────────────────────╮ "
@@ -28,6 +28,8 @@ expression: "draw(&mut app, 100, 32)"
 " │                              │ Theme                      ‹ Follow the terminal ›              │ "
 "▸│                              │                            the terminal doesn't say its         │ "
 " │                              │                            background: dark                     │ "
+" │                              │ Notify when you're away    ‹ Desktop or terminal ›              │ "
+" │                              │                            a session needing you, once per wait │ "
 " │                              │                                                                 │ "
 " │                              │                                                                 │ "
 " │                              │ ↑/↓ choose · Enter edit · Esc close                             │ "

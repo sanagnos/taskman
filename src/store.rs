@@ -925,6 +925,9 @@ pub struct Config {
     /// Light or dark, or `auto` to ask the terminal.
     #[serde(default)]
     pub theme: crate::theme::Setting,
+    /// How to notify a session waiting on you while you're away from taskman (`notify`).
+    #[serde(default)]
+    pub notify: crate::notify::Setting,
     #[serde(flatten)]
     pub extra: Extra,
 }
@@ -957,6 +960,7 @@ impl Default for Config {
             max_awake: None,
             scrollback: SCROLLBACK,
             theme: crate::theme::Setting::Auto,
+            notify: crate::notify::Setting::Auto,
             extra: Extra::new(),
         }
     }

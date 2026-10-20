@@ -96,3 +96,24 @@ fn settings_keep_a_scrollback_set_by_hand() {
     app.on_key(key(KeyCode::Esc));
     assert_eq!(app.config.scrollback, 3_000);
 }
+
+#[test]
+fn settings_save_how_to_notify() {
+    let mut app = acme_app();
+    assert_eq!(app.config.notify, crate::notify::Setting::Auto);
+    app.open_settings(SettingsItem::General, false);
+    app.on_key(key(KeyCode::Enter));
+    for _ in 0..6 {
+        app.on_key(key(KeyCode::Down));
+    }
+    assert_eq!(field(&app, "Notify when you're away"), "Desktop or terminal");
+    app.on_key(key(KeyCode::Right));
+    assert_eq!(field(&app, "Notify when you're away"), "Terminal only (OSC 9)");
+    app.on_key(key(KeyCode::Right));
+    assert_eq!(field(&app, "Notify when you're away"), "Off");
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(toast(&app), Some("Saved"));
+    assert_eq!(app.config.notify, crate::notify::Setting::Off);
+    let saved = std::fs::read_to_string(store::config_path()).unwrap();
+    assert!(saved.contains(r#""notify": "off""#), "{saved}");
+}

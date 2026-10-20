@@ -471,7 +471,7 @@ fn settings_scrolled_to_the_last_project() {
 fn settings_general() {
     let mut app = acme_app();
     app.open_settings(SettingsItem::General, false);
-    assert_snapshot!(draw(&mut app, 100, 32));
+    assert_snapshot!(draw(&mut app, 100, 34));
 }
 
 /// Sleeping sessions are a quiet glyph; one that finished a turn nobody has looked at keeps

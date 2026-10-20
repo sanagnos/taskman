@@ -5,6 +5,7 @@ What changed in each release; a release's notes on GitHub are its section here. 
 ## Unreleased
 
 - In a session taskman started, `taskman status`, `taskman add` and `taskman move`, which sessions run without asking, now keep to the session's own project: another project's ticket, by its prefix or `--project`, is refused, so text a session read in one project can't have it read another project's tracker, or open sessions there, unasked. The error says how to go ahead: the same command with `env -u TASKMAN_REPO` in front, which Claude asks you about first. From your own shell, any project works as before.
+- When a session starts needing you while you're away from taskman (the terminal says it lost the focus), taskman shows a desktop notification saying which ticket and why: the terminal's own (OSC 9) in iTerm2, WezTerm, Ghostty and kitty and over SSH, otherwise `osascript` or `terminal-notifier` on macOS, a Windows toast on WSL and `notify-send` on Linux. One per wait. Settings → General → Notify when you're away chooses the way or turns them off; inside tmux, turn on `focus-events` (see [Notifications](docs/guide.md#notifications)).
 
 ## 0.1.18 - 2026-10-20
 

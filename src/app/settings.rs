@@ -1,12 +1,12 @@
 //! The Settings popover (`prefix ,`): its list of General, projects and accounts, the keys that
-//! move through it, and the General form (the prefix key, updates). Also the tip, once, when tmux
-//! or GNU screen has taskman's prefix too.
+//! move through it, and the General form (the prefix key, updates, notifications). Also the tip,
+//! once, when tmux or GNU screen has taskman's prefix too.
 
 use super::sleep::{after_choices, after_label, cap_choices, cap_label};
 use super::sync::Msg;
 use super::{App, Field, Form, FormKind, Mode};
 use crate::store::Provider;
-use crate::{keys, theme};
+use crate::{keys, notify, theme};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Duration;
 
@@ -87,6 +87,14 @@ fn theme_label(t: theme::Setting) -> &'static str {
         theme::Setting::Auto => "Follow the terminal",
         theme::Setting::Light => "Light",
         theme::Setting::Dark => "Dark",
+    }
+}
+
+fn notify_label(n: notify::Setting) -> &'static str {
+    match n {
+        notify::Setting::Auto => "Desktop or terminal",
+        notify::Setting::Terminal => "Terminal only (OSC 9)",
+        notify::Setting::Off => "Off",
     }
 }
 
@@ -269,6 +277,12 @@ impl App {
                 theme_label(self.config.theme),
                 self.probe.describe(),
             ),
+            Field::choice(
+                "Notify when you're away",
+                notify::Setting::ALL.iter().map(|n| notify_label(*n).to_string()).collect(),
+                notify_label(self.config.notify),
+                "a session needing you, once per wait",
+            ),
         ];
         let mut form = Form::new(FormKind::General, "General", fields);
         form.note = Some(self.updater.describe());
@@ -296,6 +310,12 @@ impl App {
         {
             self.config.theme = t;
             self.apply_theme();
+        }
+        if let Some(n) = notify::Setting::ALL
+            .into_iter()
+            .find(|n| notify_label(*n) == pick("Notify when you're away"))
+        {
+            self.config.notify = n;
         }
         let prefix = keys::Prefix::parse(&form.value("Prefix key")).unwrap_or_default();
         let changed = prefix != self.config.prefix;

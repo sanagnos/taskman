@@ -153,7 +153,7 @@ The Add form opens on Type, set to Agent; ←/→ switches it to Ticket. What yo
 | `ctrl+a w` | list every session waiting on you, oldest first, with how long, why and what it asks (see below) |
 | `ctrl+a /` | jump to a ticket, agent or project by typing (see below) |
 | `ctrl+a n` / `x` | add / close a ticket |
-| `ctrl+a ,` | settings: prefix key, updates, projects and accounts |
+| `ctrl+a ,` | settings: prefix key, updates, notifications, projects and accounts |
 | `ctrl+a P` / `A` / `z` | new project / new account / fold the current project |
 | `ctrl+a j` / `c` / `g` / `b` | toggle the tracker panel, its comments, the PR panel; collapse the sidebar. On an agent, `j`, `c` and `g` change the panels tickets show, and say so; its board shows while the tracker or PR panel is on |
 | `ctrl+a o` / `p` | open the ticket / PR in your browser (a Local files ticket opens in `$EDITOR`) |
@@ -168,6 +168,25 @@ The Add form opens on Type, set to Agent; ←/→ switches it to Ticket. What yo
 ### The waiting queue
 
 `ctrl+a w` lists every session that asks you something, the one that has waited longest first. A row shows the key (or the agent's name) and project, how long it has waited, why (`permission` for a permission prompt, `question` for questions and plans) and what it asks for: for a permission prompt the tool and its command, path or input (`Bash: cargo test`), cut to fit, otherwise the session's message. ↑/↓ choose a row, Enter selects that session and closes the list, Esc closes it. The list follows the sessions while it's open, and with nothing waiting `ctrl+a w` says so instead of opening. It doesn't answer prompts: Claude's prompts have more choices than yes and no, and one key approving across sessions would widen what a key approves. A session that has waited a minute shows its time in the sidebar in place of "needs you" (`▲ 4m`). `ctrl+a ctrl+a` still goes to the next one in the sidebar's order.
+
+### Notifications
+
+When a session starts needing you (a permission prompt, a question or a plan) and you're away from taskman, it shows a desktop notification: `ENG-52 needs you: a permission prompt`, or `a question`. It says the ticket's key (or the agent's name) and why, never the command or text the session asks about; `ctrl+a w` shows that. There's one per wait: Claude's reminder of the same prompt doesn't send another, and a session that goes back to work and stops again does. A session that needs you while taskman isn't the selected one also rings the terminal's bell, as before, which many terminals turn into a flash or a badge.
+
+"Away" is what the terminal says: taskman asks it to report focus (`CSI ?1004`, which most terminals support) and notifies only while it has lost it, for the session on screen too. A terminal that never reports focus (tmux without `focus-events`) is taken as you watching, as for the bell: only sessions you aren't looking at notify. While you're in taskman nothing is sent; the sidebar and `ctrl+a w` show who waits.
+
+How it's shown, under **Notify when you're away** in Settings → General, or `"notify"` in the config file:
+
+- **Desktop or terminal** (`"auto"`, the default): in iTerm2, WezTerm, Ghostty and kitty, the terminal's own notification (OSC 9), which brings that window back when clicked; over SSH the same, so it reaches your machine rather than the server's. Otherwise the desktop's: `terminal-notifier` if installed, else `osascript` on macOS; a Windows toast through `powershell.exe` on WSL; `notify-send` on Linux. When none of them works, the terminal's.
+- **Terminal only (OSC 9)** (`"terminal"`): always the terminal's own, for a terminal that shows them where taskman can't tell, as from inside tmux.
+- **Off** (`"off"`): none; the bell still rings.
+
+Setting it up:
+
+- **macOS:** `osascript`'s notifications come from Script Editor, so clicking one opens it; if none show, allow Script Editor's in System Settings → Notifications. `brew install terminal-notifier` shows them as its own, and taskman uses it when it's there.
+- **Linux:** `notify-send` (`libnotify-bin` on Debian and Ubuntu) and a desktop that shows notifications, which GNOME, KDE and most others do.
+- **WSL:** nothing to install. The toast comes from Windows PowerShell, which Windows lists under Settings → System → Notifications; with Do not disturb on, it goes to the notification centre without showing.
+- **tmux:** `set -g focus-events on` in `~/.tmux.conf`, so taskman knows when you've left. For the terminal's own notifications from inside tmux (over SSH, or with Terminal only), also `set -g allow-passthrough on`; taskman passes them through tmux to the terminal outside it.
 
 ### Notices
 

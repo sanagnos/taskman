@@ -3,6 +3,7 @@
 //! files tickets are reread on the same poll, as their files change.
 
 use super::sessions::HAND_OFF_WAIT;
+use super::sync::Msg;
 use super::{App, Away, Blocked};
 use crate::background;
 use crate::session::Session;
@@ -326,6 +327,7 @@ impl App {
         let mut changed = false;
         let mut handed_off = Vec::new();
         let mut reported = Vec::new();
+        let mut waiting = Vec::new();
         for (i, tv) in self.tickets.iter_mut().enumerate() {
             if let Some(Away::Leaving(at)) = tv.away {
                 if tv.session.as_mut().is_none_or(Session::ended) || at.elapsed() >= HAND_OFF_WAIT {
@@ -369,7 +371,9 @@ impl App {
                     {
                         reported.push((i, sid));
                     }
-                    self.bell |= tv.hook_reported(rec, i == self.sel);
+                    if tv.hook_reported(rec, i == self.sel) {
+                        waiting.push(i);
+                    }
                     self.dirty.store(true, Ordering::Relaxed);
                 }
             }
@@ -392,8 +396,8 @@ impl App {
                 && let Some(state) =
                     tv.status.infer(s.quiet_for(), || s.screen_count("Interrupted"), i == self.sel)
             {
-                if state == AgentState::Needs && i != self.sel {
-                    self.bell = true;
+                if state == AgentState::Needs {
+                    waiting.push(i);
                 }
                 self.dirty.store(true, Ordering::Relaxed);
             }
@@ -435,6 +439,9 @@ impl App {
         for i in handed_off {
             self.handed_off(i);
         }
+        for i in waiting {
+            self.started_waiting(i);
+        }
         for (i, sid) in reported {
             match session_ids::claim(self.tickets.iter().map(|tv| &tv.t), &self.tickets[i].t, &sid)
             {
@@ -454,6 +461,25 @@ impl App {
         if changed {
             self.save();
         }
+    }
+
+    /// Session `i` just started waiting on the user: the bell if it's out of sight, and a
+    /// notification if the user is away from taskman (`notify::wanted`). Once per wait, as a
+    /// reminder of the same prompt isn't a change of state.
+    pub(super) fn started_waiting(&mut self, i: usize) {
+        let selected = i == self.sel;
+        self.bell |= !selected;
+        if !crate::notify::wanted(self.config.notify, self.focused, selected) {
+            return;
+        }
+        let tv = &self.tickets[i];
+        let text = crate::notify::text(tv.t.display(), tv.status.permission);
+        let (tx, notifier, setting) = (self.tx.clone(), self.notifier.clone(), self.config.notify);
+        std::thread::spawn(move || {
+            if notifier(setting, &text) {
+                let _ = tx.send(Msg::Notify(text));
+            }
+        });
     }
 
     /// Rereads Local files tickets whose file moved or changed. The files are local, so this runs

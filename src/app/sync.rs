@@ -128,6 +128,8 @@ pub(super) enum Msg {
     Checked(u64, Result<Check, String>),
     /// Text went to the clipboard, or no command could take it; with what the toast calls it.
     Copied(String, selection::Copied, Option<String>),
+    /// A notification no desktop command showed: its text, for the terminal (`notify::escape`).
+    Notify(String),
     Toast(Level, String),
     /// What a project form's account can see to pick the ticket prefix from: the listing's id
     /// (`Choices`), and the list.
@@ -346,6 +348,10 @@ impl App {
                 }
                 Msg::Close(id, req) => self.closing.push_back((id, req)),
                 Msg::Closed(text) => toasts.push((Level::Info, text)),
+                Msg::Notify(text) => {
+                    let tmux = std::env::var_os("TMUX").is_some_and(|v| !v.is_empty());
+                    self.notify_out.push(crate::notify::escape(&text, tmux));
+                }
                 Msg::Copied(text, copied, label) => {
                     if copied == selection::Copied::Osc52 {
                         use base64::Engine;

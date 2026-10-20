@@ -326,10 +326,10 @@ impl TicketView {
     }
 
     /// What the session's hook reported, `selected` saying whether the user is looking at it.
-    /// Returns whether to ring the bell: it waits on the user, out of sight.
+    /// Returns whether it started waiting on the user (`App::started_waiting`).
     pub(super) fn hook_reported(&mut self, rec: Record, selected: bool) -> bool {
         let state = AgentState::from(rec.state);
-        let mut bell = false;
+        let mut waits = false;
         if state != self.status.state {
             // Claude finished a turn: whatever it did may have changed the ticket or PR.
             if state == AgentState::Done {
@@ -338,8 +338,8 @@ impl TicketView {
             }
             if !selected && matches!(state, AgentState::Needs | AgentState::Done) {
                 self.status.seen = false;
-                bell = state == AgentState::Needs;
             }
+            waits = state == AgentState::Needs;
             self.status.state = state;
             // A repeated "needs" (Claude's reminder after a prompt) keeps the first one's time.
             self.status.waiting_since =
@@ -349,7 +349,7 @@ impl TicketView {
         self.status.tool = rec.tool;
         self.status.input = rec.input;
         self.status.message = rec.message;
-        bell
+        waits
     }
 
     /// What a PR lookup found (`pr_lookup`), with the worktree git found for the ticket: shows
@@ -687,22 +687,22 @@ mod tests {
         let rec = |state: &str| {
             parse(&format!(r#"{{"state":"{state}","message":"Run the build","ts":1}}"#)).unwrap()
         };
-        // Out of sight, waiting on the user: unseen, and the bell rings.
+        // Out of sight, waiting on the user: unseen, and it starts waiting.
         let mut tv = TicketView::new(ticket());
         assert!(tv.hook_reported(rec("needs"), false));
         assert_eq!(
             (tv.status.state, tv.status.seen, tv.status.message.as_str()),
             (AgentState::Needs, false, "Run the build")
         );
-        // On screen, the user sees it already.
+        // On screen, the user sees it already; it waits all the same.
         let mut tv = TicketView::new(ticket());
-        assert!(!tv.hook_reported(rec("needs"), true));
+        assert!(tv.hook_reported(rec("needs"), true));
         assert!(tv.status.seen);
-        // The same state again changes nothing about who looked.
+        // The same state again is the same wait, and changes nothing about who looked.
         tv.status.seen = true;
         assert!(!tv.hook_reported(rec("needs"), false));
         assert!(tv.status.seen);
-        // A finished turn: unseen without a bell, and the panels refresh what's older than STALE.
+        // A finished turn: unseen, not waiting on the user, and the panels refresh what's older than STALE.
         let mut tv = TicketView::new(ticket());
         tv.jira.start(1);
         tv.jira.finish(Ok(Issue::default()));

@@ -4,8 +4,9 @@
 //!
 //! None of it reaches outside the test: unit tests keep their state folder and config file in a
 //! scratch folder of their own (`store::scratch`), sessions are `Session::fake`, copying goes out
-//! as OSC 52 (`clipboard_out`) rather than through the desktop's clipboard commands, and no URL
-//! opens in a browser (`browser` records them).
+//! as OSC 52 (`clipboard_out`) rather than through the desktop's clipboard commands, no URL
+//! opens in a browser (`browser` records them) and no notification reaches the desktop
+//! (`notifications` records them).
 
 use super::{AgentState, App};
 use crate::github::{self, Check, CheckState, Pr, PrComment, Review, Thread, Threads};
@@ -42,6 +43,7 @@ pub(crate) fn offline(saved: Saved) -> App {
     app.clipboard = Arc::new(|_| crate::selection::Copied::Osc52);
     app.stop_background = Arc::new(|_| Err("no claude in tests".into()));
     app.open_url = Arc::new(|_| false);
+    app.notifier = Arc::new(|_, _| false);
     // As if the keychain check had found none; a test of the wait before it sets this back.
     app.keychain_probed = true;
     app
@@ -548,6 +550,19 @@ pub(crate) fn browser(app: &mut App) -> Opened {
         true
     });
     opened
+}
+
+/// Gives the App a notifier that reaches no desktop and notes each notification's text, leaving
+/// each to the terminal (`Msg::Notify`); returns them. Without it, an App from `offline` shows
+/// none.
+pub(crate) fn notifications(app: &mut App) -> Opened {
+    let shown = Opened::default();
+    let notes = shown.clone();
+    app.notifier = Arc::new(move |_, text| {
+        notes.lock().unwrap().push(text.into());
+        true
+    });
+    shown
 }
 
 /// What a fake session was sent, as text.

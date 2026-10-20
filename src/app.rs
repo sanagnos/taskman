@@ -70,6 +70,9 @@ pub use ticket::{Away, Blocked, TicketView};
 /// Stops a Claude background session by its id.
 type Stopper = dyn Fn(&str) -> Result<(), String> + Send + Sync;
 
+/// Shows a notification with the setting's ways, returning whether it's left to the terminal.
+type Notifier = dyn Fn(crate::notify::Setting, &str) -> bool + Send + Sync;
+
 /// How often the status files are read and the inbox is checked.
 const STATUS_EVERY: Duration = Duration::from_millis(300);
 
@@ -175,6 +178,13 @@ pub struct App {
     pub bell: bool,
     /// OSC 52 clipboard writes from sessions, to forward to the real terminal.
     pub clipboard_out: Vec<String>,
+    /// Notifications left to the terminal (`notify::escape`), to write on the next frame.
+    pub notify_out: Vec<String>,
+    /// Whether the terminal has the focus, as it last said (focus reports); None until it does.
+    pub focused: Option<bool>,
+    /// Shows a notification (`notify::send`, run on a thread), returning whether it's left to the
+    /// terminal; tests swap it so they never reach the desktop, and record what would have.
+    notifier: Arc<Notifier>,
     /// Puts text on the clipboard (`selection::copy`, run on a thread); tests swap it so they
     /// never touch the user's clipboard.
     clipboard: Arc<dyn Fn(&str) -> selection::Copied + Send + Sync>,
@@ -311,6 +321,9 @@ impl App {
             edit: None,
             bell: false,
             clipboard_out: Vec::new(),
+            notify_out: Vec::new(),
+            focused: None,
+            notifier: Arc::new(crate::notify::send),
             clipboard: Arc::new(selection::copy),
             stop_background: Arc::new(background::stop),
             open_url: Arc::new(crate::util::open_url),
