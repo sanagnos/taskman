@@ -88,8 +88,9 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 | `src/keychain.rs` | the OS keychain the account form saves tokens to: `security` on macOS (`security -i`, the command on stdin), `secret-tool` on Linux (the token on stdin); `probe` for whether there's one, `store` (read back to check), `read`, `delete`; the `keychain:NAME` source and its naming; in unit tests, a stub in the scratch folder (`stub`) |
 | `src/token_file.rs` | the private file the account form saves a pasted token to where there's no keychain: `tokens/<account id>` beside config.json, the folder 0700 and the file 0600 from creation, written to a temporary file and renamed, never through a link; the account saves `cmd:cat '<path>'` (`source`, recognised back by `name_of`) |
 | `src/proc.rs` | `proc::run`: git, gh and token commands with a time limit, no terminal and prompts off; `run_with_input` feeds a command's stdin (the updater pipes the download into `tar`) |
+| `src/git.rs` | running git: `git::run` (`git -C dir` through `proc::run`, each caller with its own time limit) and `git::command` for a call that needs more (an environment, stdin, the owner lock) |
 | `src/untrusted.rs` | tracker and PR text printed as data: `clean` strips terminal control characters and the characters that hide text from a reader (bidirectional controls, Unicode tags), `line` and `block` keep it in its own line or indented block, `branch` passes only a branch name a brief may carry, `labelled` adds the note `taskman status` prints above it |
-| `src/util.rs` | timestamps, relative ages, opening URLs, and cutting text to fit: `truncate` (keeps the start), `truncate_start`, `truncate_middle` (account labels), `fit_label` (display width; sidebar names), `wrap_words` (lines counted before they're drawn; Help) |
+| `src/util.rs` | timestamps, relative ages (`ago`, "5m"; `ago_words`, "5m ago" or "just now"), opening URLs, and cutting text to fit: `truncate` (keeps the start), `truncate_start`, `truncate_middle` (account labels), `fit_label` (display width; sidebar names), `wrap_words` (lines counted before they're drawn; Help) |
 
 ### Tests
 
