@@ -566,3 +566,29 @@ fn deletes_an_account_no_project_uses() {
     let Mode::Settings(s) = &app.mode else { panic!("Settings closed") };
     assert_eq!(s.items[s.cursor], crate::app::SettingsItem::Account(0));
 }
+
+// ---- threads that panic --------------------------------------------------------------------
+
+/// A bug that panics the keychain check counts as no keychain, so the Keep in field stops waiting.
+#[test]
+fn a_keychain_check_that_panics_finds_none() {
+    let mut app = acme_app();
+    app.keychain_probed = false;
+    panicking(&mut app);
+    app.probe_keychain();
+    settle_until(&mut app, |app| app.keychain_probed);
+    assert!(app.keychain.is_none());
+}
+
+/// A bug that panics a token's read fails it, rather than leaving it being read for good.
+#[test]
+fn a_token_read_that_panics_fails() {
+    let mut app = acme_app();
+    panicking(&mut app);
+    app.trackers.forget("env:ACME_LINEAR_TOKEN");
+    app.rebuild_clients();
+    let access = |app: &App| app.trackers.access(&app.config, app.projects.first());
+    assert!(matches!(access(&app), crate::tracker::Access::Reading));
+    settle_until(&mut app, |app| !matches!(access(app), crate::tracker::Access::Reading));
+    assert!(matches!(access(&app), crate::tracker::Access::Failed(e) if e == BUG));
+}

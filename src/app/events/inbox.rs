@@ -213,3 +213,26 @@ fn a_new_agent_can_not_take_an_older_agents_key() {
     assert!(app.add_agent(0, "tester", store::Cli::Claude, None, false).is_ok());
     assert!(app.tickets.iter().any(|tv| tv.t.key == "acme-release-tester"));
 }
+
+/// A bug that panics a `taskman close` request's PR lookup still lets the request go on: the panel
+/// stops loading and the request closes.
+#[test]
+fn a_close_whose_lookup_panics_still_closes() {
+    let mut app = acme_app();
+    panicking(&mut app);
+    let i = index(&app, "ENG-70");
+    request(
+        "0006",
+        &serde_json::json!({
+            "repo": "/src/acme", "reply_by": crate::util::now() + 60,
+            "items": [{ "kind": "ticket", "key": "ENG-70" }], "close": {},
+        }),
+    );
+    app.take_inbox();
+    assert!(app.tickets[i].pr.loading);
+    settle_until(&mut app, |app| !app.closing.is_empty());
+    assert!(!app.tickets[i].pr.loading);
+    assert_eq!(app.tickets[i].pr.error.as_deref(), Some(BUG));
+    app.close_next();
+    assert!(!app.tickets.iter().any(|tv| tv.t.key == "ENG-70"));
+}

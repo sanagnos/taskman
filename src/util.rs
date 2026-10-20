@@ -10,6 +10,33 @@ pub fn now() -> i64 {
         .unwrap_or(0)
 }
 
+/// Runs `f`, catching a panic (a bug: in a parser, say), which the panic hook has written to
+/// panics.log; the error then says where. For threads whose message something waits for: one that
+/// ended without a word would leave it waiting for good.
+pub fn caught<T>(f: impl FnOnce() -> T) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+        .map_err(|_| format!("taskman hit a bug; details in {}", crate::store::panics_log()))
+}
+
+/// The panic unit tests make to stand for a bug: `caught` catches it, and the panic hook
+/// `quiet_test_panics` sets keeps it out of the test's output.
+#[cfg(test)]
+pub struct TestPanic;
+
+/// Leaves `TestPanic` out of the output; other panics, such as a failed assertion's, still print.
+#[cfg(test)]
+pub fn quiet_test_panics() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !info.payload().is::<TestPanic>() {
+                hook(info);
+            }
+        }));
+    });
+}
+
 /// Parses `YYYY-MM-DDTHH:MM:SS[.fff][Z|±HH:MM|±HHMM]` (GitHub and Jira formats) to unix seconds.
 pub fn parse_ts(s: &str) -> Option<i64> {
     if s.len() < 19 || !s.is_char_boundary(19) {
@@ -185,6 +212,15 @@ pub fn truncate_middle(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn a_panic_caught_says_where_it_was_written() {
+        quiet_test_panics();
+        assert_eq!(caught(|| 1), Ok(1));
+        let panicked = caught(|| -> u8 { std::panic::panic_any(TestPanic) });
+        let bug = "taskman hit a bug; details in ~/.local/state/taskman/panics.log";
+        assert_eq!(panicked, Err(bug.to_string()));
+    }
 
     #[test]
     fn fits_a_label_in_display_columns() {

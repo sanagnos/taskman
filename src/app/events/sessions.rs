@@ -661,3 +661,22 @@ fn a_session_whose_reader_crashed_says_so() {
     assert!(drawn.contains("ctrl+a x to close the agent"), "{drawn}");
     assert!(!drawn.contains("Claude exited"), "{drawn}");
 }
+
+/// A bug that panics `claude stop`'s thread still ends the wait: the pane says so, and Enter tries
+/// again.
+#[test]
+fn a_stop_that_panics_says_so_and_enter_tries_again() {
+    let (mut app, _) = at_eng_52();
+    let i = ended_with(&mut app, BACKGROUND);
+    panicking(&mut app);
+    let stopping = |app: &App| app.tickets[i].background.as_ref().unwrap().stopping;
+    app.on_key(key(KeyCode::Enter));
+    assert!(stopping(&app));
+    settle_until(&mut app, |app| !stopping(app));
+    let b = app.tickets[i].background.as_ref().expect("still offered");
+    let expected = format!("{BUG}. Run `claude stop a1b2c3d4` yourself, then press Enter.");
+    assert_eq!(b.error.as_deref(), Some(expected.as_str()));
+    app.on_key(key(KeyCode::Enter));
+    assert!(stopping(&app));
+    settle_until(&mut app, |app| !stopping(app));
+}

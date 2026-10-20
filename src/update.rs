@@ -1014,7 +1014,9 @@ impl Updater {
             self.busy = true;
             let (state, failed, tx) = (self.state.clone(), self.failed.clone(), self.tx.clone());
             std::thread::spawn(move || {
-                let _ = tx.send(work(state, check, exe, &failed));
+                // A panic would leave `busy` set, and no check or install would run again.
+                let done = util::caught(|| work(state.clone(), check, exe, &failed));
+                let _ = tx.send(done.unwrap_or(Done { state, failed: None }));
             });
         }
         changed
@@ -1113,7 +1115,8 @@ fn work(mut state: State, check: bool, exe: Option<PathBuf>, failed: &[String]) 
         && let Some(dir) = exe.parent().map(Path::to_path_buf)
         && let Some(tag) = to_install(&state, &running(), &dir, failed)
     {
-        match install(&exe, &tag, By::Background) {
+        // A panic counts as a failure, so the release isn't tried again on every tick.
+        match util::caught(|| install(&exe, &tag, By::Background)).and_then(|r| r) {
             Ok(()) => state.installed = Some(Installed { version: tag, dir }),
             Err(why) => failed_tag = Some((tag, why)),
         }

@@ -109,13 +109,16 @@ impl App {
             self.closing.push_back((id, req));
             return;
         }
-        let tx = self.tx.clone();
+        let (tx, report) = (self.tx.clone(), self.reporter());
         std::thread::spawn(move || {
             std::thread::scope(|s| {
                 for (n, repo, key, branch, closes) in lookups {
-                    let tx = tx.clone();
+                    let (tx, report) = (tx.clone(), report.clone());
                     s.spawn(move || {
-                        let (res, wt) = pr_lookup(&repo, &key, branch, closes.as_ref());
+                        let what = format!("looking up {key}'s PR");
+                        let (res, wt) = report
+                            .reported(&what, || pr_lookup(&repo, &key, branch, closes.as_ref()))
+                            .unwrap_or_else(|e| (Err(e), None));
                         let _ = tx.send(Msg::Pr(n, (repo, key), res, wt));
                     });
                 }

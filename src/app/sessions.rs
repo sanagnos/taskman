@@ -223,11 +223,14 @@ impl App {
         }
         b.stopping = true;
         b.error = None;
-        let (id, job) = ((tv.t.repo.clone(), tv.t.key.clone()), b.id.clone());
-        let (stop, tx) = (self.stop_background.clone(), self.tx.clone());
-        std::thread::spawn(move || {
-            let _ = tx.send(Msg::BackgroundStopped(id, launch, stop(&job)));
-        });
+        let id: Id = (tv.t.repo.clone(), tv.t.key.clone());
+        let (job, stop) = (b.id.clone(), self.stop_background.clone());
+        let failed = (id.clone(), launch.clone());
+        self.reporter().spawn(
+            "stopping the background copy".into(),
+            move || Msg::BackgroundStopped(id, launch, stop(&job)),
+            move |e| Msg::BackgroundStopped(failed.0, failed.1, Err(e)),
+        );
     }
 
     /// `claude stop` finished. A session that started again meanwhile isn't the one it was for.

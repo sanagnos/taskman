@@ -362,3 +362,22 @@ fn the_branch_hint_names_the_trackers_own_names() {
         assert!(hint.contains(own), "{hint}");
     }
 }
+
+/// A bug that panics the listing still ends it: the form says why and takes a key typed.
+#[test]
+fn a_list_that_panics_says_so() {
+    let mut app = offline(Saved::default());
+    new_project(&mut app, "Jira");
+    fill(&mut app, "Site", "example.atlassian.net");
+    fill(&mut app, "Email", "dana@example.com");
+    choose(&mut app, "Keep in", "Variable or command");
+    fill(&mut app, "Read from", "env:TASKMAN_TEST_UNSET_TOKEN");
+    panicking(&mut app);
+    app.on_key(key(KeyCode::Tab));
+    let listing =
+        |app: &App| listed_under(app, "Project") == ["Listing the projects this account can see…"];
+    assert!(listing(&app));
+    settle_until(&mut app, |app| !listing(app));
+    let hint = hint_of(&app, "Project");
+    assert!(hint.starts_with(&format!("Couldn't list the projects: {BUG}")), "{hint}");
+}

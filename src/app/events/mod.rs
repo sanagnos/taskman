@@ -6,7 +6,8 @@
 use super::sessions::HAND_OFF_WAIT;
 use super::test_support::{
     acme_app, ago, answer_choices, attach, attach_crashed, attach_ended, attach_slow, browser,
-    ctrl, draw, key, lay_out, long_sidebar, offline, reaped, sent, settle, toast,
+    ctrl, draw, key, lay_out, long_sidebar, offline, panicking, reaped, sent, settle, settle_until,
+    toast,
 };
 use super::{AgentState, App, Away, Hit, Mode, sync::Msg};
 use crate::store::{self, Saved};
@@ -29,6 +30,14 @@ mod sleep;
 mod sync;
 mod tickets;
 mod toasts;
+
+/// What a thread whose work panicked reports (`sync::Reporter`).
+const BUG: &str = "taskman hit a bug; details in ~/.local/state/taskman/panics.log";
+
+/// Whether the toasts so far include `msg`, as an error.
+fn logged_error(app: &App, msg: &str) -> bool {
+    app.toast_log.iter().any(|l| l.level == crate::app::Level::Error && l.msg == msg)
+}
 
 const SCREEN: &str = "✻ Welcome to Claude Code\n\n> Add the magic link sign-in\n\n> ";
 
@@ -277,7 +286,7 @@ fn answer_check(app: &mut App, found: Result<(&str, &str), &str>) {
         let msg = app.rx.recv_timeout(std::time::Duration::from_secs(10)).expect("no check");
         if let Msg::Checked(id, _) = msg {
             before.into_iter().for_each(|m| app.tx.send(m).unwrap());
-            app.tx.send(Msg::Checked(id, crate::app::forms::Check::Account(found))).unwrap();
+            app.tx.send(Msg::Checked(id, Ok(crate::app::forms::Check::Account(found)))).unwrap();
             app.drain_messages();
             return;
         }

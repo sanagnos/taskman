@@ -508,12 +508,12 @@ pub struct Clients {
 }
 
 impl Clients {
-    /// Reads, in the background, the tokens of accounts not read yet or whose read failed, each
-    /// handed to `read` (which passes it back to `token_read`), then builds the clients projects
-    /// need. Runs at startup and whenever accounts or projects change.
+    /// Has `read` read, on a thread each, the tokens of accounts not read yet or whose read
+    /// failed (it passes them back to `token_read`), then builds the clients projects need. Runs
+    /// at startup and whenever accounts or projects change.
     pub fn rebuild<F>(&mut self, config: &Config, projects: &[Project], read: F)
     where
-        F: Fn(String, Result<String, String>) + Clone + Send + 'static,
+        F: Fn(Account) + Clone + Send + 'static,
     {
         let sources: HashSet<&String> = config.accounts.iter().map(|a| &a.token).collect();
         self.tokens.retain(|s, _| sources.contains(s));
@@ -523,10 +523,7 @@ impl Clients {
             }
             self.tokens.insert(a.token.clone(), None);
             let (a, read) = (a.clone(), read.clone());
-            std::thread::spawn(move || {
-                let token = a.resolve_token();
-                read(a.token, token);
-            });
+            std::thread::spawn(move || read(a));
         }
         self.build(config, projects);
     }

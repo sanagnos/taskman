@@ -247,15 +247,17 @@ impl App {
     }
 
     /// Looks at session `i`'s process tree on a thread, for `Msg::Scanned`.
-    fn scan(&mut self, i: usize, kind: Scan, pid: u32) {
+    pub(super) fn scan(&mut self, i: usize, kind: Scan, pid: u32) {
         let tv = &mut self.tickets[i];
         let Some(launch) = tv.launch.clone() else { return };
         tv.watch.scanning = true;
         let id: Id = (tv.t.repo.clone(), tv.t.key.clone());
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(Msg::Scanned(id, launch, kind, proctree::descendants(pid)));
-        });
+        let failed = (id.clone(), launch.clone());
+        self.reporter().spawn(
+            "looking at a session's processes".into(),
+            move || Msg::Scanned(id, launch, kind, proctree::descendants(pid)),
+            move |e| Msg::Scanned(failed.0, failed.1, kind, Err(e)),
+        );
     }
 
     /// What a look at a process tree found (`scan`). A session that has started again since, or

@@ -269,3 +269,16 @@ fn an_ended_session_lets_go_of_its_history_but_keeps_its_last_screen() {
     assert_eq!(tv.status.state, AgentState::NotStarted, "Enter doesn't resume it");
     assert!(tv.last_screen.is_none() && tv.end.is_none());
 }
+
+/// A bug that panics a look at the process tree still ends it: it decides nothing, and the next
+/// tick can look again.
+#[test]
+fn a_look_that_panics_ends_and_decides_nothing() {
+    let mut app = running(AgentState::Idle);
+    panicking(&mut app);
+    let i = index(&app, "ENG-53");
+    app.scan(i, Scan::Check, std::process::id());
+    assert!(app.tickets[i].watch.scanning);
+    settle_until(&mut app, |app| !app.tickets[i].watch.scanning);
+    assert!(app.tickets[i].session.is_some() && !asleep(&app, "ENG-53"));
+}

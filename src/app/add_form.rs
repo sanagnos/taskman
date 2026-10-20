@@ -270,11 +270,12 @@ impl App {
         }
         let prefix = t.key.clone();
         let Some(listing) = self.start_listing(p) else { return };
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let res = client.open_issues(&prefix);
-            let _ = tx.send(Msg::OpenIssues(listing, res));
-        });
+        let failed = listing.clone();
+        self.reporter().spawn(
+            "listing the open issues".into(),
+            move || Msg::OpenIssues(listing, client.open_issues(&prefix)),
+            move |e| Msg::OpenIssues(failed, Err(e)),
+        );
     }
 
     /// Project `p`'s open issues are being listed: the request its folder now waits on.

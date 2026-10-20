@@ -469,6 +469,20 @@ fn without_links(s: &str) -> String {
     out + rest
 }
 
+/// Makes the App's threads that report back (`sync::Reporter`) panic before their work, as a bug
+/// in it would, with the panics kept out of the test's output.
+pub(crate) fn panicking(app: &mut App) {
+    crate::util::quiet_test_panics();
+    app.panics = true;
+}
+
+/// Applies the messages the App's threads send until `done`.
+pub(crate) fn settle_until(app: &mut App, done: impl Fn(&App) -> bool) {
+    while !done(app) {
+        settle(app);
+    }
+}
+
 /// Waits for the next message a thread of the App sends, such as `Msg::Copied`, and applies it.
 pub(crate) fn settle(app: &mut App) {
     let msg =
@@ -487,7 +501,9 @@ pub(crate) fn answer_check(app: &mut App, found: Result<(&str, &str), String>) {
         _ => panic!("no form open"),
     };
     form.checking = Some(u64::MAX);
-    app.tx.send(super::sync::Msg::Checked(u64::MAX, super::forms::Check::Account(found))).unwrap();
+    app.tx
+        .send(super::sync::Msg::Checked(u64::MAX, Ok(super::forms::Check::Account(found))))
+        .unwrap();
     app.drain_messages();
 }
 

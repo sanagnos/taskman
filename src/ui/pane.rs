@@ -361,7 +361,7 @@ fn draw_ended(f: &mut Frame, tv: &TicketView, area: Rect, used: u16) {
                 Line::from(
                     format!(
                         "taskman stopped reading this session after an error; details in {}",
-                        panics_log()
+                        crate::store::panics_log()
                     )
                     .bold(),
                 ),
@@ -398,15 +398,6 @@ fn draw_ended(f: &mut Frame, tv: &TicketView, area: Rect, used: u16) {
     // Clear drops the links marked under it.
     f.render_widget(Clear, r);
     f.render_widget(banner, r);
-}
-
-/// Where a reader's panic is written (see `set_panic_hook` in main.rs). Unit tests' state folder
-/// is a scratch folder, so they draw the default, the same wherever they run.
-fn panics_log() -> String {
-    if cfg!(test) {
-        return "~/.local/state/taskman/panics.log".into();
-    }
-    tilde(&crate::store::state_dir().join("panics.log"))
 }
 
 /// "selecting · Esc to resume" in a corner of the pane holding a selection, away from it.

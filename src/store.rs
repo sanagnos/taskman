@@ -476,6 +476,16 @@ pub fn state_dir() -> PathBuf {
     base.join("taskman")
 }
 
+/// Where a worker thread's panic is written (see `set_panic_hook` in main.rs), for the messages
+/// that point to it. Unit tests' state folder is a scratch folder, so they say the default, the
+/// same wherever they run.
+pub fn panics_log() -> String {
+    if cfg!(test) {
+        return "~/.local/state/taskman/panics.log".into();
+    }
+    tilde(&state_dir().join("panics.log"))
+}
+
 /// The state folder and config file of unit tests: a folder for each test, removed when it ends, so
 /// no test reads or writes the user's, and tests running at once don't share owner locks or saved
 /// state. A test runs on a thread of its own; a thread it spawns gets a folder of its own too.

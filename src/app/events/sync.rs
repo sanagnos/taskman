@@ -365,3 +365,62 @@ fn the_pr_panel_draws_from_the_saved_gh_check_until_the_new_one_answers() {
     assert!(!app.panels().1);
     assert_eq!(saved().ui.github, [(acme, Gh::LoggedOut)].into());
 }
+
+// ---- threads that panic --------------------------------------------------------------------
+
+/// A bug that panics a fetch ends its thread, but the panels still hear of it: they stop loading,
+/// keep what they had and say what happened, an error toast points to panics.log, and `r` fetches
+/// again.
+#[test]
+fn a_fetch_that_panics_fails_and_r_fetches_again() {
+    let mut app = acme_app();
+    panicking(&mut app);
+    let i = index(&app, "ENG-52");
+    let fetching = |app: &App| (app.tickets[i].jira.loading, app.tickets[i].pr.loading);
+    app.schedule_fetches();
+    assert_eq!(fetching(&app), (true, true));
+    settle_until(&mut app, |app| fetching(app) == (false, false));
+    let tv = &app.tickets[i];
+    assert_eq!((tv.jira.error.as_deref(), tv.pr.error.as_deref()), (Some(BUG), Some(BUG)));
+    assert!(tv.jira.data.is_some() && tv.pr.data.is_some(), "what was fetched stays");
+    let log = "~/.local/state/taskman/panics.log";
+    assert!(logged_error(&app, &format!("taskman hit a bug fetching ENG-52; details in {log}")));
+    let lookup = format!("taskman hit a bug looking up ENG-52's PR; details in {log}");
+    assert!(logged_error(&app, &lookup));
+
+    prefix(&mut app, KeyCode::Char('r'));
+    app.schedule_fetches();
+    assert_eq!(fetching(&app), (true, true));
+    settle_until(&mut app, |app| fetching(app) == (false, false));
+}
+
+/// A bug that panics git's thread still ends the wait for the worktree: the session says it
+/// couldn't be created, the tracker fetch it started stops loading, and Enter tries again.
+#[test]
+fn a_worktree_creation_that_panics_fails_and_enter_tries_again() {
+    let mut app = acme_app();
+    panicking(&mut app);
+    let i = index(&app, "ENG-70");
+    app.select(i);
+    app.tickets[i].t.pending_worktree = Some(Default::default());
+    app.create_worktree(0, i);
+    assert!(app.tickets[i].creating && app.tickets[i].jira.loading);
+    settle_until(&mut app, |app| !app.tickets[i].creating);
+    let tv = &app.tickets[i];
+    assert!(!tv.jira.loading, "the tracker fetch is still loading");
+    assert_eq!(tv.jira.error.as_deref(), Some(BUG));
+    let pending = tv.t.pending_worktree.as_ref().expect("the worktree is no longer asked for");
+    assert_eq!(pending.error.as_deref(), Some(BUG));
+    assert_eq!(toast(&app), Some(format!("Couldn't create ENG-70's worktree: {BUG}").as_str()));
+    let screen = draw(&mut app, 120, 30);
+    assert!(
+        screen.contains("Couldn't create a worktree for ENG-70")
+            && screen.contains("taskman hit a bug"),
+        "{screen}"
+    );
+
+    app.on_key(key(KeyCode::Enter));
+    app.resume_worktrees();
+    assert!(app.tickets[i].creating);
+    settle_until(&mut app, |app| !app.tickets[i].creating);
+}

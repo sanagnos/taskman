@@ -592,3 +592,20 @@ fn a_key_or_link_for_the_name_switches_to_a_ticket_and_another_key_stays_a_name(
     app.on_paste("reviewer");
     assert_eq!((focused(&app), field(&app, "Name").as_str()), ("Name", "reviewer"));
 }
+
+/// A bug that panics the listing still ends it: the form says the issues couldn't be listed,
+/// rather than listing them for good.
+#[test]
+fn a_listing_of_open_issues_that_panics_says_so() {
+    let mut app = acme_app();
+    app.github.insert("/src/acme".into(), crate::github::Gh::NotGit);
+    panicking(&mut app);
+    open_ticket_form_on_ticket(&mut app, 0);
+    let loading = |app: &App| {
+        let listing = app.open_issues.get(std::path::Path::new("/src/acme"));
+        matches!(listing, Some((_, crate::app::add_form::OpenIssues::Loading(_))))
+    };
+    assert!(loading(&app));
+    settle_until(&mut app, |app| !loading(app));
+    assert_eq!(listed(&app), [format!("Couldn't list the open issues: {BUG}")]);
+}

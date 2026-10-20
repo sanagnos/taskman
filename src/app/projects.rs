@@ -603,14 +603,15 @@ impl App {
             return;
         }
         self.checks += 1;
-        let (id, tx) = (self.checks, self.tx.clone());
+        let id = self.checks;
         form.choices =
             Some(Box::new(Choices { asked: asked.clone(), id, got: None, shown: vec![] }));
         // A saved account's token the clients read already: no password manager asked again.
         let known =
             asked.pasted.clone().or_else(|| self.trackers.token(&asked.source).map(String::from));
         let k = self.keychain.clone().unwrap_or_else(Keychain::os);
-        std::thread::spawn(move || {
+        let what = "listing what the account can see".to_string();
+        let work = move || {
             let SignIn { provider, site, email, source, .. } = asked;
             let a = Account {
                 id: String::new(),
@@ -641,8 +642,9 @@ impl App {
                     .and_then(|c| c.choices())
                     .unwrap_or_else(|| Ok(Vec::new()))
             });
-            let _ = tx.send(Msg::Choices(id, got));
-        });
+            Msg::Choices(id, got)
+        };
+        self.reporter().spawn(what, work, move |e| Msg::Choices(id, Err(e)));
     }
 
     /// What the form's account can see came in: the prefix field lists it, and the only one is

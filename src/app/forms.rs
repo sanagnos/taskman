@@ -462,9 +462,10 @@ impl App {
         form.checking = Some(id);
         form.checked = None;
         form.error = None;
-        std::thread::spawn(move || {
-            let found = check(&tx);
-            let _ = tx.send(Msg::Checked(id, found));
-        });
+        self.reporter().spawn(
+            "testing the connection".into(),
+            move || Msg::Checked(id, Ok(check(&tx))),
+            move |e| Msg::Checked(id, Err(e)),
+        );
     }
 }

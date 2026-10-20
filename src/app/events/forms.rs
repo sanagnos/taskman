@@ -511,3 +511,31 @@ fn an_account_saved_with_a_token_says_what_to_change() {
     let used = app.config.accounts[1].resolve_token().unwrap_err();
     assert!(used.contains("env:VAR or cmd:COMMAND") && !used.contains("jira-raw-secret"), "{used}");
 }
+
+/// A bug that panics a form's check still ends it: the form says so, and Enter checks again.
+#[test]
+fn a_check_that_panics_says_so_and_enter_checks_again() {
+    let mut app = acme_app();
+    prefix(&mut app, KeyCode::Char('A'));
+    app.on_key(key(KeyCode::Up));
+    app.on_key(key(KeyCode::Right));
+    fill(&mut app, "Site", "globex");
+    choose(&mut app, "Keep in", "Variable or command");
+    fill(&mut app, "Read from", "env:TASKMAN_TEST_UNSET_KEY");
+    panicking(&mut app);
+    let checking = |app: &App| settings_form(app).checking.is_some();
+    app.on_key(key(KeyCode::Enter));
+    app.on_key(key(KeyCode::Enter));
+    assert!(checking(&app));
+    settle_until(&mut app, |app| !checking(app));
+    assert_eq!(form_error(&app).as_deref(), Some(BUG));
+    let log = "~/.local/state/taskman/panics.log";
+    assert!(logged_error(
+        &app,
+        &format!("taskman hit a bug testing the connection; details in {log}")
+    ));
+    assert!(app.config.accounts.len() == 1, "saved without the check");
+    app.on_key(key(KeyCode::Enter));
+    assert!(checking(&app));
+    settle_until(&mut app, |app| !checking(app));
+}

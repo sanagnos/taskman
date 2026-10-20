@@ -197,6 +197,10 @@ pub struct App {
     bin_dir: Option<PathBuf>,
     tx: mpsc::Sender<Msg>,
     rx: mpsc::Receiver<Msg>,
+    /// Unit tests: the threads that report back (`sync::Reporter`) panic before their work, as a
+    /// bug in it would.
+    #[cfg(test)]
+    pub(super) panics: bool,
     last_status_poll: Instant,
     /// When `inbox/alive` was last written, which `take_inbox` does at most once a second.
     heartbeat_at: Option<Instant>,
@@ -269,11 +273,7 @@ impl App {
         let mut app = Self::from_saved(exe, saved, config, update::Updater::new(exe));
         app.bin_dir = link_bin(exe);
         app.rebuild_clients();
-        let tx = app.tx.clone();
-        std::thread::spawn(move || {
-            let keychain = crate::keychain::Keychain::os();
-            let _ = tx.send(Msg::Keychain(keychain.probe().then_some(keychain)));
-        });
+        app.probe_keychain();
         // The first frame draws from the saved answers; gh can take a second to give its own.
         app.check_github(app.projects.iter().map(|p| p.repo.clone()).collect());
         if resumed {
@@ -322,6 +322,8 @@ impl App {
             bin_dir: None,
             tx,
             rx,
+            #[cfg(test)]
+            panics: false,
             last_status_poll: Instant::now().checked_sub(STATUS_EVERY).unwrap_or_else(Instant::now),
             heartbeat_at: None,
             form_worktrees: Default::default(),
@@ -397,10 +399,25 @@ impl App {
     /// Reads the tokens not read yet, in the background, and builds the clients projects need
     /// (`tracker::Clients::rebuild`). Runs at startup and whenever accounts or projects change.
     fn rebuild_clients(&mut self) {
-        let tx = self.tx.clone();
-        self.trackers.rebuild(&self.config, &self.projects, move |source, token| {
-            let _ = tx.send(Msg::Token(source, token));
+        let report = self.reporter();
+        self.trackers.rebuild(&self.config, &self.projects, move |a| {
+            let what = format!("reading the token of {}", a.label());
+            let token = report.reported(&what, || a.resolve_token()).and_then(|t| t);
+            report.send(Msg::Token(a.token, token));
         });
+    }
+
+    /// Asks, in the background, whether there's an OS keychain to keep tokens in. The Keep in
+    /// field waits for the answer (`keychain_probed`), which a panic makes "none".
+    fn probe_keychain(&self) {
+        self.reporter().spawn(
+            "looking for the keychain".into(),
+            || {
+                let keychain = crate::keychain::Keychain::os();
+                Msg::Keychain(keychain.probe().then_some(keychain))
+            },
+            |_| Msg::Keychain(None),
+        );
     }
 
     pub fn project_of(&self, t: &Ticket) -> Option<usize> {

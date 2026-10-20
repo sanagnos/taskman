@@ -6,6 +6,7 @@ What changed in each release; a release's notes on GitHub are its section here. 
 
 - The list of recent footer messages moved from `ctrl+a L` to `ctrl+a ~` (tmux's key for its messages; `l` and `L` were easy to mix up) and is called notices: it opens with a line saying what it holds, and the ctrl+a menu, Help and the short-window pointer (`ctrl+a ~ lists it`) say so. The menu's `w` reads "waiting on you".
 - `ctrl+a R` asks before restarting a session that's working or waiting on you, since the restart stops its turn part-way, or leaves its question unanswered; Enter restarts, Esc keeps it running. An idle or ended session restarts at once, as before.
+- If taskman hits a bug while fetching a ticket or its PR, creating a worktree, testing a connection, listing issues or reading a token, it now says so in a red message pointing to `panics.log`, and the panel or session shows the error, instead of loading forever until you restart. `ctrl+a r` fetches again, and Enter retries the worktree.
 
 ## 0.1.17 - 2026-10-19
 

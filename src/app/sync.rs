@@ -8,6 +8,7 @@ use crate::tracker::{Access, Issue, Text};
 use crate::{add, github, selection, worktree};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 // The ticket on screen refreshes often; the others refresh in the background.
@@ -122,8 +123,9 @@ pub(super) enum Msg {
     Gh(PathBuf, github::Gh),
     /// An account's token, read from its source (`env:`, `cmd:` or `keychain:`).
     Token(String, Result<String, String>),
-    /// A form's check finished: the form's `checking` id and what it found.
-    Checked(u64, Check),
+    /// A form's check finished: the form's `checking` id and what it found, or Err when it
+    /// panicked.
+    Checked(u64, Result<Check, String>),
     /// Text went to the clipboard, or no command could take it; with what the toast calls it.
     Copied(String, selection::Copied, Option<String>),
     Toast(Level, String),
@@ -144,6 +146,60 @@ pub(super) enum Msg {
     BackgroundStopped(Id, String, Result<(), String>),
 }
 
+/// Runs the work of a thread whose message something waits for: a panel loading, a form checking,
+/// a session waiting for its worktree. A panic in the work (a bug: in a parser, say) would end the
+/// thread without a word and leave that waiting for good, with `r` doing nothing, so the thread
+/// reports it instead (`util::caught`). The panic hook has written it to panics.log.
+#[derive(Clone)]
+pub(super) struct Reporter {
+    tx: mpsc::Sender<Msg>,
+    #[cfg(test)]
+    panics: bool,
+}
+
+impl Reporter {
+    /// Runs `f`; Err when it panicked.
+    pub(super) fn caught<T>(&self, f: impl FnOnce() -> T) -> Result<T, String> {
+        #[cfg(test)]
+        let panics = self.panics;
+        crate::util::caught(move || {
+            #[cfg(test)]
+            if panics {
+                std::panic::panic_any(crate::util::TestPanic);
+            }
+            f()
+        })
+    }
+
+    /// `caught`, with an error toast saying that taskman hit a bug `what` (`"fetching ENG-52"`)
+    /// when it panicked. Sent before the caller's own message, so the toast is in by the time
+    /// what waited stops waiting.
+    pub(super) fn reported<T>(&self, what: &str, f: impl FnOnce() -> T) -> Result<T, String> {
+        self.caught(f).inspect_err(|_| {
+            let msg = format!("taskman hit a bug {what}; details in {}", store::panics_log());
+            let _ = self.tx.send(Msg::Toast(Level::Error, msg));
+        })
+    }
+
+    pub(super) fn send(&self, msg: Msg) {
+        let _ = self.tx.send(msg);
+    }
+
+    /// Runs `work` on a thread, which sends the message it returns; when it panicked, the one
+    /// `failed` makes of the error instead (see `reported`).
+    pub(super) fn spawn(
+        self,
+        what: String,
+        work: impl FnOnce() -> Msg + Send + 'static,
+        failed: impl FnOnce(String) -> Msg + Send + 'static,
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            let msg = self.reported(&what, work).unwrap_or_else(failed);
+            let _ = self.tx.send(msg);
+        })
+    }
+}
+
 /// Looks ticket `key`'s PR up: one that `closes` its issue, else on its worktree's branch, else on
 /// `branch`; with the worktree git found for it.
 pub(super) fn pr_lookup(
@@ -158,6 +214,15 @@ pub(super) fn pr_lookup(
 }
 
 impl App {
+    /// Starts the threads that report back even when their work panics.
+    pub(super) fn reporter(&self) -> Reporter {
+        Reporter {
+            tx: self.tx.clone(),
+            #[cfg(test)]
+            panics: self.panics,
+        }
+    }
+
     /// Applies what the background threads sent. On the UI thread, each tick, and at a quit that
     /// waits for a worktree without the event loop (`main::shutdown`).
     pub fn drain_messages(&mut self) {
@@ -313,8 +378,14 @@ impl App {
                         continue;
                     }
                     form.checking = None;
-                    form.checked = Some(check);
-                    self.submit_form();
+                    match check {
+                        Ok(check) => {
+                            form.checked = Some(check);
+                            self.submit_form();
+                        }
+                        // Enter checks again.
+                        Err(e) => form.error = Some(e),
+                    }
                 }
             }
         }
@@ -329,6 +400,7 @@ impl App {
     pub(super) fn schedule_fetches(&mut self) {
         let access: Vec<(Access, Option<github::Closes>)> =
             self.tickets.iter().map(|tv| (self.access(&tv.t), self.closes(&tv.t))).collect();
+        let report = self.reporter();
         for ((i, tv), (access, closes)) in self.tickets.iter_mut().enumerate().zip(access) {
             let selected = i == self.sel;
             if tv.t.agent.is_some() {
@@ -341,11 +413,16 @@ impl App {
                 self.fetches += 1;
                 let n = self.fetches;
                 tv.jira.start(n);
-                let (repo, key, tx) = (tv.t.repo.clone(), tv.t.key.clone(), self.tx.clone());
-                std::thread::spawn(move || {
-                    let res = client.fetch(&key, Text::Plain).map_err(String::from);
-                    let _ = tx.send(Msg::Jira(n, (repo, key), res));
-                });
+                let id: Id = (tv.t.repo.clone(), tv.t.key.clone());
+                let (what, failed) = (format!("fetching {}", id.1), id.clone());
+                report.clone().spawn(
+                    what,
+                    move || {
+                        let res = client.fetch(&id.1, Text::Plain).map_err(String::from);
+                        Msg::Jira(n, id, res)
+                    },
+                    move |e| Msg::Jira(n, failed, Err(e)),
+                );
             }
             if self.github.get(&tv.t.repo).is_none_or(|g| *g == github::Gh::Ready)
                 && tv.pr.due(if selected { GH_SELECTED } else { GH_BACKGROUND })
@@ -353,12 +430,17 @@ impl App {
                 self.fetches += 1;
                 let n = self.fetches;
                 tv.pr.start(n);
-                let (repo, key, branch, tx) =
-                    (tv.t.repo.clone(), tv.t.key.clone(), tv.t.branch.clone(), self.tx.clone());
-                std::thread::spawn(move || {
-                    let (res, wt) = pr_lookup(&repo, &key, branch, closes.as_ref());
-                    let _ = tx.send(Msg::Pr(n, (repo, key), res, wt));
-                });
+                let (id, branch): (Id, _) =
+                    ((tv.t.repo.clone(), tv.t.key.clone()), tv.t.branch.clone());
+                let (what, failed) = (format!("looking up {}'s PR", id.1), id.clone());
+                report.clone().spawn(
+                    what,
+                    move || {
+                        let (res, wt) = pr_lookup(&id.0, &id.1, branch, closes.as_ref());
+                        Msg::Pr(n, id, res, wt)
+                    },
+                    move |e| Msg::Pr(n, failed, Err(e), None),
+                );
             }
         }
     }
@@ -412,32 +494,57 @@ impl App {
         let (key, repo, tx) = (tv.t.key.clone(), tv.t.repo.clone(), self.tx.clone());
         let folder = worktree::folder_path(prefs.folder_format(), &repo, &key);
         let format = prefs.branch_format().to_string();
-        match &access {
-            Access::Client(c) if c.remote() => tv.jira.start(fetch),
+        let started = match &access {
+            Access::Client(c) if c.remote() => {
+                tv.jira.start(fetch);
+                true
+            }
             // With the token still being read there may be no fetch, so no spinner; and a fetch
             // in flight keeps its claim, since its reply is what clears `loading`.
-            _ if !tv.jira.loading => tv.jira.expect(fetch),
-            _ => {}
-        }
-        tv.creation = Some(std::thread::spawn(move || {
-            let issue = match later.map_or(access, |f| f()) {
-                Access::Client(client) => {
-                    Some(client.fetch(&key, Text::Plain).map_err(String::from))
-                }
-                _ => None,
-            };
-            let (title, tracker_branch) = match &issue {
-                Some(Ok(i)) => (i.summary.clone(), i.branch.clone()),
-                _ => Default::default(),
-            };
-            if let Some(res) = issue {
-                let _ = tx.send(Msg::Jira(fetch, (repo.clone(), key.clone()), res));
+            _ if !tv.jira.loading => {
+                tv.jira.expect(fetch);
+                false
             }
-            let branch = worktree::branch_name(&format, provider, &key, &title, &tracker_branch);
-            let res =
-                worktree::create(&repo, &folder, &branch, base.as_ref().map(|b| b.branch.as_str()));
-            let _ = tx.send(Msg::Worktree(n, (repo, key), res, base));
-        }));
+            _ => false,
+        };
+        let report = self.reporter();
+        let thread = std::thread::spawn(move || {
+            let mut fetched = false;
+            // No toast of its own: the failed worktree's says it (`drain_messages`).
+            let res = report.caught(|| {
+                let issue = match later.map_or(access, |f| f()) {
+                    Access::Client(client) => Some(
+                        report
+                            .reported(&format!("fetching {key}"), || {
+                                client.fetch(&key, Text::Plain)
+                            })
+                            .and_then(|r| r.map_err(String::from)),
+                    ),
+                    _ => None,
+                };
+                let (title, tracker_branch) = match &issue {
+                    Some(Ok(i)) => (i.summary.clone(), i.branch.clone()),
+                    _ => Default::default(),
+                };
+                if let Some(res) = issue {
+                    let _ = tx.send(Msg::Jira(fetch, (repo.clone(), key.clone()), res));
+                    fetched = true;
+                }
+                let branch =
+                    worktree::branch_name(&format, provider, &key, &title, &tracker_branch);
+                let base = base.as_ref().map(|b| b.branch.as_str());
+                worktree::create(&repo, &folder, &branch, base)
+            });
+            // A panic before the fetch replied would leave its spinner on.
+            if let Err(e) = &res
+                && started
+                && !fetched
+            {
+                let _ = tx.send(Msg::Jira(fetch, (repo.clone(), key.clone()), Err(e.clone())));
+            }
+            let _ = tx.send(Msg::Worktree(n, (repo, key), res.and_then(|r| r), base));
+        });
+        self.tickets[i].creation = Some(thread);
     }
 
     /// Starts creating the worktrees still pending: asked for before taskman last quit, or retried
