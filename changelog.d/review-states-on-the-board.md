@@ -1,0 +1,1 @@
+- The agents' board shows a ticket's latest review as the PR panel does: a dismissed review as dismissed rather than as a comment, and a comment with 💬. A PR or review state GitHub adds later shows by its own name rather than passing for open or for a comment.

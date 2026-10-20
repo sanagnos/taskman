@@ -365,10 +365,7 @@ pub fn panel(
     }
     if let Some(i) = issue {
         for p in &i.prs {
-            add(
-                &p.url,
-                Some(format!("PR #{} ({}), closing {key}", p.number, p.state.to_lowercase())),
-            );
+            add(&p.url, Some(format!("PR #{} ({}), closing {key}", p.number, p.state)));
         }
         texts.push(&i.description);
         texts.extend(i.comments.iter().map(|c| c.body.as_str()));
@@ -383,14 +380,7 @@ pub fn panel(
             }
         }
         for r in pr.latest_reviews() {
-            add(
-                &r.url,
-                Some(format!(
-                    "Review by {} ({})",
-                    r.author,
-                    r.state.to_lowercase().replace('_', " ")
-                )),
-            );
+            add(&r.url, Some(format!("Review by {} ({})", r.author, r.state)));
         }
         texts.extend(pr.review_text().iter().map(|r| r.body.as_str()));
         if let Ok(t) = &pr.threads {
@@ -1065,10 +1055,10 @@ mod tests {
             number: 7,
             title: "Fix login".into(),
             url: "https://github.com/acme/web/pull/7".into(),
-            state: "OPEN".into(),
+            state: crate::github::PrState::Open,
             is_draft: false,
-            review_decision: String::new(),
-            mergeable: String::new(),
+            review_decision: crate::github::Decision::Unset,
+            mergeable: crate::github::Mergeable::Unknown,
             head: "eng-52".into(),
             cross_repository: false,
             head_oid: String::new(),
@@ -1082,10 +1072,10 @@ mod tests {
             reviews: vec![Review {
                 id: "r1".into(),
                 author: "ana".into(),
-                state: "CHANGES_REQUESTED".into(),
+                state: crate::github::ReviewState::ChangesRequested,
                 body: "See https://docs.example/style".into(),
                 url: "https://github.com/acme/web/pull/7#pullrequestreview-1".into(),
-                ..Default::default()
+                when: String::new(),
             }],
             comments: vec![comment(
                 "c1",

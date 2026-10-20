@@ -14,7 +14,7 @@ mod sidebar;
 pub use sidebar::{SIDEBAR_STEP, SidebarScroll};
 
 use crate::app::{AgentState, App, Away, Mode, TicketView};
-use crate::github::CheckState;
+use crate::github::{CheckState, Decision, Pr, PrState, ReviewState};
 use crate::store::UiPrefs;
 use pane::{draw_claude, draw_footer, draw_header, draw_prefix_menu, draw_selecting};
 use panels::{draw_board, draw_gh, draw_jira};
@@ -131,6 +131,48 @@ fn dim() -> Style {
 /// Yellow text, or a dark amber where yellow wouldn't read (`Theme::yellow`).
 fn yellow() -> Color {
     crate::theme::current().yellow
+}
+
+// The colours of GitHub's states, which github.rs gives their glyphs and words.
+
+impl PrState {
+    fn color(&self) -> Color {
+        match self {
+            PrState::Open => Color::Green,
+            PrState::Merged => Color::Magenta,
+            PrState::Closed | PrState::Other(_) => crate::theme::current().hint,
+        }
+    }
+}
+
+impl ReviewState {
+    fn color(&self) -> Color {
+        match self {
+            ReviewState::Approved => Color::Green,
+            ReviewState::ChangesRequested => Color::Red,
+            ReviewState::Commented | ReviewState::Pending => Color::Blue,
+            ReviewState::Dismissed | ReviewState::Other(_) => crate::theme::current().hint,
+        }
+    }
+}
+
+impl Decision {
+    fn color(&self) -> Color {
+        match self {
+            Decision::Approved => Color::Green,
+            Decision::ChangesRequested => Color::Red,
+            Decision::ReviewRequired => yellow(),
+            Decision::Unset | Decision::Other(_) => crate::theme::current().hint,
+        }
+    }
+}
+
+/// The PR's state as the sidebar and the PR panel name it: an open draft is a draft.
+fn pr_state(pr: &Pr) -> (String, Color) {
+    match &pr.state {
+        PrState::Open if pr.is_draft => ("draft".into(), crate::theme::current().hint),
+        s => (s.to_string(), s.color()),
+    }
 }
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -272,11 +314,9 @@ fn pr_spans(app: &App, tv: &TicketView) -> Vec<Span<'static>> {
         (Some(Some(pr)), _) => {
             let mut v = vec![Span::raw(format!("#{}", pr.number))];
             v.extend(target);
-            match pr.state.as_str() {
-                "MERGED" => v.push(Span::styled(" merged", Style::new().fg(Color::Magenta))),
-                "CLOSED" => v.push(Span::styled(" closed", dim())),
-                _ if pr.is_draft => v.push(Span::styled(" draft", dim())),
-                _ => {}
+            if pr.state != PrState::Open || pr.is_draft {
+                let (state, color) = pr_state(pr);
+                v.push(Span::styled(format!(" {state}"), Style::new().fg(color)));
             }
             for (state, sym, color) in [
                 (CheckState::Fail, "✗", Color::Red),
@@ -288,10 +328,9 @@ fn pr_spans(app: &App, tv: &TicketView) -> Vec<Span<'static>> {
                     v.push(Span::styled(format!(" {sym}{n}"), Style::new().fg(color)));
                 }
             }
-            match pr.review_decision.as_str() {
-                "APPROVED" => v.push(Span::styled(" ✔appr", Style::new().fg(Color::Green))),
-                "CHANGES_REQUESTED" => v.push(Span::styled(" ✎chg", Style::new().fg(Color::Red))),
-                _ => {}
+            let d = &pr.review_decision;
+            if let (Some(glyph), Some(word)) = (d.glyph(), d.short()) {
+                v.push(Span::styled(format!(" {glyph}{word}"), Style::new().fg(d.color())));
             }
             v
         }

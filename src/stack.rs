@@ -2,7 +2,7 @@
 //! panel, `taskman status` and the brief. taskman records the base and starts the worktree from
 //! it; keeping the stack up to date is left to git, GitHub and tools made for it.
 
-use crate::github::Pr;
+use crate::github::{Pr, PrState};
 use crate::store::Base;
 use crate::untrusted;
 
@@ -24,7 +24,7 @@ pub enum State {
 /// base's PR merged, when taskman knows it (the base ticket is open and its PR fetched). Without
 /// that, a PR that no longer targets the base's branch means GitHub retargeted it on the merge.
 pub fn state(base: &Base, pr: Option<&Pr>, base_merged: Option<bool>) -> State {
-    if pr.is_some_and(|p| p.state != "OPEN") {
+    if pr.is_some_and(|p| p.state != PrState::Open) {
         return State::Done;
     }
     let targets_base = pr.is_some_and(|p| p.base == base.branch);
@@ -93,10 +93,10 @@ mod tests {
             number: 15,
             title: String::new(),
             url: String::new(),
-            state: state.into(),
+            state: PrState::parse(state),
             is_draft: false,
-            review_decision: String::new(),
-            mergeable: String::new(),
+            review_decision: crate::github::Decision::Unset,
+            mergeable: crate::github::Mergeable::Unknown,
             head: "eng-52".into(),
             cross_repository: false,
             head_oid: String::new(),

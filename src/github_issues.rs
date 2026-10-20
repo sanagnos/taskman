@@ -336,7 +336,7 @@ fn parse_issue(i: &Value, text: fn(&str) -> String) -> Issue {
         .filter_map(|p| {
             Some(LinkedPr {
                 number: p["number"].as_u64()?,
-                state: s(&p["state"]),
+                state: crate::github::PrState::parse(&s(&p["state"])),
                 url: s(&p["url"]),
             })
         })
@@ -517,7 +517,7 @@ pub(crate) mod tests {
         assert_eq!(issue.comments_left_out, 3);
         assert_eq!(issue.branch, "");
         assert_eq!(
-            issue.prs.iter().map(|p| (p.number, p.state.as_str())).collect::<Vec<_>>(),
+            issue.prs.iter().map(|p| (p.number, p.state.name())).collect::<Vec<_>>(),
             [(45, "OPEN")]
         );
         // The saved repository, on its host, whatever the folder's remotes say.

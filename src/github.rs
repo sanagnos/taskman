@@ -1,6 +1,7 @@
 //! Pull request status through the `gh` CLI, and ticket → worktree/branch discovery through git.
 
 use crate::proc;
+use crate::untrusted;
 use crate::util::parse_ts;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -34,11 +35,130 @@ pub struct Check {
     pub url: String,
 }
 
-#[derive(Clone, Debug, Default)]
+/// Declares an enum of GitHub's names for a state, with `parse` and `name` between them. `Other`
+/// keeps a name it doesn't know, as GitHub adds states; it shows as GitHub's word.
+macro_rules! states {
+    ($(#[$doc:meta])* $ty:ident { $($v:ident = $name:literal,)* }) => {
+        $(#[$doc])*
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        pub enum $ty {
+            $($v,)*
+            Other(String),
+        }
+
+        impl $ty {
+            pub fn parse(s: &str) -> $ty {
+                match s {
+                    $($name => $ty::$v,)*
+                    _ => $ty::Other(s.to_string()),
+                }
+            }
+
+            /// GitHub's name for it, as `--json` prints it.
+            pub fn name(&self) -> &str {
+                match self {
+                    $($ty::$v => $name,)*
+                    $ty::Other(s) => s,
+                }
+            }
+        }
+
+        /// GitHub's name in words: `changes requested`.
+        impl std::fmt::Display for $ty {
+            fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str(&untrusted::line(&self.name().to_lowercase().replace('_', " ")))
+            }
+        }
+    };
+}
+
+states! {
+    /// A PR's `state`. Whether it's a draft is a flag of its own (`Pr::is_draft`).
+    PrState { Open = "OPEN", Closed = "CLOSED", Merged = "MERGED", }
+}
+
+states! {
+    /// A review's `state`.
+    ReviewState {
+        Approved = "APPROVED",
+        ChangesRequested = "CHANGES_REQUESTED",
+        Commented = "COMMENTED",
+        Dismissed = "DISMISSED",
+        Pending = "PENDING",
+    }
+}
+
+states! {
+    /// A PR's `reviewDecision`: what its reviews add up to under the branch's rules. `Unset` when
+    /// GitHub sends none, as when no review is required.
+    Decision {
+        Unset = "",
+        Approved = "APPROVED",
+        ChangesRequested = "CHANGES_REQUESTED",
+        ReviewRequired = "REVIEW_REQUIRED",
+    }
+}
+
+states! {
+    /// A PR's `mergeable`: `Unknown` while GitHub works it out.
+    Mergeable { Yes = "MERGEABLE", Conflicting = "CONFLICTING", Unknown = "UNKNOWN", }
+}
+
+impl ReviewState {
+    /// Whether it's a decision that stands for its author: a comment doesn't replace one.
+    fn decides(&self) -> bool {
+        *self != ReviewState::Commented
+    }
+
+    pub fn glyph(&self) -> &'static str {
+        match self {
+            ReviewState::Approved => "✔",
+            ReviewState::ChangesRequested => "✎",
+            ReviewState::Dismissed => "–",
+            ReviewState::Commented | ReviewState::Pending => "💬",
+            ReviewState::Other(_) => "?",
+        }
+    }
+
+    /// What its author did, after their name: `ana requested changes`.
+    pub fn verb(&self) -> String {
+        match self {
+            ReviewState::Approved => "approved".into(),
+            ReviewState::ChangesRequested => "requested changes".into(),
+            ReviewState::Dismissed => "dismissed".into(),
+            ReviewState::Commented | ReviewState::Pending => "commented".into(),
+            ReviewState::Other(_) => self.to_string(),
+        }
+    }
+}
+
+impl Decision {
+    /// None when there's no decision to show.
+    pub fn glyph(&self) -> Option<&'static str> {
+        match self {
+            Decision::Unset => None,
+            Decision::Approved => Some("✔"),
+            Decision::ChangesRequested => Some("✎"),
+            Decision::ReviewRequired => Some("◌"),
+            Decision::Other(_) => Some("?"),
+        }
+    }
+
+    /// The word on a sidebar row, which shows only a decision taken.
+    pub fn short(&self) -> Option<&'static str> {
+        match self {
+            Decision::Approved => Some("appr"),
+            Decision::ChangesRequested => Some("chg"),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct Review {
     pub id: String,
     pub author: String,
-    pub state: String,
+    pub state: ReviewState,
     pub when: String,
     pub body: String,
     pub url: String,
@@ -58,10 +178,10 @@ pub struct Pr {
     pub number: u64,
     pub title: String,
     pub url: String,
-    pub state: String,
+    pub state: PrState,
     pub is_draft: bool,
-    pub review_decision: String,
-    pub mergeable: String,
+    pub review_decision: Decision,
+    pub mergeable: Mergeable,
     pub head: String,
     /// Whether the head branch is in another repository, a fork: then whoever opened the PR
     /// named it, so a ticket doesn't take it as its own branch. True when GitHub doesn't say.
@@ -123,7 +243,7 @@ impl Pr {
         let mut out: Vec<&Review> = Vec::new();
         for r in &self.reviews {
             match out.iter().position(|x| x.author == r.author) {
-                Some(_) if r.state == "COMMENTED" => {}
+                Some(_) if !r.state.decides() => {}
                 Some(i) => out[i] = r,
                 None => out.push(r),
             }
@@ -137,7 +257,7 @@ impl Pr {
         let decided = |author: &str, after: &str| {
             self.reviews
                 .iter()
-                .any(|r| r.author == author && r.state != "COMMENTED" && r.when.as_str() > after)
+                .any(|r| r.author == author && r.state.decides() && r.when.as_str() > after)
         };
         self.reviews
             .iter()
@@ -469,7 +589,7 @@ pub struct Lookup {
 struct Candidate {
     number: u64,
     url: String,
-    state: String,
+    state: PrState,
     stamp: Stamp,
     /// On the ticket's own branch, rather than found by searching for its key.
     exact: bool,
@@ -580,7 +700,7 @@ fn candidate(p: &Value, exact: bool) -> Option<Candidate> {
     Some(Candidate {
         number: p["number"].as_u64()?,
         url: s("url"),
-        state: s("state"),
+        state: PrState::parse(&s("state")),
         stamp: Stamp::read(p),
         exact,
     })
@@ -590,13 +710,14 @@ fn candidate(p: &Value, exact: bool) -> Option<Candidate> {
 /// mention the key) and the newest closed-unmerged one.
 fn pick<'a>(c: impl IntoIterator<Item = &'a Candidate>) -> (Option<&'a Candidate>, Option<u64>) {
     let c: Vec<&Candidate> = c.into_iter().collect();
-    let newest = |state: &str| {
+    let newest = |state: PrState| {
         c.iter()
             .filter(|x| x.state == state)
             .max_by(|a, b| (a.exact, &a.stamp.updated).cmp(&(b.exact, &b.stamp.updated)))
             .copied()
     };
-    (newest("OPEN").or_else(|| newest("MERGED")), newest("CLOSED").map(|x| x.number))
+    let shown = newest(PrState::Open).or_else(|| newest(PrState::Merged));
+    (shown, newest(PrState::Closed).map(|x| x.number))
 }
 
 /// The issue a ticket's PR closes, when the project's tracker is its repository's issues
@@ -748,7 +869,7 @@ fn settle(
     listed: &Listed,
 ) -> Result<Lookup, String> {
     let mut found: Vec<&Candidate> = listed.branch.iter().collect();
-    let open_on_branch = found.iter().any(|c| c.state == "OPEN");
+    let open_on_branch = found.iter().any(|c| c.state == PrState::Open);
     if !open_on_branch {
         for c in &listed.search {
             if !found.iter().any(|x| x.number == c.number) {
@@ -993,7 +1114,7 @@ fn parse(reply: &Value) -> Result<Pr, String> {
         .map(|r| Review {
             id: s(&r["id"]),
             author: s(&r["author"]["login"]),
-            state: s(&r["state"]),
+            state: ReviewState::parse(r["state"].as_str().unwrap_or("")),
             when: s(&r["submittedAt"]),
             body: s(&r["body"]),
             url: s(&r["url"]),
@@ -1020,10 +1141,10 @@ fn parse(reply: &Value) -> Result<Pr, String> {
         number: v["number"].as_u64().unwrap_or(0),
         title: s(&v["title"]),
         url: s(&v["url"]),
-        state: s(&v["state"]),
+        state: PrState::parse(v["state"].as_str().unwrap_or("")),
         is_draft: v["isDraft"].as_bool().unwrap_or(false),
-        review_decision: s(&v["reviewDecision"]),
-        mergeable: s(&v["mergeable"]),
+        review_decision: Decision::parse(v["reviewDecision"].as_str().unwrap_or("")),
+        mergeable: Mergeable::parse(v["mergeable"].as_str().unwrap_or("")),
         head: s(&v["headRefName"]),
         cross_repository: v["isCrossRepository"].as_bool() != Some(false),
         head_oid: s(&v["headRefOid"]),
@@ -1301,7 +1422,7 @@ mod tests {
         let c = |number, state: &str, updated: &str| Candidate {
             number,
             url: String::new(),
-            state: state.into(),
+            state: PrState::parse(state),
             stamp: Stamp { updated: updated.into(), ..Stamp::default() },
             exact: false,
         };
@@ -1401,6 +1522,10 @@ mod tests {
             review: "CHANGES_REQUESTED".into(),
         };
         assert_eq!(pr.stamp, stamp);
+        assert_eq!(
+            (&pr.state, &pr.review_decision, &pr.mergeable),
+            (&PrState::Open, &Decision::ChangesRequested, &Mergeable::Yes)
+        );
         // A PR GitHub doesn't say is from this repository counts as a fork's.
         let bare =
             parse(&reply(json!({ "number": 1, "state": "OPEN", "headRefName": "x" }))).unwrap();
@@ -1417,7 +1542,7 @@ mod tests {
         // a's comment after their approval doesn't replace it.
         let latest = pr.latest_reviews();
         assert_eq!(
-            latest.iter().map(|r| (r.author.as_str(), r.state.as_str())).collect::<Vec<_>>(),
+            latest.iter().map(|r| (r.author.as_str(), r.state.name())).collect::<Vec<_>>(),
             [("a", "APPROVED"), ("b", "CHANGES_REQUESTED")]
         );
         assert_eq!(
@@ -1448,6 +1573,34 @@ mod tests {
         // a's change request was answered by the approval; b's question by the change request.
         assert_eq!(ids(pr.review_text()), ["2", "3", "6"]);
         assert_eq!(ids(pr.latest_reviews()), ["2", "6"]);
+    }
+
+    #[test]
+    fn reads_states_and_keeps_the_ones_it_does_not_know() {
+        for name in ["OPEN", "CLOSED", "MERGED"] {
+            assert!(!matches!(PrState::parse(name), PrState::Other(_)), "{name}");
+        }
+        for name in ["APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED", "PENDING"] {
+            assert!(!matches!(ReviewState::parse(name), ReviewState::Other(_)), "{name}");
+        }
+        for name in ["", "APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"] {
+            assert!(!matches!(Decision::parse(name), Decision::Other(_)), "{name}");
+        }
+        for name in ["MERGEABLE", "CONFLICTING", "UNKNOWN"] {
+            assert!(!matches!(Mergeable::parse(name), Mergeable::Other(_)), "{name}");
+        }
+        // A decision and a review word a change request differently, by grammar.
+        assert_eq!(Decision::ChangesRequested.to_string(), "changes requested");
+        assert_eq!(ReviewState::ChangesRequested.verb(), "requested changes");
+        // A state GitHub adds later shows as its word, on one line.
+        let review = ReviewState::parse("ESCALATED_TO_ADMINS");
+        assert_eq!(review, ReviewState::Other("ESCALATED_TO_ADMINS".into()));
+        assert_eq!((review.glyph(), review.verb()), ("?", "escalated to admins".into()));
+        let decision = Decision::parse("NEEDS_TRIAGE");
+        assert_eq!((decision.glyph(), decision.short()), (Some("?"), None));
+        assert_eq!(decision.to_string(), "needs triage");
+        assert_eq!(PrState::parse("LOCKED\n> ok").to_string(), "locked > ok");
+        assert_eq!(Decision::Unset.glyph(), None);
     }
 
     #[test]
@@ -1980,6 +2133,28 @@ mod tests {
             // Neither side has a hyphen, so the key can be nowhere else.
             let text = format!("{before}{key}{digit}{after}");
             prop_assert!(!mentions(&text, &key), "{} in {}", key, text);
+        }
+
+        #[test]
+        fn a_state_keeps_any_name_github_sends(name in "(?s).{0,24}") {
+            prop_assert_eq!(PrState::parse(&name).name().to_string(), name.clone());
+            prop_assert_eq!(ReviewState::parse(&name).name().to_string(), name.clone());
+            prop_assert_eq!(Decision::parse(&name).name().to_string(), name.clone());
+            prop_assert_eq!(Mergeable::parse(&name).name().to_string(), name.clone());
+        }
+
+        #[test]
+        fn a_state_shows_on_one_line(name in "(?s).{0,24}") {
+            let review = ReviewState::parse(&name);
+            for shown in [
+                PrState::parse(&name).to_string(),
+                review.to_string(),
+                review.verb(),
+                Decision::parse(&name).to_string(),
+                Mergeable::parse(&name).to_string(),
+            ] {
+                prop_assert!(!shown.chars().any(char::is_control), "{:?}", shown);
+            }
         }
 
         #[test]

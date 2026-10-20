@@ -192,7 +192,8 @@ impl App {
                 continue;
             };
             let tv = &self.tickets[i];
-            let merged = matches!(&tv.pr.data, Some(Some(pr)) if pr.state == "MERGED");
+            let merged =
+                matches!(&tv.pr.data, Some(Some(pr)) if pr.state == github::PrState::Merged);
             if close.merged && tv.t.agent.is_none() && !merged {
                 let not = match &tv.pr.error {
                     Some(e) => close::Outcome::Unchecked(e.clone()),

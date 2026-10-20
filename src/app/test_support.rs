@@ -164,7 +164,7 @@ pub(crate) fn acme_app() -> App {
                 found_pr.checks.truncate(1);
                 found_pr.checks[0].state = CheckState::Pending;
                 found_pr.reviews.clear();
-                found_pr.review_decision.clear();
+                found_pr.review_decision = crate::github::Decision::Unset;
             }
             "ENG-61" => found.comments.clear(),
             "ENG-70" => {
@@ -284,10 +284,10 @@ pub(crate) fn pr(number: u64, branch: &str) -> Pr {
         number,
         title: "Sign in with a magic link".into(),
         url: format!("https://github.com/acme/acme/pull/{number}"),
-        state: "OPEN".into(),
+        state: crate::github::PrState::Open,
         is_draft: false,
-        review_decision: "CHANGES_REQUESTED".into(),
-        mergeable: "MERGEABLE".into(),
+        review_decision: crate::github::Decision::ChangesRequested,
+        mergeable: crate::github::Mergeable::Yes,
         head: branch.into(),
         cross_repository: false,
         head_oid: "0123456789abcdef".into(),
@@ -301,7 +301,7 @@ pub(crate) fn pr(number: u64, branch: &str) -> Pr {
             Review {
                 id: "r1".into(),
                 author: "dana-reyes".into(),
-                state: "COMMENTED".into(),
+                state: crate::github::ReviewState::Commented,
                 when: iso(5 * HOUR + 30 * MIN),
                 body: "Looks close.".into(),
                 url: String::new(),
@@ -309,7 +309,7 @@ pub(crate) fn pr(number: u64, branch: &str) -> Pr {
             Review {
                 id: "r2".into(),
                 author: "sam-okafor".into(),
-                state: "CHANGES_REQUESTED".into(),
+                state: crate::github::ReviewState::ChangesRequested,
                 when: iso(2 * HOUR + 30 * MIN),
                 body: "The link must expire.".into(),
                 url: String::new(),

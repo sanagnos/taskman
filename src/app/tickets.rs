@@ -53,7 +53,8 @@ impl App {
         let pr = |key: &str| {
             self.tickets.iter().find(|tv| tv.t.is(&t.repo, key)).and_then(|tv| tv.pr.data.as_ref())
         };
-        let base_merged = pr(&base.key).map(|p| p.as_ref().is_some_and(|p| p.state == "MERGED"));
+        let base_merged =
+            pr(&base.key).map(|p| p.as_ref().is_some_and(|p| p.state == github::PrState::Merged));
         Some((base, stack::state(base, pr(&t.key).and_then(Option::as_ref), base_merged)))
     }
 
@@ -63,7 +64,10 @@ impl App {
     pub fn pr_target(&self, tv: &TicketView) -> Option<(String, bool)> {
         let stack = self.stack_of(&tv.t);
         match tv.pr.data.as_ref().and_then(Option::as_ref) {
-            Some(pr) if pr.state == "OPEN" && pr.base != self.default_branch(&tv.t.repo) => {
+            Some(pr)
+                if pr.state == github::PrState::Open
+                    && pr.base != self.default_branch(&tv.t.repo) =>
+            {
                 let label = self
                     .tickets
                     .iter()

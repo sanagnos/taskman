@@ -4,7 +4,7 @@
 use super::sleep::Watch;
 use super::sync::STALE;
 use super::{AgentState, Remote, Status};
-use crate::github::{self, Pr};
+use crate::github::{self, Pr, PrState};
 use crate::session::{End, Parser, Reaper, Session};
 use crate::status_file::Record;
 use crate::store::{self, Ticket, UiPrefs};
@@ -367,7 +367,7 @@ impl TicketView {
             // Adopt an open PR's branch; forget a remembered branch that's gone. A fork's branch
             // isn't the ticket's: anyone can open a PR that says it closes the issue.
             if let Some(p) = &found.pr
-                && p.state == "OPEN"
+                && p.state == PrState::Open
                 && !p.cross_repository
                 && self.t.branch.is_none()
             {
@@ -481,7 +481,7 @@ pub(super) fn own_worktree(tv: &TicketView) -> bool {
 /// The head commit of the ticket's merged PR, which vouches for the commits it merged.
 pub(super) fn merged_head(tv: &TicketView) -> Option<String> {
     match &tv.pr.data {
-        Some(Some(pr)) if pr.state == "MERGED" && !pr.head_oid.is_empty() => {
+        Some(Some(pr)) if pr.state == PrState::Merged && !pr.head_oid.is_empty() => {
             Some(pr.head_oid.clone())
         }
         _ => None,
@@ -510,10 +510,10 @@ mod tests {
             number: 15,
             title: String::new(),
             url: String::new(),
-            state: state.into(),
+            state: crate::github::PrState::parse(state),
             is_draft: false,
-            review_decision: String::new(),
-            mergeable: String::new(),
+            review_decision: crate::github::Decision::Unset,
+            mergeable: crate::github::Mergeable::Unknown,
             head: head.into(),
             cross_repository: false,
             head_oid: String::new(),
@@ -643,7 +643,7 @@ mod tests {
             .map(|(id, author)| crate::github::Review {
                 id: id.to_string(),
                 author: author.to_string(),
-                state: "COMMENTED".into(),
+                state: crate::github::ReviewState::Commented,
                 when: String::new(),
                 body: String::new(),
                 url: String::new(),

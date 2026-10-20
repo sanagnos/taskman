@@ -8,7 +8,7 @@
 
 use crate::app::parse_key;
 use crate::cli::{Arg, Lexer};
-use crate::github::{self, CheckState, Lookup, Pr, Worktree, Worktrees};
+use crate::github::{self, CheckState, Decision, Lookup, Pr, PrState, Worktree, Worktrees};
 use crate::status_file::{self, Record};
 use crate::store::{self, Config, Project, Provider, Saved, Ticket};
 use crate::tracker::{Client, FetchError, Issue, Text};
@@ -555,7 +555,7 @@ fn fetch_report(
     });
     let stack = base.and_then(|b| {
         let own = pr.as_ref().ok().and_then(|l| l.pr.as_ref());
-        let merged = base_pr.map(|l| l.pr.is_some_and(|p| p.state == "MERGED"));
+        let merged = base_pr.map(|l| l.pr.is_some_and(|p| p.state == PrState::Merged));
         let state = stack::state(&b, own, merged);
         let hint = stack::hint(&b, own, state, &worktree::default_branch_name(&project.repo))?;
         Some((b, hint))
@@ -731,7 +731,7 @@ fn where_line(r: &Report) -> String {
 }
 
 fn pr_state(pr: &Pr) -> String {
-    let state = pr.state.to_lowercase();
+    let state = pr.state.to_string();
     if pr.is_draft { format!("{state}, draft") } else { state }
 }
 
@@ -761,10 +761,6 @@ fn checks_summary(pr: &Pr) -> String {
         }
     }
     parts.join(", ")
-}
-
-fn words(s: &str) -> String {
-    s.to_lowercase().replace('_', " ")
 }
 
 /// The PR's lines; `full` adds the latest review and comment.
@@ -799,12 +795,12 @@ fn pr_lines(pr: &Result<Lookup, String>, full: bool) -> Vec<String> {
         ),
         format!("  Checks: {}", checks_summary(pr)),
     ];
-    let mut review = match pr.review_decision.as_str() {
-        "" => "no decision".to_string(),
-        d => words(d),
+    let mut review = match &pr.review_decision {
+        Decision::Unset => "no decision".to_string(),
+        d => d.to_string(),
     };
     if full && let Some(r) = pr.latest_reviews().into_iter().max_by(|a, b| a.when.cmp(&b.when)) {
-        review += &format!("; latest: {} by {}", words(&r.state), by(&r.author, &r.when));
+        review += &format!("; latest: {} by {}", r.state, by(&r.author, &r.when));
     }
     if !full && let Ok(t) = &pr.threads {
         match t.unresolved().count() {
@@ -847,7 +843,7 @@ fn review_text(pr: &Pr) -> Vec<String> {
         for r in text.iter().rev() {
             out.push(format!(
                 "  - {} by {}:\n{}",
-                words(&r.state),
+                r.state,
                 by(&r.author, &r.when),
                 untrusted::block(&r.body, 6)
             ));
@@ -934,11 +930,8 @@ impl Report {
                 out.push(meta.join(" · "));
                 out.extend(self.url.clone());
                 if !i.prs.is_empty() {
-                    let prs: Vec<String> = i
-                        .prs
-                        .iter()
-                        .map(|p| format!("#{} ({})", p.number, p.state.to_lowercase()))
-                        .collect();
+                    let prs: Vec<String> =
+                        i.prs.iter().map(|p| format!("#{} ({})", p.number, p.state)).collect();
                     out.push(format!("Closing PRs: {}", prs.join(", ")));
                 }
                 out.push(String::new());
@@ -1031,7 +1024,7 @@ impl Report {
                 "priority": i.priority, "assignee": i.assignee, "description": i.description,
                 "comments": i.comments.iter().map(|c| json!({ "author": c.author, "created": c.created, "body": c.body })).collect::<Vec<_>>(),
                 "comments_left_out": i.comments_left_out,
-                "closing_prs": i.prs.iter().map(|p| json!({ "number": p.number, "state": p.state, "url": p.url })).collect::<Vec<_>>(),
+                "closing_prs": i.prs.iter().map(|p| json!({ "number": p.number, "state": p.state.name(), "url": p.url })).collect::<Vec<_>>(),
             })
         });
         let (pr, pr_note) = match &self.pr {
@@ -1076,10 +1069,10 @@ fn pr_json(pr: &Pr) -> Value {
         CheckState::Skipped => "skipped",
     };
     json!({
-        "number": pr.number, "title": pr.title, "url": pr.url, "state": pr.state.to_lowercase(), "draft": pr.is_draft,
-        "review_decision": pr.review_decision, "mergeable": pr.mergeable, "branch": untrusted::line(&pr.head), "base": untrusted::line(&pr.base),
+        "number": pr.number, "title": pr.title, "url": pr.url, "state": pr.state.name().to_lowercase(), "draft": pr.is_draft,
+        "review_decision": pr.review_decision.name(), "mergeable": pr.mergeable.name(), "branch": untrusted::line(&pr.head), "base": untrusted::line(&pr.base),
         "checks": pr.checks.iter().map(|c| json!({ "name": c.name, "state": state(c.state) })).collect::<Vec<_>>(),
-        "reviews": pr.reviews.iter().map(|r| json!({ "author": r.author, "state": r.state, "when": r.when, "body": r.body })).collect::<Vec<_>>(),
+        "reviews": pr.reviews.iter().map(|r| json!({ "author": r.author, "state": r.state.name(), "when": r.when, "body": r.body })).collect::<Vec<_>>(),
         "comments": pr.comments.iter().map(comment).collect::<Vec<_>>(),
         "review_threads": pr.threads.as_ref().ok().map(|t| json!({
             "total": t.total,
@@ -1166,7 +1159,7 @@ fn pr_short(pr: &Result<Lookup, String>) -> String {
         Ok(Lookup { pr: None, .. }) => return "no PR".into(),
         Ok(Lookup { pr: Some(pr), .. }) => pr,
     };
-    let state = if pr.is_draft { "draft".to_string() } else { pr.state.to_lowercase() };
+    let state = if pr.is_draft { "draft".to_string() } else { pr.state.to_string() };
     let mut out = format!("#{} {state}", pr.number);
     let failing: Vec<String> = pr
         .checks
@@ -1848,10 +1841,10 @@ mod tests {
             number: 31,
             title: "Fix login".into(),
             url: "https://github.com/acme/web/pull/31".into(),
-            state: "OPEN".into(),
+            state: crate::github::PrState::Open,
             is_draft: true,
-            review_decision: "CHANGES_REQUESTED".into(),
-            mergeable: "MERGEABLE".into(),
+            review_decision: crate::github::Decision::ChangesRequested,
+            mergeable: crate::github::Mergeable::Yes,
             head: "eng-52-login".into(),
             cross_repository: false,
             head_oid: String::new(),
@@ -1866,18 +1859,18 @@ mod tests {
                 Review {
                     id: "1".into(),
                     author: "ana".into(),
-                    state: "APPROVED".into(),
+                    state: crate::github::ReviewState::Approved,
                     when: "2024-01-01T00:00:00Z".into(),
                     body: String::new(),
-                    ..Default::default()
+                    url: String::new(),
                 },
                 Review {
                     id: "2".into(),
                     author: "bo".into(),
-                    state: "CHANGES_REQUESTED".into(),
+                    state: crate::github::ReviewState::ChangesRequested,
                     when: "2024-01-02T00:00:00Z".into(),
                     body: "Handle an expired token.".into(),
-                    ..Default::default()
+                    url: String::new(),
                 },
             ],
             comments: vec![PrComment {

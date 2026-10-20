@@ -1,8 +1,8 @@
 //! The right column: the tracker and GitHub panels beside a ticket, the board beside an agent.
 
-use super::{dim, pr_spans, spinner, state_badge, yellow};
+use super::{dim, pr_spans, pr_state, spinner, state_badge, yellow};
 use crate::app::{AgentState, App, Remote};
-use crate::github::{CheckState, Pr};
+use crate::github::{CheckState, Mergeable, Pr};
 use crate::keys::prefix;
 use crate::links::Linked;
 use crate::store::Cli;
@@ -152,7 +152,7 @@ pub(super) fn draw_jira(f: &mut Frame, app: &mut App, area: Rect) {
                     spans.push(Span::styled(" · ", dim()));
                 }
                 links.push((spans.len(), p.url.clone()));
-                spans.push(Span::raw(format!("#{} {}", p.number, p.state.to_lowercase())));
+                spans.push(Span::raw(format!("#{} {}", p.number, p.state)));
             }
             lines.push(Line::from(spans));
             for (span, url) in links {
@@ -377,15 +377,10 @@ pub(super) fn draw_board(f: &mut Frame, app: &mut App, area: Rect) {
                 }
             }
             if let Some(r) = pr.latest_reviews().into_iter().max_by(|a, b| a.when.cmp(&b.when)) {
-                let (sym, color, word) = match r.state.as_str() {
-                    "APPROVED" => ("✔", Color::Green, "approved"),
-                    "CHANGES_REQUESTED" => ("✎", Color::Red, "requested changes"),
-                    _ => ("›", Color::Blue, "commented"),
-                };
                 lines.push(Line::from(vec![
                     indent(),
-                    Span::styled(format!("{sym} "), Style::new().fg(color)),
-                    Span::raw(format!("{} {word}", untrusted::line(&r.author))),
+                    Span::styled(format!("{} ", r.state.glyph()), Style::new().fg(r.state.color())),
+                    Span::raw(format!("{} {}", untrusted::line(&r.author), r.state.verb())),
                     Span::styled(format!(" · {}", ago_str(&r.when)), dim()),
                 ]));
             }
@@ -474,17 +469,11 @@ fn pr_lines(pr: &Pr, is_new: impl Fn(&str) -> bool) -> Linked {
     lines.push(Span::styled(untrusted::line(&format!("{} → {}", pr.head, pr.base)), dim()));
 
     let mut status = vec![];
-    match pr.review_decision.as_str() {
-        "APPROVED" => status.push(Span::styled("✔ approved", Style::new().fg(Color::Green))),
-        "CHANGES_REQUESTED" => {
-            status.push(Span::styled("✎ changes requested", Style::new().fg(Color::Red)));
-        }
-        "REVIEW_REQUIRED" => {
-            status.push(Span::styled("◌ review required", Style::new().fg(yellow())));
-        }
-        _ => {}
+    let d = &pr.review_decision;
+    if let Some(glyph) = d.glyph() {
+        status.push(Span::styled(format!("{glyph} {d}"), Style::new().fg(d.color())));
     }
-    if pr.mergeable == "CONFLICTING" {
+    if pr.mergeable == Mergeable::Conflicting {
         if !status.is_empty() {
             status.push(Span::raw("  "));
         }
@@ -533,19 +522,13 @@ fn pr_lines(pr: &Pr, is_new: impl Fn(&str) -> bool) -> Linked {
         lines.push(section("Reviews", latest.len(), new));
         let text = pr.review_text();
         for r in latest {
-            let (sym, color, word) = match r.state.as_str() {
-                "APPROVED" => ("✔", Color::Green, "approved"),
-                "CHANGES_REQUESTED" => ("✎", Color::Red, "requested changes"),
-                "DISMISSED" => ("–", Color::DarkGray, "dismissed"),
-                _ => ("💬", Color::Blue, "commented"),
-            };
             let mut row = new_tag(is_new(&format!("r:{}", r.id)));
             // The author and what they did open the review.
             let at = row.len() + 1;
             row.extend([
-                Span::styled(format!("{sym} "), Style::new().fg(color)),
+                Span::styled(format!("{} ", r.state.glyph()), Style::new().fg(r.state.color())),
                 Span::styled(untrusted::line(&r.author), Style::new().bold()),
-                Span::raw(format!(" {word}")),
+                Span::raw(format!(" {}", r.state.verb())),
                 Span::styled(format!(" · {}", ago_str(&r.when)), dim()),
             ]);
             lines.push(row);
@@ -686,12 +669,7 @@ pub(super) fn draw_gh(f: &mut Frame, app: &mut App, area: Rect) {
             url.clone_from(&pr.url);
             // The title line opens the PR, so the number doesn't (`panel_head`).
             title.extend([Span::raw(format!("PR #{}", pr.number)), Span::raw(" ")]);
-            let (state, color) = match pr.state.as_str() {
-                "MERGED" => ("merged", Color::Magenta),
-                "CLOSED" => ("closed", Color::DarkGray),
-                _ if pr.is_draft => ("draft", Color::DarkGray),
-                _ => ("open", Color::Green),
-            };
+            let (state, color) = pr_state(pr);
             title.push(Span::styled(format!("{state} "), Style::new().fg(color)));
             refresh_failed(&mut lines, err.as_deref());
             lines.append(pr_lines(pr, |id| tv.is_new_gh(id)));
@@ -763,10 +741,10 @@ mod tests {
             number: 7,
             title: "Fix login".into(),
             url: pr_url.into(),
-            state: "OPEN".into(),
+            state: crate::github::PrState::Open,
             is_draft: false,
-            review_decision: String::new(),
-            mergeable: String::new(),
+            review_decision: crate::github::Decision::Unset,
+            mergeable: crate::github::Mergeable::Unknown,
             head: "eng-52".into(),
             cross_repository: false,
             head_oid: String::new(),

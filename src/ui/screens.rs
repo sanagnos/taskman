@@ -98,6 +98,23 @@ fn agents_board() {
     assert_snapshot!(draw(&mut app, 160, 40));
 }
 
+/// A dismissed review reads as one on the agents' board, as in the PR panel, not as a comment.
+#[test]
+fn a_dismissed_review_on_the_board() {
+    use crate::github::ReviewState;
+    let mut app = acme_app();
+    for tv in &mut app.tickets {
+        let Some(Some(pr)) = &mut tv.pr.data else { continue };
+        for r in pr.reviews.iter_mut().filter(|r| r.state == ReviewState::ChangesRequested) {
+            r.state = ReviewState::Dismissed;
+        }
+    }
+    select(&mut app, "acme-lead");
+    let screen = draw(&mut app, 160, 40);
+    assert!(screen.contains("– sam-okafor dismissed"), "{screen}");
+    assert!(!screen.contains("sam-okafor commented"), "{screen}");
+}
+
 #[test]
 fn ended_session() {
     let mut app = acme_app();
@@ -682,12 +699,12 @@ fn github_issue_panel() {
     issue.prs = vec![
         crate::tracker::LinkedPr {
             number: 45,
-            state: "OPEN".into(),
+            state: crate::github::PrState::Open,
             url: "https://github.com/acme/web/pull/45".into(),
         },
         crate::tracker::LinkedPr {
             number: 40,
-            state: "CLOSED".into(),
+            state: crate::github::PrState::Closed,
             url: "https://github.com/acme/web/pull/40".into(),
         },
     ];

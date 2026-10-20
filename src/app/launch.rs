@@ -374,7 +374,7 @@ impl App {
                         .iter()
                         .find(|tv| tv.t.is(&t.repo, &base.key))
                         .and_then(|tv| tv.pr.data.as_ref()?.as_ref())
-                        .filter(|p| p.state == "OPEN")
+                        .filter(|p| p.state == github::PrState::Open)
                         .map(|p| p.number);
                     let merged = matches!(state, stack::State::Stale | stack::State::Merged);
                     brief += &stack::brief(base, base_pr, merged, &self.default_branch(&t.repo));
@@ -493,7 +493,7 @@ impl App {
                 let fail = pr.count(github::CheckState::Fail);
                 let checks =
                     if fail > 0 { format!(", {fail} failing checks") } else { String::new() };
-                parts.push(format!("PR #{} {}{checks}", pr.number, pr.state.to_lowercase()));
+                parts.push(format!("PR #{} {}{checks}", pr.number, pr.state));
             }
             lines.push(format!("- {}", parts.join(" · ")));
         }

@@ -35,8 +35,7 @@ pub struct Issue {
 #[derive(Clone, Debug)]
 pub struct LinkedPr {
     pub number: u64,
-    /// `OPEN`, `MERGED` or `CLOSED`.
-    pub state: String,
+    pub state: crate::github::PrState,
     pub url: String,
 }
 
