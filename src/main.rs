@@ -540,14 +540,29 @@ const TICK: Duration = Duration::from_secs(1);
 /// The longest the loop waits before it ticks again: the threads' replies (`Msg`) don't wake it.
 const MAX_WAIT: Duration = Duration::from_millis(100);
 
-/// How long after the last frame the next is due: soon for a change (`App::dirty`: a key, a reply,
-/// a toast) or the selected session's output, at the spinner's pace while the last frame showed
-/// one, else once a second. Other sessions' output is no reason: their cards change with the
-/// status poll, which says so.
-fn frame_due(changed: bool, output: bool, animated: bool) -> Duration {
-    if changed || output {
+/// What calls for the next frame.
+#[derive(Clone, Copy, Default)]
+struct Due {
+    /// The terminal changed size this pass.
+    resized: bool,
+    /// Something on screen changed (`App::dirty`: a key, a reply, a toast).
+    changed: bool,
+    /// The selected session wrote output (`App::selected_fresh`).
+    output: bool,
+    /// The last frame showed a spinner (`ui::animated`).
+    animated: bool,
+}
+
+/// How long after the last frame the next is due: at once for a resize, which has drawn nothing
+/// at the new size yet and whose user is waiting on it; soon for a change or the selected
+/// session's output; at the spinner's pace while the last frame showed one; else once a second.
+/// Other sessions' output is no reason: their cards change with the status poll, which says so.
+fn frame_due(due: Due) -> Duration {
+    if due.resized {
+        Duration::ZERO
+    } else if due.changed || due.output {
         FRAME
-    } else if animated {
+    } else if due.animated {
         SPIN
     } else {
         TICK
@@ -578,7 +593,8 @@ fn run(
         let size = terminal.size()?;
         app.tick(ratatui::layout::Rect::new(0, 0, size.width, size.height));
         // crossterm's resize events are dropped (`read_input`), so resizes are noticed here.
-        if size != std::mem::replace(&mut last_size, size) {
+        let resized = size != std::mem::replace(&mut last_size, size);
+        if resized {
             app.dirty.store(true, Ordering::Relaxed);
             // Read the resize before drawing at the new size, or a key typed after the redraw
             // could come with it (see `Tty`). Only while the terminal is there, as below.
@@ -588,10 +604,15 @@ fn run(
             read_input(app)?;
         }
 
-        let due = |app: &app::App, animated| {
-            frame_due(app.dirty.load(Ordering::Relaxed), app.selected_fresh(), animated)
+        let due = |app: &app::App, resized, animated| {
+            frame_due(Due {
+                resized,
+                changed: app.dirty.load(Ordering::Relaxed),
+                output: app.selected_fresh(),
+                animated,
+            })
         };
-        if last_draw.elapsed() >= due(app, animated) {
+        if last_draw.elapsed() >= due(app, resized, animated) {
             app.take_redraw();
             terminal.draw(|f| {
                 ui::draw(f, app);
@@ -617,7 +638,7 @@ fn run(
             let _ = out.flush();
         }
 
-        let timeout = due(app, animated).saturating_sub(last_draw.elapsed()).min(MAX_WAIT);
+        let timeout = due(app, false, animated).saturating_sub(last_draw.elapsed()).min(MAX_WAIT);
         // Input crossterm read nothing from twice is held (see `Tty`): waiting on it would spin.
         // Only new input frees it, and that doesn't end the wait, so try again soon.
         let wait = if misses >= 2 { Tty::wait_held } else { Tty::wait };
@@ -737,16 +758,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_frame_is_due_soon_only_for_a_change_or_the_selected_sessions_output() {
+    fn a_frame_is_due_at_once_for_a_resize_and_soon_only_for_a_change_or_the_selected_output() {
+        let none = Due::default();
+        // A resize draws at once, however recent the last frame.
+        assert_eq!(frame_due(Due { resized: true, ..none }), Duration::ZERO);
+        let all = Due { changed: true, output: true, animated: true, ..none };
+        assert_eq!(frame_due(Due { resized: true, ..all }), Duration::ZERO);
         // A key, a reply or a toast; or the selected session's output (`App::selected_fresh`,
         // which leaves the other sessions' out).
-        assert_eq!(frame_due(true, false, false), FRAME);
-        assert_eq!(frame_due(false, true, false), FRAME);
-        assert_eq!(frame_due(true, true, true), FRAME);
+        assert_eq!(frame_due(Due { changed: true, ..none }), FRAME);
+        assert_eq!(frame_due(Due { output: true, ..none }), FRAME);
+        assert_eq!(frame_due(all), FRAME);
         // A spinner on screen.
-        assert_eq!(frame_due(false, false, true), SPIN);
+        assert_eq!(frame_due(Due { animated: true, ..none }), SPIN);
         // Nothing: the clock, for the ages.
-        assert_eq!(frame_due(false, false, false), TICK);
+        assert_eq!(frame_due(none), TICK);
     }
     use std::os::fd::{FromRawFd, OwnedFd};
 
