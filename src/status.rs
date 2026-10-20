@@ -677,27 +677,18 @@ fn everything(saved: &Saved, config: &Config, codex: bool) -> All {
 
 // ---- text ------------------------------------------------------------------------------------
 
-fn ago(ts: &str) -> String {
-    match util::ago_str(ts).as_str() {
-        "" => String::new(),
-        "now" => "just now".into(),
-        a => format!("{a} ago"),
-    }
-}
-
 /// "ana, 2h ago", or just "ana" without a usable date.
 fn by(author: &str, when: &str) -> String {
-    match ago(when) {
-        a if a.is_empty() => untrusted::line(author),
-        a => format!("{}, {a}", untrusted::line(author)),
+    match util::parse_ts(when) {
+        Some(t) => format!("{}, {}", untrusted::line(author), util::ago_words(util::now() - t)),
+        None => untrusted::line(author),
     }
 }
 
 fn session_line(s: Option<&SessionState>) -> String {
     let mut line = format!("Session: {}", state_label(s));
     if let Some(s) = s {
-        let age = util::ago(s.record.ts);
-        line += &if age == "now" { ", just now".to_string() } else { format!(", {age} ago") };
+        line += &format!(", {}", util::ago_words(util::now() - s.record.ts));
         if !s.record.message.is_empty() {
             line += &format!(" ({})", s.record.message);
         }

@@ -1052,8 +1052,7 @@ impl Updater {
         }
         let mut out = format!("taskman {}", running());
         if let Some(l) = &self.state.latest {
-            let ago = util::ago(self.state.checked_at);
-            let when = if ago == "now" { "just now".into() } else { format!("{ago} ago") };
+            let when = util::ago_words(util::now() - self.state.checked_at);
             out.push_str(&format!(" · latest release {l}, checked {when}"));
         }
         match notice(&self.state, &running(), self.dir(), self.installs) {

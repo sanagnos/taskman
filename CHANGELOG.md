@@ -1,8 +1,6 @@
 # Changelog
 
-What changed in each release; a release's notes on GitHub are its section here. Versions follow Cargo's rule for 0.x: the patch number (0.1.1) for anything compatible, fixes and new features alike, and the minor (0.2.0) for breaking changes, such as changed keys, config or saved-state format, or a removed command.
-
-## Unreleased
+What changed in each release; a release's notes on GitHub are its section here. What's merged but not released yet is in [changelog.d/](changelog.d/), a file for each change, which the release moves in here. Versions follow Cargo's rule for 0.x: the patch number (0.1.1) for anything compatible, fixes and new features alike, and the minor (0.2.0) for breaking changes, such as changed keys, config or saved-state format, or a removed command.
 
 ## 0.1.19 - 2026-10-20
 
