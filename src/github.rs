@@ -41,7 +41,6 @@ pub struct Review {
     pub state: String,
     pub when: String,
     pub body: String,
-    /// Its page, from the review threads' query (`gh pr view` has none); empty when not fetched.
     pub url: String,
 }
 
@@ -72,12 +71,35 @@ pub struct Pr {
     /// The branch it merges into: the default branch, or a stacked ticket's base.
     pub base: String,
     pub checks: Vec<Check>,
-    /// Every review, oldest first: gh fetches them all.
+    /// Every review, oldest first.
     pub reviews: Vec<Review>,
-    /// Newest first; gh fetches them all.
+    /// Every comment, newest first.
     pub comments: Vec<PrComment>,
-    /// The inline review threads, fetched separately: failing to get them still shows the PR.
+    /// The inline review threads; Err when GitHub sent none.
     pub threads: Result<Threads, String>,
+    /// What the PR list reads of it, as these details were fetched (`Wanted::shown`).
+    pub stamp: Stamp,
+}
+
+/// What the PR list query reads of a PR to tell whether it changed since its details were
+/// fetched: GitHub moves `updatedAt` for a comment, a review or a new state, the head commit shows
+/// a push, and its check state the checks, which move neither.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Stamp {
+    pub updated: String,
+    pub head: String,
+    pub checks: String,
+}
+
+impl Stamp {
+    fn read(p: &Value) -> Stamp {
+        let s = |x: &Value| x.as_str().unwrap_or("").to_string();
+        Stamp {
+            updated: s(&p["updatedAt"]),
+            head: s(&p["headRefOid"]),
+            checks: s(&p["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"]),
+        }
+    }
 }
 
 impl Pr {
@@ -138,8 +160,6 @@ pub struct Threads {
     pub list: Vec<Thread>,
     /// How many the PR has, fetched or not.
     pub total: usize,
-    /// The newest reviews' pages, by id: fetched with the threads, as `gh pr view` has none.
-    pub review_urls: Vec<(String, String)>,
 }
 
 impl Threads {
@@ -399,8 +419,6 @@ fn pick_repo(remotes: &[Remote], resolved: &str) -> Option<DefaultRepo> {
     Some(DefaultRepo { name, host, several })
 }
 
-const FIELDS: &str = "number,title,url,state,isDraft,reviewDecision,mergeable,headRefName,headRefOid,baseRefName,isCrossRepository,statusCheckRollup,reviews,comments";
-
 pub(crate) fn gh(dir: &Path, args: &[&str]) -> Result<String, String> {
     let out =
         proc::run(Command::new("gh").args(args).current_dir(dir).env("NO_COLOR", "1"), GH_LIMIT)
@@ -442,23 +460,27 @@ pub struct Lookup {
 
 struct Candidate {
     number: u64,
+    url: String,
     state: String,
-    updated: String,
+    stamp: Stamp,
     /// On the ticket's own branch, rather than found by searching for its key.
     exact: bool,
 }
 
 /// A ticket whose PR to find.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Wanted {
     pub key: String,
     /// Its worktree's branch, else the one remembered.
     pub branch: Option<String>,
     pub closes: Option<Closes>,
+    /// The PR the ticket shows: kept, rather than fetched again, when the list finds it unchanged
+    /// (`unchanged`). None fetches the details of whichever PR is found.
+    pub shown: Option<Pr>,
 }
 
 /// What the PR list query found for one ticket: the PRs on its branch, and those that mention its
-/// key. A field per thing the query reads, so a later one (the head commit, the checks) is another.
+/// key.
 struct Listed {
     branch: Vec<Candidate>,
     search: Vec<Candidate>,
@@ -468,8 +490,10 @@ struct Listed {
 /// over 10 s fails as a whole.
 const BATCH: usize = 20;
 
-/// What each PR found carries; `candidates` reads it.
-const LISTED: &str = "fragment pr on PullRequest { number title headRefName state updatedAt }";
+/// What each PR found carries; `candidates` reads it, and `Stamp::read` what tells whether it
+/// changed.
+const LISTED: &str = "fragment pr on PullRequest { number title url headRefName state updatedAt \
+    headRefOid commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } }";
 
 /// The PR list query for `asked` and its gh arguments: per ticket, the PRs on its branch (`bN`,
 /// as `gh pr list --head`) and the search for its key (`qN`, as `gh pr list --search`). The
@@ -538,28 +562,32 @@ fn candidates(nodes: &Value, key: Option<&str>) -> Vec<Candidate> {
         .filter(|p| {
             key.is_none_or(|k| mentions(&s(p, "headRefName"), k) || mentions(&s(p, "title"), k))
         })
-        .filter_map(|p| {
-            Some(Candidate {
-                number: p["number"].as_u64()?,
-                state: s(p, "state"),
-                updated: s(p, "updatedAt"),
-                exact: key.is_none(),
-            })
-        })
+        .filter_map(|p| candidate(p, key.is_none()))
         .collect()
+}
+
+fn candidate(p: &Value, exact: bool) -> Option<Candidate> {
+    let s = |k: &str| p[k].as_str().unwrap_or("").to_string();
+    Some(Candidate {
+        number: p["number"].as_u64()?,
+        url: s("url"),
+        state: s("state"),
+        stamp: Stamp::read(p),
+        exact,
+    })
 }
 
 /// The PR to show (newest open, else newest merged; the branch's own before those that only
 /// mention the key) and the newest closed-unmerged one.
-fn pick<'a>(c: impl IntoIterator<Item = &'a Candidate>) -> (Option<u64>, Option<u64>) {
+fn pick<'a>(c: impl IntoIterator<Item = &'a Candidate>) -> (Option<&'a Candidate>, Option<u64>) {
     let c: Vec<&Candidate> = c.into_iter().collect();
     let newest = |state: &str| {
         c.iter()
             .filter(|x| x.state == state)
-            .max_by(|a, b| (a.exact, &a.updated).cmp(&(b.exact, &b.updated)))
-            .map(|x| x.number)
+            .max_by(|a, b| (a.exact, &a.stamp.updated).cmp(&(b.exact, &b.stamp.updated)))
+            .copied()
     };
-    (newest("OPEN").or_else(|| newest("MERGED")), newest("CLOSED"))
+    (newest("OPEN").or_else(|| newest("MERGED")), newest("CLOSED").map(|x| x.number))
 }
 
 /// The issue a ticket's PR closes, when the project's tracker is its repository's issues
@@ -574,7 +602,7 @@ const CLOSING_QUERY: &str = "query($owner: String!, $name: String!, $number: Int
   repository(owner: $owner, name: $name) {
     issue(number: $number) {
       closedByPullRequestsReferences(first: 20, includeClosedPrs: true) {
-        nodes { number state updatedAt repository { nameWithOwner } }
+        nodes { ...pr repository { nameWithOwner } }
       }
     }
   }
@@ -598,7 +626,7 @@ fn closing(
         "-F".into(),
         format!("number={}", c.number),
         "-f".into(),
-        format!("query={CLOSING_QUERY}"),
+        format!("query={CLOSING_QUERY}\n{LISTED}"),
     ];
     let json = gh(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
     Ok(parse_closing(&json, &format!("{}/{}", c.repo.owner, c.repo.name)))
@@ -606,20 +634,15 @@ fn closing(
 
 fn parse_closing(json: &str, name: &str) -> Vec<Candidate> {
     let v: Value = serde_json::from_str(json).unwrap_or_default();
-    let s = |p: &Value, k: &str| p[k].as_str().unwrap_or("").to_string();
     v["data"]["repository"]["issue"]["closedByPullRequestsReferences"]["nodes"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|p| s(&p["repository"], "nameWithOwner").eq_ignore_ascii_case(name))
-        .filter_map(|p| {
-            Some(Candidate {
-                number: p["number"].as_u64()?,
-                state: s(p, "state"),
-                updated: s(p, "updatedAt"),
-                exact: true,
-            })
+        .filter(|p| {
+            let repo = p["repository"]["nameWithOwner"].as_str().unwrap_or("");
+            repo.eq_ignore_ascii_case(name)
         })
+        .filter_map(|p| candidate(p, true))
         .collect()
 }
 
@@ -631,8 +654,12 @@ pub fn fetch(
     closes: Option<&Closes>,
     gh: impl Fn(&[&str]) -> Result<String, String> + Sync,
 ) -> Result<Lookup, String> {
-    let wanted =
-        Wanted { key: key.into(), branch: branch.map(String::from), closes: closes.cloned() };
+    let wanted = Wanted {
+        key: key.into(),
+        branch: branch.map(String::from),
+        closes: closes.cloned(),
+        shown: None,
+    };
     let mut found = fetch_all(repo, std::slice::from_ref(&wanted), gh);
     found.pop().unwrap_or_else(|| Err("no lookup ran".into()))
 }
@@ -640,7 +667,9 @@ pub fn fetch(
 /// Finds each ticket's PR, in order: one GitHub links as closing its issue (`closes`) when
 /// there's an open or merged one, else among those on its branch and those mentioning its key,
 /// listed for all of them in one query (`BATCH` at a time). A PR closed without merging isn't
-/// shown, so abandoned work doesn't look live. `gh` runs gh with the given arguments in `repo`
+/// shown, so abandoned work doesn't look live. The PR found is fetched in full, with its review
+/// threads, unless it's the one the ticket shows and hasn't changed (`Wanted::shown`). `gh` runs
+/// gh with the given arguments in `repo`
 /// (`|args| github::gh(repo, args)`); git reads `repo` itself.
 pub fn fetch_all(
     repo: &Path,
@@ -649,7 +678,8 @@ pub fn fetch_all(
 ) -> Vec<Result<Lookup, String>> {
     let mut out: Vec<Option<Result<Lookup, String>>> = wanted.iter().map(|_| None).collect();
     let closes: Vec<usize> = (0..wanted.len()).filter(|&i| wanted[i].closes.is_some()).collect();
-    let found = each(&closes, |&i| wanted[i].closes.as_ref().and_then(|c| linked(&gh, c)));
+    let found =
+        each(&closes, |&i| wanted[i].closes.as_ref().and_then(|c| linked(&gh, &wanted[i], c)));
     for (&i, found) in closes.iter().zip(found) {
         out[i] = found;
     }
@@ -678,7 +708,7 @@ pub fn fetch_all(
     out.into_iter().map(|r| r.unwrap_or_else(|| Err("the PR lookup crashed".into()))).collect()
 }
 
-/// `f` on each item, on threads of their own: each viewing a PR takes gh a second or two. None
+/// `f` on each item, on threads of their own: each fetching a PR takes gh a second or two. None
 /// for one whose thread panicked.
 fn each<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> Option<R> + Sync) -> Vec<Option<R>> {
     std::thread::scope(|s| {
@@ -692,10 +722,11 @@ fn each<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> Option<R> + Sync) -> Ve
 /// call says what's wrong.
 fn linked(
     gh: &(impl Fn(&[&str]) -> Result<String, String> + Sync),
+    w: &Wanted,
     c: &Closes,
 ) -> Option<Result<Lookup, String>> {
-    let (n, _) = pick(&closing(gh, c).ok()?);
-    let pr = view(gh, n?, Some(&c.repo.spec()));
+    let found = closing(gh, c).ok()?;
+    let pr = details(gh, pick(&found).0?, w.shown.as_ref());
     Some(pr.map(|pr| Lookup { pr: Some(pr), closed: None, branch_gone: false }))
 }
 
@@ -722,84 +753,145 @@ fn settle(
         _ => false,
     };
     let pr = match best {
-        Some(n) => Some(view(gh, n, None)?),
+        Some(c) => Some(details(gh, c, w.shown.as_ref())?),
         None => None,
     };
     Ok(Lookup { pr, closed: if best.is_none() { closed } else { None }, branch_gone })
 }
 
-/// PR `n` in full, with its review threads: in the repository gh picks, or in `spec`'s
-/// (`[host/]owner/name`).
-fn view(
+/// The PR found, in full: the one shown when it hasn't changed, else fetched.
+fn details(
     gh: &impl Fn(&[&str]) -> Result<String, String>,
-    n: u64,
-    spec: Option<&str>,
+    c: &Candidate,
+    shown: Option<&Pr>,
 ) -> Result<Pr, String> {
-    let n = n.to_string();
-    let mut args = vec!["pr", "view", n.as_str(), "--json", FIELDS];
-    if let Some(spec) = spec {
-        args.extend(["--repo", spec]);
+    match shown {
+        Some(pr) if unchanged(pr, c) => Ok(pr.clone()),
+        _ => view(gh, c.number, &c.url),
     }
-    let mut pr = parse(&gh(&args)?)?;
-    pr.threads = threads(gh, &pr);
-    if let Ok(t) = &pr.threads {
-        for r in &mut pr.reviews {
-            if let Some((_, url)) = t.review_urls.iter().find(|(id, _)| *id == r.id) {
-                r.url.clone_from(url);
-            }
-        }
-    }
-    Ok(pr)
+}
+
+/// Whether the PR found is the one shown, as it was when its details were fetched. One whose
+/// threads failed is fetched again, and so is one GitHub didn't stamp, which can't be compared.
+fn unchanged(shown: &Pr, c: &Candidate) -> bool {
+    shown.url == c.url
+        && !c.stamp.updated.is_empty()
+        && shown.stamp == c.stamp
+        && shown.threads.is_ok()
 }
 
 /// Review threads fetched: the newest ones, and in each the first comment and the newest replies.
-/// The newest `THREADS` reviews' pages come with them.
 const THREADS: usize = 100;
 const REPLIES: usize = 20;
+/// Reviews and comments come a page at a time, newest first, until there are no more.
+const PAGE: usize = 100;
+/// Pages of reviews or comments fetched at most past the first, in case a cursor never ends.
+const PAGES: usize = 50;
 
-const THREADS_QUERY: &str =
-    "query($owner: String!, $name: String!, $number: Int!, $threads: Int!, $replies: Int!) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      reviews(last: $threads) { nodes { id url } }
-      reviewThreads(last: $threads) {
+const REVIEW: &str = "id author { login } state submittedAt body url";
+const COMMENT: &str = "id author { login } body createdAt url";
+
+/// The PR in full, with its review threads: what `gh pr view --json` gave, and the threads, which
+/// it doesn't have, in one query. A status's `createdAt` is its `startedAt`, as gh calls it.
+fn details_query() -> String {
+    format!(
+        "query($owner: String!, $name: String!, $number: Int!, $page: Int!, $threads: Int!, \
+         $replies: Int!) {{
+  repository(owner: $owner, name: $name) {{
+    pullRequest(number: $number) {{
+      number title url state isDraft reviewDecision mergeable updatedAt
+      headRefName headRefOid baseRefName isCrossRepository
+      commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{
+        state
+        contexts(first: 100) {{ nodes {{
+          __typename
+          ... on CheckRun {{
+            name status conclusion startedAt completedAt detailsUrl
+            checkSuite {{ workflowRun {{ workflow {{ name }} }} }}
+          }}
+          ... on StatusContext {{ context state targetUrl startedAt: createdAt }}
+        }} }}
+      }} }} }} }}
+      reviews(last: $page) {{ pageInfo {{ hasPreviousPage startCursor }} nodes {{ {REVIEW} }} }}
+      comments(last: $page) {{ pageInfo {{ hasPreviousPage startCursor }} nodes {{ {COMMENT} }} }}
+      reviewThreads(last: $threads) {{
         totalCount
-        nodes {
+        nodes {{
           path line originalLine isResolved isOutdated
-          first: comments(first: 1) { totalCount nodes { id author { login } body createdAt url } }
-          newest: comments(last: $replies) { nodes { id author { login } body createdAt url } }
-        }
-      }
-    }
-  }
-}";
+          first: comments(first: 1) {{ totalCount nodes {{ {COMMENT} }} }}
+          newest: comments(last: $replies) {{ nodes {{ {COMMENT} }} }}
+        }}
+      }}
+    }}
+  }}
+}}"
+    )
+}
 
-/// The PR's review threads, and its reviews' pages, through gh's GraphQL API: `gh pr view` shows
-/// neither. The host and repository come from the PR's URL, so they're the ones `gh pr view` used.
-fn threads(gh: &impl Fn(&[&str]) -> Result<String, String>, pr: &Pr) -> Result<Threads, String> {
+/// The page of reviews or comments (`what`, with `fields`) before the cursor `$before`.
+fn older_query(what: &str, fields: &str) -> String {
+    format!(
+        "query($owner: String!, $name: String!, $number: Int!, $page: Int!, $before: String!) {{
+  repository(owner: $owner, name: $name) {{
+    pullRequest(number: $number) {{
+      {what}(last: $page, before: $before) {{
+        pageInfo {{ hasPreviousPage startCursor }} nodes {{ {fields} }}
+      }}
+    }}
+  }}
+}}"
+    )
+}
+
+/// PR `n` in full, with its review threads, in the repository its `url` names: one query, and
+/// one more for each hundred reviews or comments past the newest hundred.
+fn view(gh: &impl Fn(&[&str]) -> Result<String, String>, n: u64, url: &str) -> Result<Pr, String> {
     let (host, owner, name) =
-        pr_repo(&pr.url).ok_or_else(|| format!("can't tell the repository from {}", pr.url))?;
+        pr_repo(url).ok_or_else(|| format!("can't tell the repository from {url}"))?;
     // -f passes text as it is; -F reads numbers (and would read a file for a value starting
     // with @).
-    let args = [
-        "api".to_string(),
-        "graphql".into(),
-        "--hostname".into(),
-        host,
-        "-f".into(),
-        format!("owner={owner}"),
-        "-f".into(),
-        format!("name={name}"),
-        "-F".into(),
-        format!("number={}", pr.number),
-        "-F".into(),
-        format!("threads={THREADS}"),
-        "-F".into(),
-        format!("replies={REPLIES}"),
-        "-f".into(),
-        format!("query={THREADS_QUERY}"),
-    ];
-    parse_threads(&gh(&args.iter().map(String::as_str).collect::<Vec<_>>())?)
+    let ask = |vars: &[(&str, String)], query: &str| {
+        let mut args = vec![
+            "api".to_string(),
+            "graphql".into(),
+            "--hostname".into(),
+            host.clone(),
+            "-f".into(),
+            format!("owner={owner}"),
+            "-f".into(),
+            format!("name={name}"),
+            "-F".into(),
+            format!("number={n}"),
+            "-F".into(),
+            format!("page={PAGE}"),
+        ];
+        for (flag, var) in vars {
+            args.extend([flag.to_string(), var.clone()]);
+        }
+        args.extend(["-f".into(), format!("query={query}")]);
+        let json = gh(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
+        serde_json::from_str::<Value>(&json).map_err(|e| e.to_string())
+    };
+    let counts = [("-F", format!("threads={THREADS}")), ("-F", format!("replies={REPLIES}"))];
+    let mut v = ask(&counts, &details_query())?;
+    for (what, fields) in [("reviews", REVIEW), ("comments", COMMENT)] {
+        let query = older_query(what, fields);
+        for _ in 0..PAGES {
+            let got = &v["data"]["repository"]["pullRequest"][what];
+            let Some(before) = got["pageInfo"]["startCursor"].as_str() else { break };
+            if got["pageInfo"]["hasPreviousPage"] != true {
+                break;
+            }
+            let older = ask(&[("-f", format!("before={before}"))], &query)?;
+            let page = &older["data"]["repository"]["pullRequest"][what];
+            let mut nodes = page["nodes"].as_array().cloned().unwrap_or_default();
+            nodes.extend(got["nodes"].as_array().cloned().unwrap_or_default());
+            let got = &mut v["data"]["repository"]["pullRequest"][what];
+            got["pageInfo"] = page["pageInfo"].clone();
+            got["nodes"] = Value::Array(nodes);
+        }
+    }
+    parse(&v)
 }
 
 /// `("github.com", "acme", "web")` from `https://github.com/acme/web/pull/412`.
@@ -810,10 +902,9 @@ fn pr_repo(url: &str) -> Option<(String, String, String)> {
         .then(|| (host.to_string(), owner.to_string(), name.to_string()))
 }
 
-fn parse_threads(json: &str) -> Result<Threads, String> {
+/// The PR's review threads, from its details (`details_query`).
+fn parse_threads(pr: &Value) -> Result<Threads, String> {
     let count = |x: &Value| x.as_u64().and_then(|n| usize::try_from(n).ok()).unwrap_or(0);
-    let v: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
-    let pr = &v["data"]["repository"]["pullRequest"];
     let t = &pr["reviewThreads"];
     if t.is_null() {
         return Err("GitHub returned no review threads".into());
@@ -854,14 +945,7 @@ fn parse_threads(json: &str) -> Result<Threads, String> {
         })
         .collect::<Vec<_>>();
     let total = count(&t["totalCount"]).max(list.len());
-    let review_urls = pr["reviews"]["nodes"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|r| (s(&r["id"]), s(&r["url"])))
-        .filter(|(id, url)| !id.is_empty() && !url.is_empty())
-        .collect();
-    Ok(Threads { list, total, review_urls })
+    Ok(Threads { list, total })
 }
 
 /// Whether the branch exists locally or on origin. Unsure (say, offline) counts as existing.
@@ -878,17 +962,22 @@ fn branch_exists(repo: &Path, branch: &str) -> bool {
     }
 }
 
-fn parse(json: &str) -> Result<Pr, String> {
-    let v: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+/// Reads the details query's reply (`view`).
+fn parse(reply: &Value) -> Result<Pr, String> {
+    let v = &reply["data"]["repository"]["pullRequest"];
+    if !v.is_object() {
+        return Err("GitHub returned no PR".into());
+    }
     let s = |x: &Value| x.as_str().unwrap_or("").to_string();
+    let rollup = &v["commits"]["nodes"][0]["commit"]["statusCheckRollup"];
 
-    let mut checks: Vec<Check> = v["statusCheckRollup"]
+    let mut checks: Vec<Check> = rollup["contexts"]["nodes"]
         .as_array()
         .map(|items| items.iter().map(parse_check).collect())
         .unwrap_or_default();
     checks.sort_by(|a, b| a.state.cmp(&b.state).then(a.name.cmp(&b.name)));
 
-    let reviews: Vec<Review> = v["reviews"]
+    let reviews: Vec<Review> = v["reviews"]["nodes"]
         .as_array()
         .into_iter()
         .flatten()
@@ -898,11 +987,11 @@ fn parse(json: &str) -> Result<Pr, String> {
             state: s(&r["state"]),
             when: s(&r["submittedAt"]),
             body: s(&r["body"]),
-            url: String::new(),
+            url: s(&r["url"]),
         })
         .collect();
 
-    let mut comments: Vec<PrComment> = v["comments"]
+    let mut comments: Vec<PrComment> = v["comments"]["nodes"]
         .as_array()
         .map(|cs| {
             cs.iter()
@@ -933,8 +1022,8 @@ fn parse(json: &str) -> Result<Pr, String> {
         checks,
         reviews,
         comments,
-        // `fetch` fills them in.
-        threads: Err("not fetched".into()),
+        threads: parse_threads(v),
+        stamp: Stamp::read(v),
     })
 }
 
@@ -958,7 +1047,8 @@ fn parse_check(c: &Value) -> Check {
             _ => CheckState::Fail,
         }
     };
-    let name = match (s("workflowName"), s("name")) {
+    let workflow = c["checkSuite"]["workflowRun"]["workflow"]["name"].as_str().unwrap_or("");
+    let name = match (workflow, s("name")) {
         ("", n) => n.to_string(),
         (w, n) if w == n => n.to_string(),
         (w, n) => format!("{w} / {n}"),
@@ -1193,14 +1283,20 @@ mod tests {
         );
     }
 
+    fn numbers((best, closed): (Option<&Candidate>, Option<u64>)) -> (Option<u64>, Option<u64>) {
+        (best.map(|c| c.number), closed)
+    }
+
     #[test]
     fn prefers_open_then_merged_and_sets_closed_aside() {
         let c = |number, state: &str, updated: &str| Candidate {
             number,
+            url: String::new(),
             state: state.into(),
-            updated: updated.into(),
+            stamp: Stamp { updated: updated.into(), ..Stamp::default() },
             exact: false,
         };
+        let pick = |c: &[Candidate]| numbers(pick(c));
         let all = [
             c(1, "CLOSED", "2024-03"),
             c(2, "MERGED", "2024-01"),
@@ -1225,7 +1321,9 @@ mod tests {
         // acme/api's PR can't be viewed by its number in acme/web.
         assert_eq!(linked.iter().map(|c| c.number).collect::<Vec<_>>(), [40, 45]);
         assert!(linked.iter().all(|c| c.exact));
-        assert_eq!(pick(&linked), (Some(45), Some(40)));
+        assert_eq!(numbers(pick(&linked)), (Some(45), Some(40)));
+        assert_eq!(linked[1].url, "https://github.com/acme/web/pull/45");
+        assert_eq!(linked[1].stamp.checks, "FAILURE");
         assert!(parse_closing("{}", "acme/web").is_empty());
         assert!(parse_closing("not json", "acme/web").is_empty());
     }
@@ -1246,25 +1344,55 @@ mod tests {
         assert!(!mentions("ENG-52", "ENG-5") && !mentions("ENG-5", ""));
     }
 
+    /// The details query's reply for a PR with these fields.
+    fn reply(pr: impl Into<Value>) -> Value {
+        let pr: Value = pr.into();
+        json!({ "data": { "repository": { "pullRequest": pr } } })
+    }
+
     #[test]
-    fn parses_pr_view() {
-        let json = r#"{"number":412,"title":"t","url":"u","state":"OPEN","isDraft":false,
-            "reviewDecision":"CHANGES_REQUESTED","mergeable":"MERGEABLE","headRefName":"0008-bulk/ENG-52","baseRefName":"main",
-            "isCrossRepository":false,"statusCheckRollup":[
-              {"__typename":"CheckRun","name":"unit","workflowName":"CI","status":"COMPLETED","conclusion":"SUCCESS","completedAt":"2024-01-01T00:00:00Z"},
-              {"__typename":"CheckRun","name":"e2e","workflowName":"CI","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"https://github.com/acme/web/actions/runs/1/job/2"},
-              {"__typename":"CheckRun","name":"lint","workflowName":"","status":"IN_PROGRESS","conclusion":""},
-              {"__typename":"StatusContext","context":"vercel","state":"SUCCESS","targetUrl":"https://vercel.example/acme/web/1"}],
-            "reviews":[{"id":"r1","author":{"login":"a"},"state":"APPROVED","submittedAt":"x"},
-                       {"author":{"login":"a"},"state":"COMMENTED","submittedAt":"y"},
-                       {"author":{"login":"b"},"state":"CHANGES_REQUESTED","submittedAt":"z"}],
-            "comments":[]}"#;
-        let pr = parse(json).unwrap();
+    fn parses_a_prs_details() {
+        let check = |name: &str, workflow: &str, status: &str, conclusion: &str| {
+            json!({ "__typename": "CheckRun", "name": name, "status": status, "conclusion": conclusion,
+                    "checkSuite": { "workflowRun": { "workflow": { "name": workflow } } } })
+        };
+        let mut e2e = check("e2e", "CI", "COMPLETED", "FAILURE");
+        e2e["detailsUrl"] = json!("https://github.com/acme/web/actions/runs/1/job/2");
+        let mut unit = check("unit", "CI", "COMPLETED", "SUCCESS");
+        unit["completedAt"] = json!("2024-01-01T00:00:00Z");
+        let status = json!({ "__typename": "StatusContext", "context": "vercel", "state": "SUCCESS",
+                             "targetUrl": "https://vercel.example/acme/web/1" });
+        let contexts = [unit, e2e, check("lint", "", "IN_PROGRESS", ""), status];
+        let json = reply(json!({
+            "number": 412, "title": "t", "url": "u", "state": "OPEN", "isDraft": false,
+            "reviewDecision": "CHANGES_REQUESTED", "mergeable": "MERGEABLE",
+            "headRefName": "0008-bulk/ENG-52", "baseRefName": "main", "isCrossRepository": false,
+            "updatedAt": "2024-01-02T00:00:00Z", "headRefOid": "abc",
+            "commits": { "nodes": [{ "commit": { "statusCheckRollup": {
+                "state": "FAILURE", "contexts": { "nodes": contexts } } } }] },
+            "reviews": { "nodes": [
+                { "id": "r1", "author": { "login": "a" }, "state": "APPROVED", "submittedAt": "x",
+                  "url": "https://github.com/acme/web/pull/412#pullrequestreview-1" },
+                { "author": { "login": "a" }, "state": "COMMENTED", "submittedAt": "y" },
+                { "author": { "login": "b" }, "state": "CHANGES_REQUESTED", "submittedAt": "z" }] },
+            "comments": { "nodes": [
+                { "id": "c1", "body": "first", "createdAt": "x" },
+                { "id": "c2", "body": "second", "createdAt": "y" }] },
+            "reviewThreads": { "totalCount": 0, "nodes": [] }
+        }));
+        let pr = parse(&json).unwrap();
         assert_eq!(pr.base, "main");
         assert!(!pr.cross_repository);
+        let stamp = Stamp {
+            updated: "2024-01-02T00:00:00Z".into(),
+            head: "abc".into(),
+            checks: "FAILURE".into(),
+        };
+        assert_eq!(pr.stamp, stamp);
         // A PR GitHub doesn't say is from this repository counts as a fork's.
-        let bare = parse(r#"{"number":1,"state":"OPEN","headRefName":"x","baseRefName":"main"}"#);
-        assert!(bare.unwrap().cross_repository);
+        let bare =
+            parse(&reply(json!({ "number": 1, "state": "OPEN", "headRefName": "x" }))).unwrap();
+        assert!(bare.cross_repository);
         assert_eq!(pr.count(CheckState::Pass), 2);
         assert_eq!(pr.count(CheckState::Fail), 1);
         assert_eq!(pr.count(CheckState::Pending), 1);
@@ -1280,21 +1408,30 @@ mod tests {
             latest.iter().map(|r| (r.author.as_str(), r.state.as_str())).collect::<Vec<_>>(),
             [("a", "APPROVED"), ("b", "CHANGES_REQUESTED")]
         );
-        assert_eq!(latest[0].id, "r1");
+        assert_eq!(
+            (latest[0].id.as_str(), latest[0].url.as_str()),
+            ("r1", "https://github.com/acme/web/pull/412#pullrequestreview-1")
+        );
         assert_eq!(pr.reviews.len(), 3);
-        assert!(pr.threads.is_err(), "not fetched yet, so not empty");
+        // Comments come oldest first and are kept newest first.
+        assert_eq!(pr.comments.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["c2", "c1"]);
+        assert!(pr.threads.is_ok_and(|t| t.list.is_empty()));
+        // A reply without the threads still shows the PR, and says they're missing rather than
+        // that there are none; one without the PR is an error.
+        assert!(bare.threads.is_err());
+        assert!(parse(&reply(Value::Null)).is_err());
     }
 
     #[test]
     fn keeps_review_text_that_still_stands() {
-        let json = r#"{"number":1,"reviews":[
+        let json = r#"{"number":1,"reviews":{"nodes":[
             {"id":"1","author":{"login":"a"},"state":"CHANGES_REQUESTED","submittedAt":"2024-01-01T00:00:00Z","body":"Rename it"},
             {"id":"2","author":{"login":"a"},"state":"APPROVED","submittedAt":"2024-01-02T00:00:00Z","body":"Thanks"},
             {"id":"3","author":{"login":"a"},"state":"COMMENTED","submittedAt":"2024-01-03T00:00:00Z","body":"One more nit"},
             {"id":"4","author":{"login":"b"},"state":"COMMENTED","submittedAt":"2024-01-01T00:00:00Z","body":"Why?"},
             {"id":"5","author":{"login":"b"},"state":"COMMENTED","submittedAt":"2024-01-02T00:00:00Z","body":""},
-            {"id":"6","author":{"login":"b"},"state":"CHANGES_REQUESTED","submittedAt":"2024-01-03T00:00:00Z","body":"Add a test"}]}"#;
-        let pr = parse(json).unwrap();
+            {"id":"6","author":{"login":"b"},"state":"CHANGES_REQUESTED","submittedAt":"2024-01-03T00:00:00Z","body":"Add a test"}]}}"#;
+        let pr = parse(&reply(serde_json::from_str::<Value>(json).unwrap())).unwrap();
         let ids = |rs: Vec<&Review>| rs.iter().map(|r| r.id.clone()).collect::<Vec<_>>();
         // a's change request was answered by the approval; b's question by the change request.
         assert_eq!(ids(pr.review_text()), ["2", "3", "6"]);
@@ -1307,8 +1444,7 @@ mod tests {
             let url = format!("https://github.com/acme/web/pull/1#discussion_r{id}");
             json!({ "id": id, "author": { "login": "bo" }, "body": body, "createdAt": "t", "url": url })
         };
-        let json = json!({ "data": { "repository": { "pullRequest": {
-          "reviews": { "nodes": [{ "id": "PRR_1", "url": "https://github.com/acme/web/pull/1#pullrequestreview-1" }] },
+        let pr = json!({
           "reviewThreads": {
             "totalCount": 7,
             "nodes": [
@@ -1319,8 +1455,8 @@ mod tests {
                   "first": { "totalCount": 30, "nodes": [c("3", "Rename")] },
                   "newest": { "nodes": [c("4", "Done"), c("5", "Thanks")] } }
             ]
-        } } } } });
-        let t = parse_threads(&json.to_string()).unwrap();
+        } });
+        let t = parse_threads(&pr).unwrap();
         assert_eq!((t.total, t.left_out(), t.unresolved().count()), (7, 5, 1));
         let ids = |th: &Thread| th.comments.iter().map(|c| c.id.clone()).collect::<Vec<_>>();
         assert_eq!(
@@ -1334,11 +1470,7 @@ mod tests {
             (vec!["3".into(), "4".into(), "5".into()], 27, Some(40))
         );
         assert_eq!(t.list[0].comments[1].url, "https://github.com/acme/web/pull/1#discussion_r2");
-        assert_eq!(
-            t.review_urls,
-            [("PRR_1".into(), "https://github.com/acme/web/pull/1#pullrequestreview-1".into())]
-        );
-        assert!(parse_threads(r#"{"data":{"repository":{"pullRequest":null}}}"#).is_err());
+        assert!(parse_threads(&json!({})).is_err());
     }
 
     #[test]
@@ -1357,18 +1489,17 @@ mod tests {
     const PR_SEARCH_CLOSED: &str = include_str!("../tests/fixtures/github/pr-search-closed.json");
     const PR_BRANCH: &str = include_str!("../tests/fixtures/github/pr-branch.json");
     const PR_LOOKUP: &str = include_str!("../tests/fixtures/github/pr-lookup.json");
-    const PR_VIEW: &str = include_str!("../tests/fixtures/github/pr-view.json");
-    const THREADS_JSON: &str = include_str!("../tests/fixtures/github/review-threads.json");
+    const PR_DETAILS: &str = include_str!("../tests/fixtures/github/pr-details.json");
     const CLOSING_JSON: &str = include_str!("../tests/fixtures/github/closing-prs.json");
 
     /// Which of the lookup's gh calls `args` is, by what only that call has.
     fn call(args: &[&str]) -> &'static str {
         let query = args.iter().find(|a| a.starts_with("query=")).copied().unwrap_or("");
         match () {
-            _ if args.starts_with(&["pr", "view"]) => "view",
             _ if query.contains("search(") => "list",
             _ if query.contains("closedByPullRequestsReferences") => "closing",
-            _ if query.contains("reviewThreads") => "threads",
+            _ if query.contains("reviewThreads") => "details",
+            _ if query.contains("before: $before") => "older",
             _ => "unexpected",
         }
     }
@@ -1384,7 +1515,7 @@ mod tests {
         let calls = std::sync::Mutex::new(Vec::new());
         let gh = |args: &[&str]| {
             let c = call(args);
-            calls.lock().unwrap().push(format!("{c}: {}", args[..3].join(" ")));
+            calls.lock().unwrap().push(format!("{c}: {}", args[..args.len().min(6)].join(" ")));
             let reply = replies.iter().find(|(name, _)| *name == c).map(|(_, r)| *r);
             reply.unwrap_or(Err("no reply")).map(String::from).map_err(String::from)
         };
@@ -1402,21 +1533,18 @@ mod tests {
 
     #[test]
     fn takes_the_pr_github_links_as_closing_the_issue() {
-        let replies = [
-            ("closing", Ok(CLOSING_JSON)),
-            ("view", Ok(PR_VIEW)),
-            ("threads", Ok(THREADS_JSON)),
-            ("list", Ok(PR_SEARCH)),
-        ];
+        let replies =
+            [("closing", Ok(CLOSING_JSON)), ("details", Ok(PR_DETAILS)), ("list", Ok(PR_SEARCH))];
         let (res, calls) = lookup(Path::new("/src/acme"), None, Some(&acme_web_12()), &replies);
         let found = res.unwrap();
-        // The open one in the issue's repository, viewed there; no list.
-        assert_eq!(names(&calls), ["closing", "view", "threads"]);
-        assert_eq!(calls[0], "closing: api graphql --hostname");
+        // The open one in the issue's repository, fetched there; no list.
+        assert_eq!(names(&calls), ["closing", "details"]);
+        assert_eq!(calls[0], "closing: api graphql --hostname github.com -f owner=acme");
+        assert_eq!(calls[1], "details: api graphql --hostname github.com -f owner=acme");
         let pr = found.pr.unwrap();
         assert_eq!((pr.number, pr.head.as_str(), pr.cross_repository), (45, "eng-52-login", false));
         assert_eq!((found.closed, found.branch_gone), (None, false));
-        // The threads came, and gave the review its page.
+        // The threads came with it, and the review its page.
         assert_eq!(pr.threads.as_ref().unwrap().list[0].path, "src/auth/link.rs");
         assert_eq!(pr.reviews[0].url, "https://github.com/acme/web/pull/45#pullrequestreview-1");
         assert_eq!((pr.count(CheckState::Pass), pr.count(CheckState::Fail)), (1, 1));
@@ -1427,43 +1555,131 @@ mod tests {
         let replies = [
             ("closing", Err("HTTP 502: Bad Gateway (https://api.github.com/graphql)")),
             ("list", Ok(PR_SEARCH)),
-            ("view", Ok(PR_VIEW)),
-            ("threads", Ok(THREADS_JSON)),
+            ("details", Ok(PR_DETAILS)),
         ];
         let (res, calls) = lookup(Path::new("/src/acme"), None, Some(&acme_web_12()), &replies);
-        assert_eq!(names(&calls), ["closing", "list", "view", "threads"]);
+        assert_eq!(names(&calls), ["closing", "list", "details"]);
         assert_eq!(res.unwrap().pr.unwrap().number, 45);
         // As when the issue links only a PR closed without merging.
         let closed = r#"{"data":{"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":[
             {"number":40,"state":"CLOSED","updatedAt":"t","repository":{"nameWithOwner":"acme/web"}}]}}}}}"#;
-        let replies = [("closing", Ok(closed)), ("list", Ok(PR_SEARCH)), ("view", Ok(PR_VIEW))];
+        let replies =
+            [("closing", Ok(closed)), ("list", Ok(PR_SEARCH)), ("details", Ok(PR_DETAILS))];
         let (res, calls) = lookup(Path::new("/src/acme"), None, Some(&acme_web_12()), &replies);
-        assert_eq!(names(&calls)[..3], ["closing", "list", "view"]);
+        assert_eq!(names(&calls), ["closing", "list", "details"]);
         assert_eq!(res.unwrap().pr.unwrap().number, 45);
     }
 
     #[test]
     fn shows_the_open_pr_before_the_merged_one() {
         // #61 (ENG-520) is newer and open, but isn't ENG-52's; #38 merged; #40 closed.
-        let replies = [("list", Ok(PR_SEARCH)), ("view", Ok(PR_VIEW)), ("threads", Err("x"))];
+        let mut threadless: Value = serde_json::from_str(PR_DETAILS).unwrap();
+        threadless["data"]["repository"]["pullRequest"]["reviewThreads"] = Value::Null;
+        let threadless = threadless.to_string();
+        let replies = [("list", Ok(PR_SEARCH)), ("details", Ok(threadless.as_str()))];
         let (res, calls) = lookup(Path::new("/src/acme"), None, None, &replies);
-        assert_eq!(names(&calls), ["list", "view", "threads"]);
-        assert_eq!(calls[1], "view: pr view 45");
+        assert_eq!(names(&calls), ["list", "details"]);
         let found = res.unwrap();
         let pr = found.pr.unwrap();
-        assert_eq!(found.closed, None);
-        // Threads that couldn't be fetched still leave the PR.
+        assert_eq!((pr.number, found.closed), (45, None));
+        // Threads GitHub didn't send still leave the PR.
         assert!(pr.threads.is_err());
         // An open PR on the ticket's branch beats a newer open one that only mentions the key.
-        let replies = [("list", Ok(PR_BRANCH)), ("view", Ok(PR_VIEW))];
+        let replies = [("list", Ok(PR_BRANCH)), ("details", Ok(PR_DETAILS))];
         let (res, calls) = lookup(Path::new("/src/acme"), Some("eng-52-login"), None, &replies);
-        assert_eq!(names(&calls), ["list", "view", "threads"]);
-        assert_eq!(calls[1], "view: pr view 45");
-        assert!(!res.unwrap().branch_gone);
+        assert_eq!(names(&calls), ["list", "details"]);
+        let found = res.unwrap();
+        assert_eq!(found.pr.unwrap().number, 45);
+        assert!(!found.branch_gone);
+    }
+
+    #[test]
+    fn keeps_the_details_of_a_pr_that_has_not_changed() {
+        let shown = parse(&serde_json::from_str(PR_DETAILS).unwrap()).unwrap();
+        let ask = |list: &str, shown: Option<&Pr>| {
+            let w = Wanted { shown: shown.cloned(), ..wanted("ENG-52", Some("eng-52-login")) };
+            let replies = [("list", Ok(list)), ("details", Ok(PR_DETAILS))];
+            let (mut found, calls) = lookup_all(&[w], &replies);
+            let pr = found.pop().unwrap().unwrap().pr.unwrap();
+            let fetched = calls.iter().filter(|c| call(&strs(c)) == "details").count();
+            (pr, fetched)
+        };
+        // The same updatedAt, head and check state: the details shown stay, and no query runs.
+        let (pr, fetched) = ask(PR_BRANCH, Some(&shown));
+        assert_eq!((pr.number, fetched), (45, 0));
+        assert_eq!(pr.threads.unwrap().list[0].path, "src/auth/link.rs");
+        // A change in any of them fetches the details.
+        let changes = [
+            ("2026-10-01T10:00:00Z", "2026-10-01T11:00:00Z"),
+            (
+                "0123456789abcdef0123456789abcdef01234567",
+                "89abcdef0123456789abcdef0123456789abcdef",
+            ),
+            ("\"FAILURE\"", "\"PENDING\""),
+        ];
+        for (from, to) in changes {
+            let list = PR_BRANCH.replace(from, to);
+            assert_ne!(list, PR_BRANCH);
+            assert_eq!(ask(&list, Some(&shown)).1, 1, "{from} to {to}");
+        }
+        // So does nothing shown, a PR that's another one, one whose threads failed, and one
+        // GitHub sent without a stamp.
+        assert_eq!(ask(PR_BRANCH, None).1, 1);
+        let other = Pr { url: "https://github.com/acme/api/pull/45".into(), ..shown.clone() };
+        assert_eq!(ask(PR_BRANCH, Some(&other)).1, 1);
+        let failed = Pr { threads: Err("x".into()), ..shown.clone() };
+        assert_eq!(ask(PR_BRANCH, Some(&failed)).1, 1);
+        let unstamped = Pr { stamp: Stamp::default(), ..shown.clone() };
+        let list = PR_BRANCH
+            .replace("\"2026-10-01T10:00:00Z\"", "null")
+            .replace("\"0123456789abcdef0123456789abcdef01234567\"", "null")
+            .replace("{ \"state\": \"FAILURE\" }", "null");
+        assert_eq!(ask(&list, Some(&unstamped)).1, 1);
+    }
+
+    #[test]
+    fn fetches_reviews_and_comments_past_the_first_page() {
+        let mut first: Value = serde_json::from_str(PR_DETAILS).unwrap();
+        let pr = &mut first["data"]["repository"]["pullRequest"];
+        pr["comments"]["pageInfo"] = json!({ "hasPreviousPage": true, "startCursor": "@c2" });
+        let older = |what: &str, id: &str, more: bool, cursor: &str| {
+            let node = json!({ "id": id, "author": { "login": "ana-example" }, "state": "COMMENTED",
+                               "submittedAt": "2026-09-01T00:00:00Z", "createdAt": "2026-09-01T00:00:00Z" });
+            let page = json!({ "pageInfo": { "hasPreviousPage": more, "startCursor": cursor },
+                               "nodes": [node] });
+            let mut pr = json!({});
+            pr[what] = page;
+            reply(pr).to_string()
+        };
+        let (first, c1, c0) = (
+            first.to_string(),
+            older("comments", "IC_2", true, "@c1"),
+            older("comments", "IC_1", false, "@c0"),
+        );
+        let calls = std::sync::Mutex::new(Vec::new());
+        let gh = |args: &[&str]| {
+            calls.lock().unwrap().push(args.iter().map(|a| a.to_string()).collect::<Vec<_>>());
+            let before = args.iter().find_map(|a| a.strip_prefix("before="));
+            Ok::<_, String>(match before {
+                None => first.clone(),
+                Some("@c2") => c1.clone(),
+                Some(_) => c0.clone(),
+            })
+        };
+        let pr = view(&gh, 45, "https://github.com/acme/web/pull/45").unwrap();
+        let ids: Vec<&str> = pr.comments.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["IC_10", "IC_2", "IC_1"], "newest first, every page");
+        assert_eq!(pr.reviews.len(), 1, "one page of reviews");
+        let calls = calls.into_inner().unwrap();
+        let older: Vec<&str> = calls.iter().map(|c| call(&strs(c))).collect();
+        assert_eq!(older, ["details", "older", "older"]);
+        // The cursor goes as plain text, so one starting with `@` reads no file.
+        assert!(calls[1].windows(2).any(|w| w[0] == "-f" && w[1] == "before=@c2"));
+        assert!(calls[1].iter().any(|a| a.contains("comments(last: $page, before: $before)")));
     }
 
     fn wanted(key: &str, branch: Option<&str>) -> Wanted {
-        Wanted { key: key.into(), branch: branch.map(String::from), closes: None }
+        Wanted { key: key.into(), branch: branch.map(String::from), ..Wanted::default() }
     }
 
     /// Runs `fetch_all` with gh answering each call from `replies`, and returns the lookups and
@@ -1491,12 +1707,12 @@ mod tests {
             wanted("ENG-8", None),
             wanted("ENG-9", Some("eng-9-search")),
         ];
-        let replies = [("list", Ok(PR_LOOKUP)), ("view", Ok(PR_VIEW)), ("threads", Err("x"))];
+        let replies = [("list", Ok(PR_LOOKUP)), ("details", Ok(PR_DETAILS))];
         let (found, calls) = lookup_all(&wanted, &replies);
         let mut viewed: Vec<&str> = calls
             .iter()
-            .filter(|c| c.starts_with(&["pr".into(), "view".into()]))
-            .map(|c| c[2].as_str())
+            .filter(|c| call(&strs(c)) == "details")
+            .filter_map(|c| c.iter().find_map(|a| a.strip_prefix("number=")))
             .collect();
         viewed.sort();
         assert_eq!(calls.iter().filter(|c| call(&strs(c)) == "list").count(), 1);
@@ -1572,8 +1788,7 @@ mod tests {
         let replies = [
             ("closing", Ok(CLOSING_JSON)),
             ("list", Ok(r#"{"data":{}}"#)),
-            ("view", Ok(PR_VIEW)),
-            ("threads", Ok(THREADS_JSON)),
+            ("details", Ok(PR_DETAILS)),
         ];
         let (found, calls) = lookup_all(&[linked, wanted("ENG-61", None)], &replies);
         let list: Vec<&Vec<String>> = calls.iter().filter(|c| call(&strs(c)) == "list").collect();
@@ -1654,6 +1869,15 @@ mod tests {
             "headRefName",
             "isCrossRepository",
             "statusCheckRollup",
+            "commits",
+            "commit",
+            "contexts",
+            "checkSuite",
+            "workflowRun",
+            "workflow",
+            "name",
+            "updatedAt",
+            "headRefOid",
             "__typename",
             "status",
             "conclusion",
@@ -1742,13 +1966,14 @@ mod tests {
         #[test]
         fn reading_any_json_never_panics(v in any_json()) {
             let json = v.to_string();
-            let _ = parse(&json);
-            let _ = parse_threads(&json);
+            let _ = parse(&v);
+            let _ = parse(&reply(v.clone()));
+            let _ = parse_threads(&v);
+            let _ = Stamp::read(&v);
             let _ = parse_closing(&json, "acme/web");
             let _ = candidates(&v, Some("ENG-52"));
-            let asked = Wanted { key: "ENG-52".into(), branch: Some("x".into()), closes: None };
+            let asked = wanted("ENG-52", Some("x"));
             let _ = parse_listed(&json, &[&asked, &asked]);
-            let _ = parse(&format!("[{json}"));
         }
     }
 

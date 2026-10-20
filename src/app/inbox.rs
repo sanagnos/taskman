@@ -105,7 +105,9 @@ impl App {
                     .and_then(|p| p.tracker.as_ref()?.closes(&tv.t.key));
                 ids.push((n, tv.t.key.clone()));
                 let branch = tv.t.branch.clone();
-                wanted.push(github::Wanted { key: tv.t.key.clone(), branch, closes });
+                // Fetched in full, whatever the panel shows: the PR decides `--merged`.
+                let shown = None;
+                wanted.push(github::Wanted { key: tv.t.key.clone(), branch, closes, shown });
             }
         }
         if ids.is_empty() {

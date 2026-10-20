@@ -108,9 +108,9 @@ impl<T> Remote<T> {
 pub(super) enum Msg {
     /// A tracker fetch finished: the fetch's id (`Remote::start`), its ticket and what it found.
     Jira(u64, Id, Result<Issue, String>),
-    /// A PR lookup finished: the lookup's id, its ticket, what it found and the worktree git
-    /// found for the ticket.
-    Pr(u64, Id, Result<github::Lookup, String>, Option<(PathBuf, String)>),
+    /// A PR lookup finished: the lookup's id, its ticket, what it found (boxed: a PR in full is
+    /// several times the size of any other message) and the worktree git found for the ticket.
+    Pr(u64, Id, Box<Result<github::Lookup, String>>, Option<(PathBuf, String)>),
     /// A worktree was created, or failed: the creation's id (`TicketView::creation_id`), its
     /// ticket, and the base it was asked to start from.
     Worktree(u64, Id, Result<worktree::Created, String>, Option<Base>),
@@ -216,9 +216,19 @@ impl Reporter {
             Err(e) => ids.iter().map(|_| (Err(e.clone()), None)).collect(),
         };
         for ((n, key), (res, wt)) in ids.into_iter().zip(found) {
-            self.send(Msg::Pr(n, (repo.to_path_buf(), key), res, wt));
+            self.send(Msg::Pr(n, (repo.to_path_buf(), key), Box::new(res), wt));
         }
     }
+}
+
+/// Whether a ticket's PR lookup keeps the details it shows when the list finds the PR unchanged
+/// (`github::Wanted::shown`), rather than fetching them again. The selected ticket's are fetched on
+/// each of its refreshes, and so are those of a refresh someone waits on (`loud`): the user's own,
+/// or the hook's after Claude pushed or ran gh. In the background, a check finishing while others
+/// still run, or a change in mergeability, waits for the ticket to be selected: neither changes
+/// what the list reads.
+fn keeps_details(selected: bool, loud: bool) -> bool {
+    !selected && !loud
 }
 
 /// What a PR lookup found for a ticket, and the worktree git found for it.
@@ -279,12 +289,12 @@ impl App {
                     }
                     // gh was removed or logged out since the last check: hide the panel until
                     // the next.
-                    if let Err(e) = &res
+                    if let Err(e) = &*res
                         && let Some(gh) = github::Gh::from_error(e)
                     {
                         changed |= self.github.insert(tv.t.repo.clone(), gh) != Some(gh);
                     }
-                    changed |= tv.take_pr(res, worktree);
+                    changed |= tv.take_pr(*res, worktree);
                 }
                 Msg::Worktree(n, (repo, key), res, base) => {
                     let closed = self.closed_creating.remove(&n);
@@ -467,7 +477,10 @@ impl App {
                 tv.pr.start(n);
                 ids.push((n, tv.t.key.clone()));
                 let branch = tv.t.branch.clone();
-                wanted.push(github::Wanted { key: tv.t.key.clone(), branch, closes });
+                let shown = keeps_details(i == self.sel, tv.pr.loud)
+                    .then(|| tv.pr.data.clone().flatten())
+                    .flatten();
+                wanted.push(github::Wanted { key: tv.t.key.clone(), branch, closes, shown });
             }
             let report = report.clone();
             std::thread::spawn(move || report.send_lookups(&repo, ids, wanted));
@@ -705,6 +718,13 @@ mod tests {
         app.tickets[eng53].pr.request(false);
         app.github.insert(acme, github::Gh::LoggedOut);
         assert!(app.due_lookups().is_empty());
+    }
+
+    #[test]
+    fn fetches_the_details_of_the_selected_ticket_and_of_refreshes_someone_waits_on() {
+        assert!(keeps_details(false, false), "a routine refresh in the background");
+        assert!(!keeps_details(true, false), "the selected ticket's");
+        assert!(!keeps_details(false, true), "ctrl+a r, or the hook's after a push");
     }
 
     #[test]

@@ -328,8 +328,8 @@ pub(crate) fn pr(number: u64, branch: &str) -> Pr {
                 thread("src/auth/mail.rs", 7, true, "Typo in the subject."),
             ],
             total: 2,
-            review_urls: Vec::new(),
         }),
+        stamp: Default::default(),
     }
 }
 

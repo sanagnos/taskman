@@ -1121,6 +1121,7 @@ mod tests {
                 ],
                 ..Default::default()
             }),
+            stamp: Default::default(),
         };
         let issue = Issue {
             summary: "Login fails".into(),

@@ -4,9 +4,9 @@
       "issue": {
         "closedByPullRequestsReferences": {
           "nodes": [
-            { "number": 40, "state": "CLOSED", "updatedAt": "2026-09-20T10:00:00Z", "repository": { "nameWithOwner": "acme/web" } },
-            { "number": 45, "state": "OPEN", "updatedAt": "2026-10-01T10:00:00Z", "repository": { "nameWithOwner": "acme/web" } },
-            { "number": 7, "state": "OPEN", "updatedAt": "2026-10-02T10:00:00Z", "repository": { "nameWithOwner": "acme/api" } }
+            { "number": 40, "title": "Try another way", "url": "https://github.com/acme/web/pull/40", "headRefName": "ana/try-login", "state": "CLOSED", "updatedAt": "2026-09-20T10:00:00Z", "headRefOid": "4000000000000000000000000000000000000000", "commits": { "nodes": [{ "commit": { "statusCheckRollup": null } }] }, "repository": { "nameWithOwner": "acme/web" } },
+            { "number": 45, "title": "Sign in with a magic link", "url": "https://github.com/acme/web/pull/45", "headRefName": "eng-52-login", "state": "OPEN", "updatedAt": "2026-10-01T10:00:00Z", "headRefOid": "0123456789abcdef0123456789abcdef01234567", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "FAILURE" } } }] }, "repository": { "nameWithOwner": "acme/web" } },
+            { "number": 7, "title": "Sign-in API", "url": "https://github.com/acme/api/pull/7", "headRefName": "eng-52-api", "state": "OPEN", "updatedAt": "2026-10-02T10:00:00Z", "headRefOid": "0700000000000000000000000000000000000000", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] }, "repository": { "nameWithOwner": "acme/api" } }
           ]
         }
       }

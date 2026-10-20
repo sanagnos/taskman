@@ -105,6 +105,7 @@ mod tests {
             reviews: vec![],
             comments: vec![],
             threads: Ok(Default::default()),
+            stamp: Default::default(),
         }
     }
 

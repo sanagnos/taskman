@@ -791,6 +791,7 @@ mod tests {
                 ..Default::default()
             }],
             threads: Ok(Default::default()),
+            stamp: Default::default(),
         };
         let area = Rect::new(2, 1, 34, 20);
         let draw_with = |scroll, titled| {

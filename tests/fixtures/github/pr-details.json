@@ -1,0 +1,59 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 45,
+        "title": "Sign in with a magic link",
+        "url": "https://github.com/acme/web/pull/45",
+        "state": "OPEN",
+        "isDraft": false,
+        "reviewDecision": "CHANGES_REQUESTED",
+        "mergeable": "MERGEABLE",
+        "updatedAt": "2026-10-01T10:00:00Z",
+        "headRefName": "eng-52-login",
+        "headRefOid": "0123456789abcdef0123456789abcdef01234567",
+        "baseRefName": "main",
+        "isCrossRepository": false,
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "statusCheckRollup": {
+                  "state": "FAILURE",
+                  "contexts": {
+                    "nodes": [
+                      { "__typename": "CheckRun", "name": "test (ubuntu)", "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": "2026-10-01T07:28:00Z", "completedAt": "2026-10-01T07:30:00Z", "detailsUrl": "https://github.com/acme/web/actions/runs/1/job/1", "checkSuite": { "workflowRun": { "workflow": { "name": "CI" } } } },
+                      { "__typename": "CheckRun", "name": "test (macos)", "status": "COMPLETED", "conclusion": "FAILURE", "startedAt": "2026-10-01T07:28:00Z", "completedAt": "2026-10-01T07:31:00Z", "detailsUrl": "https://github.com/acme/web/actions/runs/1/job/2", "checkSuite": { "workflowRun": { "workflow": { "name": "CI" } } } }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "reviews": {
+          "pageInfo": { "hasPreviousPage": false, "startCursor": "Y3Vyc29yOnYyOjE=" },
+          "nodes": [
+            { "id": "PRR_1", "author": { "login": "ben-example" }, "state": "CHANGES_REQUESTED", "submittedAt": "2026-10-01T08:00:00Z", "body": "The link must expire.", "url": "https://github.com/acme/web/pull/45#pullrequestreview-1" }
+          ]
+        },
+        "comments": {
+          "pageInfo": { "hasPreviousPage": false, "startCursor": "Y3Vyc29yOnYyOjEw" },
+          "nodes": [
+            { "id": "IC_10", "author": { "login": "ana-example" }, "body": "Rebased on main.", "createdAt": "2026-10-01T09:00:00Z", "url": "https://github.com/acme/web/pull/45#issuecomment-10" }
+          ]
+        },
+        "reviewThreads": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "path": "src/auth/link.rs", "line": 42, "originalLine": 40, "isResolved": false, "isOutdated": false,
+              "first": { "totalCount": 1, "nodes": [{ "id": "PRRC_1", "author": { "login": "ben-example" }, "body": "Use a constant-time compare here.", "createdAt": "2026-10-01T08:00:00Z", "url": "https://github.com/acme/web/pull/45#discussion_r1" }] },
+              "newest": { "nodes": [{ "id": "PRRC_1", "author": { "login": "ben-example" }, "body": "Use a constant-time compare here.", "createdAt": "2026-10-01T08:00:00Z", "url": "https://github.com/acme/web/pull/45#discussion_r1" }] }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -122,13 +122,13 @@ fn a_pr_found_for_a_closed_ticket_is_not_the_reopened_tickets() {
             branch_gone: false,
         })
     };
-    app.tx.send(Msg::Pr(old, id(&app, "ENG-70"), found(), None)).unwrap();
+    app.tx.send(Msg::Pr(old, id(&app, "ENG-70"), Box::new(found()), None)).unwrap();
     app.drain_messages();
     let t = &saved().tickets[i];
     assert!(app.tickets[i].pr.data.is_none() && t.branch.is_none(), "a stale lookup applied");
     // The new ticket's own lookup is.
     let new = looking_up(&mut app, "ENG-70");
-    app.tx.send(Msg::Pr(new, id(&app, "ENG-70"), found(), None)).unwrap();
+    app.tx.send(Msg::Pr(new, id(&app, "ENG-70"), Box::new(found()), None)).unwrap();
     app.drain_messages();
     let pr = app.tickets[i].pr.data.as_ref().and_then(Option::as_ref).map(|p| p.number);
     assert_eq!((pr, saved().tickets[i].branch.as_deref()), (Some(146), Some("eng-70-export")));
@@ -400,7 +400,7 @@ fn a_pr_lookup_never_moves_a_ticket_out_of_the_worktree_taskman_made() {
     let lookup = || Ok(crate::github::Lookup { pr: None, closed: None, branch_gone: false });
     let found = || Some((std::path::PathBuf::from("/src/wf/ENG-70"), "change/ENG-70".to_string()));
     let n = looking_up(&mut app, "ENG-70");
-    app.tx.send(Msg::Pr(n, id(&app, "ENG-70"), lookup(), found())).unwrap();
+    app.tx.send(Msg::Pr(n, id(&app, "ENG-70"), Box::new(lookup()), found())).unwrap();
     app.drain_messages();
     let tv = &app.tickets[i];
     assert_eq!(
@@ -411,7 +411,7 @@ fn a_pr_lookup_never_moves_a_ticket_out_of_the_worktree_taskman_made() {
     let tv = &mut app.tickets[i];
     (tv.t.cwd, tv.t.created_worktree) = ("/src/acme".into(), false);
     let n = looking_up(&mut app, "ENG-70");
-    app.tx.send(Msg::Pr(n, id(&app, "ENG-70"), lookup(), found())).unwrap();
+    app.tx.send(Msg::Pr(n, id(&app, "ENG-70"), Box::new(lookup()), found())).unwrap();
     app.drain_messages();
     let t = saved().tickets.into_iter().find(|t| t.key == "ENG-70").unwrap();
     assert_eq!(

@@ -34,8 +34,7 @@ if [ ! -e 'DIR/gh-logged-in' ]; then
 fi
 case "$*" in
   "auth token"*) echo gho_mock_token;;
-  "pr view 45 "*) cat 'FIXTURES/pr-view.json';;
-  "api graphql"*reviewThreads*) cat 'FIXTURES/review-threads.json';;
+  "api graphql"*reviewThreads*) cat 'FIXTURES/pr-details.json';;
   "api graphql"*pullRequests\(headRefName*) cat 'FIXTURES/pr-branch.json';;
   "api graphql"*search\(*) cat 'FIXTURES/pr-search.json';;
   *) echo "$*" | head -1 >> 'DIR/gh.unexpected'; echo "gh stub: no answer for $*" >&2; exit 1;;
@@ -76,7 +75,9 @@ fn the_pr_panel_shows_once_gh_is_logged_in() {
     tui.wait_text("Sign in with a magic link");
     tui.wait_text("src/auth/link.rs:42");
     let calls = std::fs::read_to_string(dir.join("gh.calls")).unwrap();
-    assert!(calls.lines().any(|l| l.starts_with("pr view 45 ")), "{calls}");
+    // The PR's details, with its threads, in one query in the repository its URL names.
+    let details = "api graphql --hostname github.com -f owner=acme -f name=web -F number=45 ";
+    assert!(calls.lines().any(|l| l.starts_with(details)), "{calls}");
     let unexpected = std::fs::read_to_string(dir.join("gh.unexpected")).unwrap_or_default();
     assert!(unexpected.is_empty(), "gh calls the stub has no answer for:\n{unexpected}");
 

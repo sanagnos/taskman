@@ -2,10 +2,10 @@
   "data": {
     "q0": {
       "nodes": [
-        { "number": 61, "title": "ENG-520: Rate-limit sign-ins", "headRefName": "eng-520-rate-limit", "state": "OPEN", "updatedAt": "2026-10-05T10:00:00Z" },
-        { "number": 45, "title": "Sign in with a magic link", "headRefName": "eng-52-login", "state": "OPEN", "updatedAt": "2026-10-01T10:00:00Z" },
-        { "number": 40, "title": "ENG-52: try another way", "headRefName": "ana/try-login", "state": "CLOSED", "updatedAt": "2026-09-20T10:00:00Z" },
-        { "number": 38, "title": "ENG-52 first pass", "headRefName": "eng-52-first", "state": "MERGED", "updatedAt": "2026-09-10T10:00:00Z" }
+        { "number": 61, "url": "https://github.com/acme/web/pull/61", "title": "ENG-520: Rate-limit sign-ins", "headRefName": "eng-520-rate-limit", "state": "OPEN", "updatedAt": "2026-10-05T10:00:00Z", "headRefOid": "6100000000000000000000000000000000000000", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] } },
+        { "number": 45, "url": "https://github.com/acme/web/pull/45", "title": "Sign in with a magic link", "headRefName": "eng-52-login", "state": "OPEN", "updatedAt": "2026-10-01T10:00:00Z", "headRefOid": "0123456789abcdef0123456789abcdef01234567", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "FAILURE" } } }] } },
+        { "number": 40, "url": "https://github.com/acme/web/pull/40", "title": "ENG-52: try another way", "headRefName": "ana/try-login", "state": "CLOSED", "updatedAt": "2026-09-20T10:00:00Z", "headRefOid": "4000000000000000000000000000000000000000", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] } },
+        { "number": 38, "url": "https://github.com/acme/web/pull/38", "title": "ENG-52 first pass", "headRefName": "eng-52-first", "state": "MERGED", "updatedAt": "2026-09-10T10:00:00Z", "headRefOid": "3800000000000000000000000000000000000000", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] } }
       ]
     }
   }

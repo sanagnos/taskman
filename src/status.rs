@@ -1897,6 +1897,7 @@ mod tests {
                 ..Default::default()
             }],
             threads: Ok(Threads::default()),
+            stamp: Default::default(),
         }
     }
 
@@ -2018,7 +2019,6 @@ mod tests {
                 thread("README.md", false, vec![comment("cy", "Typo\n\x1b[2Jhere")], 0),
             ],
             total: 5,
-            ..Default::default()
         });
         let text =
             pr_lines(&Ok(Lookup { pr: Some(p.clone()), closed: None, branch_gone: false }), true)
