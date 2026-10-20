@@ -36,7 +36,7 @@ fn a_paste_too_big_for_the_session_is_dropped_with_a_toast() {
 #[test]
 fn prefix_commands_never_reach_the_session() {
     let (mut app, to_session) = at_eng_52();
-    prefix(&mut app, KeyCode::Char('4'));
+    prefix(&mut app, KeyCode::Char(']'));
     assert_eq!(selected(&app), "ENG-53");
     prefix(&mut app, KeyCode::Char(']'));
     assert_eq!(selected(&app), "ENG-61");
@@ -49,6 +49,10 @@ fn prefix_commands_never_reach_the_session() {
     assert!(matches!(app.mode, Mode::Normal));
     prefix(&mut app, KeyCode::Char('y'));
     assert_eq!(toast(&app), Some("ctrl+a y isn't a command · ctrl+a ? lists them"));
+    // Digits once switched to the sidebar's first nine cards; now they're like any other.
+    prefix(&mut app, KeyCode::Char('4'));
+    assert_eq!(toast(&app), Some("ctrl+a 4 isn't a command · ctrl+a ? lists them"));
+    assert_eq!(selected(&app), "ENG-52");
     assert_eq!(sent(&to_session), "");
     // Switching tickets saves which one is selected.
     assert_eq!(saved().selected, index(&app, "ENG-52"));

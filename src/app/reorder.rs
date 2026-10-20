@@ -469,7 +469,7 @@ mod tests {
         assert!(!app.nudge(Unit::Project, 1));
         let names: Vec<_> = app.projects.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["notes", "acme"]);
-        // The cards follow their project, and the numbers follow the order.
+        // The cards follow their project, and stepping through them follows the order.
         let visible: Vec<_> =
             app.ordered(true).iter().map(|&i| app.tickets[i].t.key.clone()).collect();
         assert_eq!(visible[0], "acme-lead");

@@ -52,7 +52,7 @@ fn a_long_paste_to_a_slow_cli_holds_nothing_up() {
 
     tui.step("switching to ENG-2");
     let start = Instant::now();
-    tui.send(b"\x012");
+    tui.send(b"\x01]");
     tui.wait_text("slow reader for ENG-2");
     assert!(start.elapsed() < Duration::from_secs(5), "ENG-2 took {:?}", start.elapsed());
     assert!(

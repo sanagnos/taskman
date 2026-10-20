@@ -127,26 +127,25 @@ fn p_moves_the_project_with_every_project_folded_and_their_folds_come_back() {
 }
 
 #[test]
-fn the_numbers_follow_the_new_order() {
+fn previous_and_next_follow_the_new_order() {
     let mut app = acme_app();
     app.projects[1].collapsed = false;
-    prefix(&mut app, KeyCode::Char('1'));
-    assert_eq!(selected(&app), "acme-lead");
     app.select(index(&app, "ENG-70"));
     prefix(&mut app, KeyCode::Char('{'));
     app.on_key(key(KeyCode::Up));
     app.on_key(key(KeyCode::Enter));
-    // Agents 1-2, then ENG-52, ENG-70, ENG-53 ...
-    prefix(&mut app, KeyCode::Char('4'));
+    // Agents, then ENG-52, ENG-70, ENG-53 ...
+    app.select(index(&app, "ENG-52"));
+    prefix(&mut app, KeyCode::Char(']'));
     assert_eq!(selected(&app), "ENG-70");
-    // And a project moved ahead brings its cards to the first numbers.
+    // And a project moved ahead comes before the others' cards.
     app.select(index(&app, "notes-writer"));
     prefix(&mut app, KeyCode::Char('{'));
     app.on_key(key(KeyCode::Char('p')));
     app.on_key(key(KeyCode::Up));
     app.on_key(key(KeyCode::Enter));
-    prefix(&mut app, KeyCode::Char('1'));
-    assert_eq!(selected(&app), "notes-writer");
+    prefix(&mut app, KeyCode::Char(']'));
+    assert_eq!(selected(&app), "acme-lead");
 }
 
 #[test]

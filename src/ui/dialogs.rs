@@ -1026,7 +1026,6 @@ fn draw_help(f: &mut Frame, app: &mut App) {
     let p = prefix();
     let (again, send) = (p.to_string(), format!("send {p} itself to the session"));
     let keys = [
-        ("1-9", "switch to ticket"),
         ("[ / ]", "previous / next ticket"),
         ("{ / }", "move the card; ↑/↓ go on, p moves its project, Enter ends"),
         (again.as_str(), "next ticket waiting on you (also tab)"),

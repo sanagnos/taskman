@@ -25,7 +25,7 @@ fn a_light_terminal_draws_light_and_tells_the_sessions() {
     // The footer, the bottom row, on the light grey; the selected card too.
     let footer = tui.with(|t| t.screen().cell(39, 0).map(|c| c.bgcolor()));
     assert_eq!(footer, Some(vt100::Color::Idx(254)));
-    let (col, row) = tui.wait_text("┃1 ENG-1");
+    let (col, row) = tui.wait_text("┃ ENG-1");
     let card = tui.with(|t| t.screen().cell(row, col + 2).map(|c| c.bgcolor()));
     assert_eq!(card, Some(vt100::Color::Idx(254)));
 

@@ -231,7 +231,6 @@ fn sidebar_rows(
         attention: false,
     };
     let blank = || plain(Line::default());
-    let visible = app.ordered(true);
     // Every project shows folded while one is moved, so each step passes one project.
     let all_folded = app.moving_projects();
     let mine = app.tickets.get(app.sel).and_then(|tv| app.project_of(&tv.t));
@@ -309,11 +308,6 @@ fn sidebar_rows(
             };
             let key_style =
                 if selected { Style::new().fg(Color::Cyan).bold() } else { Style::new().bold() };
-            // The digits switch among the cards as they're ordered, not among these.
-            let num = match visible.iter().position(|&v| v == i) {
-                Some(n) if n < 9 && narrowed.is_none() => format!("{} ", n + 1),
-                _ => "  ".into(),
-            };
             let mut lines: Vec<Line> = Vec::new();
             if collapsed {
                 let label = if agent { format!("✦{}", tv.t.display()) } else { tv.t.key.clone() };
@@ -330,12 +324,12 @@ fn sidebar_rows(
                 // The badge keeps its width and ends one column from the edge; the name gets
                 // the rest.
                 let badge_w = width(&badge.content);
-                let label = truncate(&label, w.saturating_sub(1 + num.len() + 1 + badge_w + 1));
-                let used = 1 + num.len() + width(&label) + badge_w;
+                let label = truncate(&label, w.saturating_sub(2 + 1 + badge_w + 1));
+                let used = 2 + width(&label) + badge_w;
                 let pad = " ".repeat(w.saturating_sub(used + 1).max(1));
                 lines.push(Line::from(vec![
                     marker.clone(),
-                    Span::styled(num, dim()),
+                    Span::raw(" "),
                     Span::styled(label, key_style),
                     Span::raw(pad),
                     badge,
@@ -343,8 +337,8 @@ fn sidebar_rows(
                 let new = if selected { 0 } else { tv.new_count() };
                 if let Some(title) = &title {
                     let title_style = if selected { Style::new() } else { dim() };
-                    let mut row = vec![marker.clone(), Span::raw("  ")];
-                    let mut room = w.saturating_sub(4);
+                    let mut row = vec![marker.clone(), Span::raw(" ")];
+                    let mut room = w.saturating_sub(3);
                     if new > 0 {
                         let tag = format!("{new} new · ");
                         room = room.saturating_sub(width(&tag));
@@ -355,7 +349,7 @@ fn sidebar_rows(
                 }
                 // Agents have no PR line: a name, and a title when Claude has set one.
                 if !agent {
-                    let mut pr = vec![marker, Span::raw("  ")];
+                    let mut pr = vec![marker, Span::raw(" ")];
                     if title.is_none() && new > 0 {
                         pr.push(Span::styled(
                             format!("{new} new · "),
