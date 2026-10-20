@@ -155,7 +155,7 @@ pub struct ClosedAgent {
     /// Empty when it closed before its session reported one; kept anyway for its role.
     #[serde(default)]
     pub session_id: String,
-    #[serde(default, skip_serializing_if = "Cli::is_claude")]
+    #[serde(default, skip_serializing_if = "Cli::is_default")]
     pub cli: Cli,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
@@ -163,32 +163,13 @@ pub struct ClosedAgent {
     pub extra: Extra,
 }
 
-/// The coding CLI a session runs.
+/// The coding CLI a session runs. What each does differently is in `coding_cli.rs`.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Cli {
     #[default]
     Claude,
     Codex,
-}
-
-impl Cli {
-    pub const ALL: [Cli; 2] = [Cli::Claude, Cli::Codex];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Cli::Claude => "Claude",
-            Cli::Codex => "Codex",
-        }
-    }
-
-    pub fn from_label(s: &str) -> Cli {
-        Cli::ALL.into_iter().find(|c| c.label() == s).unwrap_or_default()
-    }
-
-    pub fn is_claude(&self) -> bool {
-        *self == Cli::Claude
-    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -199,7 +180,7 @@ pub struct Ticket {
     /// Where the session runs: the ticket's worktree if one existed when the
     /// ticket was added, otherwise the main checkout.
     pub cwd: PathBuf,
-    #[serde(default, skip_serializing_if = "Cli::is_claude")]
+    #[serde(default, skip_serializing_if = "Cli::is_default")]
     pub cli: Cli,
     /// Branch the ticket's PR is opened from, once known.
     #[serde(default)]

@@ -51,7 +51,11 @@ pub fn switched(who: &Ticket, other: &Ticket, id: &str) -> String {
 }
 
 fn switched_text(who: &str, other: &str, cli: Cli) -> String {
-    let bug = if cli == Cli::Claude { " (a Claude Code bug)" } else { "" };
+    let bug = if cli.switches_conversations() {
+        format!(" (a {} bug)", cli.product())
+    } else {
+        String::new()
+    };
     format!(
         "{who}'s {} switched onto {other}'s conversation{bug}. Restart {who} ({} R) to give it its own.",
         cli.label(),

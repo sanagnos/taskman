@@ -5,7 +5,6 @@ use crate::app::{AgentState, App, Remote};
 use crate::github::{CheckState, Mergeable, Pr};
 use crate::keys::prefix;
 use crate::links::Linked;
-use crate::store::Cli;
 use crate::tracker::Access;
 use crate::untrusted;
 use crate::util::{ago, ago_str, ago_words, parse_ts, truncate};
@@ -300,11 +299,10 @@ pub(super) fn draw_board(f: &mut Frame, app: &mut App, area: Rect) {
     let indent = || Span::raw("  ");
     if tickets.is_empty() {
         lines.push(Line::from("No tickets in this project yet.".bold()));
-        let hint = match sel_cli {
-            Cli::Claude => {
-                format!("Add one with {} n; this agent can then message it by its key.", prefix())
-            }
-            Cli::Codex => format!("Add one with {} n.", prefix()),
+        let hint = if sel_cli.messages_agents() {
+            format!("Add one with {} n; this agent can then message it by its key.", prefix())
+        } else {
+            format!("Add one with {} n.", prefix())
         };
         lines.push(Line::from(Span::styled(hint, dim())));
     }
@@ -315,7 +313,7 @@ pub(super) fn draw_board(f: &mut Frame, app: &mut App, area: Rect) {
             Span::raw("  "),
             state_badge(tv),
         ];
-        if sel_cli == Cli::Claude && tv.t.cli != Cli::Claude {
+        if sel_cli.messages_agents() && !tv.t.cli.messages_agents() {
             head.push(Span::styled(
                 format!("  {} · can't message", tv.t.cli.label().to_lowercase()),
                 dim(),
@@ -429,13 +427,13 @@ pub(super) fn draw_board(f: &mut Frame, app: &mut App, area: Rect) {
         }
         lines.push(Line::from(""));
     }
-    let reach = match sel_cli {
-        Cli::Claude => {
-            "This agent reaches Claude ticket sessions by key with ListAgents and SendMessage."
-        }
-        Cli::Codex => {
-            "This Codex agent can't message ticket sessions; it can read their worktrees and PRs."
-        }
+    let reach = if sel_cli.messages_agents() {
+        "This agent reaches Claude ticket sessions by key with ListAgents and SendMessage.".into()
+    } else {
+        format!(
+            "This {} agent can't message ticket sessions; it can read their worktrees and PRs.",
+            sel_cli.label()
+        )
     };
     lines.push(Line::from(Span::styled(reach, dim())));
     let tv = &mut app.tickets[app.sel];

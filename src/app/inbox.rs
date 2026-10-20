@@ -8,7 +8,7 @@ use super::ticket::{Added, merged_head, own_worktree};
 use super::tickets::Closed;
 use super::{AgentAsk, App, FormKind, Mode};
 use crate::session::Reaper;
-use crate::store::{self, Base, Cli, Ticket};
+use crate::store::{self, Base, Ticket};
 use crate::ticket_key;
 use crate::{add, close, github, resume, untrusted, util, worktree};
 use std::path::PathBuf;
@@ -31,11 +31,11 @@ fn heartbeat_due(last: Option<Instant>, now: Instant) -> bool {
 /// named `session`.
 fn added_agent_line(t: &Ticket, project: &str, session: &str) -> String {
     let start = format!("Added agent ✦ {} to {project}. Its session is starting", t.display());
-    match t.cli {
-        Cli::Claude => format!("{start}: message it as {session} once ListAgents lists it"),
-        Cli::Codex => {
-            format!("{start} in Codex, which can't be messaged; the user talks to it in taskman")
-        }
+    if t.cli.messages_agents() {
+        format!("{start}: message it as {session} once ListAgents lists it")
+    } else {
+        let cli = t.cli.label();
+        format!("{start} in {cli}, which can't be messaged; the user talks to it in taskman")
     }
 }
 
@@ -435,11 +435,11 @@ impl App {
         // Its session starts now, so the project's agents can reach it.
         let agent_runs = self.tickets.iter().any(|a| {
             a.t.agent.is_some()
-                && a.t.cli == Cli::Claude
+                && a.t.cli.messages_agents()
                 && a.t.repo == proj.repo
                 && a.session.as_ref().is_some_and(|s| !s.exited())
         });
-        if agent_runs && tv.t.cli == Cli::Claude {
+        if agent_runs && tv.t.cli.messages_agents() {
             line += &format!(
                 ". Its session is starting: message it as {} once ListAgents lists it",
                 self.session_name(i)
@@ -453,6 +453,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::app::test_support::agent;
+    use crate::store::Cli;
 
     #[test]
     fn the_heartbeat_is_written_at_most_once_a_second() {

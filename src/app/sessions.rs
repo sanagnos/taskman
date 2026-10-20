@@ -1,14 +1,13 @@
 //! The sessions in the pane: starting them (one copy each, under the owner lock), their names,
 //! and handing them to another terminal (`ctrl+a t`, `taskman resume`) and back.
 
-use super::launch::session_exists;
 use super::poll::remove_status_at;
 use super::sync::Msg;
 use super::{AgentState, App, Away, Id, Level, Mode};
 use crate::background;
 use crate::resume;
 use crate::session::{self, End, Session};
-use crate::store::{self, Cli, Ticket};
+use crate::store::{self, Ticket};
 use std::ffi::OsString;
 use std::time::{Duration, Instant};
 
@@ -35,8 +34,8 @@ impl App {
         if tv.dormant() && !tv.waiting() && area.width > 0 {
             self.start_session(self.sel);
         }
-        // An agent can only message sessions that are running: once a project's Claude agent runs,
-        // start its Claude ticket sessions too, one per tick. Codex sessions can't be messaged. A
+        // An agent can only message sessions that are running: once a project's agent that
+        // messages runs, start its ticket sessions that can be messaged too, one per tick. A
         // ticket that's away won't start, and finding it every tick would hold up the rest. One
         // asleep stays asleep: waking it would undo the memory it was put to sleep to save, and
         // the agent is told it can't be messaged (`taskman status` says "asleep").
@@ -44,7 +43,7 @@ impl App {
             && let Some(i) = (0..self.tickets.len()).find(|&i| {
                 let tv = &self.tickets[i];
                 tv.t.agent.is_none()
-                    && tv.t.cli == Cli::Claude
+                    && tv.t.cli.messages_agents()
                     && tv.session.is_none()
                     && tv.status.state == AgentState::NotStarted
                     && !tv.asleep
@@ -52,7 +51,7 @@ impl App {
                     && tv.away.is_none()
                     && self.tickets.iter().any(|a| {
                         a.t.agent.is_some()
-                            && a.t.cli == Cli::Claude
+                            && a.t.cli.messages_agents()
                             && a.t.repo == tv.t.repo
                             && a.session.as_ref().is_some_and(|s| !s.exited())
                     })
@@ -157,10 +156,7 @@ impl App {
             // The pane says why; the toast only points there from another ticket.
             Err(e) => {
                 let tv = &mut self.tickets[i];
-                let (install, var) = match tv.t.cli {
-                    Cli::Claude => ("Claude Code", "TASKMAN_CLAUDE"),
-                    Cli::Codex => ("Codex", "TASKMAN_CODEX"),
-                };
+                let (install, var) = (tv.t.cli.product(), tv.t.cli.program_var());
                 tv.end = Some(End::StartFailed(session::start_error(&cmd, &e, install, var)));
                 tv.status.state = AgentState::Exited;
                 tv.status.seen = i == self.sel;
@@ -289,7 +285,7 @@ impl App {
                 s.hang_up();
                 tv.away = Some(Away::Leaving(Instant::now()));
             }
-            _ if tv.t.session_id.as_deref().is_some_and(|sid| session_exists(tv.t.cli, sid)) => {
+            _ if tv.t.session_id.as_deref().is_some_and(|sid| tv.t.cli.has_conversation(sid)) => {
                 self.handed_off(self.sel);
             }
             _ => self.warn(unstarted),

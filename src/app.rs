@@ -22,7 +22,7 @@ use crate::selection::{self, Panel, Selection};
 use crate::store::{self, Config, Project, Saved, Ticket, UiPrefs};
 use crate::tracker::{self, Access};
 use crate::ui::{self, Areas};
-use crate::{add, github, hook, links, resume, theme, update, worktree};
+use crate::{add, github, links, resume, theme, update, worktree};
 use launch::link_bin;
 use poll::take_leftover_status;
 use ratatui::layout::{Position, Rect};
@@ -199,9 +199,8 @@ pub struct App {
     pub(crate) last_click: Option<(Position, Instant, u8)>,
     /// The panel holding the selection, rendered whole; set as the panel is drawn.
     pub panel: Option<Panel>,
-    settings_json: String,
-    /// `-c` overrides adding the status hooks to Codex sessions.
-    codex_config: Vec<String>,
+    /// The running binary, which the sessions' hooks run (`Cli::hooks`).
+    exe: PathBuf,
     /// Holds a `taskman` link to the running binary, put first on the sessions' PATH.
     bin_dir: Option<PathBuf>,
     tx: mpsc::Sender<Msg>,
@@ -329,8 +328,7 @@ impl App {
             selection: None,
             last_click: None,
             panel: None,
-            settings_json: hook::settings_json(exe),
-            codex_config: hook::codex_config(exe),
+            exe: exe.to_path_buf(),
             bin_dir: None,
             tx,
             rx,
@@ -700,7 +698,6 @@ fn unsaved(path: &Path, e: &anyhow::Error) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::launch::session_args;
     use super::{quit_waits_for, take_leftover_status};
     use crate::store::{self, Saved, Ticket};
 
@@ -794,10 +791,10 @@ mod tests {
         // Each session resumes its conversation under the name it had: its key, still unique.
         let t = &saved.tickets[0];
         let name = store::session_name(t, &saved.projects, &saved.tickets, &[]);
-        let args = session_args(t.cli, &name, "Brief", t.session_id.as_deref(), &[]);
+        let args = t.cli.args(&name, "Brief", t.session_id.as_deref(), &[]);
         assert_eq!(args[..4], ["--resume", "sid-52-new", "--name", "ENG-52"]);
         let codex = &saved.tickets[1];
-        let args = session_args(codex.cli, &codex.key, "Brief", codex.session_id.as_deref(), &[]);
+        let args = codex.cli.args(&codex.key, "Brief", codex.session_id.as_deref(), &[]);
         assert_eq!(args[args.len() - 2..], ["resume", "sid-53"]);
 
         // Once another project has the key, a file by key alone could be either's: it's cleared

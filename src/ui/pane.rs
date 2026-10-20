@@ -5,7 +5,7 @@ use super::{dim, selection_bg, spinner, yellow};
 use crate::app::{AgentState, App, Away, Level, Mode, TicketView, Toast};
 use crate::keys::prefix;
 use crate::session::{End, Exit};
-use crate::store::{Cli, tilde};
+use crate::store::tilde;
 use crate::untrusted;
 use crate::util::truncate;
 use ratatui::Frame;
@@ -44,7 +44,7 @@ pub(super) fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     if let Some(away) = away_label(tv) {
         spans.push(Span::styled(format!(" {away}"), Style::new().fg(Color::Cyan).bold()));
     }
-    if tv.t.cli != Cli::Claude {
+    if !tv.t.cli.is_default() {
         spans.push(Span::styled(
             format!(" {}", tv.t.cli.label().to_lowercase()),
             Style::new().fg(Color::Magenta),

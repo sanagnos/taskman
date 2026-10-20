@@ -140,7 +140,7 @@ impl App {
                 Field::choice(
                     "CLI",
                     Cli::ALL.iter().map(|c| c.label().to_string()).collect(),
-                    Cli::Claude.label(),
+                    Cli::default().label(),
                     "",
                 ),
                 Field::choice("Worktree", vec![], "", ""),
@@ -526,17 +526,17 @@ impl App {
     }
 
     pub(super) fn update_ticket_hint(&self, form: &mut Form) {
-        let codex = Cli::from_label(&form.value("CLI")) == Cli::Codex;
+        let cli = Cli::from_label(&form.value("CLI"));
         if let Some(f) = form.field_mut("CLI") {
-            f.hint = if codex {
-                "works alone: can't message or be messaged"
-            } else {
+            f.hint = if cli.messages_agents() {
                 "the coding CLI the session runs"
+            } else {
+                "works alone: can't message or be messaged"
             }
             .into();
         }
         // Said once, the first time someone picks Codex.
-        form.note = (codex && !self.prefs.codex_explained).then(|| {
+        form.note = (!cli.is_default() && !self.prefs.codex_explained).then(|| {
             "Keep a project's tickets on one CLI; use the other for one-offs, like a review.".into()
         });
         // Tickets come from a tracker: without one, a project has agents only.

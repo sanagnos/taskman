@@ -215,15 +215,12 @@ fn prompt_key(cli: Cli, key: &KeyEvent, amending: bool) -> PromptKey {
     if amending {
         return PromptKey::Other;
     }
-    match (cli, key.code) {
-        // Claude's options are numbered and a digit picks one at once.
-        (Cli::Claude, KeyCode::Char('1'..='9')) => PromptKey::Answers,
-        (Cli::Claude, KeyCode::Tab) => PromptKey::Amends,
-        // Codex's yes and no. Its other shortcuts (p, a) and digits are on some prompts only, and
-        // one that isn't an option does nothing; Codex redraws its prompt every second, so the
-        // quiet check couldn't undo the switch. Those answers show when the next hook fires.
-        (Cli::Codex, KeyCode::Char('y' | 'n')) => PromptKey::Answers,
-        _ => PromptKey::Other,
+    if cli.answers_prompt(key.code) {
+        PromptKey::Answers
+    } else if cli.amends_prompt(key.code) {
+        PromptKey::Amends
+    } else {
+        PromptKey::Other
     }
 }
 
@@ -423,7 +420,7 @@ impl App {
                     tv.background = tv
                         .session
                         .as_ref()
-                        .filter(|_| tv.t.cli == Cli::Claude)
+                        .filter(|_| tv.t.cli.runs_in_background())
                         .map(|s| s.screen_text())
                         .and_then(|screen| {
                             Some(Blocked {

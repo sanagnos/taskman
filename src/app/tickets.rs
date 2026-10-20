@@ -2,7 +2,6 @@
 //! `taskman close` all end here. Also stacking (the bases a ticket can start from, where a stacked
 //! ticket stands) and renaming an agent.
 
-use super::launch::session_exists;
 use super::poll::{remove_status_at, remove_status_files};
 use super::sync::Msg;
 use super::ticket::{Added, merged_head, own_worktree};
@@ -199,7 +198,7 @@ impl App {
         if create {
             self.create_worktree(p, self.tickets.len() - 1);
         }
-        self.prefs.codex_explained |= cli == Cli::Codex;
+        self.prefs.codex_explained |= !cli.is_default();
         Ok(Added::New(self.show_added(p, focus)))
     }
 
@@ -282,7 +281,7 @@ impl App {
         let session_id = resumed
             .filter(|c| c.cli == cli)
             .map(|c| c.session_id)
-            .filter(|sid| !sid.is_empty() && session_exists(cli, sid));
+            .filter(|sid| !sid.is_empty() && cli.has_conversation(sid));
         if session_id.is_some() {
             self.toast(format!("Resuming ✦ {name}'s earlier conversation"));
         }
@@ -305,7 +304,7 @@ impl App {
             pending_worktree: None,
             extra: Default::default(),
         };
-        self.prefs.codex_explained |= cli == Cli::Codex;
+        self.prefs.codex_explained |= !cli.is_default();
         let mut tv = TicketView::new(t);
         // Closed a moment ago, its CLI may still be stopping, on the conversation this one
         // resumes: the new session waits for it.

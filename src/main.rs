@@ -7,6 +7,7 @@ mod backend;
 mod background;
 mod cli;
 mod close;
+mod coding_cli;
 mod git;
 mod github;
 mod github_issues;

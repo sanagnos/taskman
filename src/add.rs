@@ -74,7 +74,7 @@ pub struct Request {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
     pub items: Vec<Item>,
-    #[serde(default, skip_serializing_if = "Cli::is_claude")]
+    #[serde(default, skip_serializing_if = "Cli::is_default")]
     pub cli: Cli,
     /// Create the tickets' worktrees; None is the project's setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
