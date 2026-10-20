@@ -7,6 +7,14 @@ use crate::store::{self, Cli};
 use crossterm::event::KeyCode;
 use std::path::{Path, PathBuf};
 
+/// Who the screen shows answering an approval request (`Cli::approver`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Approver {
+    /// Codex's automatic reviewer.
+    Reviewer,
+    User,
+}
+
 impl Cli {
     pub const ALL: [Cli; 2] = [Cli::Claude, Cli::Codex];
 
@@ -108,6 +116,44 @@ impl Cli {
         match self {
             Cli::Claude => code == KeyCode::Tab,
             Cli::Codex => false,
+        }
+    }
+
+    /// Whether something other than the user may answer the approval request a PermissionRequest
+    /// hook reports: Codex's automatic reviewer (`approvals_reviewer = "auto_review"`, or
+    /// "Approve for me" in `/permissions`) gets each request after the hook has run. Claude has
+    /// no reviewer.
+    pub fn reviews_approvals(self) -> bool {
+        match self {
+            Cli::Claude => false,
+            Cli::Codex => true,
+        }
+    }
+
+    /// Who answers the approval request on `screen` (`Status::review`): Codex's reviewer while
+    /// its status line reads "Reviewing approval request" (or "Reviewing 2 approval requests"),
+    /// the user while Codex's prompt shows, which goes first, as it waits on the user whatever
+    /// else is under review. None while neither shows.
+    pub fn approver(self, screen: &str) -> Option<Approver> {
+        match self {
+            Cli::Claude => None,
+            Cli::Codex => {
+                // The prompt's footer; Codex's other lists say "to go back".
+                let prompt = |l: &str| l.contains(" to confirm or ") && l.contains(" to cancel");
+                let reviewing = |l: &str| {
+                    l.split_once("Reviewing ").is_some_and(|(_, rest)| {
+                        let rest = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+                        rest.trim_start().starts_with("approval request")
+                    })
+                };
+                if screen.lines().any(prompt) {
+                    Some(Approver::User)
+                } else if screen.lines().any(reviewing) {
+                    Some(Approver::Reviewer)
+                } else {
+                    None
+                }
+            }
         }
     }
 
@@ -289,6 +335,43 @@ mod tests {
         assert!(Cli::Claude.amends_prompt(KeyCode::Tab));
         assert!(!Cli::Claude.amends_prompt(KeyCode::Char('1')));
         assert!(!Cli::Codex.amends_prompt(KeyCode::Tab));
+    }
+
+    #[test]
+    fn codex_shows_who_answers_an_approval() {
+        let codex = |screen: &str| Cli::Codex.approver(screen);
+        // The status line as Codex draws it while its reviewer decides (the timer and hint
+        // after the header), for one request and for several.
+        assert_eq!(
+            codex(
+                "› Run the tests\n\n• Reviewing approval request (4s • esc to interrupt)\n  └ cargo test\n"
+            ),
+            Some(Approver::Reviewer)
+        );
+        assert_eq!(
+            codex("• Reviewing 2 approval requests (1s • esc to interrupt)\n  • cargo test\n"),
+            Some(Approver::Reviewer)
+        );
+        // Codex's prompt, which also goes first while another request is under review.
+        let prompt = "  Would you like to run the following command?\n\n  $ cargo test\n\n› 1. Yes, proceed (y)\n  2. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel\n";
+        assert_eq!(codex(prompt), Some(Approver::User));
+        assert_eq!(
+            codex(&format!("• Reviewing 2 approval requests (3s)\n{prompt}")),
+            Some(Approver::User)
+        );
+        // Neither: working, Codex's other lists, a review's outcome in the history.
+        for screen in [
+            "• Working (3s • esc to interrupt)\n",
+            "  Select Model\n  Press enter to confirm or esc to go back\n",
+            "✗ Request denied for codex to run cargo test\n",
+            "• Reviewing the diff (2s • esc to interrupt)\n",
+            "",
+        ] {
+            assert_eq!(codex(screen), None, "{screen}");
+        }
+        // Claude has no reviewer, and its prompts are told by its hooks.
+        assert!(Cli::Codex.reviews_approvals() && !Cli::Claude.reviews_approvals());
+        assert_eq!(Cli::Claude.approver(prompt), None);
     }
 
     #[test]

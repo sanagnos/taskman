@@ -6,6 +6,7 @@ use super::sessions::HAND_OFF_WAIT;
 use super::sync::Msg;
 use super::{App, Away, Blocked};
 use crate::background;
+use crate::coding_cli::Approver;
 use crate::session::Session;
 use crate::session_ids::{self, Claim};
 use crate::status_file::{self, HookState};
@@ -27,6 +28,11 @@ const ESC_WINDOW: Duration = Duration::from_secs(5);
 /// A working Claude or Codex never went this long without drawing (the longest seen was 1.65 s),
 /// so after a key that interrupts or answers a prompt, this much quiet means it isn't working.
 const QUIET_AFTER_KEY: Duration = Duration::from_secs(2);
+
+/// How long a Codex approval request is held from "needs you" for its reviewer's status line to
+/// show, and how long after that line goes the screen is still watched for Codex's prompt (see
+/// "Inferred states" in docs/design.md).
+const REVIEW_WAIT: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AgentState {
@@ -92,6 +98,17 @@ pub struct Status {
     /// How many "Interrupted" lines the screen showed at that key or at Esc, so an old one
     /// doesn't count.
     interrupted_lines: usize,
+    /// A Codex approval request its hook reported, shown as working until the screen says
+    /// whether its reviewer or the user answers it (`hold`).
+    review: Option<Review>,
+}
+
+#[derive(Debug)]
+struct Review {
+    /// When the hook was read, then when the reviewer's status line last showed.
+    since: Instant,
+    /// Whether the reviewer's status line has shown.
+    by_reviewer: bool,
 }
 
 impl Status {
@@ -110,6 +127,7 @@ impl Status {
             amending: false,
             answered_at: None,
             interrupted_lines: 0,
+            review: None,
         }
     }
 
@@ -152,6 +170,7 @@ impl Status {
         self.permission = false;
         self.amending = false;
         self.answered_at = None;
+        self.review = None;
     }
 
     /// A hook wrote the status file: whatever a key or the screen suggested is settled by it.
@@ -160,6 +179,42 @@ impl Status {
         self.esc_at = None;
         self.answered_at = None;
         self.amending = false;
+        self.review = None;
+    }
+
+    /// A CLI whose reviewer may answer approvals (`Cli::reviews_approvals`) reported one: the
+    /// session stays working, with no bell or notification, until `review` finds it's the
+    /// user's.
+    pub(super) fn hold(&mut self) {
+        self.review = Some(Review { since: Instant::now(), by_reviewer: false });
+    }
+
+    /// For a held approval request (`hold`) in a working session: who the screen shows answering
+    /// it, read by `approver`, applied. Returns whether it's the user's, the session now waiting
+    /// on them; `selected` says whether the user is looking at it.
+    fn review(&mut self, approver: impl FnOnce() -> Option<Approver>, selected: bool) -> bool {
+        if self.state != AgentState::Working {
+            self.review = None;
+        }
+        let Some(r) = self.review.as_mut() else { return false };
+        match review_step(r.by_reviewer, r.since.elapsed(), approver()) {
+            Step::Hold => false,
+            Step::Reviewer => {
+                (r.since, r.by_reviewer) = (Instant::now(), true);
+                false
+            }
+            Step::Decided => {
+                self.review = None;
+                false
+            }
+            Step::User => {
+                self.review = None;
+                self.state = AgentState::Needs;
+                self.waiting_since = Some(crate::util::now());
+                self.seen &= selected;
+                true
+            }
+        }
     }
 
     /// For a working session no hook has stopped: the state the screen shows instead
@@ -187,6 +242,32 @@ impl Status {
         self.answered_at = None;
         self.seen = selected || seen.interrupted;
         Some(state)
+    }
+}
+
+/// Where a held approval request stands (`Status::review`).
+#[derive(Debug, PartialEq)]
+enum Step {
+    /// Too soon to tell.
+    Hold,
+    /// The reviewer's status line shows: working.
+    Reviewer,
+    /// The reviewer's line went without Codex's prompt showing: the reviewer approved it, and
+    /// the command runs, or declined it, and Codex goes on. Working, and no longer watched.
+    Decided,
+    /// Codex's prompt shows, or no reviewer took the request: it needs the user.
+    User,
+}
+
+/// The step for a held approval request whose reviewer's line has shown or not (`by_reviewer`),
+/// `since` the hook was read or that line last showed, given who the screen shows answering it.
+fn review_step(by_reviewer: bool, since: Duration, approver: Option<Approver>) -> Step {
+    match approver {
+        Some(Approver::User) => Step::User,
+        Some(Approver::Reviewer) => Step::Reviewer,
+        None if since < REVIEW_WAIT => Step::Hold,
+        None if by_reviewer => Step::Decided,
+        None => Step::User,
     }
 }
 
@@ -386,6 +467,16 @@ impl App {
             if gh_sig.is_some() && gh_sig != tv.gh_signal {
                 tv.gh_signal = gh_sig;
                 tv.pr.request(true);
+            }
+            // Whether Codex's reviewer or the user answers an approval request, from the screen.
+            // Read only while one is held.
+            let cli = tv.t.cli;
+            if tv.status.review.is_some()
+                && let Some(s) = &tv.session
+                && tv.status.review(|| cli.approver(&s.screen_text()), i == self.sel)
+            {
+                waiting.push(i);
+                self.dirty.store(true, Ordering::Relaxed);
             }
             // Interrupts and answered prompts fire no hook: infer them from the screen.
             if tv.status.state == AgentState::Working
@@ -776,5 +867,73 @@ mod tests {
         assert!(!s.seen);
         let mut s = Status { last_event: ago(1.0), ..working() };
         assert_eq!(s.infer(ms(9000), || 0, false), None);
+    }
+
+    #[test]
+    fn an_approval_needs_you_only_once_it_is_the_users() {
+        let (user, reviewer) = (Some(Approver::User), Some(Approver::Reviewer));
+        for by_reviewer in [false, true] {
+            // Codex's prompt is the user's at once, and the reviewer's line keeps it working.
+            for since in [0.1, 5.0] {
+                assert_eq!(review_step(by_reviewer, secs(since).unwrap(), user), Step::User);
+                assert_eq!(
+                    review_step(by_reviewer, secs(since).unwrap(), reviewer),
+                    Step::Reviewer
+                );
+            }
+            // Neither shows yet: Codex draws the reviewer's line once the hook has run.
+            assert_eq!(review_step(by_reviewer, secs(0.3).unwrap(), None), Step::Hold);
+        }
+        // No reviewer took it: the prompt is the user's, though not read off the screen.
+        assert_eq!(review_step(false, REVIEW_WAIT, None), Step::User);
+        // The reviewer's line went with no prompt after it: approved or declined, working.
+        assert_eq!(review_step(true, REVIEW_WAIT, None), Step::Decided);
+    }
+
+    #[test]
+    fn a_held_approval_rings_only_when_it_needs_you() {
+        let held = |since: f32, by_reviewer: bool| Status {
+            state: AgentState::Working,
+            permission: true,
+            review: Some(Review { since: ago(since).unwrap(), by_reviewer }),
+            ..Status::new()
+        };
+        // Under review: working, watched until the reviewer's line goes.
+        let mut s = held(0.2, false);
+        assert!(!s.review(|| Some(Approver::Reviewer), false));
+        assert_eq!(s.state, AgentState::Working);
+        assert!(
+            s.review.as_ref().is_some_and(|r| r.by_reviewer && r.since.elapsed() < REVIEW_WAIT)
+        );
+        assert!(!s.review(|| None, false));
+        let mut s = held(1.5, true);
+        assert!(!s.review(|| None, false));
+        assert_eq!((s.state, s.review.is_none()), (AgentState::Working, true));
+        // Not watched any more, the screen isn't read.
+        assert!(!s.review(|| unreachable!("no review"), false));
+        // The user's: needs you, unseen while out of sight.
+        for (since, by_reviewer, approver) in [
+            (1.5, false, None),
+            (0.2, false, Some(Approver::User)),
+            (0.2, true, Some(Approver::User)),
+        ] {
+            for selected in [false, true] {
+                let mut s = held(since, by_reviewer);
+                assert!(s.review(|| approver, selected));
+                assert_eq!(
+                    (s.state, s.seen, s.review.is_none()),
+                    (AgentState::Needs, selected, true)
+                );
+                assert!(s.waiting_since.is_some());
+            }
+        }
+        // Stopped meanwhile (the session ended, say): no longer held.
+        let mut s = Status { state: AgentState::Exited, ..held(1.5, false) };
+        assert!(!s.review(|| unreachable!("not working"), false));
+        assert!(s.review.is_none());
+        // A hook settles it, whatever it says.
+        let mut s = held(0.2, false);
+        s.hook_fired();
+        assert!(s.review.is_none());
     }
 }

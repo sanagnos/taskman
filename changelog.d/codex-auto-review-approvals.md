@@ -1,0 +1,1 @@
+- A Codex session whose automatic reviewer ("Approve for me" in `/permissions`) is deciding an approval now shows as working, with no bell or notification; only a prompt Codex puts to you shows "needs you", up to a second after Codex reports it.

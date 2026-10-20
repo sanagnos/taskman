@@ -328,7 +328,13 @@ impl TicketView {
     /// What the session's hook reported, `selected` saying whether the user is looking at it.
     /// Returns whether it started waiting on the user (`App::started_waiting`).
     pub(super) fn hook_reported(&mut self, rec: Record, selected: bool) -> bool {
-        let state = AgentState::from(rec.state);
+        let mut state = AgentState::from(rec.state);
+        // Codex runs the hook before its reviewer, which may answer the request instead of the
+        // user: working until the screen shows whose it is (`Status::review`).
+        if state == AgentState::Needs && rec.permission() && self.t.cli.reviews_approvals() {
+            state = AgentState::Working;
+            self.status.hold();
+        }
         let mut waits = false;
         if state != self.status.state {
             // Claude finished a turn: whatever it did may have changed the ticket or PR.
