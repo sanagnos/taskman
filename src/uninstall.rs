@@ -497,17 +497,26 @@ mod tests {
             kept(vec![p("/x/taskman"), p("/x/taskman"), p("/x/taskman-old")]),
             paths(&["/x/taskman", "/x/taskman-old"])
         );
-        // Spelled through a link above it, as macOS's /var is /private/var.
+        // Spelled through a link above it, as macOS's /var is /private/var. Its scratch folder is
+        // there already; elsewhere, `top` stands behind a link too.
         let dir = store::scratch::dir();
-        let (real, link) = (dir.join("real"), dir.join("link"));
+        let top = dir.join("top");
+        std::fs::create_dir_all(dir.join("top-real")).unwrap();
+        std::os::unix::fs::symlink(dir.join("top-real"), &top).unwrap();
+        let (real, link) = (top.join("real"), top.join("link"));
         std::fs::create_dir_all(real.join("taskman")).unwrap();
         std::os::unix::fs::symlink(&real, &link).unwrap();
         let (state, config) = (real.join("taskman"), link.join("taskman/config.json"));
         let (state_p, config_p) = ((state.clone(), ()), (config.clone(), ()));
+        // What's kept is each path as it was given, never a resolved spelling.
         assert_eq!(kept(vec![config_p, state_p]), vec![state.clone()]);
         assert_eq!(kept(vec![(link.join("taskman"), ()), (state, ())]), vec![link.join("taskman")]);
-        // A link itself is never resolved: it isn't the folder it leads to.
-        assert_eq!(resolved(&link), link);
+        // The links above a path are resolved, the path itself never is: a link isn't the folder
+        // it leads to.
+        let above = top.canonicalize().unwrap();
+        assert_ne!(above, top);
+        assert_eq!(resolved(&link), above.join("link"));
+        assert_eq!(resolved(&real.join("taskman")), above.join("real/taskman"));
     }
 
     #[test]
