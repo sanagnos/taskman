@@ -1,0 +1,1 @@
+- Every dialog, form and settings page shows its keys the same way, each key in bold, and a row of keys too long for the screen breaks between keys instead of in the middle of one. The notices list on a small screen no longer cuts its keys off.

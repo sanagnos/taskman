@@ -1,0 +1,20 @@
+---
+source: src/ui/screens.rs
+expression: screen
+---
+" taskman    │  ENG-52  /src/acme-ENG-…  "
+" ╭ Notices ───────────────────────────╮ "
+"▾│                                    │ "
+" │  What the footer showed, newest f  │ "
+" │                                    │ "
+"┃│  now  Refreshed ENG-12             │,"
+" │  now  Refreshed ENG-11             │ "
+" │  now  Refreshed ENG-10             │ "
+" │  now  Refreshed ENG-9              │ "
+" │  now  Refreshed ENG-8              │ "
+"▸│                                    │ "
+" │  ↑/↓ PgUp/PgDn scroll   1-5 of 12  │ "
+" │  other keys close                  │ "
+" │                                    │ "
+" ╰────────────────────────────────────╯ "
+" Refreshed ENG-12    ▲ 4 waiting on you "

@@ -58,7 +58,7 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 | `src/term.rs` | a vt100 screen as tui-term's `PseudoTerminal` draws it: tui-term's `Screen` and `Cell` traits implemented over vt100's types (`Screen`, `Cell`), with tui-term's `vt100` feature off, so vt100's version isn't tied to the one tui-term asks for; a character vt100 draws in two columns that unicode-width counts as three is drawn as `�`, or ratatui would skip the cell after it; `dim` and `size` turn plain numbers into vt100's non-zero sizes and back |
 | `src/backend.rs` | the terminal taskman draws to: crossterm's backend, writing a blank into the column an emoji with a selector (⚠️) covers before the emoji, so nothing stale is left beside it whether the terminal draws it one column wide or two (see "Emoji that terminals measure differently" in design.md) |
 | `src/ui/panels.rs` | the right column: the tracker and GitHub panels, the agents' project board, and how a panel draws with its links (`render_panel`) |
-| `src/ui/dialogs.rs` | what draws over the screen: confirm dialogs, the links list, the notices list, forms, settings and help |
+| `src/ui/dialogs.rs` | what draws over the screen: confirm dialogs, the links list, the waiting queue, the notices list, forms, settings and help; every one's key hints are drawn by `key_rows`, from a list of keys and what each does |
 
 ### Sessions
 

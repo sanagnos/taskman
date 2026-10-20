@@ -240,14 +240,8 @@ fn draw_links(f: &mut Frame, app: &mut App) {
         text.push(more_line("↓", below, false, room));
     }
     text.push(Line::from(""));
-    let mut keys = Vec::new();
-    for (i, (key, what)) in
-        [("↑/↓", "choose"), ("Enter", "open"), ("c", "copy"), ("Esc", "close")].iter().enumerate()
-    {
-        let gap = if i < 3 { "   " } else { "" };
-        keys.extend([key.to_string().bold(), format!(" {what}{gap}").into()]);
-    }
-    text.push(Line::from(keys));
+    let keys = [("↑/↓", "choose"), ("Enter", "open"), ("c", "copy"), ("Esc", "close")];
+    text.extend(key_rows(&keys, usize::from(w.saturating_sub(2 + DIALOG_PAD_W))));
     let h = u16::try_from(text.len()).unwrap_or(u16::MAX) + 2 + DIALOG_PAD_H;
     let r = centered(f, w, h);
     f.render_widget(Clear, r);
@@ -319,14 +313,8 @@ fn draw_queue(f: &mut Frame, app: &mut App) {
         )));
     }
     text.push(Line::from(""));
-    let mut keys = Vec::new();
-    for (i, (key, what)) in
-        [("↑/↓", "choose"), ("Enter", "go to it"), ("Esc", "close")].iter().enumerate()
-    {
-        let gap = if i < 2 { "   " } else { "" };
-        keys.extend([key.to_string().bold(), format!(" {what}{gap}").into()]);
-    }
-    text.push(Line::from(keys));
+    let keys = [("↑/↓", "choose"), ("Enter", "go to it"), ("Esc", "close")];
+    text.extend(key_rows(&keys, usize::from(w.saturating_sub(2 + DIALOG_PAD_W))));
     let h = u16::try_from(text.len()).unwrap_or(u16::MAX) + 2 + DIALOG_PAD_H;
     let r = centered(f, w, h);
     f.render_widget(Clear, r);
@@ -362,29 +350,31 @@ fn draw_log(f: &mut Frame, app: &mut App) {
     }
     let n = text.len();
     // Rows for the entries: what the screen leaves, less the border, padding, the line saying what
-    // this is with a blank row under it, and a blank row and the note.
-    let room = usize::from(f.area().height.saturating_sub(2 + 2 + DIALOG_PAD_H + 4)).max(1);
+    // this is with a blank row under it, and a blank row and the keys. Those take a row, or when
+    // the entries scroll as many as their longest form wraps to, so the entries' rows stay put.
+    let left = usize::from(f.area().height.saturating_sub(2 + 2 + DIALOG_PAD_H + 3));
+    let longest = format!("{n}-{n} of {n}");
+    let keys_h = if n < left {
+        1
+    } else {
+        key_rows(&scroll_hints(SCROLL_KEYS, Some(&longest)), inner).len()
+    };
+    let room = left.saturating_sub(keys_h).max(1);
     let rows = n.min(room);
-    let rect = centered(f, w, u16::try_from(rows).unwrap_or(u16::MAX) + 2 + DIALOG_PAD_H + 4);
+    let rect =
+        centered(f, w, u16::try_from(rows + keys_h).unwrap_or(u16::MAX) + 2 + DIALOG_PAD_H + 3);
     view.max = n.saturating_sub(rows);
     view.page = rows.saturating_sub(1).max(1);
     view.top = view.top.min(view.max);
-    let note = if view.max == 0 {
-        "Press any key to close.".to_string()
-    } else {
-        format!(
-            "↑/↓ PgUp/PgDn scroll · {}-{} of {n} · other keys close",
-            view.top + 1,
-            (view.top + rows).min(n)
-        )
-    };
+    let at = format!("{}-{} of {n}", view.top + 1, (view.top + rows).min(n));
+    let keys = scroll_hints(SCROLL_KEYS, (view.max > 0).then_some(at.as_str()));
     let mut shown = vec![
         Line::from(Span::styled("What the footer showed, newest first.", dim())),
         Line::from(""),
     ];
     shown.extend(text.into_iter().skip(view.top).take(rows));
     shown.push(Line::from(""));
-    shown.push(Line::from(Span::styled(note, dim())));
+    shown.extend(key_rows(&keys, inner));
     f.render_widget(Clear, rect);
     f.render_widget(Paragraph::new(shown).block(dialog("Notices").padding(DIALOG_PAD)), rect);
 }
@@ -449,23 +439,77 @@ const DIALOG_PAD_H: u16 = 2;
 
 const YES_NO: &[(&str, &str)] = &[("Enter", "yes"), ("Esc", "cancel")];
 
-/// The question, a blank line, the body, a blank line and the keys. No trimming when wrapping,
-/// so indented body lines keep their indent.
-fn confirm_text<'a>(question: &str, body: Vec<Line<'a>>, keys: &[(&str, &str)]) -> Paragraph<'a> {
+/// The question, a blank line, the body, a blank line and the keys, for a dialog `width` columns
+/// wide inside. No trimming when wrapping, so indented body lines keep their indent.
+fn confirm_text<'a>(
+    question: &str,
+    body: Vec<Line<'a>>,
+    keys: &[(&str, &str)],
+    width: u16,
+) -> Paragraph<'a> {
     let mut text = vec![Line::from(question.to_string().bold()), Line::from("")];
     text.extend(body);
-    text.extend([Line::from(""), key_row(keys)]);
+    text.push(Line::from(""));
+    text.extend(key_rows(keys, usize::from(width)));
     Paragraph::new(text).wrap(Wrap { trim: false })
 }
 
-/// A dialog's last line: its keys and what each does.
-fn key_row(keys: &[(&str, &str)]) -> Line<'static> {
-    let mut row = Vec::new();
-    for (i, (key, what)) in keys.iter().enumerate() {
-        let gap = if i + 1 < keys.len() { "   " } else { "" };
-        row.extend([key.to_string().bold(), format!(" {what}{gap}").into()]);
+/// Columns between one key's hint and the next.
+const KEY_GAP: &str = "   ";
+
+/// Every dialog's and form's key hints: each key in bold and what it does, `KEY_GAP` apart, in
+/// as many rows of `width` columns as they take. A row breaks between hints, never inside one,
+/// and a hint wider than a row is cut. A hint with no key is a note, such as how far a list is
+/// scrolled.
+fn key_rows(keys: &[(&str, &str)], width: usize) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let mut rows = Vec::new();
+    let mut row: Vec<Span> = Vec::new();
+    let mut used = 0;
+    for &(key, what) in keys {
+        let mut hint = Vec::new();
+        if key.is_empty() {
+            hint.push(Span::raw(truncate(what, width)));
+        } else {
+            hint.push(truncate(key, width).bold());
+            let room = width.saturating_sub(key.width() + 1);
+            if room > 0 {
+                hint.push(Span::raw(format!(" {}", truncate(what, room))));
+            }
+        }
+        let w: usize = hint.iter().map(|s| s.content.width()).sum();
+        if used > 0 && used + KEY_GAP.len() + w > width {
+            rows.push(Line::from(std::mem::take(&mut row)));
+            used = 0;
+        }
+        if used > 0 {
+            row.push(Span::raw(KEY_GAP));
+            used += KEY_GAP.len();
+        }
+        row.extend(hint);
+        used += w;
     }
-    Line::from(row)
+    if !row.is_empty() {
+        rows.push(Line::from(row));
+    }
+    rows
+}
+
+/// The key hints on one row, however wide: to measure them.
+fn key_row(keys: &[(&str, &str)]) -> Line<'static> {
+    key_rows(keys, usize::MAX).pop().unwrap_or_default()
+}
+
+/// The keys that scroll help and the notices.
+const SCROLL_KEYS: &str = "↑/↓ PgUp/PgDn";
+
+/// The hints under a list that scrolls: `scroll` names its keys, `at` where it is, such as
+/// `1-20 of 40`, or None when it shows all of it.
+fn scroll_hints<'a>(scroll: &'a str, at: Option<&'a str>) -> Vec<(&'a str, &'a str)> {
+    match at {
+        Some(at) => vec![(scroll, "scroll"), ("", at), ("other keys", "close")],
+        None => vec![("", "Press any key to close.")],
+    }
 }
 
 /// Box height for a confirm dialog `width` columns wide, so the wrapped text and the key row
@@ -473,7 +517,7 @@ fn key_row(keys: &[(&str, &str)]) -> Line<'static> {
 fn confirm_height(question: &str, body: Vec<Line>, keys: &[(&str, &str)], width: u16) -> u16 {
     let inner_w = width.saturating_sub(2 + DIALOG_PAD_W).max(1);
     // line_count counts a block's rows but not its columns, so wrap at the inner width without one.
-    let lines = confirm_text(question, body, keys).line_count(inner_w) as u16;
+    let lines = confirm_text(question, body, keys, inner_w).line_count(inner_w) as u16;
     lines + 2 + DIALOG_PAD_H
 }
 
@@ -497,8 +541,9 @@ fn draw_confirm_lines(f: &mut Frame, question: &str, body: Vec<Line>, keys: &[(&
     let w = confirm_width(f, keys);
     let r = centered(f, w, confirm_height(question, body.clone(), keys, w));
     f.render_widget(Clear, r);
+    let inner_w = r.width.saturating_sub(2 + DIALOG_PAD_W);
     f.render_widget(
-        confirm_text(question, body, keys).block(dialog("Confirm").padding(DIALOG_PAD)),
+        confirm_text(question, body, keys, inner_w).block(dialog("Confirm").padding(DIALOG_PAD)),
         r,
     );
 }
@@ -575,28 +620,37 @@ fn join_and(items: &[String]) -> String {
     }
 }
 
+/// The keys a form takes while one of its fields, `focused`, is being edited: ↑/↓ while it lists
+/// issues to pick from, else ←/→ for a choice.
+fn editing_keys(focused: &crate::app::Field) -> Vec<(&'static str, &'static str)> {
+    let mut keys = vec![("Enter", "save"), ("Tab", "next field")];
+    if focused.list.picks > 0 {
+        keys.insert(0, ("↑/↓", "choose"));
+    } else {
+        keys.push(("←/→", "change choice"));
+    }
+    keys
+}
+
 fn draw_form(f: &mut Frame, app: &App) {
     let Mode::Form(form) = &app.mode else { return };
-    let keys = if form.fields[form.focus].list.picks > 0 {
-        "↑/↓ pick · Enter save · Tab next field · ctrl+u clear · Esc cancel"
-    } else {
-        "Enter save · Tab next field · ←/→ change choice · ctrl+u clear · Esc cancel"
-    };
+    let mut keys = editing_keys(&form.fields[form.focus]);
+    keys.extend([("ctrl+u", "clear"), ("Esc", "cancel")]);
     let w = (78 + DIALOG_PAD_W).min(f.area().width.saturating_sub(2));
     // The note can wrap on a narrow terminal; size to the wrapped text so the key row still shows.
     let inner_w = w.saturating_sub(2 + DIALOG_PAD_W);
-    let rows = form_rows(form_lines(form, true, keys, inner_w).0.lines, inner_w);
+    let rows = form_rows(form_lines(form, true, &keys, inner_w).0.lines, inner_w);
     let r = centered(f, w, rows + 2 + DIALOG_PAD_H);
     f.render_widget(Clear, r);
     let block = dialog(form.title).padding(DIALOG_PAD);
     let inner = block.inner(r);
     f.render_widget(block, r);
-    render_form(f, form, inner, true, keys);
+    render_form(f, form, inner, true, &keys);
 }
 
 /// Draws a form's note, fields with hints, error and key line into `area`. `active` shows the
 /// focused field and the text cursor.
-fn render_form(f: &mut Frame, form: &Form, area: Rect, active: bool, keys: &str) {
+fn render_form(f: &mut Frame, form: &Form, area: Rect, active: bool, keys: &[(&str, &str)]) {
     let (text, cursor) = form_lines(form, active, keys, area.width);
     if let Some((line, col)) = cursor {
         let row = form_rows(text.lines[..line].to_vec(), area.width);
@@ -626,7 +680,7 @@ fn form_rows(lines: Vec<Line>, width: u16) -> u16 {
 fn form_lines(
     form: &Form,
     active: bool,
-    keys: &str,
+    keys: &[(&str, &str)],
     width: u16,
 ) -> (crate::links::Linked, Option<(usize, u16)>) {
     let label_w = form
@@ -777,7 +831,7 @@ fn form_lines(
         Some(e) => text.push(Line::from(Span::styled(e.clone(), Style::new().fg(Color::Red)))),
         None => text.push(Line::from("")),
     }
-    text.push(Line::from(Span::styled(keys.to_string(), dim())));
+    text.extend(key_rows(keys, usize::from(width)));
     let mut out = crate::links::Linked::default();
     for (n, line) in text.into_iter().enumerate() {
         out.push(line);
@@ -838,24 +892,20 @@ fn draw_settings(f: &mut Frame, app: &mut App) {
     let Mode::Settings(s) = &app.mode else { return };
     let deletable =
         matches!(s.items[s.cursor], SettingsItem::Project(_) | SettingsItem::Account(_));
-    let picking = s.form.fields[s.form.focus].list.picks > 0;
-    let keys = match (s.editing, deletable) {
-        (true, true) if picking => {
-            "↑/↓ pick · Enter save · Tab next field · ctrl+d delete · Esc back to list"
-        }
-        (true, false) if picking => "↑/↓ pick · Enter save · Tab next field · Esc back to list",
-        (true, true) => {
-            "Enter save · Tab next field · ←/→ choice · ctrl+d delete · Esc back to list"
-        }
-        (true, false) => "Enter save · Tab next field · ←/→ choice · Esc back to list",
-        (false, true) => "↑/↓ choose · Enter edit · ctrl+d delete · Esc close",
-        (false, false) => "↑/↓ choose · Enter edit · Esc close",
+    let mut keys = if s.editing {
+        editing_keys(&s.form.fields[s.form.focus])
+    } else {
+        vec![("↑/↓", "choose"), ("Enter", "edit")]
     };
+    if deletable {
+        keys.push(("ctrl+d", "delete"));
+    }
+    keys.push(("Esc", if s.editing { "back to list" } else { "close" }));
     // Tall enough for the form, wrapped hints and keys included, so its error and key lines
     // always show; 3 rows for the borders and the pane title. The form is as wide as the dialog
     // `centered` gives, less its borders, the list and the pane's border and gap.
     let form_w = 108u16.min(f.area().width.saturating_sub(2)).saturating_sub(2 + 30 + 2);
-    let rows = form_rows(form_lines(&s.form, s.editing, keys, form_w).0.lines, form_w);
+    let rows = form_rows(form_lines(&s.form, s.editing, &keys, form_w).0.lines, form_w);
     let r = centered(f, 108, (rows + 3).max(28));
     f.render_widget(Clear, r);
     let block = dialog("Settings");
@@ -950,7 +1000,7 @@ fn draw_settings(f: &mut Frame, app: &mut App) {
     f.render_widget(pane, form_area);
     let body =
         Rect { x: pane_inner.x + 1, width: pane_inner.width.saturating_sub(1), ..pane_inner };
-    render_form(f, &s.form, body, s.editing, keys);
+    render_form(f, &s.form, body, s.editing, &keys);
     if let Mode::Settings(s) = &mut app.mode {
         s.top = top;
     }
@@ -1081,28 +1131,26 @@ fn draw_help(f: &mut Frame, app: &mut App) {
     // Sized for its longest form, so the rows left for the text stay put as it scrolls; without
     // PgUp/PgDn where that keeps it to a row.
     let n = text.len() as u16;
-    let close = "Press any key to close.";
-    let full = format!("↑/↓ PgUp/PgDn scroll · {n}-{n} of {n} · other keys close").width() <= inner;
-    let scrolling = |top: u16, last: u16| {
-        let keys = if full { "↑/↓ PgUp/PgDn" } else { "↑/↓" };
-        format!("{keys} scroll · {top}-{last} of {n} · other keys close")
+    let longest = format!("{n}-{n} of {n}");
+    let scroll = if key_row(&scroll_hints(SCROLL_KEYS, Some(&longest))).width() <= inner {
+        SCROLL_KEYS
+    } else {
+        "↑/↓"
     };
     let fits = n + 2 + 2 + DIALOG_PAD_H <= f.area().height.saturating_sub(2);
-    let note_h = if fits { 1 } else { wrap_words(&scrolling(n, n), inner).len() as u16 };
-    let r = centered(f, inner as u16 + 2 + DIALOG_PAD_W, n + 1 + note_h + 2 + DIALOG_PAD_H);
-    let rows = r.height.saturating_sub(2 + DIALOG_PAD_H + 1 + note_h);
+    let keys_h =
+        if fits { 1 } else { key_rows(&scroll_hints(scroll, Some(&longest)), inner).len() as u16 };
+    let r = centered(f, inner as u16 + 2 + DIALOG_PAD_W, n + 1 + keys_h + 2 + DIALOG_PAD_H);
+    let rows = r.height.saturating_sub(2 + DIALOG_PAD_H + 1 + keys_h);
     view.max = n.saturating_sub(rows);
     view.page = rows.saturating_sub(1).max(1);
     view.top = view.top.min(view.max);
-    let note = if view.max == 0 {
-        close.to_string()
-    } else {
-        scrolling(view.top + 1, (view.top + rows).min(n))
-    };
+    let at = format!("{}-{} of {n}", view.top + 1, (view.top + rows).min(n));
+    let keys = scroll_hints(scroll, (view.max > 0).then_some(at.as_str()));
     let mut shown: Vec<Line> =
         text.into_iter().skip(view.top as usize).take(rows as usize).collect();
     shown.push(Line::from(""));
-    shown.extend(wrap_words(&note, inner).into_iter().map(|l| Line::from(Span::styled(l, dim()))));
+    shown.extend(key_rows(&keys, inner));
     f.render_widget(Clear, r);
     f.render_widget(Paragraph::new(shown).block(dialog("Help").padding(DIALOG_PAD)), r);
 }
@@ -1110,6 +1158,86 @@ fn draw_help(f: &mut Frame, app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rows(keys: &[(&str, &str)], width: usize) -> Vec<String> {
+        key_rows(keys, width).iter().map(|l| l.to_string()).collect()
+    }
+
+    #[test]
+    fn key_hints_share_a_row_until_it_is_full() {
+        let keys = [("Enter", "save"), ("Tab", "next field"), ("Esc", "cancel")];
+        assert_eq!(rows(&keys, 80), ["Enter save   Tab next field   Esc cancel"]);
+        // Exactly as wide as the row still fits; a column less breaks before the last hint.
+        assert_eq!(rows(&keys, 40), ["Enter save   Tab next field   Esc cancel"]);
+        assert_eq!(rows(&keys, 39), ["Enter save   Tab next field", "Esc cancel"]);
+        assert_eq!(rows(&keys, 14), ["Enter save", "Tab next field", "Esc cancel"]);
+        // The keys are bold, the gaps and what they do aren't.
+        let row = &key_rows(&keys, 80)[0];
+        let bold: Vec<&str> = row
+            .spans
+            .iter()
+            .filter(|s| s.style.add_modifier.contains(ratatui::style::Modifier::BOLD))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(bold, ["Enter", "Tab", "Esc"]);
+        assert_eq!(key_row(&keys).to_string(), "Enter save   Tab next field   Esc cancel");
+        assert!(key_rows(&[], 80).is_empty());
+    }
+
+    #[test]
+    fn a_key_hint_wider_than_its_row_is_cut() {
+        let keys = [("Esc", "back to list"), ("ctrl+d", "delete")];
+        assert_eq!(rows(&keys, 10), ["Esc back …", "ctrl+d de…"]);
+        // Only room for the key: the words go.
+        assert_eq!(rows(&keys, 6), ["Esc b…", "ctrl+d"]);
+        assert_eq!(rows(&keys, 4), ["Esc", "ctr…"]);
+        for width in 0..30 {
+            for row in rows(&keys, width) {
+                assert!(row.width() <= width.max(1), "{row:?} at {width}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_note_among_the_key_hints_has_no_key() {
+        let keys = scroll_hints(SCROLL_KEYS, Some("1-20 of 40"));
+        assert_eq!(rows(&keys, 80), ["↑/↓ PgUp/PgDn scroll   1-20 of 40   other keys close"]);
+        assert_eq!(rows(&keys, 40), ["↑/↓ PgUp/PgDn scroll   1-20 of 40", "other keys close"]);
+        assert!(!key_rows(&keys, 80)[0].spans.iter().any(|s| {
+            s.content.contains("1-20")
+                && s.style.add_modifier.contains(ratatui::style::Modifier::BOLD)
+        }));
+        assert_eq!(rows(&scroll_hints(SCROLL_KEYS, None), 80), ["Press any key to close."]);
+    }
+
+    #[test]
+    fn a_forms_keys_follow_its_focused_field() {
+        use crate::app::{Field, FormKind};
+        let mut form = Form::new(
+            FormKind::Project,
+            "Project",
+            vec![
+                Field::text("Folder", "", ""),
+                Field::choice("Tracker", vec!["Jira".into()], "Jira", ""),
+            ],
+        );
+        let keys = |form: &Form| editing_keys(&form.fields[form.focus]);
+        assert_eq!(
+            keys(&form),
+            [("Enter", "save"), ("Tab", "next field"), ("←/→", "change choice")]
+        );
+        form.fields[0].list.picks = 3;
+        assert_eq!(keys(&form), [("↑/↓", "choose"), ("Enter", "save"), ("Tab", "next field")]);
+        // At the bottom of the form, broken between hints at its width.
+        let mut all = keys(&form);
+        all.extend([("ctrl+u", "clear"), ("Esc", "cancel")]);
+        let (lines, _) = form_lines(&form, true, &all, 40);
+        let text: Vec<String> = lines.lines.iter().map(|l| l.to_string()).collect();
+        assert_eq!(
+            text[text.len() - 2..],
+            ["↑/↓ choose   Enter save   Tab next field", "ctrl+u clear   Esc cancel"]
+        );
+    }
 
     #[test]
     fn joins_lists_in_prose() {
@@ -1160,7 +1288,7 @@ mod tests {
             Form::new(FormKind::Project, "Project", vec![Field::text("Path", path, ""), account]);
         let width = 50;
         let rows = |form: &Form| {
-            let (lines, cursor) = form_lines(form, true, "", width);
+            let (lines, cursor) = form_lines(form, true, &[], width);
             let lines = lines.lines;
             assert_eq!(form_rows(lines.clone(), width), lines.len() as u16, "a line wrapped");
             (lines.iter().map(|l| l.to_string()).collect::<Vec<_>>(), cursor)
@@ -1182,7 +1310,7 @@ mod tests {
         let hint = "e.g. ~/work/clients/acme/repositories/acme-web-frontend-monorepo-ENG-52 on ENG-52-fix-login";
         let form = Form::new(FormKind::Project, "Project", vec![Field::text("Folder", "", hint)]);
         let width = 40;
-        let (lines, _) = form_lines(&form, false, "", width);
+        let (lines, _) = form_lines(&form, false, &[], width);
         let lines = lines.lines;
         assert_eq!(form_rows(lines.clone(), width), lines.len() as u16, "a line wrapped");
         let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
@@ -1219,7 +1347,7 @@ mod tests {
         let field = Field { list, ..Field::text("Ticket", "", "") };
         let form = Form::new(FormKind::Ticket, "Add", vec![field]);
         let bg = |active: bool| -> Vec<bool> {
-            let (lines, _) = form_lines(&form, active, "", 40);
+            let (lines, _) = form_lines(&form, active, &[], 40);
             let lines = lines.lines;
             let shaded = |l: &Line| l.spans.iter().any(|s| s.style.bg == Some(selection_bg()));
             lines[2..5].iter().map(shaded).collect()
@@ -1239,7 +1367,7 @@ mod tests {
         focus_on(&mut form, "Role");
         let width = 40;
         let lines = |form: &Form| {
-            let (lines, cursor) = form_lines(form, true, "", width);
+            let (lines, cursor) = form_lines(form, true, &[], width);
             let lines = lines.lines;
             assert_eq!(form_rows(lines.clone(), width), lines.len() as u16, "a line wrapped");
             (lines.iter().map(|l| l.to_string()).collect::<Vec<_>>(), cursor)
@@ -1298,6 +1426,7 @@ mod tests {
             "Close ENG-52?",
             removal_lines("~/acme-ENG-52", Some("eng/eng-52"), &[], 62),
             YES_NO,
+            62,
         );
         let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 62, 9));
         ratatui::widgets::Widget::render(p, buf.area, &mut buf);

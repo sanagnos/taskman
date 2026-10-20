@@ -910,3 +910,17 @@ fn notices_list() {
     app.mode = Mode::Log(Default::default());
     assert_snapshot!(draw(&mut app, 80, 24));
 }
+
+/// Too many to show on a narrow screen: the keys wrap between hints, and the list gives up rows
+/// to them rather than run under the border.
+#[test]
+fn notices_scrolling_on_a_narrow_screen() {
+    let mut app = acme_app();
+    for n in 1..=12 {
+        app.toast(format!("Refreshed ENG-{n}"));
+    }
+    app.mode = Mode::Log(Default::default());
+    let screen = draw(&mut app, 40, 16);
+    assert!(screen.contains("other keys close"), "{screen}");
+    assert_snapshot!(screen);
+}
