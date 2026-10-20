@@ -4,6 +4,8 @@ What changed in each release; a release's notes on GitHub are its section here. 
 
 ## Unreleased
 
+- In a session taskman started, `taskman status`, `taskman add` and `taskman move`, which sessions run without asking, now keep to the session's own project: another project's ticket, by its prefix or `--project`, is refused, so text a session read in one project can't have it read another project's tracker, or open sessions there, unasked. The error says how to go ahead: the same command with `env -u TASKMAN_REPO` in front, which Claude asks you about first. From your own shell, any project works as before.
+
 ## 0.1.18 - 2026-10-20
 
 - The list of recent footer messages moved from `ctrl+a L` to `ctrl+a ~` (tmux's key for its messages; `l` and `L` were easy to mix up) and is called notices: it opens with a line saying what it holds, and the ctrl+a menu, Help and the short-window pointer (`ctrl+a ~ lists it`) say so. The menu's `w` reads "waiting on you".

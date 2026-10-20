@@ -594,7 +594,8 @@ committed.
 
   KEY             a ticket number (3) or key (WP-3)
   COLUMN          a column of the board, like doing or review
-  --project NAME  the project, when the folder or session doesn't say which";
+  --project NAME  the project, when the folder or session doesn't say which. In a session
+                  taskman started, only the session's own";
 
 pub fn run(args: &[String]) -> i32 {
     crate::cli::run("move", MOVE_USAGE, args, |args| {
@@ -647,6 +648,8 @@ fn move_command(args: &[String]) -> Result<String, String> {
         &saved,
         here.as_ref(),
     )?;
+    let own = crate::cli::session_project(&saved, session_repo.as_deref())?;
+    crate::cli::confine(p, own, &saved)?;
     let proj = &saved.projects[p];
     let Some(board) = proj.tracker.as_ref().and_then(|t| t.board(&proj.repo)) else {
         let what = proj

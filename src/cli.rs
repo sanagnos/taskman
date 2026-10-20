@@ -186,6 +186,43 @@ pub(crate) fn context(me: Option<&Ticket>, saved: &Saved, here: Option<&Here>) -
     status::project_here(&saved.projects, here?)
 }
 
+/// What lifts `confine`. The CLI asks the user before it runs a command written this way, as it
+/// matches no rule of the allow-list.
+const WIDER: &str =
+    "run the same command with `env -u TASKMAN_REPO` in front, which asks the user first";
+
+/// The project of the session taskman started that the command runs in, by `TASKMAN_REPO`; None
+/// outside one.
+pub(crate) fn session_project(
+    saved: &Saved,
+    session_repo: Option<&Path>,
+) -> Result<Option<usize>, String> {
+    let Some(repo) = session_repo else { return Ok(None) };
+    let repo = real(repo);
+    match saved.projects.iter().position(|p| real(&p.repo) == repo) {
+        Some(p) => Ok(Some(p)),
+        None => {
+            Err(format!("this session's project is no longer in taskman; to go ahead, {WIDER}"))
+        }
+    }
+}
+
+/// Refuses project `p` in a session whose project is another, `own`: sessions run `taskman
+/// status`, `add` and `move` without asking (`hook::settings_json`), so text a session read could
+/// otherwise send them to another project's tracker, account, board or repository. The allow-list
+/// can't tell arguments apart (a quoted `--proj""ect` gets past an ask rule), so the line is drawn
+/// here, and only a command that leaves the session's environment, which the CLI asks the user
+/// about, crosses it.
+pub(crate) fn confine(p: usize, own: Option<usize>, saved: &Saved) -> Result<(), String> {
+    match own {
+        Some(own) if own != p => Err(format!(
+            "that's project {}, and this session works in {}: a session goes beyond its own project only with the user's approval. To go ahead, {WIDER}.",
+            saved.projects[p].name, saved.projects[own].name
+        )),
+        _ => Ok(()),
+    }
+}
+
 fn prefix_of(key: &str) -> &str {
     key.rsplit_once('-').map_or(key, |(p, _)| p)
 }
@@ -439,6 +476,36 @@ pub(crate) mod tests {
                 .unwrap_err()
                 .contains("no projects yet")
         );
+    }
+
+    #[test]
+    fn keeps_a_session_to_its_project() {
+        let s = saved();
+        // Outside a session, any project.
+        assert_eq!(session_project(&s, None), Ok(None));
+        assert_eq!(confine(1, None, &s), Ok(()));
+        // In acme-web's session, acme-web only.
+        let own = session_project(&s, Some(Path::new("/src/acme-web"))).unwrap();
+        assert_eq!(own, Some(0));
+        assert_eq!(confine(0, own, &s), Ok(()));
+        assert_eq!(
+            confine(1, own, &s).unwrap_err(),
+            "that's project acme-api, and this session works in acme-web: a session goes beyond its own project only with the user's approval. To go ahead, run the same command with `env -u TASKMAN_REPO` in front, which asks the user first."
+        );
+        // A session whose project was removed reaches none.
+        assert!(session_project(&s, Some(Path::new("/src/gone"))).unwrap_err().contains(
+            "no longer in taskman; to go ahead, run the same command with `env -u TASKMAN_REPO`"
+        ));
+        // A project agent's session is its project's too, so add and move keep to it as well:
+        // --project names another, or the key's prefix picks one when the session can't.
+        let me =
+            store::session_ticket(&s.tickets, "acme-api-planner", Some(Path::new("/src/acme-api")));
+        let own = session_project(&s, Some(Path::new("/src/acme-api"))).unwrap();
+        let keys = |k: &[&str]| k.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let picked = |named, me| pick_project(named, &keys(&["ENG-60"]), me, &s, None).unwrap();
+        assert_eq!(confine(picked(None, me), own, &s), Ok(()));
+        assert!(confine(picked(Some("acme-web"), me), own, &s).is_err());
+        assert!(confine(picked(None, None), own, &s).is_err());
     }
 
     #[test]

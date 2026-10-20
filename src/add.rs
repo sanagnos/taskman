@@ -40,7 +40,8 @@ that asked can message it.
                   create the ticket's worktree or not (default: the project's setting)
   --on KEY        stack on another open ticket: the worktree starts from its branch, and
                   the session opens its PR against that branch
-  --project NAME  the project, when the folder or session doesn't say which";
+  --project NAME  the project, when the folder or session doesn't say which. In a session
+                  taskman started, only the session's own";
 
 /// How long the command waits for the TUI's reply.
 const WAIT: Duration = Duration::from_secs(5);
@@ -361,6 +362,7 @@ fn add(args: &[String]) -> Result<bool, String> {
         .as_deref()
         .and_then(|s| store::session_ticket(&saved.tickets, s, session_repo.as_deref()));
     let p = pick_project(a.project.as_deref(), &a.inputs, me, &saved, Here::current().as_ref())?;
+    cli::confine(p, cli::session_project(&saved, session_repo.as_deref())?, &saved)?;
     let project = &saved.projects[p];
     let base = a.on.as_deref().map(|on| base_key(on, p, &saved)).transpose()?;
     let codex = std::env::var(status::CODEX_NO_NETWORK).is_ok_and(|v| v == "1");

@@ -30,7 +30,8 @@ pub fn settings_json(exe: &Path) -> String {
     // The briefs point sessions here. status only reads; move moves a Local files ticket between
     // columns; add opens tickets, but an agent or a role, which becomes a system prompt, waits
     // for the user to approve it in taskman (`App::take_inbox`), as text a session read may be
-    // what asked for it. `taskman close` is left out on purpose: it stops sessions and removes
+    // what asked for it. All three keep to the session's own project (`cli::confine`), since the
+    // rules can't tell arguments apart. `taskman close` is left out on purpose: it stops sessions and removes
     // worktrees, so the session asks the user first.
     "permissions": { "allow": ["Bash(taskman status:*)", "Bash(taskman add:*)", "Bash(taskman move:*)"] }})
     .to_string()

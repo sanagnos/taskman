@@ -24,13 +24,15 @@ On a public repository anyone can open an issue or comment on a PR, and on a sha
 
 ### What a session can run without asking
 
-taskman gives Claude sessions permission (through `--settings`, for that session only) to run three of its own commands without a prompt:
+taskman gives Claude sessions permission (through `--settings`, for that session only) to run three of its own commands without a prompt, each kept to the session's own project:
 
-- `taskman status`: reads the ticket and PR.
+- `taskman status`: reads the project's tickets and their PRs, with the project's own tracker account.
 - `taskman add`: adds tickets. Adding an **agent** or changing an agent's **role**, which becomes part of a session's system prompt, waits for you to approve it in taskman, so text a session read can't create one unattended.
 - `taskman move`: moves a Local files ticket between columns.
 
-`taskman close` is deliberately not allowed: a session asks you before closing tickets or removing worktrees. Codex sessions get no allowances; Codex's own sandbox asks.
+Another project's ticket, board or repository is refused in a session, by `--project` or by the key's prefix, so text a session read in a public project can't have it read a private project's tracker with that project's account, or open sessions there, without asking you. Claude's rules match a command's text and can't tell its arguments apart, so taskman checks this itself, by the project in the session's `TASKMAN_REPO`. To go beyond it, the session runs the command with `env -u TASKMAN_REPO` in front, which no rule allows, so Claude asks you first; from your own shell any project works as before.
+
+`taskman close` is deliberately not allowed: a session asks you before closing tickets or removing worktrees. Codex sessions get no allowances; Codex's own sandbox asks. The project check applies in Codex too, in case you let a command through for good.
 
 ### Tokens are never stored
 

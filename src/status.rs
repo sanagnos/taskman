@@ -29,9 +29,11 @@ comment). It says when it left anything out.
            - in a project's repository, every ticket in the project
            - anywhere else, every project, one line per ticket
            With KEY, the ticket of the session's or folder's project, open in taskman or
-           not, unless the key has another project's prefix.
+           not, unless the key has another project's prefix. A session taskman started
+           reads only its own project's tickets.
   --project NAME
-           the project: with KEY, whose ticket it is; without, its tickets
+           the project: with KEY, whose ticket it is; without, its tickets. In a session
+           taskman started, only the session's own
   --json   the same, as JSON, with every PR review and comment, the newest 100 tracker comments
            and review threads, and how many older ones were left out.";
 
@@ -59,10 +61,20 @@ fn status(args: &[String]) -> Result<bool, String> {
     let codex = std::env::var(CODEX_NO_NETWORK).is_ok_and(|v| v == "1");
     let here = Here::current();
     let named = a.project.as_deref().map(|n| cli::project_named(&saved.projects, n)).transpose()?;
-    match target(a.key, session.as_deref(), me, named, &saved, here.as_ref())? {
+    let own = cli::session_project(&saved, session_repo.as_deref())?;
+    if let Some(p) = named {
+        cli::confine(p, own, &saved)?;
+    }
+    match within(own, target(a.key, session.as_deref(), me, named, &saved, here.as_ref())?) {
         Target::Ticket(key, repo) => {
-            let scope = scope(named, repo.as_deref(), me, &saved, here.as_ref());
+            let scope = match own {
+                Some(p) if named.is_none() => Scope::Session(&saved.projects[p].repo),
+                _ => scope(named, repo.as_deref(), me, &saved, here.as_ref()),
+            };
             let (ticket, project) = locate(&key, &saved, scope)?;
+            if let Some(p) = saved.projects.iter().position(|p| p.repo == project.repo) {
+                cli::confine(p, own, &saved)?;
+            }
             let r = report(&key, ticket, project, &saved, &config, codex);
             let own = me.is_some_and(|m| ticket.is_some_and(|t| t.is(&m.repo, &m.key)));
             cli::out!(
@@ -76,6 +88,7 @@ fn status(args: &[String]) -> Result<bool, String> {
             Ok(r.ok())
         }
         Target::Project(p) => {
+            cli::confine(p, own, &saved)?;
             let project = &saved.projects[p];
             let me = me.filter(|t| t.repo == project.repo).map(|t| t.key.as_str());
             let o = overview(project, &saved, &config, codex, me);
@@ -145,6 +158,14 @@ enum Target {
     Project(usize),
     /// Asked from outside any ticket or project: every project's tickets.
     All,
+}
+
+/// In a session (`own`, its project), every project's tickets are its own project's.
+fn within(own: Option<usize>, target: Target) -> Target {
+    match (own, target) {
+        (Some(p), Target::All) => Target::Project(p),
+        (_, t) => t,
+    }
 }
 
 /// Where the command runs: the directory, resolved, and its repository's worktrees with the main
@@ -260,6 +281,10 @@ pub(crate) enum Scope<'a> {
     /// The project of the session or folder the command runs in: its ticket, unless the key can't
     /// be one (another prefix), or it's the same tracker issue that another project has open.
     Here(&'a Path),
+    /// The project of the session taskman started the command in: as `Here`, but never another
+    /// project's ticket (`cli::confine` refuses what resolves elsewhere), so not the same tracker
+    /// issue another project has open either.
+    Session(&'a Path),
     Anywhere,
 }
 
@@ -306,7 +331,7 @@ pub(crate) fn locate<'a>(
     };
     let prefix = key.rsplit_once('-').map_or(key, |(p, _)| p);
     let here = match scope {
-        Scope::Named(repo) | Scope::Here(repo) => {
+        Scope::Named(repo) | Scope::Here(repo) | Scope::Session(repo) => {
             let p = project_of(repo)?;
             if let Some(t) = open.iter().find(|t| t.repo == repo) {
                 return Ok((Some(t), p));
@@ -318,6 +343,9 @@ pub(crate) fn locate<'a>(
                 .tracker
                 .as_ref()
                 .is_some_and(|t| t.key.is_empty() || t.key.eq_ignore_ascii_case(prefix));
+            if has_prefix && matches!(scope, Scope::Session(_)) {
+                return Ok((None, p));
+            }
             if has_prefix {
                 // A Jira site or Linear workspace has one ENG-52, whichever project reads it: the
                 // one that has it open shows its worktree and PR too.
@@ -1524,6 +1552,52 @@ mod tests {
         assert!(name("OPS-1", None).unwrap_err().contains("no project has the ticket prefix OPS"));
         // An agent's session name is not a ticket.
         assert!(name("acme-lead", None).is_err());
+    }
+
+    /// What `status` reads in project `own`'s session: the project the key resolves to, or why
+    /// it's refused.
+    fn in_session(s: &Saved, key: &str, own: usize) -> Result<(Option<String>, String), String> {
+        let (t, p) = locate(key, s, Scope::Session(&s.projects[own].repo))?;
+        let index = s.projects.iter().position(|q| q.repo == p.repo).unwrap();
+        cli::confine(index, Some(own), s)?;
+        Ok((t.map(|t| format!("{} in {}", t.key, t.repo.display())), p.name.clone()))
+    }
+
+    #[test]
+    fn keeps_a_session_to_its_project() {
+        let s = saved();
+        // acme's session reads ENG-52 from acme's own tracker, not from acme-web, which has it
+        // open on the same workspace: that would show acme-web's worktree and PR.
+        assert_eq!(in_session(&s, "ENG-52", 0), Ok((None, "acme".into())));
+        assert_eq!(
+            in_session(&s, "ENG-52", 1),
+            Ok((Some("ENG-52 in /src/acme-web".into()), "acme-web".into()))
+        );
+        // A key no project has the prefix of is the session's project's to answer.
+        assert_eq!(in_session(&s, "OPS-1", 0), Ok((None, "acme".into())));
+
+        let s = boards();
+        // Each board's own WP-1, and WP-2 from alpha's board though beta has one open.
+        assert_eq!(
+            in_session(&s, "WP-1", 0),
+            Ok((Some("WP-1 in /src/alpha".into()), "alpha".into()))
+        );
+        assert_eq!(in_session(&s, "WP-2", 0), Ok((None, "alpha".into())));
+        // Another project's prefix is refused, with the way round it.
+        let refused = in_session(&s, "OPS-3", 0).unwrap_err();
+        assert!(refused.starts_with("that's project ops, and this session works in alpha"));
+        assert!(refused.contains("`env -u TASKMAN_REPO`"), "{refused}");
+        // A ticket only another project has open, from a project without its prefix.
+        let mut ops_session = boards();
+        ops_session.tickets.push(Ticket { key: "WP-9".into(), ..s.tickets[0].clone() });
+        assert!(
+            in_session(&ops_session, "WP-9", 2).unwrap_err().starts_with("that's project alpha")
+        );
+
+        // Every project's tickets, in a session, are its own project's.
+        assert_eq!(within(Some(1), Target::All), Target::Project(1));
+        assert_eq!(within(None, Target::All), Target::All);
+        assert_eq!(within(Some(1), Target::Project(0)), Target::Project(0));
     }
 
     /// Two Local files boards, each with its own WP-1 open.
