@@ -1,0 +1,17 @@
+{
+  "data": {
+    "repository": {
+      "b0": {
+        "nodes": [
+          { "number": 45, "title": "Sign in with a magic link", "headRefName": "eng-52-login", "state": "OPEN", "updatedAt": "2026-10-01T10:00:00Z" }
+        ]
+      }
+    },
+    "q0": {
+      "nodes": [
+        { "number": 63, "title": "ENG-52: Remember the device", "headRefName": "bo/remember-device", "state": "OPEN", "updatedAt": "2026-10-06T10:00:00Z" },
+        { "number": 45, "title": "Sign in with a magic link", "headRefName": "eng-52-login", "state": "OPEN", "updatedAt": "2026-10-01T10:00:00Z" }
+      ]
+    }
+  }
+}

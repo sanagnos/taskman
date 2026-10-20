@@ -385,13 +385,42 @@ fn a_fetch_that_panics_fails_and_r_fetches_again() {
     assert!(tv.jira.data.is_some() && tv.pr.data.is_some(), "what was fetched stays");
     let log = "~/.local/state/taskman/panics.log";
     assert!(logged_error(&app, &format!("taskman hit a bug fetching ENG-52; details in {log}")));
-    let lookup = format!("taskman hit a bug looking up ENG-52's PR; details in {log}");
-    assert!(logged_error(&app, &lookup));
+    let lookup = "looking up the PRs of ENG-52, ENG-53, ENG-61, ENG-70";
+    assert!(logged_error(&app, &format!("taskman hit a bug {lookup}; details in {log}")));
 
     prefix(&mut app, KeyCode::Char('r'));
     app.schedule_fetches();
     assert_eq!(fetching(&app), (true, true));
     settle_until(&mut app, |app| fetching(app) == (false, false));
+}
+
+/// A repository's PR lookups share a thread, so a bug that panics it fails every ticket it was
+/// looking up: none is left loading, each keeps its PR, one toast names them, and the next
+/// refresh looks them all up again.
+#[test]
+fn a_repositorys_lookup_that_panics_fails_each_of_its_tickets() {
+    let mut app = acme_app();
+    panicking(&mut app);
+    let keys = ["ENG-52", "ENG-53", "ENG-61", "ENG-70"];
+    let looking = |app: &App| keys.map(|k| app.tickets[index(app, k)].pr.loading);
+    let had = keys.map(|k| app.tickets[index(&app, k)].pr.data.is_some());
+    app.schedule_fetches();
+    assert_eq!(looking(&app), [true; 4]);
+    settle_until(&mut app, |app| looking(app) == [false; 4]);
+    for (k, had) in keys.iter().zip(had) {
+        let tv = &app.tickets[index(&app, k)];
+        assert_eq!(tv.pr.error.as_deref(), Some(BUG), "{k}");
+        assert_eq!(tv.pr.data.is_some(), had, "{k} keeps what it had");
+    }
+    let bugs = app.toast_log.iter().filter(|l| l.msg.contains("looking up the PRs")).count();
+    assert_eq!(bugs, 1, "one toast for the repository");
+    for k in keys {
+        let i = index(&app, k);
+        app.tickets[i].pr.request(false);
+    }
+    app.schedule_fetches();
+    assert_eq!(looking(&app), [true; 4]);
+    settle_until(&mut app, |app| looking(app) == [false; 4]);
 }
 
 /// A bug that panics git's thread still ends the wait for the worktree: the session says it

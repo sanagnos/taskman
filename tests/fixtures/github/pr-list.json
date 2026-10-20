@@ -1,6 +1,0 @@
-[
-  { "headRefName": "eng-520-rate-limit", "number": 61, "state": "OPEN", "title": "ENG-520: Rate-limit sign-ins", "updatedAt": "2026-10-05T10:00:00Z" },
-  { "headRefName": "eng-52-login", "number": 45, "state": "OPEN", "title": "Sign in with a magic link", "updatedAt": "2026-10-01T10:00:00Z" },
-  { "headRefName": "ana/try-login", "number": 40, "state": "CLOSED", "title": "ENG-52: try another way", "updatedAt": "2026-09-20T10:00:00Z" },
-  { "headRefName": "eng-52-first", "number": 38, "state": "MERGED", "title": "ENG-52 first pass", "updatedAt": "2026-09-10T10:00:00Z" }
-]

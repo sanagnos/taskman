@@ -3,13 +3,13 @@
 //! a ticket by its place in the list, and the replies (see `add.rs` and `close.rs` for the
 //! commands).
 
-use super::sync::{Msg, pr_lookup};
+use super::sync::Msg;
 use super::ticket::{Added, merged_head, own_worktree};
 use super::tickets::Closed;
 use super::{AgentAsk, App, FormKind, Mode, parse_key};
 use crate::session::Reaper;
 use crate::store::{self, Base, Cli, Ticket};
-use crate::{add, close, resume, untrusted, util, worktree};
+use crate::{add, close, github, resume, untrusted, util, worktree};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -82,7 +82,8 @@ impl App {
             add::reply(&id, &req, &[add::Line::err(e)]);
             return;
         }
-        let mut lookups = Vec::new();
+        // All in the request's repository: one query lists their PRs.
+        let (mut ids, mut wanted) = (Vec::new(), Vec::new());
         let projects = &self.projects;
         for tv in &mut self.tickets {
             let asked = || {
@@ -102,29 +103,20 @@ impl App {
                     .iter()
                     .find(|p| p.repo == tv.t.repo)
                     .and_then(|p| p.tracker.as_ref()?.closes(&tv.t.key));
-                lookups.push((n, tv.t.repo.clone(), tv.t.key.clone(), tv.t.branch.clone(), closes));
+                ids.push((n, tv.t.key.clone()));
+                let branch = tv.t.branch.clone();
+                wanted.push(github::Wanted { key: tv.t.key.clone(), branch, closes });
             }
         }
-        if lookups.is_empty() {
+        if ids.is_empty() {
             self.closing.push_back((id, req));
             return;
         }
-        let (tx, report) = (self.tx.clone(), self.reporter());
+        let report = self.reporter();
         std::thread::spawn(move || {
-            std::thread::scope(|s| {
-                for (n, repo, key, branch, closes) in lookups {
-                    let (tx, report) = (tx.clone(), report.clone());
-                    s.spawn(move || {
-                        let what = format!("looking up {key}'s PR");
-                        let (res, wt) = report
-                            .reported(&what, || pr_lookup(&repo, &key, branch, closes.as_ref()))
-                            .unwrap_or_else(|e| (Err(e), None));
-                        let _ = tx.send(Msg::Pr(n, (repo, key), res, wt));
-                    });
-                }
-            });
+            report.send_lookups(&req.repo, ids, wanted);
             // After the lookups' messages, so the panels hold what they found.
-            let _ = tx.send(Msg::Close(id, req));
+            report.send(Msg::Close(id, req));
         });
     }
 

@@ -198,19 +198,43 @@ impl Reporter {
             let _ = self.tx.send(msg);
         })
     }
+
+    /// Looks up the PRs of tickets in `repo` (`pr_lookups`) and sends each one's `Msg::Pr` with
+    /// its lookup's id; when the lookup panicked, the failure for each of them.
+    pub(super) fn send_lookups(
+        &self,
+        repo: &Path,
+        ids: Vec<(u64, String)>,
+        wanted: Vec<github::Wanted>,
+    ) {
+        let keys: Vec<&str> = ids.iter().map(|(_, k)| k.as_str()).collect();
+        let what = format!("looking up the PRs of {}", keys.join(", "));
+        let found = match self.reported(&what, || pr_lookups(repo, wanted)) {
+            Ok(found) => found,
+            Err(e) => ids.iter().map(|_| (Err(e.clone()), None)).collect(),
+        };
+        for ((n, key), (res, wt)) in ids.into_iter().zip(found) {
+            self.send(Msg::Pr(n, (repo.to_path_buf(), key), res, wt));
+        }
+    }
 }
 
-/// Looks ticket `key`'s PR up: one that `closes` its issue, else on its worktree's branch, else on
-/// `branch`; with the worktree git found for it.
-pub(super) fn pr_lookup(
-    repo: &Path,
-    key: &str,
-    branch: Option<String>,
-    closes: Option<&github::Closes>,
-) -> (Result<github::Lookup, String>, Option<(PathBuf, String)>) {
-    let wt = github::find_worktree(repo, key);
-    let branch = wt.as_ref().map(|(_, b)| b.clone()).or(branch);
-    (github::fetch(repo, branch.as_deref(), key, closes, |args| github::gh(repo, args)), wt)
+/// What a PR lookup found for a ticket, and the worktree git found for it.
+pub(super) type LookedUp = (Result<github::Lookup, String>, Option<(PathBuf, String)>);
+
+/// Looks up the PRs of tickets in `repo`, in order: one that `closes` each one's issue, else on
+/// its worktree's branch, else on the branch it remembers; each with the worktree git found for
+/// it. git lists the worktrees once, and gh lists the PRs of them all in one query.
+pub(super) fn pr_lookups(repo: &Path, mut wanted: Vec<github::Wanted>) -> Vec<LookedUp> {
+    let list = github::worktrees(repo).unwrap_or_default();
+    let worktrees: Vec<_> = wanted.iter().map(|w| github::pick_worktree(&list, &w.key)).collect();
+    for (w, wt) in wanted.iter_mut().zip(&worktrees) {
+        if let Some((_, b)) = wt {
+            w.branch = Some(b.clone());
+        }
+    }
+    let found = github::fetch_all(repo, &wanted, |args| github::gh(repo, args));
+    found.into_iter().zip(worktrees).collect()
 }
 
 impl App {
@@ -398,10 +422,9 @@ impl App {
     }
 
     pub(super) fn schedule_fetches(&mut self) {
-        let access: Vec<(Access, Option<github::Closes>)> =
-            self.tickets.iter().map(|tv| (self.access(&tv.t), self.closes(&tv.t))).collect();
+        let access: Vec<Access> = self.tickets.iter().map(|tv| self.access(&tv.t)).collect();
         let report = self.reporter();
-        for ((i, tv), (access, closes)) in self.tickets.iter_mut().enumerate().zip(access) {
+        for ((i, tv), access) in self.tickets.iter_mut().enumerate().zip(access) {
             let selected = i == self.sel;
             if tv.t.agent.is_some() {
                 continue;
@@ -424,25 +447,48 @@ impl App {
                     move |e| Msg::Jira(n, failed, Err(e)),
                 );
             }
-            if self.github.get(&tv.t.repo).is_none_or(|g| *g == github::Gh::Ready)
-                && tv.pr.due(if selected { GH_SELECTED } else { GH_BACKGROUND })
-            {
+        }
+        for (repo, batch) in self.due_lookups() {
+            let (mut ids, mut wanted) = (Vec::new(), Vec::new());
+            for i in batch {
+                let closes = self.closes(&self.tickets[i].t);
                 self.fetches += 1;
                 let n = self.fetches;
+                let tv = &mut self.tickets[i];
                 tv.pr.start(n);
-                let (id, branch): (Id, _) =
-                    ((tv.t.repo.clone(), tv.t.key.clone()), tv.t.branch.clone());
-                let (what, failed) = (format!("looking up {}'s PR", id.1), id.clone());
-                report.clone().spawn(
-                    what,
-                    move || {
-                        let (res, wt) = pr_lookup(&id.0, &id.1, branch, closes.as_ref());
-                        Msg::Pr(n, id, res, wt)
-                    },
-                    move |e| Msg::Pr(n, failed, Err(e), None),
-                );
+                ids.push((n, tv.t.key.clone()));
+                let branch = tv.t.branch.clone();
+                wanted.push(github::Wanted { key: tv.t.key.clone(), branch, closes });
+            }
+            let report = report.clone();
+            std::thread::spawn(move || report.send_lookups(&repo, ids, wanted));
+        }
+    }
+
+    /// The tickets whose PRs to look up now, by repository: those due, and in a repository with
+    /// one due, those three quarters of the way there. They share the repository's query, so
+    /// tickets that fell out of step (refreshed when selected, or on a hook's signal) fall back in.
+    fn due_lookups(&self) -> Vec<(PathBuf, Vec<usize>)> {
+        let every = |i: usize| if i == self.sel { GH_SELECTED } else { GH_BACKGROUND };
+        let can = |tv: &super::TicketView| {
+            tv.t.agent.is_none()
+                && self.github.get(&tv.t.repo).is_none_or(|g| *g == github::Gh::Ready)
+        };
+        let mut out: Vec<(PathBuf, Vec<usize>)> = Vec::new();
+        for (i, tv) in self.tickets.iter().enumerate() {
+            if can(tv) && tv.pr.due(every(i)) && !out.iter().any(|(r, _)| *r == tv.t.repo) {
+                out.push((tv.t.repo.clone(), Vec::new()));
             }
         }
+        for (i, tv) in self.tickets.iter().enumerate() {
+            if let Some((_, batch)) = out.iter_mut().find(|(r, _)| *r == tv.t.repo)
+                && can(tv)
+                && tv.pr.due(every(i) * 3 / 4)
+            {
+                batch.push(i);
+            }
+        }
+        out
     }
 
     pub(super) fn refresh_selected(&mut self) {
@@ -607,6 +653,43 @@ mod tests {
         r.fetched_at = ago(120.0);
         r.request_if_older_than(minute, true);
         assert!(r.due(minute));
+    }
+
+    #[test]
+    fn looks_up_a_repositorys_prs_together() {
+        let mut app = crate::app::test_support::acme_app();
+        let acme = PathBuf::from("/src/acme");
+        let i = |app: &App, key: &str| app.tickets.iter().position(|tv| tv.t.key == key).unwrap();
+        let (eng52, eng53, eng61, eng70) =
+            (i(&app, "ENG-52"), i(&app, "ENG-53"), i(&app, "ENG-61"), i(&app, "ENG-70"));
+        assert_eq!(app.sel, eng52);
+        // Never looked up: every ticket at once, and no agent.
+        assert_eq!(app.due_lookups(), [(acme.clone(), vec![eng52, eng53, eng61, eng70])]);
+        let looked =
+            |app: &mut App, i: usize, secs: f32| app.tickets[i].pr.last_attempt = ago(secs);
+        for t in [eng53, eng61, eng70] {
+            looked(&mut app, t, 10.0);
+        }
+        looked(&mut app, eng52, 5.0);
+        assert!(app.due_lookups().is_empty());
+        // The selected ticket is due after 20 s; others join it from 45 s, three quarters of
+        // their minute, so they fall back in step.
+        looked(&mut app, eng52, 25.0);
+        assert_eq!(app.due_lookups(), [(acme.clone(), vec![eng52])]);
+        looked(&mut app, eng61, 50.0);
+        assert_eq!(app.due_lookups(), [(acme.clone(), vec![eng52, eng61])]);
+        // A background ticket that's due takes the selected one along from 15 s.
+        looked(&mut app, eng52, 16.0);
+        looked(&mut app, eng61, 61.0);
+        assert_eq!(app.due_lookups(), [(acme.clone(), vec![eng52, eng61])]);
+        looked(&mut app, eng52, 5.0);
+        assert_eq!(app.due_lookups(), [(acme.clone(), vec![eng61])]);
+        // Not while one is in flight, nor while gh can't answer.
+        app.tickets[eng61].pr.start(1);
+        assert!(app.due_lookups().is_empty());
+        app.tickets[eng53].pr.request(false);
+        app.github.insert(acme, github::Gh::LoggedOut);
+        assert!(app.due_lookups().is_empty());
     }
 
     #[test]

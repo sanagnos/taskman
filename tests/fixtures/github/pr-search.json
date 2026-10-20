@@ -1,0 +1,12 @@
+{
+  "data": {
+    "q0": {
+      "nodes": [
+        { "number": 61, "title": "ENG-520: Rate-limit sign-ins", "headRefName": "eng-520-rate-limit", "state": "OPEN", "updatedAt": "2026-10-05T10:00:00Z" },
+        { "number": 45, "title": "Sign in with a magic link", "headRefName": "eng-52-login", "state": "OPEN", "updatedAt": "2026-10-01T10:00:00Z" },
+        { "number": 40, "title": "ENG-52: try another way", "headRefName": "ana/try-login", "state": "CLOSED", "updatedAt": "2026-09-20T10:00:00Z" },
+        { "number": 38, "title": "ENG-52 first pass", "headRefName": "eng-52-first", "state": "MERGED", "updatedAt": "2026-09-10T10:00:00Z" }
+      ]
+    }
+  }
+}

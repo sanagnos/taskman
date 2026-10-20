@@ -34,10 +34,10 @@ if [ ! -e 'DIR/gh-logged-in' ]; then
 fi
 case "$*" in
   "auth token"*) echo gho_mock_token;;
-  "pr list"*--head*) cat 'FIXTURES/pr-list-branch.json';;
-  "pr list"*--search*) cat 'FIXTURES/pr-list.json';;
   "pr view 45 "*) cat 'FIXTURES/pr-view.json';;
   "api graphql"*reviewThreads*) cat 'FIXTURES/review-threads.json';;
+  "api graphql"*pullRequests\(headRefName*) cat 'FIXTURES/pr-branch.json';;
+  "api graphql"*search\(*) cat 'FIXTURES/pr-search.json';;
   *) echo "$*" | head -1 >> 'DIR/gh.unexpected'; echo "gh stub: no answer for $*" >&2; exit 1;;
 esac
 "#;
