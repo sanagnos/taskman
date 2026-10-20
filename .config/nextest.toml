@@ -1,0 +1,28 @@
+# cargo-nextest, which CI runs the tests with (`cargo nextest run --profile ci`). Each test runs
+# in a process of its own, so one that hangs or exits ends only itself. `cargo test` still works
+# and ignores this file.
+
+[profile.default]
+# Past the longest limit a test in tests/ gives its own `Watchdog` (120s), so a hung test's
+# watchdog says where it was and stops what it started before nextest ends it.
+slow-timeout = { period = "30s", terminate-after = 5 }
+
+[profile.ci]
+# Every failure in the run, not just the first.
+fail-fast = false
+# In target/nextest/ci/, which the CI job uploads.
+junit = { path = "junit.xml" }
+
+# The tests in tests/ drive the binary, most in a pty, against timing on a shared runner: one
+# rerun for those, and a test that passes on it shows as FLAKY in the summary and the JUnit report
+# instead of failing the job. The unit tests aren't retried.
+[[profile.ci.overrides]]
+filter = "kind(test) & !binary(ownership) & !binary(stopping)"
+retries = 1
+
+# These guard one copy of a session: a second copy that starts only sometimes is the bug they
+# look for, so a pass on the rerun still fails the run. The rerun says whether it was every time.
+[[profile.ci.overrides]]
+filter = "binary(ownership) | binary(stopping)"
+retries = 1
+flaky-result = "fail"
