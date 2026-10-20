@@ -115,6 +115,35 @@ fn adds_a_linear_account_once_its_key_is_the_workspaces() {
     assert_eq!(s.items[s.cursor], crate::app::SettingsItem::Account(1));
 }
 
+/// The new account form offers each provider that takes an account, in `Provider::ALL`'s order,
+/// and shows each one's own rows: its site's hint, an email only where it signs in with one, its
+/// variable suggested and the page that makes its token.
+#[test]
+fn the_account_form_walks_each_provider_that_takes_an_account() {
+    let mut app = acme_app();
+    prefix(&mut app, KeyCode::Char('A'));
+    let offered: Vec<_> = store::Provider::ALL.into_iter().filter(|p| p.needs_account()).collect();
+    let labels: Vec<_> = offered.iter().map(|p| p.label().to_string()).collect();
+    assert_eq!(settings_form(&app).field("Provider").unwrap().choices, labels);
+    choose(&mut app, "Keep in", "Variable or command");
+    focus(&mut app, "Provider");
+    for p in offered.iter().chain(&offered[..1]) {
+        let form = settings_form(&app);
+        assert_eq!(form.value("Provider"), p.label());
+        assert_eq!(form.field("Site").unwrap().hint, p.account_site_hint(), "{p:?}");
+        let email = form.field("Email").unwrap();
+        assert_eq!(email.hidden, !p.signs_in_with_email(), "{p:?}");
+        if !email.hidden {
+            assert_eq!(email.hint, p.email_hint());
+        }
+        let read_from = form.field("Read from").unwrap();
+        assert_eq!(read_from.value, format!("env:{}", p.token_var()));
+        let page = p.token_page("").unwrap();
+        assert!(read_from.links.iter().any(|(_, _, url)| *url == page), "{p:?}");
+        app.on_key(key(KeyCode::Right));
+    }
+}
+
 #[test]
 fn a_second_linear_workspace_gets_a_key_of_its_own() {
     let mut app = acme_app();

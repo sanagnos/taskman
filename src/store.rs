@@ -760,12 +760,16 @@ impl Account {
         self.provider == t.provider && same_site(&self.site, &t.site)
     }
 
-    /// Who the account is: the email for Jira, the workspace for Linear.
+    /// Who the account is: the email it signs in with, or else the one site its key belongs to
+    /// (Jira's email, Linear's workspace).
     pub fn who(&self) -> String {
-        match self.provider {
-            Provider::Jira if !self.email.is_empty() => self.email.clone(),
-            Provider::Linear if !self.site.is_empty() => self.site.clone(),
-            p => p.label().to_string(),
+        let p = self.provider;
+        if p.signs_in_with_email() && !self.email.is_empty() {
+            self.email.clone()
+        } else if !p.account_spans_sites() && !self.site.is_empty() {
+            self.site.clone()
+        } else {
+            p.label().to_string()
         }
     }
 
@@ -1911,6 +1915,21 @@ mod tests {
             extra: Default::default(),
         };
         assert_eq!(linear.label(), "acme · env:LINEAR_API_KEY_ACME");
+    }
+
+    #[test]
+    fn says_who_an_account_is() {
+        let linear = |site: &str| Account {
+            provider: Provider::Linear,
+            site: site.into(),
+            email: String::new(),
+            ..jira("linear-1", "env:LINEAR_API_KEY")
+        };
+        assert_eq!(jira("jira-1", "env:JIRA_API_TOKEN").who(), "you@example.com");
+        let nobody = Account { email: String::new(), ..jira("jira-1", "env:JIRA_API_TOKEN") };
+        assert_eq!(nobody.who(), "Jira");
+        assert_eq!(linear("acme").who(), "acme");
+        assert_eq!(linear("").who(), "Linear");
     }
 
     #[test]

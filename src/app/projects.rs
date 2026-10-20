@@ -115,8 +115,10 @@ pub(super) fn show_project_rows(
                     )
                     .into();
             }
-            "Site" => f.hint = Provider::Jira.site_hint().into(),
-            "Workspace" => f.hint = Provider::Linear.site_hint().into(),
+            "Site" | "Workspace" => {
+                let typed_in = Provider::ALL.into_iter().find(|p| p.site_field() == Some(f.label));
+                f.hint = typed_in.map_or("", Provider::site_hint).into();
+            }
             "Ticket prefix" => {
                 // Hidden unless it's typed.
                 f.hint = provider.unwrap_or(Provider::Local).prefix_hint().into();

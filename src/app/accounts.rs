@@ -50,12 +50,29 @@ fn pasted_name(source: &str, file: bool) -> Option<&str> {
     if file { token_file::name_of(source) } else { keychain::name_of(source) }
 }
 
-/// The provider an account form is for.
+/// The providers an account can be for, in the order the account form offers them.
+fn account_providers() -> impl Iterator<Item = Provider> {
+    Provider::ALL.into_iter().filter(|p| p.needs_account())
+}
+
+/// The provider a new account form starts on: the first it offers.
+pub(super) fn first_account_provider() -> Provider {
+    account_providers().next().expect("some provider takes an account")
+}
+
+/// The provider an account form is for, as its Provider names it.
 pub(super) fn form_provider(form: &Form) -> Provider {
-    match form.value("Provider").as_str() {
-        "Linear" => Provider::Linear,
-        _ => Provider::Jira,
-    }
+    let label = form.value("Provider");
+    account_providers().find(|p| p.label() == label).unwrap_or_else(first_account_provider)
+}
+
+/// Whether `source` is a variable the form suggested (`default_var`), for any provider: one a
+/// change of provider or site may replace.
+fn suggested(source: &str) -> bool {
+    account_providers().any(|p| {
+        let var = format!("env:{}", p.token_var());
+        source == var || (!p.account_spans_sites() && source.starts_with(&var))
+    })
 }
 
 /// The environment variable a new account's token is suggested in. A second Linear workspace gets
@@ -87,9 +104,7 @@ pub(super) fn account_defaults(
     keychain: Option<&Keychain>,
 ) {
     let source = form.value("Read from");
-    let is_default = source.is_empty()
-        || source == format!("env:{}", Provider::Jira.token_var())
-        || source.starts_with(&format!("env:{}", Provider::Linear.token_var()));
+    let is_default = source.is_empty() || suggested(&source);
     let picked = form.field("Keep in").is_some_and(|f| !f.hidden && f.value == ELSEWHERE);
     // A project form comes here on every key: a field cleared to type in stays clear.
     let typing = form.fields.get(form.focus).is_some_and(|f| f.label == "Read from");
@@ -138,15 +153,10 @@ pub(super) fn account_rows(
     let var = provider.token_var();
     for f in &mut form.fields {
         match f.label {
-            "Site" if account_form && provider == Provider::Linear => {
-                f.hint = "workspace: the part after linear.app/".into();
-            }
-            "Site" if account_form => {
-                f.hint = "where to test the token, like your-site.atlassian.net".into();
-            }
+            "Site" if account_form => f.hint = provider.account_site_hint().into(),
             "Email" => {
                 f.hidden = !provider.signs_in_with_email();
-                f.hint = "the email you sign in to Atlassian with".into();
+                f.hint = provider.email_hint().into();
             }
             "Keep in" if f.choices.iter().any(|c| c == FILE) => {
                 f.hint = "←/→: a file only you can read, or a variable or command of yours".into();
@@ -290,7 +300,12 @@ impl App {
             .iter()
             .find(|a| a.provider.signs_in_with_email() && !a.email.is_empty())
             .map(|a| a.email.clone())
-            .or_else(|| std::env::var("JIRA_EMAIL").ok())
+            .or_else(|| {
+                Provider::ALL
+                    .into_iter()
+                    .filter_map(Provider::email_var)
+                    .find_map(|v| std::env::var(v).ok())
+            })
             .unwrap_or_default();
         vec![
             Field::text("Email", email, ""),
@@ -301,7 +316,7 @@ impl App {
     }
 
     pub(super) fn new_account_form(&self, provider: Provider, site: String) -> Box<Form> {
-        let providers = vec!["Jira".to_string(), "Linear".to_string()];
+        let providers = account_providers().map(|p| p.label().to_string()).collect();
         let mut fields = vec![
             Field::choice("Provider", providers, provider.label(), "←/→ to change"),
             Field::text("Site", site, ""),
@@ -314,7 +329,7 @@ impl App {
         let token = if takes_pasted(&form) { "Token" } else { "Read from" };
         form.focus_on(if form.value("Site").is_empty() {
             "Site"
-        } else if provider == Provider::Jira && form.value("Email").is_empty() {
+        } else if provider.signs_in_with_email() && form.value("Email").is_empty() {
             "Email"
         } else {
             token

@@ -723,6 +723,23 @@ impl Provider {
         }
     }
 
+    /// The account form's hint under Email, where it's shown (`signs_in_with_email`).
+    pub fn email_hint(self) -> &'static str {
+        match self {
+            Provider::Jira => "the email you sign in to Atlassian with",
+            Provider::Linear | Provider::Local | Provider::Github => "",
+        }
+    }
+
+    /// The environment variable a new account's email is suggested from, where it signs in with
+    /// one.
+    pub fn email_var(self) -> Option<&'static str> {
+        match self {
+            Provider::Jira => Some("JIRA_EMAIL"),
+            Provider::Linear | Provider::Local | Provider::Github => None,
+        }
+    }
+
     /// Whether the project form checks that the ticket prefix names a project there.
     pub fn checks_prefix(self) -> bool {
         match self {
@@ -763,6 +780,16 @@ impl Provider {
         match self {
             Provider::Jira => "your Jira site, like your-site.atlassian.net",
             Provider::Linear => "the part after linear.app/ in its address",
+            Provider::Local | Provider::Github => "",
+        }
+    }
+
+    /// The account form's hint under Site, where the account's site is what its token is tested
+    /// against (Jira) or the one workspace its key belongs to (Linear).
+    pub fn account_site_hint(self) -> &'static str {
+        match self {
+            Provider::Jira => "where to test the token, like your-site.atlassian.net",
+            Provider::Linear => "workspace: the part after linear.app/",
             Provider::Local | Provider::Github => "",
         }
     }

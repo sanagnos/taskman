@@ -2,10 +2,10 @@
 //! move through it, and the General form (the prefix key, updates, notifications). Also the tip,
 //! once, when tmux or GNU screen has taskman's prefix too.
 
+use super::accounts::first_account_provider;
 use super::sleep::{after_choices, after_label, cap_choices, cap_label};
 use super::sync::Msg;
 use super::{App, Field, Form, FormKind, Mode};
-use crate::store::Provider;
 use crate::{keys, notify, theme};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Duration;
@@ -137,7 +137,9 @@ impl App {
             SettingsItem::Project(p) => self.project_settings_form(p),
             SettingsItem::NewProject => self.new_project_form(),
             SettingsItem::Account(i) => self.account_settings_form(i),
-            SettingsItem::NewAccount => self.new_account_form(Provider::Jira, String::new()),
+            SettingsItem::NewAccount => {
+                self.new_account_form(first_account_provider(), String::new())
+            }
         }
     }
 
