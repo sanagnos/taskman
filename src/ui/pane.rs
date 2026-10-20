@@ -461,7 +461,7 @@ fn draw_toast(f: &mut Frame, app: &App, toast: &Toast, area: Rect) {
     let room = width - right.as_ref().map_or(0, |r| r.width() + 1);
     let msg = untrusted::line(&toast.msg);
     let p = prefix().short();
-    let more = format!(" · {p} L lists it");
+    let more = format!(" · {p} ~ lists it");
     let mut lines = vec![format!(" {msg}")];
     if lines[0].width() > room {
         let above = area.y > 0 && f.area().height >= super::FOOTER_GAP_MIN_H;
@@ -550,7 +550,7 @@ pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
                 ("{ }", "move"),
                 (&again, "next waiting"),
                 ("/", "jump"),
-                ("w", "waiting"),
+                ("w", "waiting on you"),
                 ("n", "add ticket/agent"),
                 ("x", "close"),
             ],
@@ -580,7 +580,7 @@ pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
                 ("PgUp", "scroll"),
                 ("v", "history in $EDITOR"),
                 ("l", "links"),
-                ("L", "messages"),
+                ("~", "notices"),
                 ("a", &send),
             ],
         ),

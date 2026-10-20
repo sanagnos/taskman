@@ -318,8 +318,8 @@ fn draw_queue(f: &mut Frame, app: &mut App) {
     );
 }
 
-/// Every toast shown, newest first (`prefix L`): how long ago, then the text, wrapped under
-/// itself. Errors are red and warnings yellow.
+/// The notices: every toast shown, newest first (`prefix ~`): how long ago, then the text, wrapped
+/// under itself. Errors are red and warnings yellow.
 fn draw_log(f: &mut Frame, app: &mut App) {
     let Mode::Log(view) = &mut app.mode else { return };
     let w = (100 + DIALOG_PAD_W).min(f.area().width.saturating_sub(2));
@@ -343,11 +343,11 @@ fn draw_log(f: &mut Frame, app: &mut App) {
         }
     }
     let n = text.len();
-    // Rows for the entries: what the screen leaves, less the border, padding, a blank row and the
-    // note.
-    let room = usize::from(f.area().height.saturating_sub(2 + 2 + DIALOG_PAD_H + 2)).max(1);
+    // Rows for the entries: what the screen leaves, less the border, padding, the line saying what
+    // this is with a blank row under it, and a blank row and the note.
+    let room = usize::from(f.area().height.saturating_sub(2 + 2 + DIALOG_PAD_H + 4)).max(1);
     let rows = n.min(room);
-    let rect = centered(f, w, u16::try_from(rows).unwrap_or(u16::MAX) + 2 + DIALOG_PAD_H + 2);
+    let rect = centered(f, w, u16::try_from(rows).unwrap_or(u16::MAX) + 2 + DIALOG_PAD_H + 4);
     view.max = n.saturating_sub(rows);
     view.page = rows.saturating_sub(1).max(1);
     view.top = view.top.min(view.max);
@@ -360,11 +360,15 @@ fn draw_log(f: &mut Frame, app: &mut App) {
             (view.top + rows).min(n)
         )
     };
-    let mut shown: Vec<Line> = text.into_iter().skip(view.top).take(rows).collect();
+    let mut shown = vec![
+        Line::from(Span::styled("What the footer showed, newest first.", dim())),
+        Line::from(""),
+    ];
+    shown.extend(text.into_iter().skip(view.top).take(rows));
     shown.push(Line::from(""));
     shown.push(Line::from(Span::styled(note, dim())));
     f.render_widget(Clear, rect);
-    f.render_widget(Paragraph::new(shown).block(dialog("Messages").padding(DIALOG_PAD)), rect);
+    f.render_widget(Paragraph::new(shown).block(dialog("Notices").padding(DIALOG_PAD)), rect);
 }
 
 /// The most of a role the dialog shows; a longer one says how much is left out.
@@ -964,7 +968,7 @@ fn draw_help(f: &mut Frame, app: &mut App) {
         ("PgUp/PgDn", "scroll the session's history"),
         ("v", "open the session's history in $EDITOR"),
         ("l", "list links (ticket, PR, session) to open or copy"),
-        ("L", "the recent messages, newest first"),
+        ("~", "notices: what the footer showed, newest first"),
         ("a", send.as_str()),
         ("q", "quit"),
     ];

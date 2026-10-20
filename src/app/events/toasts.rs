@@ -33,7 +33,7 @@ fn an_error_stays_past_five_seconds_and_clears_on_the_next_key() {
     assert_eq!(toast(&app), None);
     // The key that raises an error doesn't clear it.
     app.on_key(ctrl('a'));
-    app.on_key(key(KeyCode::Char('~')));
+    app.on_key(key(KeyCode::Char('%')));
     assert_eq!(toast(&app).map(|t| t.contains("isn't a command")), Some(true));
 }
 
@@ -83,12 +83,12 @@ fn the_log_keeps_the_last_200_and_one_entry_for_a_repeat() {
 }
 
 #[test]
-fn prefix_shift_l_lists_the_log_and_any_other_key_closes_it() {
+fn prefix_tilde_lists_the_notices_and_any_other_key_closes_it() {
     let mut app = acme_app();
-    prefix(&mut app, KeyCode::Char('L'));
+    prefix(&mut app, KeyCode::Char('~'));
     assert!(matches!(app.mode, Mode::Normal));
     assert_eq!(toast(&app), Some("Nothing has been shown yet"));
-    prefix(&mut app, KeyCode::Char('L'));
+    prefix(&mut app, KeyCode::Char('~'));
     assert!(matches!(app.mode, Mode::Log(_)), "the first toast is in the log");
     let screen = draw(&mut app, 80, 24);
     assert!(screen.contains("Nothing has been shown yet"), "{screen}");
@@ -97,18 +97,39 @@ fn prefix_shift_l_lists_the_log_and_any_other_key_closes_it() {
 }
 
 #[test]
+fn prefix_tilde_with_shift_held_lists_the_notices_too() {
+    // A kitty keyboard protocol terminal may report ~ with SHIFT; the loop normalizes it.
+    let mut app = acme_app();
+    app.toast("Marked as read");
+    app.on_key(ctrl('a'));
+    app.on_key(crate::keys::normalize(crossterm::event::KeyEvent::new(
+        KeyCode::Char('~'),
+        KeyModifiers::SHIFT,
+    )));
+    assert!(matches!(app.mode, Mode::Log(_)), "{:?}", toast(&app));
+}
+
+#[test]
+fn prefix_shift_l_no_longer_lists_the_notices() {
+    let mut app = acme_app();
+    prefix(&mut app, KeyCode::Char('L'));
+    assert!(matches!(app.mode, Mode::Normal));
+    assert!(toast(&app).is_some_and(|t| t.contains("L isn't a command")), "{:?}", toast(&app));
+}
+
+#[test]
 fn the_log_scrolls_when_it_does_not_fit() {
     let mut app = acme_app();
     for n in 0..60 {
         app.toast(format!("Toast {n}"));
     }
-    prefix(&mut app, KeyCode::Char('L'));
+    prefix(&mut app, KeyCode::Char('~'));
     let screen = draw(&mut app, 80, 24);
     assert!(screen.contains("Toast 59") && !screen.contains("Toast 0 "), "{screen}");
     assert!(screen.contains("of 60"), "{screen}");
     app.on_key(key(KeyCode::End));
     let screen = draw(&mut app, 80, 24);
-    assert!(screen.contains("Toast 0") && screen.contains("45-60 of 60"), "{screen}");
+    assert!(screen.contains("Toast 0") && screen.contains("47-60 of 60"), "{screen}");
     assert!(matches!(app.mode, Mode::Log(_)));
 }
 

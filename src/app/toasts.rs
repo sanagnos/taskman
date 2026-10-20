@@ -1,4 +1,4 @@
-//! The toast in the footer, and the log of every toast shown (`prefix L`).
+//! The toast in the footer, and the log of every toast shown (`prefix ~`).
 
 use super::App;
 use crate::util;
@@ -36,7 +36,7 @@ pub struct Logged {
     pub ts: i64,
 }
 
-/// `prefix L`: the log, newest first, scrolled by `top` rows.
+/// `prefix ~`: the log, newest first, scrolled by `top` rows.
 #[derive(Default)]
 pub struct LogView {
     pub top: usize,

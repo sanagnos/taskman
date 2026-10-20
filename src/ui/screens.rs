@@ -857,7 +857,7 @@ fn long_error_toast_on_a_short_screen_points_to_the_list() {
     let mut app = acme_app();
     app.error(LONG_ERROR);
     let screen = draw(&mut app, 80, 24);
-    assert!(screen.contains(" L lists it"), "{screen}");
+    assert!(screen.contains(" ~ lists it"), "{screen}");
     assert_snapshot!(screen);
 }
 
@@ -865,9 +865,9 @@ const LONG_ERROR: &str = "Couldn't create ENG-70's worktree: fatal: a branch nam
     'eng-70-fix-login' already exists, and git refused to check it out in /src/acme-ENG-70 \
     because another worktree has it checked out";
 
-/// The list of every toast shown (`ctrl+a L`), newest first, errors red.
+/// The notices: every toast shown (`ctrl+a ~`), newest first, errors red.
 #[test]
-fn messages_list() {
+fn notices_list() {
     let mut app = acme_app();
     app.toast("Marked as read");
     app.warn("No PR found for this ticket yet");

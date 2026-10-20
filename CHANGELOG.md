@@ -4,6 +4,8 @@ What changed in each release; a release's notes on GitHub are its section here. 
 
 ## Unreleased
 
+- The list of recent footer messages moved from `ctrl+a L` to `ctrl+a ~` (tmux's key for its messages; `l` and `L` were easy to mix up) and is called notices: it opens with a line saying what it holds, and the ctrl+a menu, Help and the short-window pointer (`ctrl+a ~ lists it`) say so. The menu's `w` reads "waiting on you".
+
 ## 0.1.17 - 2026-10-19
 
 - Closing an overlay (help, the quit dialog, the links list) over an emoji such as ⚠️, or a session redrawing the text beside one, no longer leaves a stale character next to the emoji or moves the text after it a column right. Seen in tmux 3.4 and Windows Terminal; terminals that draw ⚠️ one column wide show it the same way.

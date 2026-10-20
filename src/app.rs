@@ -102,7 +102,7 @@ pub enum Mode {
     Queue(queue::Queue),
     /// Moving the selected card, or its project, in the sidebar (`prefix {` and `}`).
     Move(Box<reorder::Moving>),
-    /// Every toast shown (`prefix L`), newest first.
+    /// Every toast shown (`prefix ~`), newest first.
     Log(LogView),
 }
 
@@ -164,7 +164,7 @@ pub struct App {
     /// `current_project`. Its folder, so a reorder or a removal can't point it at another one.
     pub header_project: Option<PathBuf>,
     pub toast: Option<Toast>,
-    /// Every toast shown, newest first, up to `toasts::LOG_CAP`; see `prefix L`.
+    /// Every toast shown, newest first, up to `toasts::LOG_CAP`; see `prefix ~`.
     pub toast_log: toasts::Log,
     pub quit: bool,
     /// A file to open in the user's editor; the event loop hands it the terminal meanwhile.

@@ -489,7 +489,7 @@ impl App {
             KeyCode::Char('t') if !self.tickets.is_empty() => self.hand_off(),
             KeyCode::Char('v') => self.open_history(),
             KeyCode::Char('l') => self.open_links(),
-            KeyCode::Char('L') => self.open_log(),
+            KeyCode::Char('~') => self.open_log(),
             KeyCode::PageUp => self.page_claude(true),
             KeyCode::PageDown => self.page_claude(false),
             KeyCode::Char('?' | 'h') => self.mode = Mode::Help(HelpView::default()),

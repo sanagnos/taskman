@@ -31,7 +31,7 @@ expression: screen
 "                  │    ctrl+a PgUp/PgDn  scroll the session's history                                │updated just now ╮"
 "                  │    ctrl+a v          open the session's history in $EDITOR                       │with a magic     │"
 "                  │    ctrl+a l          list links (ticket, PR, session) to open or copy            │                 │"
-"                  │    ctrl+a L          the recent messages, newest first                           │ogin → main      │"
+"                  │    ctrl+a ~          notices: what the footer showed, newest first               │ogin → main      │"
 "                  │    ctrl+a a          send ctrl+a itself to the session                           │s requested      │"
 "                  │    ctrl+a q          quit                                                        │                 │"
 "                  │                                                                                  │s ✓2 ✗1 ◷0 ──    │"
