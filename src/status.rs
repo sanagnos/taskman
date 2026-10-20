@@ -6,13 +6,12 @@
 //! with the project's own tracker account rather than whatever tracker tools its CLI happens to
 //! have.
 
-use crate::app::parse_key;
 use crate::cli::{Arg, Lexer};
 use crate::github::{self, CheckState, Lookup, Pr, Worktree, Worktrees};
 use crate::status_file::{self, Record};
 use crate::store::{self, Config, Project, Provider, Saved, Ticket};
 use crate::tracker::{Client, FetchError, Issue, Text};
-use crate::{cli, local, resume, stack, untrusted, util, worktree};
+use crate::{cli, local, resume, stack, ticket_key, untrusted, util, worktree};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -140,7 +139,7 @@ fn parse_args(args: &[String], example: &str) -> Result<Args, String> {
             Arg::Option(_) => return Err(lex.unknown()),
             Arg::Word(w) if a.key.is_none() => {
                 a.key =
-                    Some(parse_key(w).ok_or_else(|| {
+                    Some(ticket_key::parse(w).ok_or_else(|| {
                         format!("{w} isn't a ticket key; pass one, like {example}")
                     })?);
             }
@@ -239,7 +238,7 @@ fn target(
             .map(Target::Project)
             .ok_or_else(|| format!("{s}'s project is no longer in taskman")),
         Some(t) => Ok(Target::Ticket(t.key.clone(), Some(t.repo.clone()))),
-        None => parse_key(s).map(|k| Target::Ticket(k, None)).ok_or_else(|| {
+        None => ticket_key::parse(s).map(|k| Target::Ticket(k, None)).ok_or_else(|| {
             format!("session {s} has no ticket; pass a key, like {}", example(saved))
         }),
     }
@@ -329,7 +328,7 @@ pub(crate) fn locate<'a>(
             .find(|p| p.repo == repo)
             .ok_or_else(|| format!("{key}'s project is no longer in taskman"))
     };
-    let prefix = key.rsplit_once('-').map_or(key, |(p, _)| p);
+    let prefix = ticket_key::prefix_of(key);
     let here = match scope {
         Scope::Named(repo) | Scope::Here(repo) | Scope::Session(repo) => {
             let p = project_of(repo)?;

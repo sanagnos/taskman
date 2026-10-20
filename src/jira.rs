@@ -951,7 +951,7 @@ mod tests {
         #[test]
         fn a_created_ticket_has_a_key(v in any_json()) {
             if let Ok(made) = parse_created(&v, "https://example.atlassian.net", "ENG") {
-                prop_assert!(crate::tracker::is_prefix(made.key.split('-').next().unwrap()));
+                prop_assert!(crate::ticket_key::well_formed(&made.key));
             }
             let key = json!({ "key": "ENG-53", "id": v });
             prop_assert_eq!(parse_created(&key, "", "ENG").unwrap().key, "ENG-53");

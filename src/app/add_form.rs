@@ -1,14 +1,13 @@
 //! The Add form (`prefix n`): a ticket, by number, key or link, words of an open issue's title, or
 //! an open issue picked with ↑/↓ (on a Local files board, a title is a new ticket instead), or an
-//! agent; its CLI, and the worktree and base it starts from. Also `parse_key`, which the commands
-//! use too.
+//! agent; its CLI, and the worktree and base it starts from.
 
 use super::sync::Msg;
 use super::ticket::Added;
 use super::{App, Field, Form, FormKind, List, Mode, SettingsItem};
 use crate::store::{self, Cli, Provider, Tracker};
 use crate::tracker::{self, Access, Listed};
-use crate::{github, keys, local, untrusted, worktree};
+use crate::{github, keys, local, ticket_key, untrusted, worktree};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -62,10 +61,8 @@ fn local_input(input: &str, prefix: &str) -> Option<LocalInput> {
     if input.is_empty() {
         return None;
     }
-    if !prefix.is_empty() && input.chars().all(|c| c.is_ascii_digit()) {
-        return Some(LocalInput::Key(format!("{}-{input}", prefix.to_uppercase())));
-    }
-    Some(parse_key(input).map_or(LocalInput::Title, LocalInput::Key))
+    let key = ticket_key::complete(input, prefix).or_else(|| ticket_key::parse(input));
+    Some(key.map_or(LocalInput::Title, LocalInput::Key))
 }
 
 /// The ticket the Add form names in a Local files project: a file on the board, checked, or a new
@@ -96,48 +93,19 @@ fn branch_preview(format: &str, provider: Option<Provider>, key: &str) -> String
     b.replace("{slug}", "…")
 }
 
-/// Accepts `ENG-52`, `eng-52`, or a link to one: Jira's `/browse/ENG-52` or `selectedIssue=ENG-52`,
-/// Linear's `/issue/ENG-52/slug`. Any other link gives the first part of its path that reads as a
-/// key, then of its query, then of its fragment: a slug ending in `phase-2` after the key, or a
-/// fragment `#comment-10`, is never the ticket.
-pub fn parse_key(input: &str) -> Option<String> {
-    let s = input.trim();
-    let (s, fragment) = s.split_once('#').unwrap_or((s, ""));
-    let (path, query) = s.split_once('?').unwrap_or((s, ""));
-    // The host can read as a key (`eng-52.example.com`), so the path starts after it.
-    let path = path
-        .split_once("://")
-        .map_or(path, |(_, rest)| rest.split_once('/').map_or("", |(_, p)| p));
-    let parts: Vec<&str> = path.split(['/', ' ']).collect();
-    let after =
-        |marker: &str| parts.windows(2).find(|w| w[0] == marker && is_key(w[1])).map(|w| w[1]);
-    let params = || query.split('&').filter_map(|p| p.split_once('='));
-    let key = after("browse")
-        .or_else(|| after("issue"))
-        .or_else(|| {
-            params().find(|&(name, v)| name == "selectedIssue" && is_key(v)).map(|(_, v)| v)
-        })
-        .or_else(|| parts.iter().copied().find(|p| is_key(p)))
-        .or_else(|| params().map(|(_, v)| v).find(|v| is_key(v)))
-        .or_else(|| fragment.split(['/', '=', '?', '&', ' ']).find(|p| is_key(p)))?;
-    Some(key.to_uppercase())
-}
-
 /// Whether what's typed as an agent's name names a ticket of the project whose prefix is
 /// `prefix` instead: a number (`52`, `#52`), a link, or a key with the project's prefix (any key
 /// when it has none). Another key stays a name: `phase-2` reads as a key, and is a fair name.
 fn names_ticket(prefix: &str, input: &str) -> bool {
     let input = input.trim();
-    let number = input.strip_prefix('#').unwrap_or(input);
-    if !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()) {
+    if ticket_key::is_number(input.strip_prefix('#').unwrap_or(input)) {
         return true;
     }
     if input.contains("://") {
         return true;
     }
-    parse_key(input).is_some_and(|key| {
-        prefix.is_empty()
-            || key.split_once('-').is_some_and(|(p, _)| p.eq_ignore_ascii_case(prefix))
+    ticket_key::parse(input).is_some_and(|key| {
+        prefix.is_empty() || ticket_key::prefix_of(&key).eq_ignore_ascii_case(prefix)
     })
 }
 
@@ -147,15 +115,6 @@ pub(super) fn focus_text(form: &mut Form) {
     if let Some(i) = form.fields.iter().position(|f| matches!(f.label, "Ticket" | "Name")) {
         form.focus = i;
     }
-}
-
-fn is_key(s: &str) -> bool {
-    let Some((proj, num)) = s.split_once('-') else { return false };
-    !proj.is_empty()
-        && proj.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-        && proj.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && !num.is_empty()
-        && num.chars().all(|c| c.is_ascii_digit())
 }
 
 impl App {
@@ -214,11 +173,8 @@ impl App {
         if let Some(r) = self.tracker_input(p, input) {
             return r.ok();
         }
-        let prefix = self.projects[p].tracker.as_ref().map(|t| t.key.clone()).unwrap_or_default();
-        if !prefix.is_empty() && !input.is_empty() && input.chars().all(|c| c.is_ascii_digit()) {
-            return Some(format!("{}-{input}", prefix.to_uppercase()));
-        }
-        parse_key(input)
+        let prefix = self.projects[p].tracker.as_ref().map_or("", |t| t.key.as_str());
+        ticket_key::complete(input, prefix).or_else(|| ticket_key::parse(input))
     }
 
     /// What the ticket field names when it's written the tracker's own way (`#12`, an issue's
@@ -230,8 +186,7 @@ impl App {
             return Some(r);
         }
         let s = input.trim();
-        let words =
-            !s.is_empty() && !s.chars().all(|c| c.is_ascii_digit()) && parse_key(s).is_none();
+        let words = !s.is_empty() && !ticket_key::is_number(s) && ticket_key::parse(s).is_none();
         if !t.lists_open() || !words {
             return None;
         }
@@ -354,7 +309,7 @@ impl App {
             let named = match tracker.and_then(|t| t.key_from_input(s)) {
                 Some(Ok(key)) => Some(key),
                 Some(Err(e)) => return Shown::Note(vec![e]),
-                None => parse_key(s),
+                None => ticket_key::parse(s),
             };
             if let Some(key) = named {
                 return match list.iter().find(|i| i.key.eq_ignore_ascii_case(&key)) {
@@ -821,51 +776,5 @@ mod tests {
             "the ticket file's name"
         );
         assert_eq!(branch_preview("feature/{key}-{slug}", None, "ENG-52"), "feature/eng-52-…");
-    }
-
-    #[test]
-    fn parses_keys_and_links() {
-        assert_eq!(parse_key("eng-52").as_deref(), Some("ENG-52"));
-        assert_eq!(
-            parse_key("https://example.atlassian.net/browse/ENG-52").as_deref(),
-            Some("ENG-52")
-        );
-        assert_eq!(
-            parse_key("https://example.atlassian.net/jira/software/projects/ENG/boards/1?selectedIssue=ENG-7")
-                .as_deref(),
-            Some("ENG-7")
-        );
-        // What follows the key in a link isn't the ticket, even when it reads as a key.
-        assert_eq!(
-            parse_key("https://example.atlassian.net/browse/ENG-52?focusedCommentId=10#comment-10")
-                .as_deref(),
-            Some("ENG-52")
-        );
-        assert_eq!(
-            parse_key("https://linear.app/acme/issue/ENG-52/phase-2").as_deref(),
-            Some("ENG-52")
-        );
-        assert_eq!(parse_key("linear.app/acme/issue/eng-52/phase-2").as_deref(), Some("ENG-52"));
-        // A workspace or host that reads as a key doesn't count either.
-        assert_eq!(parse_key("https://linear.app/team-1/issue/ENG-52").as_deref(), Some("ENG-52"));
-        assert_eq!(
-            parse_key("https://eng-1.example.com/tickets/ENG-52").as_deref(),
-            Some("ENG-52")
-        );
-        // Other links: the first key in the path, then in the query.
-        assert_eq!(parse_key("https://example.com/t/ENG-52/split-2").as_deref(), Some("ENG-52"));
-        assert_eq!(
-            parse_key("https://example.com/view?id=ENG-52&page=2").as_deref(),
-            Some("ENG-52")
-        );
-        // The fragment only when the path and query have no key.
-        assert_eq!(
-            parse_key("https://example.atlassian.net/browse/ENG-52#comment-10").as_deref(),
-            Some("ENG-52")
-        );
-        assert_eq!(parse_key("https://example.com/#ENG-52").as_deref(), Some("ENG-52"));
-        assert_eq!(parse_key("https://example.com/#/view?id=ENG-52").as_deref(), Some("ENG-52"));
-        assert_eq!(parse_key("hello"), None);
-        assert_eq!(parse_key("ENG-"), None);
     }
 }

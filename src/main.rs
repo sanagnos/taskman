@@ -31,6 +31,7 @@ mod status_file;
 mod store;
 mod term;
 mod theme;
+mod ticket_key;
 mod token_file;
 mod tracker;
 mod ui;

@@ -13,7 +13,7 @@ use super::{App, Field, Form, FormKind, Mode, Remote, SettingsItem};
 use crate::keychain::{self, Keychain};
 use crate::store::{self, Account, Config, Project, Provider, Tracker, WorktreePrefs};
 use crate::tracker::{self, Choice, Client};
-use crate::{github, local, untrusted, worktree};
+use crate::{github, local, ticket_key, untrusted, worktree};
 use std::path::{Path, PathBuf};
 
 /// The Account picker's entry for creating one.
@@ -801,7 +801,7 @@ impl App {
             if t.site.is_empty() && !t.provider.has_board() {
                 return Err(t.provider.site_missing().into());
             }
-            if !t.key.is_empty() && !tracker::is_prefix(&t.key) {
+            if !t.key.is_empty() && !ticket_key::is_prefix(&t.key) {
                 return Err(format!(
                     "{} isn't a ticket prefix: letters and digits, starting with a letter (like ENG)",
                     t.key

@@ -5,12 +5,11 @@
 //! the command prints its reply.
 
 use crate::add::{self, Close, Item, Line, Request};
-use crate::app::parse_key;
 use crate::cli::{self, Arg, Lexer};
 use crate::resume::Hold;
 use crate::status::{self, Here, Scope};
 use crate::store::{self, Cli, Saved, Ticket};
-use crate::{untrusted, worktree};
+use crate::{ticket_key, untrusted, worktree};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -182,7 +181,7 @@ fn plan(a: &Args, saved: &Saved, me: Option<&Ticket>, here: Option<&Here>) -> Re
         return Ok(plan);
     }
     for input in &a.inputs {
-        let located = if !input.is_empty() && input.chars().all(|c| c.is_ascii_digit()) {
+        let located = if ticket_key::is_number(input) {
             cli::pick_project(a.project.as_deref(), &[], me, saved, here)
                 .and_then(|p| cli::resolve_key(input, p, &saved.projects).map(|k| (k, p)))
                 .and_then(|(key, p)| {
@@ -190,7 +189,7 @@ fn plan(a: &Args, saved: &Saved, me: Option<&Ticket>, here: Option<&Here>) -> Re
                         .map(|l| (key, l))
                 })
         } else {
-            parse_key(input)
+            ticket_key::parse(input)
                 .ok_or_else(|| format!("{input} isn't a ticket number, key or link"))
                 .and_then(|key| {
                     status::locate(&key, saved, status::scope(named, None, me, saved, here))

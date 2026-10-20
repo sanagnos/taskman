@@ -3,6 +3,7 @@
 //! the project's own folder; callers pass that folder, never a worktree's copy.
 
 use crate::cli::{Arg, Lexer};
+use crate::ticket_key;
 use crate::tracker::{FetchError, Issue, Listed};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -125,9 +126,7 @@ pub fn category(column: &str) -> &'static str {
 pub fn parse_filename(name: &str) -> Option<(String, String)> {
     let stem = name.strip_suffix(".md")?;
     let (prefix, rest) = stem.split_once('-')?;
-    if !prefix.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-        || !prefix.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-    {
+    if !ticket_key::is_prefix(prefix) {
         return None;
     }
     let digits = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
@@ -138,7 +137,7 @@ pub fn parse_filename(name: &str) -> Option<(String, String)> {
         "" => "",
         s => s.strip_prefix('-')?,
     };
-    Some((format!("{}-{}", prefix.to_uppercase(), &rest[..digits]), slug.to_string()))
+    Some((ticket_key::join(prefix, &rest[..digits]), slug.to_string()))
 }
 
 /// One ticket file on the board.
@@ -313,15 +312,11 @@ pub fn next_key(files: &[File], prefix: &str) -> String {
     let prefix = prefix.to_uppercase();
     let n = files
         .iter()
-        .filter_map(|f| {
-            f.key
-                .rsplit_once('-')
-                .filter(|(p, _)| *p == prefix)
-                .and_then(|(_, n)| n.parse::<u64>().ok())
-        })
+        .filter(|f| ticket_key::prefix_of(&f.key) == prefix)
+        .filter_map(|f| ticket_key::number(&f.key))
         .max()
         .unwrap_or(0);
-    format!("{prefix}-{}", n + 1)
+    ticket_key::join(&prefix, n + 1)
 }
 
 /// A ticket file as an issue: the first `# ` heading is the summary (else the slug), the column
@@ -518,9 +513,7 @@ pub fn default_prefix(project: &str) -> String {
 pub fn prefix_in_use(files: &[File]) -> Option<String> {
     let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
     for f in files {
-        if let Some((prefix, _)) = f.key.split_once('-') {
-            *counts.entry(prefix).or_default() += 1;
-        }
+        *counts.entry(ticket_key::prefix_of(&f.key)).or_default() += 1;
     }
     let most = counts.values().copied().max()?;
     counts.into_iter().find(|(_, n)| *n == most).map(|(p, _)| p.to_string())
@@ -1000,10 +993,8 @@ mod tests {
         #[test]
         fn file_names_that_parse_have_a_key(name in "[A-Za-z0-9_.-]{0,6}-?[0-9]{0,3}(-.{0,6})?(\\.md)?") {
             if let Some((key, _)) = parse_filename(&name) {
-                let (p, n) = key.split_once('-').unwrap();
-                prop_assert!(p.starts_with(|c: char| c.is_ascii_uppercase()), "{key}");
-                prop_assert!(p.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'), "{key}");
-                prop_assert!(!n.is_empty() && n.chars().all(|c| c.is_ascii_digit()), "{key}");
+                prop_assert!(ticket_key::well_formed(&key), "{key}");
+                prop_assert_eq!(key.to_uppercase(), key.clone());
             }
         }
 

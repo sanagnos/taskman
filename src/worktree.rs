@@ -1483,7 +1483,7 @@ mod tests {
         assert!(check_format("{repo}-{KEY}").unwrap_err().contains("{repo}"));
     }
 
-    /// A ticket key, as `parse_key` accepts it, in any case.
+    /// A ticket key, as `ticket_key::parse` accepts it, in any case.
     fn key() -> impl Strategy<Value = String> {
         "[A-Za-z][A-Za-z0-9_]{0,6}-[0-9]{1,5}"
     }
