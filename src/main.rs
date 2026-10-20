@@ -131,6 +131,9 @@ impl Signals {
 /// at once, it reports the resize and drops the input, and as it waits for new input (edge
 /// triggered) it won't read that input until more comes. So `wait` wakes on a SIGWINCH too, for
 /// `run` to read each resize before input can arrive with it.
+///
+/// `wait` also wakes for the sessions' output (`session::Wake`), so the loop can wait long between
+/// frames without the selected session's echo waiting with it.
 struct Tty {
     fd: RawFd,
     /// The file `fd` belongs to when it isn't stdin: `/dev/tty`, or the watchdog's copy.
@@ -138,18 +141,23 @@ struct Tty {
     /// Readable after a SIGWINCH. The watchdog's copy has none: it only looks for the terminal
     /// going.
     resized: Option<UnixStream>,
+    /// Readable after a session's output. None in the watchdog's copy too.
+    woken: Option<UnixStream>,
 }
 
 #[derive(Debug, PartialEq)]
 enum Input {
     Ready,
     Idle,
+    /// A session wrote output; the terminal may still hold input (see `wait_held`).
+    Woken,
     Gone,
 }
 
 impl Tty {
-    /// The file crossterm picks: stdin if it's a terminal, else `/dev/tty`.
-    fn open() -> std::io::Result<Self> {
+    /// The file crossterm picks: stdin if it's a terminal, else `/dev/tty`. With what wakes its
+    /// `wait`, for the sessions.
+    fn open() -> std::io::Result<(Self, session::Wake)> {
         // SAFETY: isatty only looks at a descriptor number; it reads or writes no memory.
         let (fd, file) = if unsafe { libc::isatty(libc::STDIN_FILENO) } == 1 {
             (libc::STDIN_FILENO, None)
@@ -160,7 +168,11 @@ impl Tty {
         let (resized, wake) = UnixStream::pair()?;
         resized.set_nonblocking(true)?;
         signal_hook::low_level::pipe::register(SIGWINCH, wake)?;
-        Ok(Self { fd, _file: file, resized: Some(resized) })
+        let (woken, wake) = UnixStream::pair()?;
+        woken.set_nonblocking(true)?;
+        wake.set_nonblocking(true)?;
+        let tty = Self { fd, _file: file, resized: Some(resized), woken: Some(woken) };
+        Ok((tty, session::Wake::new(wake)))
     }
 
     fn try_clone(&self) -> std::io::Result<Self> {
@@ -168,18 +180,19 @@ impl Tty {
         // clone.
         let f =
             std::fs::File::from(unsafe { BorrowedFd::borrow_raw(self.fd) }.try_clone_to_owned()?);
-        Ok(Self { fd: f.as_raw_fd(), _file: Some(f), resized: None })
+        Ok(Self { fd: f.as_raw_fd(), _file: Some(f), resized: None, woken: None })
     }
 
-    /// Waits up to `timeout` for input or a resize, which crossterm reads. Through
-    /// `filedescriptor::poll`, which uses select on macOS, where poll doesn't work on terminals.
+    /// Waits up to `timeout` for input or a resize, which crossterm reads, or a session's output.
+    /// Through `filedescriptor::poll`, which uses select on macOS, where poll doesn't work on
+    /// terminals.
     fn wait(&self, timeout: Duration) -> Input {
         self.poll(timeout, false)
     }
 
     /// As `wait`, for input crossterm won't read until more comes (see `Tty`): that input keeps
-    /// the terminal readable, so only a resize or the terminal going ends the wait early. Ready
-    /// while the input is still there, for `run` to try crossterm again.
+    /// the terminal readable, so only a resize, a session's output or the terminal going ends the
+    /// wait early. Ready while the input is still there, for `run` to try crossterm again.
     fn wait_held(&self, timeout: Duration) -> Input {
         self.poll(timeout, true)
     }
@@ -187,12 +200,14 @@ impl Tty {
     fn poll(&self, timeout: Duration, held: bool) -> Input {
         // Without POLLIN, poll still reports a hangup, and select (macOS) an exception.
         let events = if held { 0 } else { libc::POLLIN };
-        let resized = self.resized.as_ref().map_or(-1, AsRawFd::as_raw_fd);
-        let mut fds = [
-            libc::pollfd { fd: self.fd, events, revents: 0 },
-            libc::pollfd { fd: resized, events: libc::POLLIN, revents: 0 },
-        ];
-        let fds = &mut fds[..if self.resized.is_some() { 2 } else { 1 }];
+        // Only the pipes there are: select (macOS) refuses a negative descriptor.
+        let mut fds = [libc::pollfd { fd: self.fd, events, revents: 0 }; 3];
+        let mut len = 1;
+        for pipe in [&self.resized, &self.woken].into_iter().flatten() {
+            fds[len] = libc::pollfd { fd: pipe.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+            len += 1;
+        }
+        let fds = &mut fds[..len];
         match filedescriptor::poll(fds, Some(timeout)) {
             // An error is a signal arriving; the caller checks for those.
             Ok(0) | Err(_) if !held => return Input::Idle,
@@ -201,13 +216,23 @@ impl Tty {
         if fds[0].revents & (libc::POLLHUP | libc::POLLNVAL) != 0 {
             return Input::Gone;
         }
+        let readable = |pipe: &UnixStream| {
+            fds.iter().any(|f| f.fd == pipe.as_raw_fd() && f.revents & libc::POLLIN != 0)
+        };
         if let Some(r) = &self.resized
-            && fds[1].revents & libc::POLLIN != 0
+            && readable(r)
         {
-            // Writes collate, so one read usually takes them all.
-            let mut buf = [0u8; 64];
-            while matches!((&*r).read(&mut buf), Ok(n) if n > 0) {}
+            drain(r);
             return Input::Ready;
+        }
+        if let Some(w) = &self.woken
+            && readable(w)
+        {
+            drain(w);
+            // Input that came too is read as usual; held input is still held.
+            if held || fds[0].revents == 0 {
+                return Input::Woken;
+            }
         }
         // Readable with nothing to read is the end of file; select on macOS reports no hangup.
         let mut n: libc::c_int = 0;
@@ -220,6 +245,12 @@ impl Tty {
             (false, true) => Input::Idle,
         }
     }
+}
+
+/// Empties a wake-up pipe. Writes collate, so one read usually takes them all.
+fn drain(mut r: &UnixStream) {
+    let mut buf = [0u8; 64];
+    while matches!(r.read(&mut buf), Ok(n) if n > 0) {}
 }
 
 /// Ends taskman when the terminal has been gone for `GRACE` and it's still running: the loop is
@@ -388,7 +419,8 @@ fn main() -> anyhow::Result<()> {
     let mut app = app::App::new(&exe, saved, config);
     app.check_prefix_tip();
     let signals = Signals::register()?;
-    let tty = Tty::open()?;
+    let (tty, wake) = Tty::open()?;
+    app.wake = wake;
     watchdog(tty.try_clone()?, signals.hangup.clone(), signals.stops.clone())?;
     set_panic_hook();
 
@@ -499,6 +531,29 @@ fn set_panic_hook() {
     }));
 }
 
+/// The closest frames follow each other: for a change on screen or the selected session's output.
+const FRAME: Duration = Duration::from_millis(16);
+/// Frames while a spinner shows: its pace.
+const SPIN: Duration = Duration::from_millis(100);
+/// Frames otherwise, for the ages and anything that changed without saying so.
+const TICK: Duration = Duration::from_secs(1);
+/// The longest the loop waits before it ticks again: the threads' replies (`Msg`) don't wake it.
+const MAX_WAIT: Duration = Duration::from_millis(100);
+
+/// How long after the last frame the next is due: soon for a change (`App::dirty`: a key, a reply,
+/// a toast) or the selected session's output, at the spinner's pace while the last frame showed
+/// one, else once a second. Other sessions' output is no reason: their cards change with the
+/// status poll, which says so.
+fn frame_due(changed: bool, output: bool, animated: bool) -> Duration {
+    if changed || output {
+        FRAME
+    } else if animated {
+        SPIN
+    } else {
+        TICK
+    }
+}
+
 /// The terminal, clearing what an emoji covers before drawing it (see `backend`), its output
 /// sending each link once per run of cells (see `links::Runs`).
 type Term = ratatui::Terminal<backend::Backend<links::Runs<std::io::Stdout>>>;
@@ -510,8 +565,9 @@ fn run(
     signals: &Signals,
     tty: &Tty,
 ) -> anyhow::Result<()> {
-    let mut last_draw =
-        Instant::now().checked_sub(Duration::from_secs(1)).unwrap_or_else(Instant::now);
+    let mut last_draw = Instant::now().checked_sub(TICK).unwrap_or_else(Instant::now);
+    // Whether the last frame showed a spinner.
+    let mut animated = false;
     // Keys typed during the keyboard query wait in crossterm's queue, not on the terminal.
     let mut input = true;
     // Passes in a row that found input and read nothing from crossterm.
@@ -532,17 +588,22 @@ fn run(
             read_input(app)?;
         }
 
-        // Redraw on output, input, or at 10fps for spinners and clocks.
-        if app.dirty.swap(false, Ordering::Relaxed)
-            || last_draw.elapsed() >= Duration::from_millis(100)
-        {
+        let due = |app: &app::App, animated| {
+            frame_due(app.dirty.load(Ordering::Relaxed), app.selected_fresh(), animated)
+        };
+        if last_draw.elapsed() >= due(app, animated) {
+            app.take_redraw();
             terminal.draw(|f| {
                 ui::draw(f, app);
                 if no_color {
                     ui::drop_colours(f.buffer_mut());
                 }
             })?;
+            animated = ui::animated();
             last_draw = Instant::now();
+        }
+        // Not only with a frame: these come from the sessions and the poll, which needn't draw.
+        if !app.clipboard_out.is_empty() || app.bell || !app.notify_out.is_empty() {
             let mut out = std::io::stdout();
             for data in app.clipboard_out.drain(..) {
                 let _ = write!(out, "\x1b]52;c;{data}\x07");
@@ -556,13 +617,18 @@ fn run(
             let _ = out.flush();
         }
 
+        let timeout = due(app, animated).saturating_sub(last_draw.elapsed()).min(MAX_WAIT);
         // Input crossterm read nothing from twice is held (see `Tty`): waiting on it would spin.
+        // Only new input frees it, and that doesn't end the wait, so try again soon.
         let wait = if misses >= 2 { Tty::wait_held } else { Tty::wait };
-        match wait(tty, Duration::from_millis(16)) {
+        let timeout = if misses >= 2 { timeout.min(FRAME) } else { timeout };
+        match wait(tty, timeout) {
             // The terminal is gone, as with SIGHUP: stop the sessions and end.
             Input::Gone => return Ok(()),
             Input::Ready => input = true,
             Input::Idle => misses = 0,
+            // The next pass draws it, if it's the selected session's.
+            Input::Woken => {}
         }
         if std::mem::take(&mut input) {
             misses = if read_input(app)? { 0 } else { misses.saturating_add(1) };
@@ -669,6 +735,19 @@ fn edit(terminal: &mut Term, path: &std::path::Path, enhanced: bool) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_frame_is_due_soon_only_for_a_change_or_the_selected_sessions_output() {
+        // A key, a reply or a toast; or the selected session's output (`App::selected_fresh`,
+        // which leaves the other sessions' out).
+        assert_eq!(frame_due(true, false, false), FRAME);
+        assert_eq!(frame_due(false, true, false), FRAME);
+        assert_eq!(frame_due(true, true, true), FRAME);
+        // A spinner on screen.
+        assert_eq!(frame_due(false, false, true), SPIN);
+        // Nothing: the clock, for the ages.
+        assert_eq!(frame_due(false, false, false), TICK);
+    }
     use std::os::fd::{FromRawFd, OwnedFd};
 
     #[test]
@@ -714,7 +793,7 @@ mod tests {
     #[test]
     fn tty_wait_sees_the_terminal_close() {
         let (master, slave) = pty();
-        let tty = Tty { fd: slave.as_raw_fd(), _file: None, resized: None };
+        let tty = Tty { fd: slave.as_raw_fd(), _file: None, resized: None, woken: None };
         let wait = Duration::from_millis(200);
 
         assert_eq!(tty.wait(wait), Input::Idle);
@@ -741,7 +820,7 @@ mod tests {
         let (_master, slave) = pty();
         let (resized, mut wake) = UnixStream::pair().unwrap();
         resized.set_nonblocking(true).unwrap();
-        let tty = Tty { fd: slave.as_raw_fd(), _file: None, resized: Some(resized) };
+        let tty = Tty { fd: slave.as_raw_fd(), _file: None, resized: Some(resized), woken: None };
         let wait = Duration::from_millis(200);
 
         assert_eq!(tty.wait(wait), Input::Idle);
@@ -752,9 +831,34 @@ mod tests {
     }
 
     #[test]
+    fn tty_wait_wakes_on_a_sessions_output() {
+        let (master, slave) = pty();
+        let (woken, mut wake) = UnixStream::pair().unwrap();
+        woken.set_nonblocking(true).unwrap();
+        let tty = Tty { fd: slave.as_raw_fd(), _file: None, resized: None, woken: Some(woken) };
+        let wait = Duration::from_millis(200);
+
+        assert_eq!(tty.wait(wait), Input::Idle);
+        // Two sessions' output before the wait: one wake.
+        wake.write_all(b"\0\0").unwrap();
+        assert_eq!(tty.wait(wait), Input::Woken);
+        assert_eq!(tty.wait(Duration::ZERO), Input::Idle);
+        // Input that comes with it is still read.
+        let mut m = std::fs::File::from(master);
+        m.write_all(b"x\n").unwrap();
+        wake.write_all(b"\0").unwrap();
+        assert_eq!(tty.wait(wait), Input::Ready);
+        // Held, the input doesn't end the wait, but the output does.
+        wake.write_all(b"\0").unwrap();
+        let start = Instant::now();
+        assert_eq!(tty.wait_held(Duration::from_secs(5)), Input::Woken);
+        assert!(start.elapsed() < Duration::from_secs(1), "returned after {:?}", start.elapsed());
+    }
+
+    #[test]
     fn tty_wait_held_waits_out_input_crossterm_left() {
         let (master, slave) = pty();
-        let tty = Tty { fd: slave.as_raw_fd(), _file: None, resized: None };
+        let tty = Tty { fd: slave.as_raw_fd(), _file: None, resized: None, woken: None };
         let wait = Duration::from_millis(100);
 
         assert_eq!(tty.wait_held(Duration::ZERO), Input::Idle);

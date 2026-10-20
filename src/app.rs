@@ -156,7 +156,11 @@ pub struct App {
     pub config: Config,
     /// The accounts' tokens, the tracker clients built from them, and Local files boards' listings.
     trackers: tracker::Clients,
+    /// Something on screen changed: draw a frame. Not for a session's output, which each session
+    /// keeps (`Session::fresh`), so that only the selected one's draws.
     pub dirty: Arc<AtomicBool>,
+    /// Given to each session started, to wake the event loop with its output.
+    pub wake: crate::session::Wake,
     pub areas: Areas,
     /// The cards and project headers drawn, at the rows they're drawn on, for clicks.
     pub sidebar_hits: Vec<(Rect, Hit)>,
@@ -308,6 +312,7 @@ impl App {
             config,
             trackers: Default::default(),
             dirty: Arc::new(AtomicBool::new(true)),
+            wake: Default::default(),
             areas: Areas::default(),
             sidebar_hits: Vec::new(),
             sidebar_scroll: ui::SidebarScroll::default(),
@@ -556,6 +561,22 @@ impl App {
 
     pub fn selected(&self) -> Option<&TicketView> {
         self.tickets.get(self.sel)
+    }
+
+    /// Whether the selected session has written anything since its pane was last drawn. The
+    /// others' output isn't drawn for: the sidebar learns of it from the status poll.
+    pub fn selected_fresh(&self) -> bool {
+        self.selected()
+            .and_then(|tv| tv.session.as_ref())
+            .is_some_and(crate::session::Session::fresh)
+    }
+
+    /// Takes what calls for a frame (`dirty`, the selected session's output), as one is drawn.
+    pub fn take_redraw(&self) {
+        self.dirty.store(false, Ordering::Relaxed);
+        if let Some(s) = self.selected().and_then(|tv| tv.session.as_ref()) {
+            s.drawn();
+        }
     }
 
     pub fn tick(&mut self, screen: Rect) {

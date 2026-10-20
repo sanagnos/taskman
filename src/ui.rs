@@ -116,7 +116,18 @@ fn fit_widths(w: u16, want_sw: u16, want_rw: u16) -> (u16, u16) {
     tries.into_iter().find(|&(sw, rw)| claude(sw, rw) >= CLAUDE_MIN_W).unwrap_or((folded, 0))
 }
 
+thread_local! {
+    /// Whether the frame being drawn shows a spinner (`spinner`).
+    static SPUN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the last frame drawn showed a spinner, which wants the next frame in 100 ms.
+pub fn animated() -> bool {
+    SPUN.get()
+}
+
 fn spinner() -> &'static str {
+    SPUN.set(true);
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
@@ -176,6 +187,7 @@ fn pr_state(pr: &Pr) -> (String, Color) {
 }
 
 pub fn draw(f: &mut Frame, app: &mut App) {
+    SPUN.set(false);
     crate::theme::set_current(app.theme);
     // From the frame's own size: see `App::lay_out`.
     app.lay_out(f.area());
@@ -343,6 +355,20 @@ mod screens;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::test_support::{acme_app, draw};
+
+    #[test]
+    fn a_frame_with_a_spinner_asks_for_the_next_soon() {
+        // ENG-61 is working: its card spins.
+        let mut app = acme_app();
+        draw(&mut app, 160, 40);
+        assert!(animated());
+        for tv in &mut app.tickets {
+            tv.status.state = AgentState::Idle;
+        }
+        draw(&mut app, 160, 40);
+        assert!(!animated());
+    }
 
     #[test]
     fn badges_differ_by_symbol_not_only_colour() {

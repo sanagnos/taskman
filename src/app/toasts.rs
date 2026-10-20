@@ -3,6 +3,7 @@
 use super::App;
 use crate::util;
 use std::collections::VecDeque;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 /// How many toasts the log keeps.
@@ -79,6 +80,7 @@ impl App {
             return;
         }
         self.toast = Some(Toast { msg, level, at: Instant::now(), hold });
+        self.dirty.store(true, Ordering::Relaxed);
     }
 
     /// A key dismisses an error toast, before the key does anything that may toast again.
@@ -92,6 +94,7 @@ impl App {
     pub(super) fn expire_toast(&mut self) {
         if self.toast.as_ref().is_some_and(|t| t.level != Level::Error && t.at.elapsed() > t.hold) {
             self.toast = None;
+            self.dirty.store(true, Ordering::Relaxed);
         }
         if self.toast.is_none() {
             self.show_save_error();

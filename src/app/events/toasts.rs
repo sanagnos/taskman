@@ -140,3 +140,17 @@ fn a_failed_background_job_toasts_an_error() {
     app.drain_messages();
     assert_eq!(app.toast.as_ref().unwrap().level, Level::Error);
 }
+
+#[test]
+fn a_toast_calls_for_a_frame_as_it_shows_and_as_it_clears() {
+    use std::sync::atomic::Ordering;
+    let mut app = acme_app();
+    app.take_redraw();
+    app.toast("Marked as read");
+    assert!(app.dirty.load(Ordering::Relaxed));
+    app.take_redraw();
+    age_toast(&mut app, 3);
+    assert!(!app.dirty.load(Ordering::Relaxed), "nothing changed");
+    age_toast(&mut app, 5);
+    assert!(app.dirty.load(Ordering::Relaxed), "cleared");
+}

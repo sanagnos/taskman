@@ -43,10 +43,13 @@ fn a_key_after_a_resize_arrives_on_its_own() {
     assert!(tui.wait_exit().success());
 }
 
-/// Resizes the terminal and waits for taskman to draw at the new size: the hints on the last row.
+/// Resizes the terminal and waits for taskman to draw at the new size: the hints on the last row,
+/// and the header on the first. The hints alone can be the last frame before the resize, kept at
+/// the bottom as the screen shrank, and a key sent then comes with the resize.
 fn resize(tui: &Tui, rows: u16, cols: u16) {
     tui.resize(rows, cols);
-    tui.wait_for("the hints on the resized terminal's last row", |s| {
+    tui.wait_for("the header and the hints on the resized terminal", |s| {
+        find(s, "taskman v").filter(|&(_, r)| r == 0)?;
         find(s, "menu").filter(|&(_, r)| r == rows - 1)
     });
 }

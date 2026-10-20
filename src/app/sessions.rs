@@ -131,17 +131,10 @@ impl App {
         // What the status file says is an earlier start's: at taskman's next start it would pass
         // for the session's latest conversation (`take_leftover_status`).
         remove_status_at(&store::status_file(&self.tickets[i].t.repo, &self.tickets[i].t.key));
-        let dirty = self.dirty.clone();
+        let wake = self.wake.clone();
         let (scrollback, colours) = (self.config.scrollback, self.theme.colours);
-        match Session::spawn(
-            cmd.clone(),
-            &name,
-            area.height,
-            area.width,
-            scrollback,
-            dirty,
-            colours,
-        ) {
+        match Session::spawn(cmd.clone(), &name, area.height, area.width, scrollback, wake, colours)
+        {
             Ok(s) => {
                 let tv = &mut self.tickets[i];
                 tv.session = Some(s);

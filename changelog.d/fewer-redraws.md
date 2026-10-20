@@ -1,0 +1,1 @@
+- taskman draws only when the screen changes: other sessions' output no longer redraws it, and an idle taskman draws once a second instead of ten times. With nine busy sessions in the background it takes about a third of the processor time it did.

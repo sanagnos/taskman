@@ -680,3 +680,28 @@ fn a_stop_that_panics_says_so_and_enter_tries_again() {
     assert!(stopping(&app));
     settle_until(&mut app, |app| !stopping(app));
 }
+
+// ---- what calls for a frame --------------------------------------------------------------------
+
+#[test]
+fn only_the_selected_sessions_output_calls_for_a_frame() {
+    let (mut app, _) = at_eng_52();
+    attach(&mut app, "ENG-61", "in the background");
+    app.take_redraw();
+    assert!(!app.selected_fresh());
+
+    let session = |app: &App, key: &str| {
+        let tv = app.tickets.iter().find(|tv| tv.t.key == key).unwrap();
+        tv.session.as_ref().unwrap().output(b"more\r\n");
+    };
+    session(&app, "ENG-61");
+    assert!(!app.selected_fresh(), "a background session's output draws nothing");
+    session(&app, "ENG-52");
+    assert!(app.selected_fresh());
+    app.take_redraw();
+    assert!(!app.selected_fresh(), "drawn");
+
+    // Selected, the other's output is drawn at once.
+    app.sel = app.tickets.iter().position(|tv| tv.t.key == "ENG-61").unwrap();
+    assert!(app.selected_fresh());
+}

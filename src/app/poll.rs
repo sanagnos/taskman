@@ -403,6 +403,7 @@ impl App {
             {
                 tv.status.state = AgentState::Exited;
                 tv.status.seen = i == self.sel;
+                self.dirty.store(true, Ordering::Relaxed);
             }
             // Ended in the pane: `taskman resume` may take it now.
             if let Some(s) = tv.session.as_mut().filter(|s| s.exited()) {

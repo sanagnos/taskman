@@ -2,6 +2,7 @@
 
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
@@ -65,6 +66,24 @@ impl vt100::Callbacks for Callbacks {
 
 pub type Parser = vt100::Parser<Callbacks>;
 
+/// Wakes the event loop, which waits on the other end (`Tty::wait`), for a session's output.
+/// Unit tests' sessions have none.
+#[derive(Clone, Default)]
+pub struct Wake(Option<Arc<UnixStream>>);
+
+impl Wake {
+    /// `stream` must be non-blocking: a full buffer already wakes the loop.
+    pub fn new(stream: UnixStream) -> Self {
+        Self(Some(Arc::new(stream)))
+    }
+
+    fn wake(&self) {
+        if let Some(s) = &self.0 {
+            let _ = (&**s).write(&[0]);
+        }
+    }
+}
+
 /// Why a session ended, for its pane to say.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum End {
@@ -104,6 +123,9 @@ pub struct Session {
     crashed: Arc<AtomicBool>,
     /// When the child last wrote output, in ms since the epoch.
     last_output: Arc<AtomicU64>,
+    /// Output since the pane was last drawn (`drawn`). Only the selected session's is drawn
+    /// for; the others' stays set, so their readers don't wake the loop again.
+    fresh: Arc<AtomicBool>,
     size: (u16, u16),
 }
 
@@ -116,7 +138,7 @@ impl Session {
         rows: u16,
         cols: u16,
         scrollback: usize,
-        dirty: Arc<AtomicBool>,
+        wake: Wake,
         colours: crate::theme::Colours,
     ) -> anyhow::Result<Self> {
         let (rows, cols) = (rows.max(2), cols.max(10));
@@ -135,15 +157,22 @@ impl Session {
         let exited = Arc::new(AtomicBool::new(false));
         let crashed = Arc::new(AtomicBool::new(false));
         let last_output = Arc::new(AtomicU64::new(now_ms()));
+        let fresh = Arc::new(AtomicBool::new(false));
 
         {
-            let (parser, input, exited, crashed, last_output) = (
+            let (parser, input, exited, crashed, last_output, fresh) = (
                 parser.clone(),
                 input.clone(),
                 exited.clone(),
                 crashed.clone(),
                 last_output.clone(),
+                fresh.clone(),
             );
+            let printed = move || {
+                if !fresh.swap(true, Ordering::Relaxed) {
+                    wake.wake();
+                }
+            };
             let mut killer = child.clone_killer();
             std::thread::Builder::new().name(format!("reader {name}")).spawn(move || {
                 // A panic here (in vt100, say) ends this session only; the others and the TUI
@@ -171,7 +200,7 @@ impl Session {
                                 };
                                 input.send(replies);
                                 last_output.store(now_ms(), Ordering::Relaxed);
-                                dirty.store(true, Ordering::Relaxed);
+                                printed();
                             }
                         }
                     }
@@ -182,7 +211,7 @@ impl Session {
                     crashed.store(true, Ordering::Relaxed);
                 }
                 exited.store(true, Ordering::Relaxed);
-                dirty.store(true, Ordering::Relaxed);
+                printed();
             })?;
         }
 
@@ -194,6 +223,7 @@ impl Session {
             exited,
             crashed,
             last_output,
+            fresh,
             size: (rows, cols),
         })
     }
@@ -228,6 +258,17 @@ impl Session {
         // taken as drawn on the old screen, and rows of its history overwritten.
         lock(&self.parser).screen_mut().set_size(crate::term::dim(rows), crate::term::dim(cols));
         let _ = self.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
+    }
+
+    /// Whether the CLI has written anything, or ended, since `drawn`.
+    pub fn fresh(&self) -> bool {
+        self.fresh.load(Ordering::Relaxed)
+    }
+
+    /// The pane is about to be drawn, with all the CLI has written: the next output wakes the
+    /// loop.
+    pub fn drawn(&self) {
+        self.fresh.store(false, Ordering::Relaxed);
     }
 
     /// How long since the child last wrote anything.
@@ -683,6 +724,7 @@ pub mod fake {
                 exited: Arc::new(AtomicBool::new(false)),
                 crashed: Arc::new(AtomicBool::new(false)),
                 last_output: Arc::new(AtomicU64::new(now_ms())),
+                fresh: Arc::new(AtomicBool::new(false)),
                 size: (rows, cols),
             };
             (session, sent)
@@ -708,6 +750,7 @@ pub mod fake {
         /// Shows `bytes` as if the CLI had written them.
         pub fn output(&self, bytes: &[u8]) {
             super::lock(&self.parser).process(bytes);
+            self.fresh.store(true, Ordering::Relaxed);
         }
     }
 }
