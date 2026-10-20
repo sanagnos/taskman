@@ -158,7 +158,7 @@ pub fn encode(key: &KeyEvent, app_cursor: bool) -> Option<Vec<u8>> {
         m.contains(KeyModifiers::SHIFT),
     );
     // xterm modifier parameter: 1 + shift + 2*alt + 4*ctrl.
-    let modp = 1 + shift as u8 + 2 * alt as u8 + 4 * ctrl as u8;
+    let modp = 1 + u8::from(shift) + 2 * u8::from(alt) + 4 * u8::from(ctrl);
     let csi = |final_: char| -> Vec<u8> {
         if modp > 1 {
             format!("\x1b[1;{modp}{final_}").into_bytes()

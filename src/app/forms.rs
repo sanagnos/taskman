@@ -258,11 +258,11 @@ impl Form {
         let mut i = self.focus.cast_signed();
         for _ in 0..n {
             i = (i + step).rem_euclid(n);
-            if !self.fields[i as usize].hidden {
+            if !self.fields[i.cast_unsigned()].hidden {
                 break;
             }
         }
-        i as usize
+        i.cast_unsigned()
     }
 }
 

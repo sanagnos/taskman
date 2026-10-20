@@ -235,7 +235,10 @@ fn panel_head(title: Vec<Span<'static>>, url: &str, titled: bool) -> Linked {
 
 /// Draws a panel: a block titled with `title`'s line, `body`'s lines in it from `scroll`, and the
 /// links in both passed on to the terminal (see `Linked`).
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a panel's parts, which each of its three callers builds differently"
+)]
 fn render_panel(
     f: &mut Frame,
     app: &mut App,
@@ -405,7 +408,7 @@ pub(super) fn draw_board(f: &mut Frame, app: &mut App, area: Rect) {
             row.push(Span::styled(lead.clone(), Style::new().fg(Color::Cyan)));
             row.push(Span::raw(truncate(
                 &text,
-                w.saturating_sub(width(&lead) + 2 * is_new as usize),
+                w.saturating_sub(width(&lead) + 2 * usize::from(is_new)),
             )));
             lines.push(Line::from(row));
         }

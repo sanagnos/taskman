@@ -1,7 +1,6 @@
 //! Running the taskman binary in a pty, as in a terminal window, with state and config kept in a
 //! scratch folder.
-// Each test binary uses its own part of this.
-#![allow(dead_code)]
+#![allow(dead_code, reason = "each test binary uses its own part of this")]
 
 use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};

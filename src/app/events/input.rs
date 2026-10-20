@@ -331,7 +331,7 @@ fn prefix_m_marks_what_shows_as_read() {
 #[test]
 fn page_up_and_down_scroll_the_session_or_reach_one_that_wants_the_mouse() {
     let (mut app, to_session) = at_eng_52();
-    let half = i32::from(app.areas.claude.height / 2);
+    let half = usize::from(app.areas.claude.height / 2);
     let lines: String = (1..=100).map(|n| format!("line {n}\r\n")).collect();
     let s = app.tickets[app.sel].session.as_ref().unwrap();
     s.output(lines.as_bytes());
@@ -341,9 +341,9 @@ fn page_up_and_down_scroll_the_session_or_reach_one_that_wants_the_mouse() {
     };
     prefix(&mut app, KeyCode::PageUp);
     prefix(&mut app, KeyCode::PageUp);
-    assert_eq!(scrolled(&app), 2 * half as usize);
+    assert_eq!(scrolled(&app), 2 * half);
     prefix(&mut app, KeyCode::PageDown);
-    assert_eq!(scrolled(&app), half as usize);
+    assert_eq!(scrolled(&app), half);
     assert_eq!(sent(&to_session), "");
     // A CLI that turned on mouse reporting scrolls itself: it gets the keys.
     let s = app.tickets[app.sel].session.as_ref().unwrap();
@@ -351,7 +351,7 @@ fn page_up_and_down_scroll_the_session_or_reach_one_that_wants_the_mouse() {
     prefix(&mut app, KeyCode::PageUp);
     prefix(&mut app, KeyCode::PageDown);
     assert_eq!(sent(&to_session), "\x1b[5~\x1b[6~");
-    assert_eq!(scrolled(&app), half as usize);
+    assert_eq!(scrolled(&app), half);
 }
 
 /// Scrolled to the top of a history that has dropped rows, the pane says where the rest is, in

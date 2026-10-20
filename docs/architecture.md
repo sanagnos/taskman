@@ -136,6 +136,7 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 | `.github/` | the CI and release workflows, issue and pull request templates, Dependabot, `CODEOWNERS` |
 | `.config/nextest.toml` | cargo-nextest's settings, which CI runs the tests with: a timeout per test, one rerun for the tests in `tests/`, flaky ones reported (failing for `ownership` and `stopping`) and a JUnit report |
 | `deny.toml` | cargo-deny's settings, checked in CI: advisories, bans, the accepted licenses and sources |
+| `clippy.toml` | clippy's settings: the unit tests may unwrap, expect and panic, which `src/main.rs` warns of everywhere else in the binary |
 | `rust-toolchain.toml` | the Rust CI and the release builds use, which rustup installs in a clone; Cargo.toml's `rust-version` is the oldest supported, which CI checks too |
 | `about.toml`, `about.hbs`, `LICENSE-THIRD-PARTY` | the notices of the crates built into the binary: cargo-about's settings (accepting `deny.toml`'s licenses) and template, and the file they generate, which the binary embeds (`taskman --licenses`) and every release archive carries beside `LICENSE-MIT` and `LICENSE-APACHE`; CI and the release build regenerate it and fail when it doesn't match `Cargo.lock` |
 

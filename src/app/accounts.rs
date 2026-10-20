@@ -56,6 +56,10 @@ fn account_providers() -> impl Iterator<Item = Provider> {
 }
 
 /// The provider a new account form starts on: the first it offers.
+#[expect(
+    clippy::expect_used,
+    reason = "Provider::ALL is a constant, and Jira and Linear in it take accounts"
+)]
 pub(super) fn first_account_provider() -> Provider {
     account_providers().next().expect("some provider takes an account")
 }
@@ -476,7 +480,7 @@ impl App {
             {
                 source
             } else {
-                return Err(keychain::check_token("").unwrap_err());
+                return Err(keychain::NO_TOKEN.into());
             }
         } else {
             // `$NAME` becomes `env:NAME` in the field too, so the form shows what's saved.

@@ -686,7 +686,7 @@ impl App {
             Some(here) => (here.cast_signed() + dir).rem_euclid(n),
             None => 0,
         };
-        self.select(order[i as usize]);
+        self.select(order[i.cast_unsigned()]);
     }
 
     /// The project `ctrl+a n` and `ctrl+a ,` open on: the one whose header was last clicked or

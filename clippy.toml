@@ -1,0 +1,5 @@
+# The unit tests' own code may panic (unwrap, expect, panic!): that is how a test fails. The
+# lints are on in src/main.rs.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

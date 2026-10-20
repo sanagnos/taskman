@@ -52,11 +52,14 @@ pub fn is_name(name: &str) -> bool {
         && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
 }
 
+/// What `check_token` says of an empty token.
+pub const NO_TOKEN: &str = "Paste the token into the Token field";
+
 /// Refuses what can't be a token, before anything runs: Jira's and Linear's are printable ASCII
 /// with no spaces, and `security -i` reads one command a line. Never repeats the value.
 pub fn check_token(token: &str) -> Result<(), String> {
     if token.is_empty() {
-        return Err("Paste the token into the Token field".into());
+        return Err(NO_TOKEN.into());
     }
     if token.len() > 4096 || !token.chars().all(|c| c.is_ascii_graphic()) {
         return Err(

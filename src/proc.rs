@@ -167,7 +167,7 @@ mod tests {
     #[test]
     fn writes_all_the_input_to_a_slow_reader() {
         // More than a pipe holds, so the write has to wait for the reader.
-        let input: Vec<u8> = (0..1 << 20).map(|i| (i % 251) as u8).collect();
+        let input: Vec<u8> = (0..1u32 << 20).map(|i| (i % 251) as u8).collect();
         let cmd = &mut Command::new("sh");
         let out = run_with_input(
             cmd.args(["-c", "sleep 0.3; cat"]),

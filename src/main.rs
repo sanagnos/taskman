@@ -1,3 +1,7 @@
+// Here rather than in Cargo.toml's [lints], which would reach tests/ too: a test fails by
+// panicking, and clippy.toml lets the unit tests do it.
+#![warn(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 #[cfg(not(unix))]
 compile_error!("taskman needs macOS or Linux (use WSL on Windows)");
 

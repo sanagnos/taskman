@@ -303,7 +303,7 @@ pub fn ask(fd: RawFd) -> Probe {
         if n <= 0 {
             break;
         }
-        got.extend_from_slice(&buf[..n as usize]);
+        got.extend_from_slice(&buf[..n.cast_unsigned()]);
         if parse_replies(&got).done {
             break;
         }

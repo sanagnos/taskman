@@ -193,7 +193,13 @@ impl Session {
                                         buf[..n].windows(m.len()).position(|w| w == m)
                                     }) {
                                         p.process(&buf[..at]);
-                                        panic!("test panic in the session's reader");
+                                        #[expect(
+                                            clippy::panic,
+                                            reason = "the debug builds' test of a reader's panic"
+                                        )]
+                                        {
+                                            panic!("test panic in the session's reader");
+                                        }
                                     }
                                     p.process(&buf[..n]);
                                     std::mem::take(&mut p.callbacks_mut().replies)
@@ -376,7 +382,7 @@ impl Session {
     }
 
     /// Scrolls the view into history; positive goes back in time.
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap,
         reason = "scrollback is capped at the parser's history length, far below i32::MAX"
@@ -384,7 +390,7 @@ impl Session {
     pub fn scroll(&self, delta: i32) {
         let mut p = lock(&self.parser);
         let cur = p.screen().scrollback() as i32;
-        p.screen_mut().set_scrollback((cur + delta).max(0) as usize);
+        p.screen_mut().set_scrollback(usize::try_from(cur + delta).unwrap_or(0));
     }
 
     /// True when the program has turned on mouse reporting (Claude Code's full-screen mode does).
@@ -393,7 +399,7 @@ impl Session {
     }
 
     /// Sends one mouse-wheel step at a cell of the pane, encoded the way the program asked for.
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         reason = "the legacy encoding clamps each coordinate to 223, so 32 + it fits a byte"
     )]
@@ -401,7 +407,7 @@ impl Session {
     pub fn send_wheel(&self, col: u16, row: u16, up: bool) -> bool {
         let enc = lock(&self.parser).screen().mouse_protocol_encoding();
         let button = if up { 64u8 } else { 65 };
-        let (c, r) = (col as u32 + 1, row as u32 + 1);
+        let (c, r) = (u32::from(col) + 1, u32::from(row) + 1);
         match enc {
             vt100::MouseProtocolEncoding::Sgr => {
                 self.write(format!("\x1b[<{button};{c};{r}M").as_bytes())
@@ -522,7 +528,7 @@ pub fn lock<T: ?Sized>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     reason = "milliseconds since 1970 fit u64 for millions of years"
 )]

@@ -1,10 +1,12 @@
 //! Drawing: the layout and `draw`, which calls on a module for each part of the screen, and what
 //! they share.
 
-// Terminal coordinates are u16 throughout ratatui, and the lengths cast to them here (text widths,
-// line counts) stay far below 65535 in practice. Saturating casts would change the overflow
-// behaviour, so that is left to its own change.
-#![allow(clippy::cast_possible_truncation)]
+// Saturating casts would change the overflow behaviour, so that is left to its own change.
+#![expect(
+    clippy::cast_possible_truncation,
+    reason = "terminal coordinates are u16 throughout ratatui, and the lengths cast to them here \
+              (text widths, line counts) stay far below 65535 in practice"
+)]
 
 mod dialogs;
 mod pane;

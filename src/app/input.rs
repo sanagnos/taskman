@@ -586,7 +586,7 @@ impl App {
     }
 
     fn page_claude(&mut self, up: bool) {
-        let half = self.areas.claude.height as i32 / 2;
+        let half = i32::from(self.areas.claude.height) / 2;
         let Some(s) = self.tickets.get(self.sel).and_then(|tv| tv.session.as_ref()) else { return };
         if s.wants_mouse() {
             if !s.write(if up { b"\x1b[5~" } else { b"\x1b[6~" }) {
