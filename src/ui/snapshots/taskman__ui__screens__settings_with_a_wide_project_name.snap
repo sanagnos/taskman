@@ -1,0 +1,28 @@
+---
+source: src/ui/screens.rs
+expression: "draw(&mut app, 80, 24)"
+---
+" taskman    │  ENG-52                           /src/acme-ENG-52 eng-52-login   "
+" ╭ Settings ──────────────────────────────────────────────────────────────────╮ "
+"▾│ GENERAL                      │ Project                                     │ "
+" │  Prefix and updates   notify │ /src/acme · 6 sessions                      │ "
+" │                              │ PR panel: on, through gh                    │ "
+"┃│ PROJECTS                     │                                             │ "
+" │▸ アクメ開発チームのプロジ… 6 │ Name         アクメ開発チームのプロジェクト │ " Hidden by multi-width symbols: [(5, " "), (7, " "), (9, " "), (11, " "), (13, " "), (15, " "), (17, " "), (19, " "), (21, " "), (23, " "), (25, " "), (27, " "), (48, " "), (50, " "), (52, " "), (54, " "), (56, " "), (58, " "), (60, " "), (62, " "), (64, " "), (66, " "), (68, " "), (70, " "), (72, " "), (74, " "), (76, " ")]
+" │  notes                     1 │              shown in the sidebar           │ "
+" │  + new project               │ Tracker      ‹ Linear ›                     │ "
+" │                              │              ←/→ to change; None keeps the  │ "
+"▸│ ACCOUNTS                     │              project to agents              │ "
+" │  acme                 Linear │ Workspace    acme                           │ "
+" │  + new account               │              the part after linear.app/ in  │ "
+" │                              │              its address                    │ "
+" │                              │ Account      ‹ acme · env:ACME_L…EAR_TOKEN ›│ "
+" │                              │              ←/→ to pick, or + new account  │ "
+" │                              │ Team         ENG                            │ "
+" │                              │              the team its tickets are in    │ "
+" │                              │              (ENG for ENG-12)               │ "
+" │                              │                                             │ "
+" │                              │ Worktrees                                   │ "
+" │                              │ New tickets  ‹ Create one ›                 │ "
+" ╰────────────────────────────────────────────────────────────────────────────╯ "
+" ^a menu · ^a ^a next waiting · ^a ? help                    ▲ 4 waiting on you "

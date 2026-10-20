@@ -1,7 +1,8 @@
-//! Small helpers: timestamps, relative ages, opening URLs.
+//! Small helpers: timestamps, relative ages, opening URLs, measuring and cutting text.
 
+use ratatui::buffer::CellWidth as _;
 use std::process::{Command, Stdio};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation as _;
 
 pub fn now() -> i64 {
     std::time::SystemTime::now()
@@ -129,38 +130,17 @@ pub fn open_url(url: &str) -> bool {
     })
 }
 
-/// Like `truncate`, but in display columns: a wide character counts two and is never split.
-/// A sidebar card's name is cut with it so the state badge beside it never is.
-pub fn fit_label(label: &str, room: usize) -> String {
-    if label.width() <= room {
-        return label.to_string();
-    }
-    let mut out = String::new();
-    let mut used = 0;
-    for c in label.chars() {
-        let cw = c.width().unwrap_or(0);
-        if used + cw + 1 > room {
-            break;
-        }
-        out.push(c);
-        used += cw;
-    }
-    if room > 0 {
-        out.push('…');
-    }
-    out
-}
-
-/// `s` broken into lines at most `width` columns wide, between words; a word longer than that is
-/// broken where it reaches the edge. For text whose rows must be counted before it's drawn, or
-/// that wraps under an indent of its own (Help).
-pub fn wrap_words(s: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
+/// `s` broken into lines at most `room` columns wide, between words; a word longer than that is
+/// broken where it reaches the edge, a wide character or an emoji with its selector kept whole.
+/// For text whose rows must be counted before it's drawn, or that wraps under an indent of its own
+/// (Help).
+pub fn wrap_words(s: &str, room: usize) -> Vec<String> {
+    let room = room.max(1);
     let mut lines = Vec::new();
     let mut line = String::new();
     for word in s.split_whitespace() {
         let gap = usize::from(!line.is_empty());
-        if line.width() + gap + word.width() <= width {
+        if width(&line) + gap + width(word) <= room {
             if gap == 1 {
                 line.push(' ');
             }
@@ -170,11 +150,11 @@ pub fn wrap_words(s: &str, width: usize) -> Vec<String> {
         if !line.is_empty() {
             lines.push(std::mem::take(&mut line));
         }
-        for c in word.chars() {
-            if line.width() + c.width().unwrap_or(0) > width && !line.is_empty() {
+        for g in word.graphemes(true) {
+            if width(&line) + grapheme_width(g) > room && !line.is_empty() {
                 lines.push(std::mem::take(&mut line));
             }
-            line.push(c);
+            line.push_str(g);
         }
     }
     if !line.is_empty() || lines.is_empty() {
@@ -183,41 +163,84 @@ pub fn wrap_words(s: &str, width: usize) -> Vec<String> {
     lines
 }
 
+/// The columns `s` takes on screen, measured as ratatui draws it: grapheme by grapheme, so an
+/// emoji with U+FE0F (⚠️) counts two, a combining mark nothing, and a grapheme with a control
+/// character in it nothing, as ratatui leaves those out. Cut and pad with this, never
+/// `chars().count()`, or a CJK or emoji title overflows the room it was cut for.
+pub fn width(s: &str) -> usize {
+    s.graphemes(true).map(grapheme_width).sum()
+}
+
+/// `width` of a line of spans.
+pub fn line_width(line: &ratatui::text::Line) -> usize {
+    line.spans.iter().map(|s| width(&s.content)).sum()
+}
+
+fn grapheme_width(g: &str) -> usize {
+    if g.contains(char::is_control) { 0 } else { usize::from(g.cell_width()) }
+}
+
+/// `s` and spaces after it to make `cols` columns (`width`): `format!("{s:<cols$}")` counts
+/// characters, so a CJK or emoji `s` would come out too wide.
+pub fn pad(s: &str, cols: usize) -> String {
+    format!("{s}{}", " ".repeat(cols.saturating_sub(width(s))))
+}
+
+/// The longest start of `s` at most `room` columns wide, in whole graphemes.
+fn head(s: &str, room: usize) -> &str {
+    let mut used = 0;
+    let mut end = 0;
+    for (i, g) in s.grapheme_indices(true) {
+        used += grapheme_width(g);
+        if used > room {
+            break;
+        }
+        end = i + g.len();
+    }
+    &s[..end]
+}
+
+/// The longest end of `s` at most `room` columns wide, in whole graphemes.
+fn tail(s: &str, room: usize) -> &str {
+    let mut used = 0;
+    let mut start = s.len();
+    for (i, g) in s.grapheme_indices(true).rev() {
+        used += grapheme_width(g);
+        if used > room {
+            break;
+        }
+        start = i;
+    }
+    &s[start..]
+}
+
+/// `s` in at most `max` columns (`width`): as it is if it fits, else cut and ended with `…`. A
+/// wide character or an emoji with its selector that doesn't fit whole is left out, never split,
+/// so the cut may be a column short.
 pub fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else if max == 0 {
-        String::new()
-    } else {
-        let mut t: String = s.chars().take(max - 1).collect();
-        t.push('…');
-        t
+    match max {
+        _ if width(s) <= max => s.to_string(),
+        0 => String::new(),
+        _ => format!("{}…", head(s, max - 1)),
     }
 }
 
-/// Like `truncate`, but keeps the end: `…` and the last `max - 1` characters.
+/// Like `truncate`, but keeps the end: `…` and the last `max - 1` columns.
 pub fn truncate_start(s: &str, max: usize) -> String {
-    let n = s.chars().count();
     match max {
-        _ if n <= max => s.to_string(),
+        _ if width(s) <= max => s.to_string(),
         0 => String::new(),
-        _ => format!("…{}", s.chars().skip(n + 1 - max).collect::<String>()),
+        _ => format!("…{}", tail(s, max - 1)),
     }
 }
 
 /// Like `truncate`, but keeps both ends and puts the `…` in the middle.
 pub fn truncate_middle(s: &str, max: usize) -> String {
-    let n = s.chars().count();
-    if n <= max || max == 0 {
+    if width(s) <= max || max == 0 {
         return truncate(s, max);
     }
-    let head = max / 2;
-    let tail = max - 1 - head;
-    format!(
-        "{}…{}",
-        s.chars().take(head).collect::<String>(),
-        s.chars().skip(n - tail).collect::<String>()
-    )
+    let start = head(s, max / 2);
+    format!("{start}…{}", tail(s, max - 1 - width(start)))
 }
 
 #[cfg(test)]
@@ -234,20 +257,70 @@ mod tests {
         assert_eq!(panicked, Err(bug.to_string()));
     }
 
+    /// The columns ratatui moves on by drawing `s`.
+    fn drawn(s: &str) -> usize {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        let mut buf = Buffer::empty(Rect::new(0, 0, 400, 1));
+        usize::from(buf.set_stringn(0, 0, s, 400, ratatui::style::Style::new()).0)
+    }
+
+    /// Text that measures differently by characters, by `char` widths and by graphemes: CJK, the
+    /// warning sign with and without U+FE0F, an emoji, a ZWJ sequence, combining marks, and
+    /// control characters.
+    fn tricky() -> impl Strategy<Value = String> {
+        let parts = [
+            "a", "b", " ", "-", "日", "語", "⚠", "\u{fe0f}", "\u{301}", "\u{200d}", "👍", "é",
+            "\u{7}", "\t", "\u{1b}", "\u{ff9e}",
+        ];
+        prop::collection::vec(prop::sample::select(parts.to_vec()), 0..30).prop_map(|v| v.concat())
+    }
+
+    /// Where `cut` may end: a grapheme boundary of `s`.
+    fn boundary(s: &str, at: usize) -> bool {
+        at == s.len() || s.grapheme_indices(true).any(|(i, _)| i == at)
+    }
+
     #[test]
-    fn fits_a_label_in_display_columns() {
-        assert_eq!(fit_label("✦ tester", 23), "✦ tester");
-        assert_eq!(fit_label("✦ open-source-planner", 21), "✦ open-source-planner");
-        assert_eq!(fit_label("✦ open-source-planner", 13), "✦ open-sourc…");
-        assert_eq!(fit_label("ENG-52", 4), "ENG…");
-        // A wide character that doesn't fit whole is left out, never split.
-        assert_eq!(fit_label("✦ 日本語チーム", 7), "✦ 日本…");
-        assert_eq!(fit_label("✦ 日本語チーム", 8), "✦ 日本…");
-        for room in 0..16 {
-            assert!(fit_label("✦ 日本語チーム-planner", room).width() <= room, "room {room}");
+    fn measures_text_as_ratatui_draws_it() {
+        assert_eq!(width("ENG-52"), 6);
+        assert_eq!(width("日本語"), 6);
+        // U+FE0F makes the warning sign an emoji, two columns; without it, it's one.
+        assert_eq!(width("⚠"), 1);
+        assert_eq!(width("⚠\u{fe0f}"), 2);
+        assert_eq!(width("⚠\u{fe0f} failed"), 9);
+        // A combining mark adds nothing; a control character is left out.
+        assert_eq!(width("cafe\u{301}"), 4);
+        assert_eq!(width("a\u{7}b\tc\u{1b}"), 3);
+        for s in ["日本語", "⚠\u{fe0f}", "cafe\u{301}", "a\u{7}b", "👍\u{200d}👍"] {
+            assert_eq!(width(s), drawn(s), "{s:?}");
         }
-        assert_eq!(fit_label("abc", 1), "…");
-        assert_eq!(fit_label("abc", 0), "");
+        assert_eq!(pad("日本", 6), "日本  ");
+        assert_eq!(pad("⚠\u{fe0f}", 3), "⚠\u{fe0f} ");
+        assert_eq!(pad("abcd", 2), "abcd");
+    }
+
+    #[test]
+    fn cuts_by_display_columns() {
+        assert_eq!(truncate("✦ tester", 23), "✦ tester");
+        assert_eq!(truncate("✦ open-source-planner", 21), "✦ open-source-planner");
+        assert_eq!(truncate("✦ open-source-planner", 13), "✦ open-sourc…");
+        assert_eq!(truncate("ENG-52", 4), "ENG…");
+        // A wide character that doesn't fit whole is left out, never split.
+        assert_eq!(truncate("✦ 日本語チーム", 7), "✦ 日本…");
+        assert_eq!(truncate("✦ 日本語チーム", 8), "✦ 日本…");
+        assert_eq!(truncate_start("日本語チーム", 6), "…ーム");
+        assert_eq!(truncate_middle("日本語チーム", 7), "日…ーム");
+        // An emoji keeps its selector: both go, or neither.
+        assert_eq!(truncate("a⚠\u{fe0f}b", 3), "a…");
+        assert_eq!(truncate("a⚠b", 3), "a⚠b");
+        assert_eq!(truncate_start("a⚠\u{fe0f}", 2), "…");
+        assert_eq!(truncate_start("ab⚠\u{fe0f}", 3), "…⚠\u{fe0f}");
+        // A combining mark stays with its letter.
+        assert_eq!(truncate("cafe\u{301} au lait", 5), "cafe\u{301}…");
+        assert_eq!(truncate_start("e\u{301}abc", 3), "…bc");
+        // Control characters take no room.
+        assert_eq!(truncate("a\u{7}bc", 3), "a\u{7}bc");
     }
 
     #[test]
@@ -265,14 +338,57 @@ mod tests {
 
         /// Every line fits, and the words come back in order.
         #[test]
-        fn wrapped_lines_fit_and_keep_the_text(s in "[a-z日 ]{0,60}", width in 2usize..30) {
-            let lines = wrap_words(&s, width);
+        fn wrapped_lines_fit_and_keep_the_text(
+            s in prop_oneof!["[a-z日 ]{0,60}".boxed(), tricky().boxed()],
+            room in 2usize..30,
+        ) {
+            let lines = wrap_words(&s, room);
             for l in &lines {
-                prop_assert!(l.width() <= width, "{l:?} wider than {width}");
+                // Only a character wider than the room on its own (日 and ﾞ are one, three wide).
+                let one = l.graphemes(true).count() == 1;
+                prop_assert!(width(l) <= room || one, "{l:?} wider than {room}");
             }
             let joined: String = lines.concat().split_whitespace().collect();
             let words: String = s.split_whitespace().collect();
             prop_assert_eq!(joined, words);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(200))]
+
+        #[test]
+        fn measures_what_ratatui_draws(s in tricky()) {
+            prop_assert_eq!(width(&s), drawn(&s));
+        }
+
+        /// A cut fits, wastes less than a grapheme's columns (one that didn't fit whole), and
+        /// keeps whole graphemes of `s`.
+        #[test]
+        fn cuts_fit_and_keep_whole_graphemes(s in tricky(), max in 0usize..24) {
+            let whole = width(&s) <= max;
+            let widest = s.graphemes(true).map(width).max().unwrap_or(1);
+            let cut = truncate(&s, max);
+            let start = truncate_start(&s, max);
+            let middle = truncate_middle(&s, max);
+            for out in [&cut, &start, &middle] {
+                prop_assert!(width(out) <= max, "{out:?} wider than {max}");
+                if whole {
+                    prop_assert_eq!(out, &s);
+                } else if max > 0 {
+                    prop_assert!(width(out) + widest > max, "{out:?} short of {max}");
+                }
+            }
+            if whole || max == 0 {
+                return Ok(());
+            }
+            let kept = cut.strip_suffix('…').unwrap();
+            prop_assert!(s.starts_with(kept) && boundary(&s, kept.len()));
+            let kept = start.strip_prefix('…').unwrap();
+            prop_assert!(s.ends_with(kept) && boundary(&s, s.len() - kept.len()));
+            let (head, tail) = middle.split_once('…').unwrap();
+            prop_assert!(s.starts_with(head) && boundary(&s, head.len()));
+            prop_assert!(s.ends_with(tail) && boundary(&s, s.len() - tail.len()));
         }
     }
 

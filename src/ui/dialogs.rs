@@ -6,13 +6,12 @@ use crate::app::{AgentAsk, AgentState, App, Form, Level, Mode, SettingsItem, toa
 use crate::keys::prefix;
 use crate::store::tilde;
 use crate::untrusted;
-use crate::util::{truncate, truncate_middle, truncate_start, wrap_words};
+use crate::util::{self, pad, truncate, truncate_middle, truncate_start, wrap_words};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap};
-use unicode_width::UnicodeWidthStr;
 
 /// The dialog over the screen in `app.mode`, if any.
 pub(super) fn draw_dialog(f: &mut Frame, app: &mut App) {
@@ -211,7 +210,10 @@ fn draw_links(f: &mut Frame, app: &mut App) {
         let under = under.unwrap_or_default();
         rows.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled(truncate(&under, room.saturating_sub(note.len())), dim().fg(Color::Cyan)),
+            Span::styled(
+                truncate(&under, room.saturating_sub(util::width(note))),
+                dim().fg(Color::Cyan),
+            ),
             Span::styled(note, dim()),
         ]));
     }
@@ -472,12 +474,12 @@ fn key_rows(keys: &[(&str, &str)], width: usize) -> Vec<Line<'static>> {
             hint.push(Span::raw(truncate(what, width)));
         } else {
             hint.push(truncate(key, width).bold());
-            let room = width.saturating_sub(key.width() + 1);
+            let room = width.saturating_sub(util::width(key) + 1);
             if room > 0 {
                 hint.push(Span::raw(format!(" {}", truncate(what, room))));
             }
         }
-        let w: usize = hint.iter().map(|s| s.content.width()).sum();
+        let w: usize = hint.iter().map(|s| util::width(&s.content)).sum();
         if used > 0 && used + KEY_GAP.len() + w > width {
             rows.push(Line::from(std::mem::take(&mut row)));
             used = 0;
@@ -524,7 +526,7 @@ fn confirm_height(question: &str, body: Vec<Line>, keys: &[(&str, &str)], width:
 /// A confirm dialog's width: `CONFIRM_W`, or as wide as its key row needs, since a key row that
 /// wraps reads badly; within the screen either way.
 fn confirm_width(f: &Frame, keys: &[(&str, &str)]) -> u16 {
-    let row = u16::try_from(key_row(keys).width()).unwrap_or(u16::MAX);
+    let row = u16::try_from(util::line_width(&key_row(keys))).unwrap_or(u16::MAX);
     CONFIRM_W.max(row.saturating_add(2 + DIALOG_PAD_W)).min(f.area().width.saturating_sub(2))
 }
 
@@ -558,7 +560,7 @@ fn removal_lines(
     width: usize,
 ) -> Vec<Line<'static>> {
     const MERGED: &str = "  (merged branch)";
-    let room = |note: &str| width.saturating_sub(2 + note.chars().count());
+    let room = |note: &str| width.saturating_sub(2 + util::width(note));
     let item = |s: String, note: &str| {
         Line::from(vec![Span::raw(format!("  {s}")), Span::styled(note.to_string(), dim())])
     };
@@ -683,14 +685,9 @@ fn form_lines(
     keys: &[(&str, &str)],
     width: u16,
 ) -> (crate::links::Linked, Option<(usize, u16)>) {
-    let label_w = form
-        .fields
-        .iter()
-        .filter(|f| !f.hidden)
-        .map(|f| f.label.chars().count())
-        .max()
-        .unwrap_or(8)
-        + 2;
+    let label_w =
+        form.fields.iter().filter(|f| !f.hidden).map(|f| util::width(f.label)).max().unwrap_or(8)
+            + 2;
     let mut text: Vec<Line> = Vec::new();
     // The lines that link somewhere, each linked whole after its indent (span 1).
     let mut linked: Vec<(usize, String)> = Vec::new();
@@ -712,7 +709,7 @@ fn form_lines(
         }
         let focused = active && i == form.focus;
         let label_style = if focused { Style::new().fg(Color::Cyan).bold() } else { Style::new() };
-        let mut row = vec![Span::styled(format!("{:<label_w$}", field.label), label_style)];
+        let mut row = vec![Span::styled(pad(field.label, label_w), label_style)];
         // Room for the value after the label and the ‹ › around a choice or presets.
         let arrows = if field.choices.is_empty() { 0 } else { 4 };
         let room = (width as usize).saturating_sub(label_w + arrows);
@@ -734,7 +731,7 @@ fn form_lines(
             }
             if focused {
                 let last = lines.len() - 1;
-                cursor = Some((text.len() + last, (label_w + lines[last].chars().count()) as u16));
+                cursor = Some((text.len() + last, (label_w + util::width(&lines[last])) as u16));
             }
             let mut lines = lines.into_iter();
             row.push(Span::raw(lines.next().unwrap_or_default()));
@@ -762,7 +759,7 @@ fn form_lines(
             };
             if focused {
                 let open = if presets { 2 } else { 0 };
-                cursor = Some((text.len(), (label_w + open + value.chars().count()) as u16));
+                cursor = Some((text.len(), (label_w + open + util::width(&value)) as u16));
             }
             row.push(Span::raw(value));
             if presets {
@@ -814,7 +811,7 @@ fn form_lines(
             match highlighted {
                 Some(h) if h == n => Line::from(vec![
                     Span::raw(format!("{:label_w$}", "")),
-                    Span::styled(format!("{l:<hint_room$}"), Style::new().bg(selection_bg())),
+                    Span::styled(pad(&l, hint_room), Style::new().bg(selection_bg())),
                 ]),
                 _ => Line::from(format!("{:label_w$}{l}", "")),
             }
@@ -845,28 +842,43 @@ fn form_lines(
 /// The most lines a prose field takes; a longer one scrolls while typed and is cut otherwise.
 const PROSE_LINES: usize = 4;
 
-/// `s` wrapped at spaces into lines of at most `width` characters; a word longer than that is
-/// split. The space a line breaks at is dropped, but every other character is kept, a trailing
-/// space too, so the end of the last line is where typing continues.
-fn wrap_prose(s: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    let chars: Vec<char> = s.chars().collect();
+/// `s` wrapped at spaces into lines of at most `room` columns; a word longer than that is split
+/// between graphemes. The space a line breaks at is dropped, but every other character is kept, a
+/// trailing space too, so the end of the last line is where typing continues.
+fn wrap_prose(s: &str, room: usize) -> Vec<String> {
+    use unicode_segmentation::UnicodeSegmentation as _;
+    let room = room.max(1);
+    let gs: Vec<&str> = s.graphemes(true).collect();
     let mut lines = Vec::new();
     let mut start = 0;
     loop {
-        if chars.len() - start <= width {
-            lines.push(chars[start..].iter().collect());
+        // The first grapheme past what fits from `start`.
+        let mut end = start;
+        let mut used = 0;
+        while let Some(g) = gs.get(end)
+            && used + util::width(g) <= room
+        {
+            used += util::width(g);
+            end += 1;
+        }
+        if end == gs.len() {
+            lines.push(gs[start..].concat());
             return lines;
         }
         // A space just past a full line breaks there too.
-        match (start + 1..=start + width).rev().find(|&i| chars[i] == ' ') {
+        match (start + 1..=end).rev().find(|&i| gs[i] == " ") {
             Some(i) => {
-                lines.push(chars[start..i].iter().collect());
+                lines.push(gs[start..i].concat());
                 start = i + 1;
             }
             None => {
-                lines.push(chars[start..start + width].iter().collect());
-                start += width;
+                // A character wider than the room goes on a line of its own.
+                let end = end.max(start + 1);
+                lines.push(gs[start..end].concat());
+                if end == gs.len() {
+                    return lines;
+                }
+                start = end;
             }
         }
     }
@@ -879,8 +891,8 @@ fn fit(field: &crate::app::Field, room: usize) -> String {
         return truncate(&field.value, room);
     }
     match field.value.split_once(" · ") {
-        Some((who, source)) if who.chars().count() + 3 + 12 <= room => {
-            format!("{who} · {}", truncate_middle(source, room - who.chars().count() - 3))
+        Some((who, source)) if util::width(who) + 3 + 12 <= room => {
+            format!("{who} · {}", truncate_middle(source, room - util::width(who) - 3))
         }
         _ => truncate_middle(&field.value, room),
     }
@@ -962,9 +974,9 @@ fn draw_settings(f: &mut Frame, app: &mut App) {
             SettingsItem::NewAccount => ("+ new account".to_string(), String::new(), true),
         };
         let selected = row == s.cursor;
-        let room = w.saturating_sub(right.chars().count() + 2);
+        let room = w.saturating_sub(util::width(&right) + 2);
         let name = truncate(&left, room);
-        let pad = w.saturating_sub(name.chars().count() + right.chars().count() + 1);
+        let pad = w.saturating_sub(util::width(&name) + util::width(&right) + 1);
         let base = match (selected, s.editing, new) {
             (true, false, _) => Style::new().fg(Color::Black).bg(Color::Cyan),
             (true, true, _) => Style::new().fg(Color::Cyan).bold(),
@@ -1057,14 +1069,14 @@ fn draw_help(f: &mut Frame, app: &mut App) {
     ];
     // Indented under the heading, unless the prefix's name is long enough to need the room.
     let indent = if p.name().len() > "ctrl+a".len() { 0 } else { 2 };
-    let key_w = keys.iter().map(|(k, _)| format!("{p} {k}").width()).max().unwrap_or(0) + 2;
-    let badge_w = legend.iter().map(|(b, _)| b.content.width()).max().unwrap_or(0) + 2;
+    let key_w = keys.iter().map(|(k, _)| util::width(&format!("{p} {k}"))).max().unwrap_or(0) + 2;
+    let badge_w = legend.iter().map(|(b, _)| util::width(&b.content)).max().unwrap_or(0) + 2;
     // Two to a row, each column as wide as its own words.
     let words = |skip: usize| {
-        legend.iter().skip(skip).step_by(2).map(|(_, what)| what.width()).max().unwrap_or(0)
+        legend.iter().skip(skip).step_by(2).map(|(_, what)| util::width(what)).max().unwrap_or(0)
     };
     let what_w = words(0) + 3;
-    let keys_w = keys.iter().map(|(_, what)| indent + key_w + what.width()).max().unwrap_or(0);
+    let keys_w = keys.iter().map(|(_, what)| indent + key_w + util::width(what)).max().unwrap_or(0);
     let pairs_w = 2 + 2 * badge_w + what_w + words(1);
     let room = usize::from(f.area().width.saturating_sub(2 + 2 + DIALOG_PAD_W));
     let inner = keys_w.max(pairs_w).min(HELP_W).min(room).max(1);
@@ -1089,8 +1101,11 @@ fn draw_help(f: &mut Frame, app: &mut App) {
         }
         let col = indent + key_w;
         for (i, l) in wrap_words(what, inner - col).into_iter().enumerate() {
-            let left =
-                if i == 0 { format!("{:indent$}{key:<key_w$}", "") } else { " ".repeat(col) };
+            let left = if i == 0 {
+                format!("{:indent$}{}", "", pad(&key, key_w))
+            } else {
+                " ".repeat(col)
+            };
             text.push(Line::from(vec![Span::styled(left, cyan), Span::raw(l)]));
         }
     }
@@ -1106,9 +1121,9 @@ fn draw_help(f: &mut Frame, app: &mut App) {
         for pair in legend.chunks(2) {
             let mut row = vec![Span::raw("  ")];
             for (n, (b, what)) in pair.iter().enumerate() {
-                let pad = " ".repeat(badge_w - b.content.width());
-                let what = if n == 0 { format!("{what:<what_w$}") } else { what.to_string() };
-                row.extend([b.clone(), Span::raw(pad), Span::raw(what)]);
+                let gap = " ".repeat(badge_w - util::width(&b.content));
+                let what = if n == 0 { pad(what, what_w) } else { what.to_string() };
+                row.extend([b.clone(), Span::raw(gap), Span::raw(what)]);
             }
             text.push(Line::from(row));
         }
@@ -1118,7 +1133,10 @@ fn draw_help(f: &mut Frame, app: &mut App) {
             for (i, l) in wrap_words(what, inner.saturating_sub(col)).into_iter().enumerate() {
                 let mut row = vec![Span::raw("  ")];
                 if i == 0 {
-                    row.extend([b.clone(), Span::raw(" ".repeat(badge_w - b.content.width()))]);
+                    row.extend([
+                        b.clone(),
+                        Span::raw(" ".repeat(badge_w - util::width(&b.content))),
+                    ]);
                 } else {
                     row.push(Span::raw(" ".repeat(badge_w)));
                 }
@@ -1132,7 +1150,8 @@ fn draw_help(f: &mut Frame, app: &mut App) {
     // PgUp/PgDn where that keeps it to a row.
     let n = text.len() as u16;
     let longest = format!("{n}-{n} of {n}");
-    let scroll = if key_row(&scroll_hints(SCROLL_KEYS, Some(&longest))).width() <= inner {
+    let scroll = if util::line_width(&key_row(&scroll_hints(SCROLL_KEYS, Some(&longest)))) <= inner
+    {
         SCROLL_KEYS
     } else {
         "↑/↓"
@@ -1191,9 +1210,14 @@ mod tests {
         // Only room for the key: the words go.
         assert_eq!(rows(&keys, 6), ["Esc b…", "ctrl+d"]);
         assert_eq!(rows(&keys, 4), ["Esc", "ctr…"]);
+        // By columns: a wide hint is cut where it fits, and rows break by width.
+        let wide = [("⚠\u{fe0f}", "日本語のヒント"), ("Esc", "閉じる")];
+        assert_eq!(rows(&wide, 30), ["⚠\u{fe0f} 日本語のヒント   Esc 閉じる"]);
+        assert_eq!(rows(&wide, 29), ["⚠\u{fe0f} 日本語のヒント", "Esc 閉じる"]);
+        assert_eq!(rows(&wide, 12), ["⚠\u{fe0f} 日本語の…", "Esc 閉じる"]);
         for width in 0..30 {
-            for row in rows(&keys, width) {
-                assert!(row.width() <= width.max(1), "{row:?} at {width}");
+            for row in rows(&keys, width).into_iter().chain(rows(&wide, width)) {
+                assert!(util::width(&row) <= width.max(1), "{row:?} at {width}");
             }
         }
     }
@@ -1337,6 +1361,40 @@ mod tests {
         assert_eq!(wrap_prose("review ", 10), ["review "]);
         assert_eq!(wrap_prose("review PRs ", 10), ["review PRs", ""]);
         assert_eq!(wrap_prose("abcdefghijklmn op", 5), ["abcde", "fghij", "klmn", "op"]);
+        // By columns: a wide character is kept whole, and an emoji with its selector.
+        assert_eq!(wrap_prose("日本語の役割", 5), ["日本", "語の", "役割"]);
+        assert_eq!(wrap_prose("見る ⚠\u{fe0f} ok", 5), ["見る", "⚠\u{fe0f} ok"]);
+        assert_eq!(wrap_prose("ab⚠\u{fe0f}c", 3), ["ab", "⚠\u{fe0f}c"]);
+        // A character wider than the room goes on a line of its own rather than loop.
+        assert_eq!(wrap_prose("日本", 1), ["日", "本"]);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(200))]
+
+        /// Every line fits, unless it's one character wider than the room, only the spaces lines
+        /// break at are dropped, and no empty line is left after the text.
+        #[test]
+        fn wrapped_prose_fits_and_keeps_the_text(
+            parts in proptest::collection::vec(
+                proptest::sample::select(vec!["a", "b", " ", "日", "⚠", "\u{fe0f}", "\u{301}", "👍"]),
+                0..40,
+            ),
+            room in 1usize..12,
+        ) {
+            use unicode_segmentation::UnicodeSegmentation as _;
+            let s = parts.concat();
+            let lines = wrap_prose(&s, room);
+            for l in &lines {
+                let one = l.graphemes(true).count() == 1;
+                proptest::prop_assert!(util::width(l) <= room || one, "{l:?} wider than {room}");
+            }
+            let kept: String = lines.concat().split(' ').collect();
+            proptest::prop_assert_eq!(kept, s.split(' ').collect::<String>());
+            // An empty last line is where typing goes after a space the line broke at.
+            let last = lines.last().unwrap();
+            proptest::prop_assert!(!last.is_empty() || s.is_empty() || s.ends_with(' '));
+        }
     }
 
     #[test]

@@ -7,14 +7,13 @@ use crate::keys::prefix;
 use crate::session::{End, Exit};
 use crate::store::tilde;
 use crate::untrusted;
-use crate::util::truncate;
+use crate::util::{line_width, truncate, width};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Margin, Rect};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use tui_term::widget::{Cursor, PseudoTerminal};
-use unicode_width::UnicodeWidthStr;
 
 /// What the header says about a session away from the pane.
 fn away_label(tv: &TicketView) -> Option<String> {
@@ -59,10 +58,10 @@ pub(super) fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let branch =
         tv.t.branch.as_deref().map(|b| format!(" {}", untrusted::line(b))).unwrap_or_default();
     let right = format!("{}{branch} ", tilde(&tv.t.cwd));
-    let left_len: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    let left_len: usize = spans.iter().map(|s| width(&s.content)).sum();
     // At least a space between the two sides, however long the folder.
     let room = (area.width as usize).saturating_sub(left_len + 3);
-    spans.push(Span::raw(" ".repeat(1 + room.saturating_sub(right.chars().count().min(room)))));
+    spans.push(Span::raw(" ".repeat(1 + room.saturating_sub(width(&right).min(room)))));
     spans.push(Span::styled(truncate(&right, room), dim()));
     f.render_widget(Paragraph::new(Line::from(spans)).style(Style::new().bg(Color::Reset)), area);
 }
@@ -320,7 +319,7 @@ fn draw_session(
         crate::links::mark(f.buffer_mut(), area, screen);
         if scrolled > 0 {
             let msg = format!(" ↑ {scrolled} lines back · type to return ");
-            let w = msg.chars().count() as u16;
+            let w = width(&msg) as u16;
             let r = Rect {
                 x: area.right().saturating_sub(w + 1),
                 y: area.y,
@@ -408,7 +407,7 @@ pub(super) fn draw_selecting(f: &mut Frame, app: &App) {
         return;
     };
     let msg = " selecting · Esc to resume ";
-    let w = (msg.chars().count() as u16).min(sel.rect.width);
+    let w = (width(msg) as u16).min(sel.rect.width);
     let (start, end) = sel.span();
     let shown = crate::selection::on_screen(sel.rect, app.view_top(sel), start, end);
     // The top row unless that's where the selection starts, then the bottom one.
@@ -446,29 +445,29 @@ fn draw_toast(f: &mut Frame, app: &App, toast: &Toast, area: Rect) {
         Level::Info | Level::Warn => Style::new().fg(yellow()),
         Level::Error => Style::new().fg(Color::Red).bold(),
     };
-    let width = usize::from(area.width);
-    let right = waiting_on_you(app).filter(|r| r.width() + 8 <= width);
+    let cols = usize::from(area.width);
+    let right = waiting_on_you(app).filter(|r| width(r) + 8 <= cols);
     // Room left of the count, with a space between.
-    let room = width - right.as_ref().map_or(0, |r| r.width() + 1);
+    let room = cols - right.as_ref().map_or(0, |r| width(r) + 1);
     let msg = untrusted::line(&toast.msg);
     let p = prefix().short();
     let more = format!(" · {p} ~ lists it");
     let mut lines = vec![format!(" {msg}")];
-    if lines[0].width() > room {
+    if width(&lines[0]) > room {
         let above = area.y > 0 && f.area().height >= super::FOOTER_GAP_MIN_H;
-        let first = if above { width } else { room };
+        let first = if above { cols } else { room };
         let mut wrapped = crate::util::wrap_words(&msg, first.saturating_sub(1)).into_iter();
         lines = vec![format!(" {}", wrapped.next().unwrap_or_default())];
         let rest = wrapped.collect::<Vec<_>>().join(" ");
         if above && !rest.is_empty() {
             let rest = format!(" {rest}");
-            lines.push(if rest.width() > room {
-                truncate(&rest, room.saturating_sub(more.width() + 1)) + &more
+            lines.push(if width(&rest) > room {
+                truncate(&rest, room.saturating_sub(width(&more) + 1)) + &more
             } else {
                 rest
             });
-        } else if lines[0].width() > room || !rest.is_empty() {
-            let cut = truncate(&lines[0], room.saturating_sub(more.width() + 1));
+        } else if width(&lines[0]) > room || !rest.is_empty() {
+            let cut = truncate(&lines[0], room.saturating_sub(width(&more) + 1));
             lines[0] = cut + &more;
         }
     }
@@ -480,7 +479,7 @@ fn draw_toast(f: &mut Frame, app: &App, toast: &Toast, area: Rect) {
         if i == last
             && let Some(r) = &right
         {
-            let pad = width.saturating_sub(line.width() + r.width());
+            let pad = cols.saturating_sub(width(&line) + width(r));
             spans.push(Span::raw(" ".repeat(pad)));
             spans.push(Span::styled(r.clone(), Style::new().fg(yellow()).bold()));
         }
@@ -513,13 +512,13 @@ pub(super) fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(format!("{p} ?"), key),
             Span::styled(" help", dim()),
         ];
-        let used: usize = v.iter().map(|s| s.content.width()).sum();
+        let used: usize = v.iter().map(|s| width(&s.content)).sum();
         // Right-aligned, like a status line's right side, and left out rather than run into
         // the keys.
         if let Some(right) = waiting_on_you(app)
-            && used + 1 + right.width() <= usize::from(area.width)
+            && used + 1 + width(&right) <= usize::from(area.width)
         {
-            v.push(Span::raw(" ".repeat(usize::from(area.width) - used - right.width())));
+            v.push(Span::raw(" ".repeat(usize::from(area.width) - used - width(&right))));
             v.push(Span::styled(right, Style::new().fg(yellow()).bold()));
         }
         Line::from(v)
@@ -584,7 +583,7 @@ pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
         let mut v = vec![Span::styled(format!(" {title:<9}"), Style::new().bold())];
         let mut used = INDENT;
         for (k, what) in items {
-            let w = k.width() + 1 + what.width();
+            let w = width(k) + 1 + width(what);
             if used > INDENT && used + w > room {
                 lines.push(Line::from(std::mem::take(&mut v)));
                 v.push(Span::raw(" ".repeat(INDENT)));
@@ -605,7 +604,7 @@ pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
         Span::styled("Esc ", Style::new().fg(yellow()).bold()),
         Span::raw("cancel"),
     ]));
-    let w = lines.iter().map(|l| l.width() as u16).max().unwrap_or(40) + 2;
+    let w = lines.iter().map(|l| line_width(l) as u16).max().unwrap_or(40) + 2;
     let h = lines.len() as u16 + 2;
     let area = f.area();
     let r = Rect {

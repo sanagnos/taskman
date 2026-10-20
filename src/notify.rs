@@ -69,7 +69,7 @@ pub fn wanted(setting: Setting, focused: Option<bool>, selected: bool) -> bool {
 
 /// What a notification says: `label` (a key, or an agent's name) and why it waits.
 pub fn text(label: &str, permission: bool) -> String {
-    let label: String = untrusted::line(label).chars().take(60).collect();
+    let label = crate::util::truncate(&untrusted::line(label), 60);
     let why = if permission { "a permission prompt" } else { "a question" };
     format!("{label} needs you: {why}")
 }

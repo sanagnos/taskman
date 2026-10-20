@@ -1,0 +1,1 @@
+- Titles and names in Chinese, Japanese or Korean, or with emoji such as ⚠️, are cut to the columns they take on screen: they end with `…` at the edge of the sidebar, panels and forms instead of being clipped, the counts and providers in Settings stay in view, and `taskman status` keeps its columns in line.

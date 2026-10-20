@@ -38,6 +38,8 @@ signal-hook = "0.4.5"
 # Without its vt100 feature, which ties vt100 to the version tui-term asks for: src/term.rs
 # implements its traits.
 tui-term = { version = "0.3", default-features = false }
+# The graphemes ratatui draws text in, so text is cut where ratatui would: src/util.rs.
+unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
 ureq = { version = "3.4.2", features = ["json"] }
 vt100 = "0.18"

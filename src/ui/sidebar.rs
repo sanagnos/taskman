@@ -4,13 +4,12 @@ use super::{dim, pr_spans, selection_bg, sidebar_badge, state_badge, yellow};
 use crate::app::{App, Hit, Mode, Piece, TicketView};
 use crate::keys::prefix;
 use crate::untrusted;
-use crate::util::{fit_label, truncate, truncate_start};
+use crate::util::{truncate, truncate_start, width};
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
-use unicode_width::UnicodeWidthStr;
 
 fn state_glyph(tv: &TicketView) -> Span<'static> {
     let b = state_badge(tv);
@@ -175,7 +174,7 @@ pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
 fn draw_title(f: &mut Frame, app: &App, inner: Rect) {
     let version = format!(" v{}", env!("CARGO_PKG_VERSION"));
     let mut title = vec![Span::styled(" taskman", Style::new().bold())];
-    if inner.width as usize >= 8 + version.chars().count() {
+    if inner.width as usize >= 8 + width(&version) {
         title.push(Span::styled(version, dim()));
     }
     f.render_widget(Paragraph::new(Line::from(title)), Rect { height: 1, ..inner });
@@ -198,7 +197,7 @@ fn draw_jump_box(f: &mut Frame, query: &str, inner: Rect) {
         Span::raw(shown.clone()),
     ]);
     f.render_widget(Paragraph::new(line), Rect { height: 1, ..inner });
-    f.set_cursor_position((inner.x + 3 + shown.width() as u16, inner.y));
+    f.set_cursor_position((inner.x + 3 + width(&shown) as u16, inner.y));
     if inner.height > 1 {
         let hint = truncate(" ↑/↓ · Enter go · Esc", inner.width as usize);
         f.render_widget(
@@ -255,15 +254,16 @@ fn sidebar_rows(
         let count = if folded { format!(" ({})", members.len()) } else { String::new() };
         let waiting = folded && members.iter().any(|&i| app.tickets[i].needs_attention());
         // The ● ends one column from the edge, where the cards' badges end.
-        let room = w.saturating_sub(2 + count.chars().count() + if waiting { 3 } else { 0 });
+        let room = w.saturating_sub(2 + width(&count) + if waiting { 3 } else { 0 });
         let name_style = if held(p) { dim() } else { Style::new().bold() };
+        let name = truncate(&proj.name, room);
+        let used = 2 + width(&name) + width(&count);
         let mut header = vec![
             Span::styled(arrow, dim()),
-            Span::styled(truncate(&proj.name, room), name_style),
+            Span::styled(name, name_style),
             Span::styled(count.clone(), dim()),
         ];
         if waiting {
-            let used = 2 + proj.name.chars().count().min(room) + count.chars().count();
             header.push(Span::raw(" ".repeat(w.saturating_sub(used + 2).max(1))));
             header.push(Span::styled("●", Style::new().fg(yellow()).bold()));
         }
@@ -329,9 +329,9 @@ fn sidebar_rows(
                     if agent { format!("✦ {}", tv.t.display()) } else { tv.t.key.clone() };
                 // The badge keeps its width and ends one column from the edge; the name gets
                 // the rest.
-                let badge_w = badge.content.width();
-                let label = fit_label(&label, w.saturating_sub(1 + num.len() + 1 + badge_w + 1));
-                let used = 1 + num.len() + label.width() + badge_w;
+                let badge_w = width(&badge.content);
+                let label = truncate(&label, w.saturating_sub(1 + num.len() + 1 + badge_w + 1));
+                let used = 1 + num.len() + width(&label) + badge_w;
                 let pad = " ".repeat(w.saturating_sub(used + 1).max(1));
                 lines.push(Line::from(vec![
                     marker.clone(),
@@ -347,7 +347,7 @@ fn sidebar_rows(
                     let mut room = w.saturating_sub(4);
                     if new > 0 {
                         let tag = format!("{new} new · ");
-                        room = room.saturating_sub(tag.chars().count());
+                        room = room.saturating_sub(width(&tag));
                         row.push(Span::styled(tag, Style::new().fg(yellow()).bold()));
                     }
                     row.push(Span::styled(truncate(&untrusted::line(title), room), title_style));
@@ -445,7 +445,7 @@ pub(super) fn scroll_to_show(
 /// them needs the user.
 pub(super) fn more_line(arrow: &str, entries: usize, attention: bool, w: usize) -> Line<'static> {
     let text = if entries > 0 { format!(" {arrow} {entries} more") } else { format!(" {arrow}") };
-    let used = text.chars().count();
+    let used = width(&text);
     let mut spans = vec![Span::styled(text, dim())];
     if attention {
         spans.push(Span::raw(" ".repeat(w.saturating_sub(used + 2).max(1))));

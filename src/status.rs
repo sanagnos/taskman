@@ -1214,7 +1214,7 @@ impl All {
         let mut width = [0; 4];
         for row in rows.iter().flatten() {
             for (w, cell) in width.iter_mut().zip(row) {
-                *w = (*w).max(cell.chars().count());
+                *w = (*w).max(util::width(cell));
             }
         }
         let mut out = Vec::new();
@@ -1230,11 +1230,11 @@ impl All {
             }
             for [key, status, session, pr, title] in rows {
                 let line = format!(
-                    "  {key:w0$}  {status:w1$}  {session:w2$}  {pr:w3$}  {title}",
-                    w0 = width[0],
-                    w1 = width[1],
-                    w2 = width[2],
-                    w3 = width[3]
+                    "  {}  {}  {}  {}  {title}",
+                    util::pad(key, width[0]),
+                    util::pad(status, width[1]),
+                    util::pad(session, width[2]),
+                    util::pad(pr, width[3]),
                 );
                 out.push(line.trim_end().to_string());
             }

@@ -483,6 +483,30 @@ fn settings_scrolled_to_the_last_project() {
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 
+/// Tracker titles and names in Japanese and with an emoji, cut to the columns they take: each
+/// ends with its `…` at the sidebar's and the panel's edge rather than past it.
+#[test]
+fn wide_titles_cut_to_their_columns() {
+    let mut app = acme_app();
+    for tv in &mut app.tickets {
+        if let Some(issue) = &mut tv.jira.data {
+            issue.summary =
+                "ログイン画面のマジックリンクを直す ⚠\u{fe0f} 期限切れのトークン".into();
+        }
+    }
+    select(&mut app, "ENG-52");
+    assert_snapshot!(draw(&mut app, 160, 40));
+}
+
+/// Settings with a project named in Japanese: its count stays at the list's right edge.
+#[test]
+fn settings_with_a_wide_project_name() {
+    let mut app = acme_app();
+    app.projects[0].name = "アクメ開発チームのプロジェクト".into();
+    app.open_settings(SettingsItem::Project(0), false);
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
 /// Settings → General, with the defaults: sleep after an hour, no limit, 10,000 rows of scrollback.
 #[test]
 fn settings_general() {

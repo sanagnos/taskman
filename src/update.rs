@@ -864,7 +864,7 @@ pub fn notice_text(n: &Notice, width: usize) -> String {
         Action::Rebuild | Action::Cargo => vec![format!("↑ {v} available")],
         Action::Brew => vec![format!("↑ {v} · brew upgrade")],
     };
-    texts.into_iter().find(|t| t.chars().count() <= width).unwrap_or_else(|| format!("↑ {v}"))
+    texts.into_iter().find(|t| crate::util::width(t) <= width).unwrap_or_else(|| format!("↑ {v}"))
 }
 
 /// Finished background work.

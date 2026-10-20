@@ -7,7 +7,7 @@ use crate::keys::prefix;
 use crate::links::Linked;
 use crate::tracker::Access;
 use crate::untrusted;
-use crate::util::{ago, ago_str, ago_words, parse_ts, truncate};
+use crate::util::{ago, ago_str, ago_words, parse_ts, truncate, width};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -405,7 +405,7 @@ pub(super) fn draw_board(f: &mut Frame, app: &mut App, area: Rect) {
             row.push(Span::styled(lead.clone(), Style::new().fg(Color::Cyan)));
             row.push(Span::raw(truncate(
                 &text,
-                w.saturating_sub(lead.chars().count() + 2 * is_new as usize),
+                w.saturating_sub(width(&lead) + 2 * is_new as usize),
             )));
             lines.push(Line::from(row));
         }

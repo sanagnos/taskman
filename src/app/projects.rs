@@ -13,7 +13,7 @@ use super::{App, Field, Form, FormKind, Mode, Remote, SettingsItem};
 use crate::keychain::{self, Keychain};
 use crate::store::{self, Account, Config, Project, Provider, Tracker, WorktreePrefs};
 use crate::tracker::{self, Choice, Client};
-use crate::{github, local, ticket_key, untrusted, worktree};
+use crate::{github, local, ticket_key, untrusted, util, worktree};
 use std::path::{Path, PathBuf};
 
 /// The Account picker's entry for creating one.
@@ -233,14 +233,14 @@ fn choice_rows(form: &mut Form, signs_in: bool) {
             let found = tracker::choosing(all, if exact { "" } else { &typed });
             shown = found.iter().map(|c| c.key.clone()).collect();
             if focused && !found.is_empty() {
-                let key_w = found.iter().map(|c| c.key.chars().count()).max().unwrap_or(0);
+                let key_w = found.iter().map(|c| util::width(&c.key)).max().unwrap_or(0);
                 list.picks = found.len();
                 list.at = list.at.filter(|&a| a < found.len());
                 list.scroll(CHOICES_SHOWN);
                 let window = &found[list.top..(list.top + CHOICES_SHOWN).min(found.len())];
                 list.lines = window
                     .iter()
-                    .map(|c| format!("{:key_w$}  {}", c.key, untrusted::line(&c.name)))
+                    .map(|c| format!("{}  {}", util::pad(&c.key, key_w), untrusted::line(&c.name)))
                     .collect();
                 let below = found.len() - list.top - window.len();
                 let more: Vec<String> = [("↑", list.top), ("↓", below)]
