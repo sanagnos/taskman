@@ -111,8 +111,9 @@ pub struct Created {
     pub note: Option<String>,
     /// It started from the base branch `create` was given.
     pub stacked: bool,
-    /// git made it now. False when the folder already was the branch's worktree: someone else's,
-    /// which closing the ticket must never remove.
+    /// taskman made it: git did now, or a try that a quit cut short did (`create`'s `ours`).
+    /// False when the folder already was the branch's worktree otherwise: someone else's, which
+    /// closing the ticket must never remove.
     pub made: bool,
 }
 
@@ -120,12 +121,15 @@ pub struct Created {
 /// else a new one after a fetch, from `base` (another ticket's branch, see `start_point`) or
 /// origin's default branch (the local HEAD without a remote or when the fetch fails). A base
 /// that's gone everywhere, most likely merged and deleted, falls back to the default branch. A
-/// folder that exists is used only if it is already that branch's worktree. Slow: it fetches.
+/// folder that exists is used only if it is already that branch's worktree, and counts as made
+/// only when `ours`: taskman started making it there before, and quit before it heard back.
+/// Slow: it fetches.
 pub fn create(
     repo: &Path,
     folder: &Path,
     branch: &str,
     base: Option<&str>,
+    ours: bool,
 ) -> Result<Created, String> {
     let done = |note, stacked, made| {
         Ok(Created { path: folder.to_path_buf(), branch: branch.to_string(), note, stacked, made })
@@ -135,7 +139,7 @@ pub fn create(
         match list.iter().find(|w| same_path(&w.path, folder)) {
             // Left by a `git worktree add` that was killed or stopped at the time limit.
             Some(w) if w.unfinished() => remove_unfinished(repo, folder)?,
-            Some(w) if w.branch.as_deref() == Some(branch) => return done(None, false, false),
+            Some(w) if w.branch.as_deref() == Some(branch) => return done(None, false, ours),
             _ => {
                 return Err(format!(
                     "{} already exists; move it, or change Folder in Project settings",
@@ -891,7 +895,7 @@ mod tests {
         // Its own `git worktree add` stopped mid-checkout: it says so and takes the folder away.
         let creating = {
             let (repo, folder) = (repo.clone(), folder.clone());
-            std::thread::spawn(move || create(&repo, &folder, "eng-52-slow", None))
+            std::thread::spawn(move || create(&repo, &folder, "eng-52-slow", None, false))
         };
         stop_slow_checkout(&root);
         assert!(creating.join().unwrap().is_err());
@@ -914,7 +918,7 @@ mod tests {
         assert!(listed().is_some_and(|w| w.unfinished()));
         assert_eq!(github::find_worktree(&repo, "ENG-52"), None);
         std::fs::remove_file(root.join("slow")).unwrap();
-        let c = create(&repo, &folder, "eng-52-slow", None).unwrap();
+        let c = create(&repo, &folder, "eng-52-slow", None, false).unwrap();
         assert!(c.made);
         assert_eq!(std::fs::read_to_string(folder.join("a.txt")).unwrap(), "hello\n");
         let status = git(&folder, &["status", "--porcelain"]).unwrap();
@@ -929,11 +933,11 @@ mod tests {
         let path = repo.join(".git/info/exclude");
         let theirs = b"/secrets/\n# caf\xe9\n/build".to_vec();
         std::fs::write(&path, &theirs).unwrap();
-        create(&repo, &folder_path(INSIDE, &repo, "ENG-53"), "ENG-53", None).unwrap();
+        create(&repo, &folder_path(INSIDE, &repo, "ENG-53"), "ENG-53", None, false).unwrap();
         let mut want = theirs;
         want.extend_from_slice(b"\n# taskman worktrees\n/.claude/worktrees/\n");
         assert_eq!(std::fs::read(&path).unwrap(), want);
-        create(&repo, &folder_path(INSIDE, &repo, "ENG-54"), "ENG-54", None).unwrap();
+        create(&repo, &folder_path(INSIDE, &repo, "ENG-54"), "ENG-54", None, false).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), want);
         let _ = std::fs::remove_dir_all(root);
     }
@@ -967,40 +971,43 @@ mod tests {
 
         // A new branch starts from the fetched main, not the stale local one.
         let folder = folder_path(BESIDE, &repo, "ENG-52");
-        let c = create(&repo, &folder, "ENG-52-fix-login", None).unwrap();
+        let c = create(&repo, &folder, "ENG-52-fix-login", None, false).unwrap();
         assert_eq!((c.path.as_path(), c.note, c.made), (folder.as_path(), None, true));
         assert_eq!(head(&folder, "HEAD"), head(&repo, "origin/main"));
         assert_ne!(head(&folder, "HEAD"), head(&repo, "main"));
 
         // An existing branch, local or only on origin, is checked out rather than created.
-        assert!(create(&repo, &folder_path(BESIDE, &repo, "ENG-7"), "eng-7-old", None).is_ok());
+        assert!(
+            create(&repo, &folder_path(BESIDE, &repo, "ENG-7"), "eng-7-old", None, false).is_ok()
+        );
         let remote = folder_path(BESIDE, &repo, "ENG-8");
-        create(&repo, &remote, "eng-8-remote", None).unwrap();
+        create(&repo, &remote, "eng-8-remote", None, false).unwrap();
         assert_eq!(head(&remote, "HEAD"), head(&repo, "origin/eng-8-remote"));
 
-        // Its own folder again is fine, though git didn't make it now; someone else's folder isn't
-        // touched.
-        assert!(!create(&repo, &folder, "ENG-52-fix-login", None).unwrap().made);
+        // Its own folder again is fine, though git didn't make it now: made only when taskman
+        // started making it there before. Someone else's folder isn't touched.
+        assert!(!create(&repo, &folder, "ENG-52-fix-login", None, false).unwrap().made);
+        assert!(create(&repo, &folder, "ENG-52-fix-login", None, true).unwrap().made);
         std::fs::create_dir_all(root.join("acme-web-ENG-9")).unwrap();
         assert!(
-            create(&repo, &folder_path(BESIDE, &repo, "ENG-9"), "ENG-9", None)
+            create(&repo, &folder_path(BESIDE, &repo, "ENG-9"), "ENG-9", None, false)
                 .unwrap_err()
                 .contains("already exists")
         );
         assert!(
-            create(&repo, &folder_path(BESIDE, &repo, "ENG-10"), "bad..name", None)
+            create(&repo, &folder_path(BESIDE, &repo, "ENG-10"), "bad..name", None, false)
                 .unwrap_err()
                 .contains("valid branch")
         );
 
         // Inside the checkout, the folder is ignored locally so it doesn't show as untracked.
-        create(&repo, &folder_path(INSIDE, &repo, "ENG-53"), "ENG-53", None).unwrap();
+        create(&repo, &folder_path(INSIDE, &repo, "ENG-53"), "ENG-53", None, false).unwrap();
         let status =
             String::from_utf8(git(&repo, &["status", "--porcelain"]).unwrap().stdout).unwrap();
         assert_eq!(status, "");
         let exclude = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
         assert_eq!(exclude.matches("/.claude/worktrees/").count(), 1);
-        create(&repo, &folder_path(INSIDE, &repo, "ENG-54"), "ENG-54", None).unwrap();
+        create(&repo, &folder_path(INSIDE, &repo, "ENG-54"), "ENG-54", None, false).unwrap();
         assert_eq!(std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap(), exclude);
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1016,8 +1023,9 @@ mod tests {
             );
         };
         let id = "-c user.name=t -c user.email=t@example.com";
-        let add =
-            |key: &str| create(&repo, &folder_path(BESIDE, &repo, key), key, None).unwrap().path;
+        let add = |key: &str| {
+            create(&repo, &folder_path(BESIDE, &repo, key), key, None, false).unwrap().path
+        };
 
         // Fresh from main: nothing to lose, and the branch has nothing main lacks.
         let clean = add("ENG-1");
@@ -1068,7 +1076,8 @@ mod tests {
     fn sees_untracked_files_the_settings_hide() {
         let (root, repo) = scratch_repo("hidden");
         let lock = hold(&root);
-        let wt = create(&repo, &folder_path(BESIDE, &repo, "ENG-4"), "ENG-4", None).unwrap().path;
+        let wt =
+            create(&repo, &folder_path(BESIDE, &repo, "ENG-4"), "ENG-4", None, false).unwrap().path;
         let clean = removal_check(&repo, &wt, None).unwrap().unwrap();
         assert!(clean.safe());
         // Set in the repository, which its worktrees share.
@@ -1101,7 +1110,8 @@ mod tests {
         std::fs::write(root.join("notes.md"), "notes\n").unwrap();
         std::fs::create_dir(root.join("shared")).unwrap();
         std::fs::write(root.join("shared/a"), "a\n").unwrap();
-        let wt = create(&repo, &folder_path(BESIDE, &repo, "ENG-6"), "ENG-6", None).unwrap().path;
+        let wt =
+            create(&repo, &folder_path(BESIDE, &repo, "ENG-6"), "ENG-6", None, false).unwrap().path;
         sh(
             &wt,
             &format!(
@@ -1136,7 +1146,8 @@ mod tests {
             );
         };
         let id = "-c user.name=t -c user.email=t@example.com";
-        let wt = create(&repo, &folder_path(BESIDE, &repo, "ENG-5"), "ENG-5", None).unwrap().path;
+        let wt =
+            create(&repo, &folder_path(BESIDE, &repo, "ENG-5"), "ENG-5", None, false).unwrap().path;
         sh(
             &wt,
             &format!(
@@ -1187,7 +1198,8 @@ mod tests {
         let tag = "printf 'Signature: 8a477f597d28d172789f06886806bc55\\n# a cache\\n'";
         // Pushed, with a .gitignore of its own: nothing but ignored files to lose.
         let add = |key: &str| {
-            let wt = create(&repo, &folder_path(BESIDE, &repo, key), key, None).unwrap().path;
+            let wt =
+                create(&repo, &folder_path(BESIDE, &repo, key), key, None, false).unwrap().path;
             sh(
                 &wt,
                 &format!(
@@ -1297,7 +1309,8 @@ mod tests {
         };
         let id = "-c user.name=t -c user.email=t@example.com";
         let branch_at = |b: &str| rev(&repo, &format!("refs/heads/{b}"));
-        let wt = create(&repo, &folder_path(BESIDE, &repo, "ENG-5"), "ENG-5", None).unwrap().path;
+        let wt =
+            create(&repo, &folder_path(BESIDE, &repo, "ENG-5"), "ENG-5", None, false).unwrap().path;
         sh(&wt, &format!("git {id} commit -q --allow-empty -m work && git push -q origin ENG-5"));
         let pr_head = rev(&wt, "HEAD").unwrap();
         sh(&wt, "git push -q origin --delete ENG-5 && git fetch -q --prune");
@@ -1317,8 +1330,9 @@ mod tests {
         );
 
         // Another ticket's merged PR (ENG-52's, say) vouches for nothing here.
-        let other =
-            create(&repo, &folder_path(BESIDE, &repo, "ENG-52"), "ENG-52", None).unwrap().path;
+        let other = create(&repo, &folder_path(BESIDE, &repo, "ENG-52"), "ENG-52", None, false)
+            .unwrap()
+            .path;
         sh(&other, &format!("git {id} commit -q --allow-empty -m theirs"));
         let theirs = rev(&other, "HEAD").unwrap();
         assert_eq!(
@@ -1370,9 +1384,11 @@ mod tests {
         let repo = link.join("acme-web");
         let folder = folder_path(BESIDE, &repo, "ENG-52");
         assert!(folder.starts_with(&link));
-        create(&repo, &folder, "ENG-52", None).unwrap();
-        assert!(create(&repo, &folder, "ENG-52", None).is_ok());
-        assert!(create(&repo, &folder, "ENG-53", None).unwrap_err().contains("already exists"));
+        create(&repo, &folder, "ENG-52", None, false).unwrap();
+        assert!(create(&repo, &folder, "ENG-52", None, false).is_ok());
+        assert!(
+            create(&repo, &folder, "ENG-53", None, false).unwrap_err().contains("already exists")
+        );
         let check = removal_check(&repo, &folder, None).unwrap().unwrap();
         assert_eq!((check.safe(), check.branch.as_deref()), (true, Some("ENG-52")));
         remove(&repo, &check, None, &lock).unwrap();
@@ -1393,8 +1409,9 @@ mod tests {
         let head =
             |rev: &str| String::from_utf8(git(&repo, &["rev-parse", rev]).unwrap().stdout).unwrap();
         let start = |b: &str| start_point(&repo, b, true);
-        let base =
-            create(&repo, &folder_path(BESIDE, &repo, "ENG-51"), "eng-51", None).unwrap().path;
+        let base = create(&repo, &folder_path(BESIDE, &repo, "ENG-51"), "eng-51", None, false)
+            .unwrap()
+            .path;
         sh(
             &base,
             &format!("git {id} commit -q --allow-empty -m base && git push -q origin eng-51"),
@@ -1406,7 +1423,8 @@ mod tests {
         sh(&base, &format!("git {id} commit -q --allow-empty -m local"));
         assert_eq!(start("eng-51").as_deref(), Some("refs/heads/eng-51"));
         let stacked =
-            create(&repo, &folder_path(BESIDE, &repo, "ENG-52"), "eng-52", Some("eng-51")).unwrap();
+            create(&repo, &folder_path(BESIDE, &repo, "ENG-52"), "eng-52", Some("eng-51"), false)
+                .unwrap();
         assert!(stacked.stacked);
         assert_eq!(head("eng-52"), head("eng-51"));
         // Diverged from what's on origin: origin's, which the PR targets.
@@ -1425,12 +1443,14 @@ mod tests {
 
         // A base that's gone everywhere: from the default branch, and not stacked.
         let gone =
-            create(&repo, &folder_path(BESIDE, &repo, "ENG-53"), "eng-53", Some("eng-50")).unwrap();
+            create(&repo, &folder_path(BESIDE, &repo, "ENG-53"), "eng-53", Some("eng-50"), false)
+                .unwrap();
         assert!(!gone.stacked && gone.note.unwrap().contains("eng-50 is gone"));
         assert_eq!(head("eng-53"), head("origin/main"));
         // The ticket's own branch exists already: it's checked out, and the base doesn't apply.
-        let own = create(&repo, &folder_path(BESIDE, &repo, "ENG-7"), "eng-7-old", Some("eng-51"))
-            .unwrap();
+        let own =
+            create(&repo, &folder_path(BESIDE, &repo, "ENG-7"), "eng-7-old", Some("eng-51"), false)
+                .unwrap();
         assert!(!own.stacked);
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1439,7 +1459,8 @@ mod tests {
     fn starts_from_local_head_when_the_fetch_fails() {
         let (root, repo) = scratch_repo("offline");
         git(&repo, &["remote", "set-url", "origin", "/nonexistent/origin.git"]).unwrap();
-        let c = create(&repo, &folder_path(BESIDE, &repo, "ENG-52"), "ENG-52", None).unwrap();
+        let c =
+            create(&repo, &folder_path(BESIDE, &repo, "ENG-52"), "ENG-52", None, false).unwrap();
         assert!(c.note.unwrap().contains("local HEAD"));
         let _ = std::fs::remove_dir_all(root);
     }

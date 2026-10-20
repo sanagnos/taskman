@@ -187,6 +187,101 @@ fn a_created_worktree_becomes_the_tickets_and_taskmans_only_if_git_made_it() {
     assert!(!t.created_worktree && t.pending_worktree.is_none());
 }
 
+/// Project web (`web_project`) with ENG-5's worktree made by hand, on the branch taskman would
+/// give it. Returns the project and the worktree.
+fn hand_made_worktree(app: &mut App) -> (usize, std::path::PathBuf) {
+    let (p, repo) = web_project(app);
+    let wt = crate::worktree::folder_path(crate::worktree::BESIDE, &repo, "ENG-5");
+    sh(&repo, &format!("git worktree add -q -b ENG-5 {}", wt.display()));
+    (p, wt)
+}
+
+/// The close dialog for the selected ticket offers no removal, and Enter leaves worktree `wt`.
+fn closes_keeping(app: &mut App, wt: &std::path::Path) {
+    prefix(app, KeyCode::Char('x'));
+    assert!(matches!(app.mode, Mode::ConfirmClose));
+    assert!(app.close_check.is_none() && app.close_unchecked.is_none());
+    app.on_key(key(KeyCode::Enter));
+    assert!(!saved().tickets.iter().any(|t| t.key == "ENG-5"));
+    assert!(wt.join(".git").exists());
+}
+
+#[test]
+fn a_hand_made_worktree_found_as_the_ticket_is_added_stays_when_it_closes() {
+    let mut app = acme_app();
+    let (p, wt) = hand_made_worktree(&mut app);
+    let added = app.add_ticket(p, "ENG-5".into(), store::Cli::Claude, true, None, true);
+    assert!(matches!(added, Ok(crate::app::ticket::Added::New(_))));
+    let t = &saved().tickets[app.sel];
+    assert_eq!((&t.cwd, t.branch.as_deref()), (&wt, Some("ENG-5")));
+    assert!(!t.created_worktree && t.pending_worktree.is_none());
+    closes_keeping(&mut app, &wt);
+}
+
+#[test]
+fn a_hand_made_worktree_found_by_git_stays_when_the_ticket_closes() {
+    // Made by hand where git failed, then tried again: git finds it already the branch's.
+    let mut app = acme_app();
+    let (i, wt) = failed_worktree(&mut app);
+    std::fs::remove_dir(&wt).unwrap();
+    sh(
+        &app.projects.last().unwrap().repo,
+        &format!("git worktree add -q -b ENG-5 {}", wt.display()),
+    );
+    app.on_key(key(KeyCode::Enter));
+    app.resume_worktrees();
+    settle(&mut app);
+    let t = &saved().tickets[i];
+    assert_eq!(t.cwd, wt);
+    assert!(!t.created_worktree && t.pending_worktree.is_none());
+    closes_keeping(&mut app, &wt);
+}
+
+#[test]
+fn the_folder_is_marked_taskmans_before_git_runs() {
+    let mut app = acme_app();
+    let (p, repo) = web_project(&mut app);
+    let wt = crate::worktree::folder_path(crate::worktree::BESIDE, &repo, "ENG-5");
+    let added = app.add_ticket(p, "ENG-5".into(), store::Cli::Claude, true, None, true);
+    assert!(matches!(added, Ok(crate::app::ticket::Added::New(_))));
+    // A quit now doesn't stop git; the next start finds this.
+    let pending = saved().tickets[app.sel].pending_worktree.clone().expect("not pending");
+    assert_eq!(pending.making, Some(wt.clone()));
+    settle(&mut app);
+    let t = &saved().tickets[app.sel];
+    assert_eq!(t.cwd, wt);
+    assert!(t.created_worktree && t.pending_worktree.is_none());
+}
+
+#[test]
+fn a_worktree_git_finished_after_a_quit_is_still_taskmans() {
+    let mut app = acme_app();
+    // As `create_worktree` saved it before a quit, and the worktree git finished after.
+    let (p, wt) = hand_made_worktree(&mut app);
+    let added = app.add_ticket(p, "ENG-5".into(), store::Cli::Claude, false, None, true);
+    assert!(matches!(added, Ok(crate::app::ticket::Added::New(_))));
+    let making = Some(wt.clone());
+    app.tickets[app.sel].t.pending_worktree =
+        Some(store::PendingWorktree { making, ..Default::default() });
+
+    app.resume_worktrees();
+    settle(&mut app);
+    let t = &saved().tickets[app.sel];
+    assert_eq!(t.cwd, wt);
+    assert!(t.created_worktree && t.pending_worktree.is_none());
+    prefix(&mut app, KeyCode::Char('x'));
+    let check = app.close_check.as_ref().expect("removal not considered");
+    assert_eq!(check.path, wt);
+}
+
+#[test]
+fn a_failed_worktree_leaves_its_folder_unclaimed() {
+    let mut app = acme_app();
+    let (i, _) = failed_worktree(&mut app);
+    let pending = saved().tickets[i].pending_worktree.clone().expect("no longer asked for");
+    assert!(pending.error.is_some() && pending.making.is_none());
+}
+
 #[test]
 fn a_worktree_finished_after_its_ticket_closed_is_not_the_reopened_tickets() {
     let mut app = acme_app();

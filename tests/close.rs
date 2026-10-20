@@ -3,13 +3,13 @@
 //! made while taskman was closed applies when it starts. A ticket whose session runs in another
 //! terminal closes neither from the command nor from the close dialog. A closed ticket can't come
 //! back while its worktree is still being removed, and a worktree git finishes after its ticket
-//! closed doesn't stay behind.
+//! closed doesn't stay behind. One git finished after taskman quit is still taskman's to remove.
 
 mod common;
 
 use common::{
-    Tui, Watchdog, acme, answer_queries, scratch_dir, sh, slow_add_git, slow_git, spawn_in_pty,
-    stub_cli, taskman,
+    Tui, Watchdog, acme, answer_queries, scratch_dir, sh, slow_add_git, slow_added_git, slow_git,
+    spawn_in_pty, stub_cli, taskman,
 };
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
@@ -543,14 +543,20 @@ fn a_removal_keeps_the_ticket_out_after_taskman_ends() {
 }
 
 /// Project `acme` in `dir` with an origin, Local files tickets `keys` and none open, and taskman
-/// started on it with git held at `worktree add` (`slow_add_git`). Returns the repo and taskman.
-fn held_at_add(dir: &Path, name: &'static str, keys: &[&str]) -> (std::path::PathBuf, Tui) {
+/// started on it with git held at `worktree add` by `hold` (`slow_add_git`, `slow_added_git`).
+/// Returns the repo and taskman.
+fn held_at_add(
+    dir: &Path,
+    name: &'static str,
+    keys: &[&str],
+    hold: fn(&Path),
+) -> (std::path::PathBuf, Tui) {
     let repo = acme(dir);
     std::fs::create_dir_all(repo.join("workplan/todo")).unwrap();
     for key in keys {
         std::fs::write(repo.join(format!("workplan/todo/{key}-late.md")), "# late\n").unwrap();
     }
-    slow_add_git(dir);
+    hold(dir);
     let state = dir.join("state/taskman");
     std::fs::create_dir_all(&state).unwrap();
     let tickets = serde_json::json!({
@@ -575,8 +581,12 @@ fn branches(repo: &Path) -> String {
 #[test]
 fn a_worktree_created_after_its_ticket_closed_goes() {
     let dir = scratch_dir("close-creating").canonicalize().unwrap();
-    let (repo, tui) =
-        held_at_add(&dir, "a_worktree_created_after_its_ticket_closed_goes", &["ENG-11", "ENG-12"]);
+    let (repo, tui) = held_at_add(
+        &dir,
+        "a_worktree_created_after_its_ticket_closed_goes",
+        &["ENG-11", "ENG-12"],
+        slow_add_git,
+    );
     let (wt11, wt12) = (dir.join("acme-ENG-11"), dir.join("acme-ENG-12"));
     let open =
         || std::fs::read_to_string(dir.join("state/taskman/tickets.json")).unwrap_or_default();
@@ -620,7 +630,7 @@ fn a_worktree_created_after_its_ticket_closed_goes() {
 fn a_quit_waits_for_a_closed_tickets_worktree() {
     let dir = scratch_dir("close-creating-quit").canonicalize().unwrap();
     let (repo, mut tui) =
-        held_at_add(&dir, "a_quit_waits_for_a_closed_tickets_worktree", &["ENG-13"]);
+        held_at_add(&dir, "a_quit_waits_for_a_closed_tickets_worktree", &["ENG-13"], slow_add_git);
     let wt13 = dir.join("acme-ENG-13");
     let open =
         || std::fs::read_to_string(dir.join("state/taskman/tickets.json")).unwrap_or_default();
@@ -646,4 +656,34 @@ fn a_quit_waits_for_a_closed_tickets_worktree() {
             && !wt13.exists()
             && !branches(&repo).contains("ENG-13")
     );
+}
+
+/// taskman quits after git has made a ticket's worktree but before it heard back: the next start
+/// finds the worktree taskman started, so closing the ticket still removes it.
+#[test]
+fn a_worktree_made_as_taskman_quit_is_still_taskmans() {
+    let dir = scratch_dir("close-quit-creating").canonicalize().unwrap();
+    let name = "a_worktree_made_as_taskman_quit_is_still_taskmans";
+    let (repo, mut tui) = held_at_add(&dir, name, &["ENG-14"], slow_added_git);
+    let wt14 = dir.join("acme-ENG-14");
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    let added = taskman(&dir).args(["add", "ENG-14"]).current_dir(&repo).output().unwrap();
+    assert!(added.status.success(), "{}", text(&added.stderr));
+    tui.wait_until("git never made the worktree", || dir.join("added-acme-ENG-14").exists());
+    tui.quit();
+    std::fs::write(dir.join("release-acme-ENG-14"), "").unwrap();
+
+    let mut cmd = taskman(&dir);
+    cmd.env("TASKMAN_CLAUDE", stub_cli(&dir, &dir.join("session.pid")));
+    let mut tui = Tui::start(name, &dir, cmd, Duration::from_secs(90));
+    let tickets = || std::fs::read_to_string(dir.join("state/taskman/tickets.json")).unwrap();
+    tui.wait_until("the worktree wasn't taken up", || !tickets().contains("pending_worktree"));
+    let saved: serde_json::Value = serde_json::from_str(&tickets()).unwrap();
+    assert_eq!(saved["tickets"][0]["created_worktree"], true, "{saved}");
+
+    let closed = taskman(&dir).args(["close", "ENG-14"]).current_dir(&repo).output().unwrap();
+    let reply = text(&closed.stdout);
+    assert!(reply.starts_with(&format!("Closed ENG-14. Removed {}", wt14.display())), "{reply}");
+    assert!(!wt14.exists());
+    tui.quit();
 }

@@ -325,17 +325,20 @@ impl App {
                             }
                             tv.t.cwd = c.path;
                             tv.t.branch = Some(c.branch);
-                            // Not when the folder already was the branch's worktree: someone
-                            // else's, which closing the ticket must leave.
+                            // Not when the folder already was the branch's worktree, unless
+                            // taskman had started it there: someone else's, which closing the
+                            // ticket must leave.
                             tv.t.created_worktree = c.made;
                             tv.t.pending_worktree = None;
                             (level, msg)
                         }
-                        // The session waits rather than editing the shared checkout;
-                        // see `draw_claude`.
+                        // The session waits rather than editing the shared checkout; see
+                        // `draw_claude`. git leaves no worktree when it fails, so whatever is in
+                        // the folder by the next try isn't taskman's.
                         Err(e) => {
                             let msg = format!("Couldn't create {key}'s worktree: {e}");
-                            tv.t.pending_worktree.get_or_insert_default().error = Some(e);
+                            let pending = tv.t.pending_worktree.get_or_insert_default();
+                            (pending.error, pending.making) = (Some(e), None);
                             (Level::Error, msg)
                         }
                     });
@@ -540,12 +543,17 @@ impl App {
         let tv = &mut self.tickets[i];
         tv.creating = true;
         tv.creation_id = n;
-        let base = tv.t.pending_worktree.as_ref().and_then(|w| w.base.clone());
         let prefs = &self.projects[p].worktrees;
         let provider = self.projects[p].tracker.as_ref().map(|t| t.provider);
         let (key, repo, tx) = (tv.t.key.clone(), tv.t.repo.clone(), self.tx.clone());
         let folder = worktree::folder_path(prefs.folder_format(), &repo, &key);
         let format = prefs.branch_format().to_string();
+        // Saved below, before git can run: git runs in its own process group, so a quit doesn't
+        // stop it, and the next try finds the worktree it finished.
+        let pending = tv.t.pending_worktree.get_or_insert_default();
+        let base = pending.base.clone();
+        let ours = pending.making.as_ref() == Some(&folder);
+        pending.making = Some(folder.clone());
         let started = match &access {
             Access::Client(c) if c.remote() => {
                 tv.jira.start(fetch);
@@ -559,6 +567,7 @@ impl App {
             }
             _ => false,
         };
+        self.save();
         let report = self.reporter();
         let thread = std::thread::spawn(move || {
             let mut fetched = false;
@@ -585,7 +594,7 @@ impl App {
                 let branch =
                     worktree::branch_name(&format, provider, &key, &title, &tracker_branch);
                 let base = base.as_ref().map(|b| b.branch.as_str());
-                worktree::create(&repo, &folder, &branch, base)
+                worktree::create(&repo, &folder, &branch, base, ours)
             });
             // A panic before the fetch replied would leave its spinner on.
             if let Err(e) = &res

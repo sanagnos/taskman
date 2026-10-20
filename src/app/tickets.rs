@@ -187,8 +187,7 @@ impl App {
             extra: Default::default(),
         });
         if create {
-            tv.t.pending_worktree =
-                Some(store::PendingWorktree { base, error: None, extra: Default::default() });
+            tv.t.pending_worktree = Some(store::PendingWorktree { base, ..Default::default() });
         }
         // Closed a moment ago, its CLI may still be stopping: the new session waits for it.
         tv.reaper = self.take_reaper(&tv.t.repo, &tv.t.key);

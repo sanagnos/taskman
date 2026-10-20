@@ -818,6 +818,23 @@ pub fn slow_git(dir: &Path) {
     script(&bin, "git", &shim);
 }
 
+/// A git in `dir/bin` that makes the worktree at `worktree add` and touches `dir/added-FOLDER`,
+/// then waits until the test writes `dir/release-FOLDER` before it returns: the worktree is made
+/// and taskman hasn't heard yet.
+pub fn slow_added_git(dir: &Path) {
+    let real_git = Command::new("sh").args(["-c", "command -v git"]).output().unwrap();
+    let real_git = String::from_utf8_lossy(&real_git.stdout).trim().to_string();
+    let bin = stub_tools(dir);
+    let shim = format!(
+        "#!/bin/sh\ncase \"$*\" in *'worktree add'*)\n  eval folder=\\${{$(($# - 1))}}; f=$(basename \"$folder\")\n  \
+         '{real_git}' \"$@\"; s=$?; touch '{d}/added-'$f; i=0\n  \
+         while [ ! -e '{d}/release-'$f ] && [ $i -lt 600 ]; do sleep 0.05; i=$((i+1)); done; exit $s;;\n\
+         esac\nexec '{real_git}' \"$@\"\n",
+        d = dir.display()
+    );
+    script(&bin, "git", &shim);
+}
+
 /// A git in `dir/bin` that waits at `worktree add` until the test writes `dir/release-FOLDER`,
 /// after touching `dir/adding-FOLDER`, and touches `dir/added-FOLDER` once the worktree is made, in
 /// the folder `taskman` puts first on PATH.

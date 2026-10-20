@@ -244,6 +244,10 @@ pub struct PendingWorktree {
     pub base: Option<Base>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The folder taskman is making the worktree in, saved before git runs: one found there at
+    /// the next try, after a quit that cut this one short, is still taskman's to remove.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub making: Option<PathBuf>,
     #[serde(flatten)]
     pub extra: Extra,
 }
