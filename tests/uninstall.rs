@@ -101,7 +101,21 @@ struct Installed {
 }
 
 fn installed(name: &str) -> Installed {
-    let dir = scratch_dir(name);
+    installed_in(scratch_dir(name))
+}
+
+/// A scratch folder reached through a link, as macOS's temporary folders are (/var is
+/// /private/var), so Linux sees what macOS does: the program's path comes back with its links
+/// resolved, and the home folder's doesn't.
+fn behind_a_link(name: &str) -> PathBuf {
+    let real = scratch_dir(name);
+    let link = real.with_file_name(format!("{}-link", real.file_name().unwrap().to_str().unwrap()));
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    link
+}
+
+fn installed_in(dir: PathBuf) -> Installed {
     let home = dir.join("home");
     let bin = keychain(&dir, &["jira-1", "jira-9"]);
     let config_dir = home.join(".config/taskman");
@@ -373,4 +387,60 @@ fn asks_about_the_program_then_the_data() {
         }
         t.assert_theirs_kept();
     }
+}
+
+/// $HOME reached through a link: the program is still the install script's copy, shown under
+/// `~`, and the data is still taskman's own, removed with --purge.
+#[test]
+fn works_with_home_behind_a_link() {
+    let t = installed_in(behind_a_link("uninstall-linked-home"));
+    let out = run(t.cmd(), &["--yes"]);
+    let stdout = text(&out.stdout);
+    assert!(out.status.success(), "{stdout}{}", text(&out.stderr));
+    assert!(
+        stdout.starts_with("taskman uninstall removes the program: ~/.local/bin/taskman\n"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("and the PATH line for ~/.local/bin\n"), "{stdout}");
+    assert!(stdout.contains("\nRemoved ~/.local/bin/taskman\n"), "{stdout}");
+    assert!(gone(&t.program));
+    assert!(t.data_kept(), "{stdout}");
+
+    // Then the data, with the build, as `taskman uninstall --purge` before the program went would.
+    let mut cmd = taskman(&t.dir);
+    cmd.env_remove("TASKMAN_CONFIG");
+    let out = run(cmd, &["--yes", "--purge"]);
+    let stdout = text(&out.stdout);
+    assert!(out.status.success(), "{stdout}{}", text(&out.stderr));
+    assert!(
+        stdout.contains(
+            "  - your accounts and settings, and the tokens saved in files: ~/.config/taskman\n"
+        ),
+        "{stdout}"
+    );
+    for path in [&t.config_dir, &t.state, &t.bin.join("items/taskman-jira-1")] {
+        assert!(gone(path), "{} is still there", path.display());
+    }
+    t.assert_theirs_kept();
+}
+
+/// A token file is taskman's when it's in its token folder, however the folder's path was spelled
+/// when the token was saved; one elsewhere stays, even with a name like one.
+#[test]
+fn purge_finds_its_token_files_however_their_folder_was_spelled() {
+    let dir = behind_a_link("uninstall-token-spelling");
+    let real = dir.canonicalize().unwrap();
+    let token = token_file(&dir.join("tokens"), "jira-1");
+    let elsewhere = token_file(&dir.join("elsewhere"), "jira-2");
+    config(
+        &dir.join("config.json"),
+        &[&cat(&real.join("tokens/jira-1")), &cat(&real.join("elsewhere/jira-2"))],
+    );
+    let out = run(taskman(&dir), &["--yes", "--purge"]);
+    let stdout = text(&out.stdout);
+    assert!(out.status.success(), "{stdout}{}", text(&out.stderr));
+    assert!(gone(&token) && gone(&dir.join("config.json")), "{stdout}");
+    assert!(elsewhere.exists(), "{stdout}");
+    // The folder's empty now, so it goes too.
+    assert!(gone(&dir.join("tokens")), "{stdout}");
 }

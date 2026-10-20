@@ -10,7 +10,8 @@
 
 use crate::cli::{Arg, Lexer, out};
 use crate::keychain::{self, Keychain};
-use crate::store::{self, Config, Saved, tilde};
+use crate::status::real;
+use crate::store::{self, Config, Saved};
 use crate::update::{self, Installs};
 use crate::{add, keys, resume, token_file};
 use std::io::{IsTerminal, Write};
@@ -148,7 +149,9 @@ impl Plan {
 }
 
 /// Whether there's something at `path`, refusing a link: taskman removes only its own files and
-/// folders, and reads none through a link either, so it never reaches what a link leads to.
+/// folders, and reads none through a link either, so it never reaches what a link leads to. Only
+/// `path` itself is taskman's: a link above it (macOS's /var, a home folder reached through one)
+/// is where the user keeps it, and is used as it is.
 fn own(path: &Path) -> Result<bool, String> {
     match std::fs::symlink_metadata(path) {
         Ok(m) if m.file_type().is_symlink() => {
@@ -209,10 +212,13 @@ fn data(plan: &mut Plan) -> Result<(), String> {
                 plan.paths.push((config_path, "your accounts and settings"));
             }
             for a in &config.accounts {
-                if let Some(name) = token_file::name_of(&a.token)
-                    && own(&token_file::path(name))?
+                // In this token folder, however its path was spelled when the token was saved.
+                if let Some(file) = token_file::file_of(&a.token)
+                    && file.parent().is_some_and(|d| real(d) == real(&tokens))
+                    && own(&file)?
+                    && !plan.paths.iter().any(|(p, _)| *p == file)
                 {
-                    plan.paths.push((token_file::path(name), "a token saved in a file"));
+                    plan.paths.push((file, "a token saved in a file"));
                 }
             }
             plan.tokens_dir = tokens_there.then_some(tokens);
@@ -240,17 +246,41 @@ fn data(plan: &mut Plan) -> Result<(), String> {
 }
 
 /// `paths` without those inside another of them, or listed before: the state folder may hold the
-/// config file, or be the config folder.
+/// config file, or be the config folder, each maybe spelled through a link.
 fn outermost<T>(paths: Vec<(PathBuf, T)>) -> Vec<(PathBuf, T)> {
-    let all: Vec<PathBuf> = paths.iter().map(|(p, _)| p.clone()).collect();
+    let all: Vec<PathBuf> = paths.iter().map(|(p, _)| resolved(p)).collect();
     let mut kept: Vec<(PathBuf, T)> = Vec::new();
     for (p, what) in paths {
-        let inside = all.iter().any(|q| *q != p && p.starts_with(q));
-        if !inside && !kept.iter().any(|(k, _)| *k == p) {
+        let r = resolved(&p);
+        let inside = all.iter().any(|q| *q != r && r.starts_with(q));
+        if !inside && !kept.iter().any(|(k, _)| resolved(k) == r) {
             kept.push((p, what));
         }
     }
     kept
+}
+
+/// `p` with the links above it resolved, but not `p` itself if it's one: the same file or folder
+/// whichever way its parents are spelled, never what a link leads to.
+fn resolved(p: &Path) -> PathBuf {
+    match (p.parent(), p.file_name()) {
+        (Some(dir), Some(name)) => real(dir).join(name),
+        _ => p.to_path_buf(),
+    }
+}
+
+/// `p` as `~/...` when it's under the home folder, whichever way either is spelled: the
+/// program's path has its links resolved (`current_exe`), and $HOME may be reached through a link
+/// (macOS's /var is /private/var).
+fn tilde(p: &Path) -> String {
+    let home = store::home();
+    if p.starts_with(&home) {
+        return store::tilde(p);
+    }
+    match resolved(p).strip_prefix(real(&home)) {
+        Ok(rest) => store::tilde(&home.join(rest)),
+        Err(_) => store::tilde(p),
+    }
 }
 
 /// The running program, links resolved: Ok when it's taskman's to remove, a copy the install
@@ -291,7 +321,11 @@ fn worktrees(saved: &Saved) -> Vec<(PathBuf, PathBuf)> {
     let mut out: Vec<(PathBuf, PathBuf)> = Vec::new();
     for t in &saved.tickets {
         let w = (t.repo.clone(), t.cwd.clone());
-        if t.created_worktree && t.cwd != t.repo && t.cwd.is_dir() && !out.contains(&w) {
+        if t.created_worktree
+            && real(&t.cwd) != real(&t.repo)
+            && t.cwd.is_dir()
+            && !out.contains(&w)
+        {
             out.push(w);
         }
     }
@@ -463,6 +497,17 @@ mod tests {
             kept(vec![p("/x/taskman"), p("/x/taskman"), p("/x/taskman-old")]),
             paths(&["/x/taskman", "/x/taskman-old"])
         );
+        // Spelled through a link above it, as macOS's /var is /private/var.
+        let dir = store::scratch::dir();
+        let (real, link) = (dir.join("real"), dir.join("link"));
+        std::fs::create_dir_all(real.join("taskman")).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let (state, config) = (real.join("taskman"), link.join("taskman/config.json"));
+        let (state_p, config_p) = ((state.clone(), ()), (config.clone(), ()));
+        assert_eq!(kept(vec![config_p, state_p]), vec![state.clone()]);
+        assert_eq!(kept(vec![(link.join("taskman"), ()), (state, ())]), vec![link.join("taskman")]);
+        // A link itself is never resolved: it isn't the folder it leads to.
+        assert_eq!(resolved(&link), link);
     }
 
     #[test]

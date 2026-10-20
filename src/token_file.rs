@@ -40,7 +40,22 @@ pub fn is_name(name: &str) -> bool {
 /// The source that reads file `name`: `cat` and its path as one shell word, whatever the path
 /// holds.
 pub fn source(name: &str) -> String {
-    format!("cmd:cat '{}'", path(name).display().to_string().replace('\'', r"'\''"))
+    reading(&path(name))
+}
+
+fn reading(path: &Path) -> String {
+    format!("cmd:cat '{}'", path.display().to_string().replace('\'', r"'\''"))
+}
+
+/// The file a source of `source`'s making reads, in whichever folder it names: the folder may
+/// have been spelled another way when it was saved, through a link or another $HOME. None for any
+/// other source, and for a name `is_name` refuses.
+pub fn file_of(source: &str) -> Option<PathBuf> {
+    let source = source.trim();
+    let quoted = source.strip_prefix("cmd:cat '")?.strip_suffix('\'')?;
+    let path = PathBuf::from(quoted.replace(r"'\''", "'"));
+    let name = path.file_name()?.to_str()?;
+    (path.is_absolute() && is_name(name) && reading(&path) == source).then_some(path)
 }
 
 /// The file `source` reads, if it's the source `source` makes for one.
@@ -192,8 +207,36 @@ mod tests {
         assert_eq!(String::from_utf8(out.stdout).unwrap(), p);
     }
 
+    #[test]
+    fn finds_the_file_whichever_way_its_folder_is_spelled() {
+        assert_eq!(file_of(&source("jira-1")), Some(path("jira-1")));
+        let elsewhere = "/home/o'brien/linked/taskman/tokens/jira-2";
+        let s = format!("cmd:cat '{}'", elsewhere.replace('\'', r"'\''"));
+        assert_eq!(file_of(&format!(" {s} ")), Some(PathBuf::from(elsewhere)));
+        for other in [
+            "cmd:cat ~/token",
+            "cmd:cat 'tokens/jira-1'",
+            "cmd:cat '/a/b'c/jira-1'",
+            "cmd:cat '/a/.jira-1.tmp'",
+            "cmd:cat '/a/jira-1'; rm x",
+            "keychain:jira-1",
+        ] {
+            assert_eq!(file_of(other), None, "{other}");
+        }
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
+
+        /// A file is found only in a source of this module's making, and its name is a valid one.
+        #[test]
+        fn file_of_finds_only_sources_made_here(s in "(cmd:cat '/[a-z' /\\\\.-]{0,30}'?)?.{0,20}") {
+            if let Some(file) = file_of(&s) {
+                prop_assert!(is_name(file.file_name().unwrap().to_str().unwrap()));
+                prop_assert_eq!(reading(&file), s.trim());
+            }
+        }
+
         /// Only a source of this folder's own making names a file, and the name is a valid one.
         #[test]
         fn name_of_names_only_valid_files(s in ".{0,80}") {
