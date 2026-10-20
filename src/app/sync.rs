@@ -225,8 +225,7 @@ impl Reporter {
 /// (`github::Wanted::shown`), rather than fetching them again. The selected ticket's are fetched on
 /// each of its refreshes, and so are those of a refresh someone waits on (`loud`): the user's own,
 /// or the hook's after Claude pushed or ran gh. In the background, a check finishing while others
-/// still run, or a change in mergeability, waits for the ticket to be selected: neither changes
-/// what the list reads.
+/// still run waits for the ticket to be selected: it doesn't change what the list reads.
 fn keeps_details(selected: bool, loud: bool) -> bool {
     !selected && !loud
 }

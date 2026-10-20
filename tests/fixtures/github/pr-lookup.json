@@ -3,12 +3,12 @@
     "repository": {
       "b0": {
         "nodes": [
-          { "number": 45, "url": "https://github.com/acme/web/pull/45", "title": "Sign in with a magic link", "headRefName": "eng-52-login", "state": "OPEN", "updatedAt": "2026-10-01T10:00:00Z", "headRefOid": "0123456789abcdef0123456789abcdef01234567", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "FAILURE" } } }] } }
+          { "number": 45, "url": "https://github.com/acme/web/pull/45", "title": "Sign in with a magic link", "headRefName": "eng-52-login", "state": "OPEN", "updatedAt": "2026-10-01T10:00:00Z", "headRefOid": "0123456789abcdef0123456789abcdef01234567", "mergeable": "MERGEABLE", "isDraft": false, "reviewDecision": "CHANGES_REQUESTED", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "FAILURE" } } }] } }
         ]
       },
       "b2": {
         "nodes": [
-          { "number": 50, "url": "https://github.com/acme/web/pull/50", "title": "Export to CSV", "headRefName": "eng-7-export", "state": "MERGED", "updatedAt": "2026-09-01T10:00:00Z", "headRefOid": "5000000000000000000000000000000000000000", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] } }
+          { "number": 50, "url": "https://github.com/acme/web/pull/50", "title": "Export to CSV", "headRefName": "eng-7-export", "state": "MERGED", "updatedAt": "2026-09-01T10:00:00Z", "headRefOid": "5000000000000000000000000000000000000000", "mergeable": "MERGEABLE", "isDraft": false, "reviewDecision": "REVIEW_REQUIRED", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] } }
         ]
       },
       "b4": {
@@ -17,27 +17,27 @@
     },
     "q0": {
       "nodes": [
-        { "number": 63, "url": "https://github.com/acme/web/pull/63", "title": "ENG-52: Remember the device", "headRefName": "bo/remember-device", "state": "OPEN", "updatedAt": "2026-10-06T10:00:00Z", "headRefOid": "6300000000000000000000000000000000000000", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] } },
-        { "number": 45, "url": "https://github.com/acme/web/pull/45", "title": "Sign in with a magic link", "headRefName": "eng-52-login", "state": "OPEN", "updatedAt": "2026-10-01T10:00:00Z", "headRefOid": "0123456789abcdef0123456789abcdef01234567", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "FAILURE" } } }] } }
+        { "number": 63, "url": "https://github.com/acme/web/pull/63", "title": "ENG-52: Remember the device", "headRefName": "bo/remember-device", "state": "OPEN", "updatedAt": "2026-10-06T10:00:00Z", "headRefOid": "6300000000000000000000000000000000000000", "mergeable": "MERGEABLE", "isDraft": false, "reviewDecision": "REVIEW_REQUIRED", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] } },
+        { "number": 45, "url": "https://github.com/acme/web/pull/45", "title": "Sign in with a magic link", "headRefName": "eng-52-login", "state": "OPEN", "updatedAt": "2026-10-01T10:00:00Z", "headRefOid": "0123456789abcdef0123456789abcdef01234567", "mergeable": "MERGEABLE", "isDraft": false, "reviewDecision": "CHANGES_REQUESTED", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "FAILURE" } } }] } }
       ]
     },
     "q1": {
       "nodes": [
-        { "number": 71, "url": "https://github.com/acme/web/pull/71", "title": "ENG-610: Audit log", "headRefName": "eng-610-audit", "state": "OPEN", "updatedAt": "2026-10-08T10:00:00Z", "headRefOid": "7100000000000000000000000000000000000000", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] } },
-        { "number": 66, "url": "https://github.com/acme/web/pull/66", "title": "Webhooks", "headRefName": "you/ENG-61-webhooks", "state": "OPEN", "updatedAt": "2026-10-02T10:00:00Z", "headRefOid": "6600000000000000000000000000000000000000", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] } },
-        { "number": 64, "url": "https://github.com/acme/web/pull/64", "title": "ENG-61: Webhooks, first pass", "headRefName": "eng-61-first", "state": "MERGED", "updatedAt": "2026-09-25T10:00:00Z", "headRefOid": "6400000000000000000000000000000000000000", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] } },
+        { "number": 71, "url": "https://github.com/acme/web/pull/71", "title": "ENG-610: Audit log", "headRefName": "eng-610-audit", "state": "OPEN", "updatedAt": "2026-10-08T10:00:00Z", "headRefOid": "7100000000000000000000000000000000000000", "mergeable": "MERGEABLE", "isDraft": false, "reviewDecision": "REVIEW_REQUIRED", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] } },
+        { "number": 66, "url": "https://github.com/acme/web/pull/66", "title": "Webhooks", "headRefName": "you/ENG-61-webhooks", "state": "OPEN", "updatedAt": "2026-10-02T10:00:00Z", "headRefOid": "6600000000000000000000000000000000000000", "mergeable": "MERGEABLE", "isDraft": false, "reviewDecision": "REVIEW_REQUIRED", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] } },
+        { "number": 64, "url": "https://github.com/acme/web/pull/64", "title": "ENG-61: Webhooks, first pass", "headRefName": "eng-61-first", "state": "MERGED", "updatedAt": "2026-09-25T10:00:00Z", "headRefOid": "6400000000000000000000000000000000000000", "mergeable": "MERGEABLE", "isDraft": false, "reviewDecision": "REVIEW_REQUIRED", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] } },
         {}
       ]
     },
     "q2": {
       "nodes": [
-        { "number": 55, "url": "https://github.com/acme/web/pull/55", "title": "ENG-7: Export follow-up", "headRefName": "eng-7-more", "state": "MERGED", "updatedAt": "2026-10-03T10:00:00Z", "headRefOid": "5500000000000000000000000000000000000000", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] } }
+        { "number": 55, "url": "https://github.com/acme/web/pull/55", "title": "ENG-7: Export follow-up", "headRefName": "eng-7-more", "state": "MERGED", "updatedAt": "2026-10-03T10:00:00Z", "headRefOid": "5500000000000000000000000000000000000000", "mergeable": "MERGEABLE", "isDraft": false, "reviewDecision": "REVIEW_REQUIRED", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] } }
       ]
     },
     "q3": {
       "nodes": [
-        { "number": 33, "url": "https://github.com/acme/web/pull/33", "title": "ENG-8: Dark mode", "headRefName": "ana/dark", "state": "CLOSED", "updatedAt": "2026-09-12T10:00:00Z", "headRefOid": "3300000000000000000000000000000000000000", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] } },
-        { "number": 30, "url": "https://github.com/acme/web/pull/30", "title": "ENG-8 dark mode, take one", "headRefName": "ana/dark-1", "state": "CLOSED", "updatedAt": "2026-08-12T10:00:00Z", "headRefOid": "3000000000000000000000000000000000000000", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] } }
+        { "number": 33, "url": "https://github.com/acme/web/pull/33", "title": "ENG-8: Dark mode", "headRefName": "ana/dark", "state": "CLOSED", "updatedAt": "2026-09-12T10:00:00Z", "headRefOid": "3300000000000000000000000000000000000000", "mergeable": "MERGEABLE", "isDraft": false, "reviewDecision": "REVIEW_REQUIRED", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] } },
+        { "number": 30, "url": "https://github.com/acme/web/pull/30", "title": "ENG-8 dark mode, take one", "headRefName": "ana/dark-1", "state": "CLOSED", "updatedAt": "2026-08-12T10:00:00Z", "headRefOid": "3000000000000000000000000000000000000000", "mergeable": "MERGEABLE", "isDraft": false, "reviewDecision": "REVIEW_REQUIRED", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] } }
       ]
     },
     "q4": {

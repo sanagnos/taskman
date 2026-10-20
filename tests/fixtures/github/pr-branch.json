@@ -3,14 +3,14 @@
     "repository": {
       "b0": {
         "nodes": [
-          { "number": 45, "url": "https://github.com/acme/web/pull/45", "title": "Sign in with a magic link", "headRefName": "eng-52-login", "state": "OPEN", "updatedAt": "2026-10-01T10:00:00Z", "headRefOid": "0123456789abcdef0123456789abcdef01234567", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "FAILURE" } } }] } }
+          { "number": 45, "url": "https://github.com/acme/web/pull/45", "title": "Sign in with a magic link", "headRefName": "eng-52-login", "state": "OPEN", "updatedAt": "2026-10-01T10:00:00Z", "headRefOid": "0123456789abcdef0123456789abcdef01234567", "mergeable": "MERGEABLE", "isDraft": false, "reviewDecision": "CHANGES_REQUESTED", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "FAILURE" } } }] } }
         ]
       }
     },
     "q0": {
       "nodes": [
-        { "number": 63, "url": "https://github.com/acme/web/pull/63", "title": "ENG-52: Remember the device", "headRefName": "bo/remember-device", "state": "OPEN", "updatedAt": "2026-10-06T10:00:00Z", "headRefOid": "6300000000000000000000000000000000000000", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] } },
-        { "number": 45, "url": "https://github.com/acme/web/pull/45", "title": "Sign in with a magic link", "headRefName": "eng-52-login", "state": "OPEN", "updatedAt": "2026-10-01T10:00:00Z", "headRefOid": "0123456789abcdef0123456789abcdef01234567", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "FAILURE" } } }] } }
+        { "number": 63, "url": "https://github.com/acme/web/pull/63", "title": "ENG-52: Remember the device", "headRefName": "bo/remember-device", "state": "OPEN", "updatedAt": "2026-10-06T10:00:00Z", "headRefOid": "6300000000000000000000000000000000000000", "mergeable": "MERGEABLE", "isDraft": false, "reviewDecision": "REVIEW_REQUIRED", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] } },
+        { "number": 45, "url": "https://github.com/acme/web/pull/45", "title": "Sign in with a magic link", "headRefName": "eng-52-login", "state": "OPEN", "updatedAt": "2026-10-01T10:00:00Z", "headRefOid": "0123456789abcdef0123456789abcdef01234567", "mergeable": "MERGEABLE", "isDraft": false, "reviewDecision": "CHANGES_REQUESTED", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "FAILURE" } } }] } }
       ]
     }
   }

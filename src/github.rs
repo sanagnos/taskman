@@ -83,12 +83,17 @@ pub struct Pr {
 
 /// What the PR list query reads of a PR to tell whether it changed since its details were
 /// fetched: GitHub moves `updatedAt` for a comment, a review or a new state, the head commit shows
-/// a push, and its check state the checks, which move neither.
+/// a push, and its check state the checks, which move neither. Mergeability moves when the base
+/// does (a conflict after another PR merged), and the draft flag and review decision are read too,
+/// as the sidebar shows them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Stamp {
     pub updated: String,
     pub head: String,
     pub checks: String,
+    pub mergeable: String,
+    pub draft: bool,
+    pub review: String,
 }
 
 impl Stamp {
@@ -98,6 +103,9 @@ impl Stamp {
             updated: s(&p["updatedAt"]),
             head: s(&p["headRefOid"]),
             checks: s(&p["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"]),
+            mergeable: s(&p["mergeable"]),
+            draft: p["isDraft"].as_bool().unwrap_or(false),
+            review: s(&p["reviewDecision"]),
         }
     }
 }
@@ -493,7 +501,8 @@ const BATCH: usize = 20;
 /// What each PR found carries; `candidates` reads it, and `Stamp::read` what tells whether it
 /// changed.
 const LISTED: &str = "fragment pr on PullRequest { number title url headRefName state updatedAt \
-    headRefOid commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } }";
+    headRefOid mergeable isDraft reviewDecision \
+    commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } }";
 
 /// The PR list query for `asked` and its gh arguments: per ticket, the PRs on its branch (`bN`,
 /// as `gh pr list --head`) and the search for its key (`qN`, as `gh pr list --search`). The
@@ -1387,6 +1396,9 @@ mod tests {
             updated: "2024-01-02T00:00:00Z".into(),
             head: "abc".into(),
             checks: "FAILURE".into(),
+            mergeable: "MERGEABLE".into(),
+            draft: false,
+            review: "CHANGES_REQUESTED".into(),
         };
         assert_eq!(pr.stamp, stamp);
         // A PR GitHub doesn't say is from this repository counts as a fork's.
@@ -1604,7 +1616,8 @@ mod tests {
             let fetched = calls.iter().filter(|c| call(&strs(c)) == "details").count();
             (pr, fetched)
         };
-        // The same updatedAt, head and check state: the details shown stay, and no query runs.
+        // The same updatedAt, head, check state, mergeability, draft flag and review decision: the
+        // details shown stay, and no query runs.
         let (pr, fetched) = ask(PR_BRANCH, Some(&shown));
         assert_eq!((pr.number, fetched), (45, 0));
         assert_eq!(pr.threads.unwrap().list[0].path, "src/auth/link.rs");
@@ -1616,6 +1629,10 @@ mod tests {
                 "89abcdef0123456789abcdef0123456789abcdef",
             ),
             ("\"FAILURE\"", "\"PENDING\""),
+            // Another PR merged, and this one conflicts with its base now.
+            ("\"MERGEABLE\"", "\"CONFLICTING\""),
+            ("\"isDraft\": false", "\"isDraft\": true"),
+            ("\"CHANGES_REQUESTED\"", "\"APPROVED\""),
         ];
         for (from, to) in changes {
             let list = PR_BRANCH.replace(from, to);
@@ -1633,7 +1650,9 @@ mod tests {
         let list = PR_BRANCH
             .replace("\"2026-10-01T10:00:00Z\"", "null")
             .replace("\"0123456789abcdef0123456789abcdef01234567\"", "null")
-            .replace("{ \"state\": \"FAILURE\" }", "null");
+            .replace("{ \"state\": \"FAILURE\" }", "null")
+            .replace("\"MERGEABLE\"", "null")
+            .replace("\"CHANGES_REQUESTED\"", "null");
         assert_eq!(ask(&list, Some(&unstamped)).1, 1);
     }
 
