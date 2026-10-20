@@ -150,7 +150,16 @@ pub fn spawn_in_pty(mut cmd: Command) -> (std::process::Child, std::fs::File) {
     // only setsid and ioctl, which are async-signal-safe.
     unsafe {
         cmd.pre_exec(|| {
-            if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
+            #[cfg_attr(
+                target_os = "macos",
+                expect(
+                    clippy::cast_lossless,
+                    reason = "TIOCSCTTY is a u32 on macOS and ioctl's request type on Linux, \
+                              where From would be a useless conversion"
+                )
+            )]
+            let request = libc::TIOCSCTTY as _;
+            if libc::setsid() < 0 || libc::ioctl(0, request, 0) < 0 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
