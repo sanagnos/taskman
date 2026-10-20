@@ -364,25 +364,30 @@ fn selecting_the_selected_card_again_brings_it_back_into_view() {
     assert!(card(&app, "ENG-52").is_none(), "scrolled out of view");
     draw(&mut app, 160, 40);
     assert_eq!(app.sidebar_scroll.top, 22, "a redraw keeps the wheel's scroll");
-    // Its number: the list scrolls back just enough to show it, under the "more" row.
-    prefix(&mut app, KeyCode::Char('3'));
+    // The jump box: the full list comes back from the top, and scrolls to show it.
+    prefix(&mut app, KeyCode::Char('/'));
+    type_text(&mut app, "ENG-52");
+    app.on_key(key(KeyCode::Enter));
     assert_eq!(selected(&app), "ENG-52");
     draw(&mut app, 160, 40);
     let rows = list_rows(&app);
     let r = card(&app, "ENG-52").expect("back in view");
     assert!(rows.contains(&r.y) && r.bottom() <= rows.end && r.height == 3, "shown whole: {r:?}");
-    assert_eq!(r.y, rows.start + 1);
-    let top = app.sidebar_scroll.top;
-    // One notch hides its first rows; a click on what's left shows it whole again.
-    mouse(&mut app, MouseEventKind::ScrollDown, s.x + 2, s.y + 5);
-    draw(&mut app, 160, 40);
+    // The wheel hides its first rows; a click on what's left scrolls back just enough to show
+    // it whole, under the "more" row.
+    while card(&app, "ENG-52").is_some_and(|r| r.height == 3) {
+        mouse(&mut app, MouseEventKind::ScrollDown, s.x + 2, s.y + 5);
+        draw(&mut app, 160, 40);
+    }
     let partial = card(&app, "ENG-52").expect("partly in view");
-    assert_eq!((app.sidebar_scroll.top, partial.height), (top + 2, 1));
+    assert_eq!(partial.y, list_rows(&app).start + 1);
+    let top = app.sidebar_scroll.top;
     mouse(&mut app, MouseEventKind::Down(MouseButton::Left), partial.x + 3, partial.y);
     assert_eq!(selected(&app), "ENG-52");
     draw(&mut app, 160, 40);
-    assert_eq!(app.sidebar_scroll.top, top);
-    assert_eq!(card(&app, "ENG-52").unwrap().height, 3);
+    let r = card(&app, "ENG-52").unwrap();
+    assert_eq!((r.y, r.height), (list_rows(&app).start + 1, 3));
+    assert!(app.sidebar_scroll.top < top);
 }
 
 #[test]

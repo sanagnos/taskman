@@ -555,7 +555,6 @@ pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
         (
             "Tickets",
             &[
-                ("1-9", "switch"),
                 ("[ ]", "prev / next"),
                 ("{ }", "move"),
                 (&again, "next waiting"),

@@ -163,7 +163,7 @@ The Add form opens on Type, set to Agent; ←/→ switches it to Ticket. What yo
 
 | Keys | Action |
 |---|---|
-| `ctrl+a 1-9`, `ctrl+a [` / `]` | switch ticket |
+| `ctrl+a [` / `]` | switch ticket |
 | `ctrl+a {` / `}` | move the selected agent or ticket up / down, then keep going (see [Sidebar](#sidebar)) |
 | `ctrl+a ctrl+a` | jump to the next ticket waiting on you |
 | `ctrl+a w` | list every session waiting on you, oldest first, with how long, why and what it asks (see below) |
@@ -231,13 +231,13 @@ The tracker panel shows for tickets in a project with a tracker, and the GitHub 
 
 ### Sidebar
 
-The sidebar lists each project's agents and tickets, each with its session's state beside its name; a folded project's header shows `●` when one of its tickets needs you. A list longer than the screen scrolls: selecting a card out of view, by key, number or click, scrolls just enough to show it, and the mouse wheel over the sidebar scrolls the list without moving the selection; selecting the selected card again (its number, or a click on what shows of it) brings it back into view. The top and bottom rows then say what's hidden past them (`↑ 3 more`, `↓ 5 more`), with `●` when a hidden ticket needs you.
+The sidebar lists each project's agents and tickets, each with its session's state beside its name; a folded project's header shows `●` when one of its tickets needs you. A list longer than the screen scrolls: selecting a card out of view, by key or click, scrolls just enough to show it, and the mouse wheel over the sidebar scrolls the list without moving the selection; selecting the selected card again (from `ctrl+a /`, or a click on what shows of it) brings it back into view. The top and bottom rows then say what's hidden past them (`↑ 3 more`, `↓ 5 more`), with `●` when a hidden ticket needs you.
 
 The order is yours to change. An agent moves among its project's agents, a ticket among its project's tickets, and a project among the projects; a card never crosses into another group or project. Press `ctrl+a }` or `ctrl+a {` to move the selected card down or up one place. That starts move mode, where `{` and `}` or ↑ and ↓ go on without the prefix, `p` switches to moving the card's project (every project then shows folded, so each step passes one project, and their folds come back afterwards), Enter or any other key ends it, and Esc puts the order back as it was before the first move. The footer says what is moving and which keys do what. A card stops at the edge of its group.
 
 With the mouse, press on a card and drag it up or down. It becomes a drag only once the pointer leaves the card's rows, so a click selects as before. While you drag, the card stays where it is, dimmed, a line shows where it would land and the footer says where (`move ENG-52 below ENG-61 · Esc cancels`). The line snaps to the nearest place the card can go, wherever the pointer is. A long list scrolls while the pointer rests at its top or bottom edge. Release to drop; Esc cancels. Dragging a project's header moves the project, with every project drawn folded for the drag; a click on the header still folds it, on release. Clicking or dragging a project's header, an empty project's too, makes it the current project, which `ctrl+a n` and `ctrl+a ,` open on, until you select a card.
 
-The order is saved as it is: projects and cards in `tickets.json` keep the order they are listed in, so `ctrl+a 1-9` numbers follow it, and nothing else in the file changes.
+The order is saved as it is: projects and cards in `tickets.json` keep the order they are listed in, so `ctrl+a [` / `]` follow it, and nothing else in the file changes.
 
 ### Sleeping sessions
 

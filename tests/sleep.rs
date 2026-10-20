@@ -77,7 +77,7 @@ fn marked(dir: &Path) -> bool {
 /// Returns ENG-2's pid.
 fn both_settled(tui: &mut Tui, dir: &Path) -> i32 {
     tui.wait_text("stub ready for ENG-1");
-    tui.send(b"\x012");
+    tui.send(b"\x01]");
     tui.wait_text("stub ready for ENG-2");
     let two = pid(dir, "ENG-2.pid").unwrap();
     // `ps` notes its run once it has listed the processes, so anything started from now on isn't
@@ -100,13 +100,13 @@ fn an_idle_session_sleeps_when_unselected_and_wakes_when_selected() {
     let two = both_settled(&mut tui, &dir);
     let one = pid(&dir, "ENG-1.pid").unwrap();
     // ENG-1 in front: ENG-2 is unselected from now.
-    tui.send(b"\x011");
+    tui.send(b"\x01[");
     tui.wait_until("ENG-2 didn't go to sleep", || !alive(two) && marked(&dir));
     tui.wait_text("☾");
     assert!(alive(one), "the session in front was stopped");
 
     // Selecting it starts the conversation again, as a new process.
-    tui.send(b"\x012");
+    tui.send(b"\x01]");
     tui.wait_until("ENG-2 didn't wake", || {
         pid(&dir, "ENG-2.pid").is_some_and(|p| p != two && alive(p))
     });
@@ -123,7 +123,7 @@ fn work_in_the_background_keeps_a_session_awake() {
     tui.send(b"bg\r");
     tui.wait_until("the stub didn't start its task", || pid(&dir, "ENG-2.bg.pid").is_some());
     let task = pid(&dir, "ENG-2.bg.pid").unwrap();
-    tui.send(b"\x011");
+    tui.send(b"\x01[");
 
     // Well past the time: still running, and not marked.
     let until = Instant::now() + Duration::from_secs(AFTER * 5 / 2);

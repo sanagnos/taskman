@@ -436,11 +436,6 @@ impl App {
                     self.warn(NOT_SENT);
                 }
             }
-            KeyCode::Char(d @ '1'..='9') => {
-                if let Some(&i) = self.ordered(true).get(d as usize - '1' as usize) {
-                    self.select(i);
-                }
-            }
             KeyCode::Char('{') => self.start_move(-1),
             KeyCode::Char('}') => self.start_move(1),
             KeyCode::Up | KeyCode::Char('[') => self.step(-1),
