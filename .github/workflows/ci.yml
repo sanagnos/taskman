@@ -1,5 +1,6 @@
 # Formatting, lints, tests and a coverage report on every pull request and every push to main,
-# and a weekly dependency check so new security advisories show up without a pull request.
+# and every week the tests again and a dependency check, so a new runner image or toolchain and
+# new security advisories show up without a pull request.
 # Actions are pinned by commit; Dependabot proposes updates (.github/dependabot.yml).
 name: CI
 
@@ -24,7 +25,6 @@ env:
 
 jobs:
   test:
-    if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
       matrix:
@@ -41,12 +41,57 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
-      - run: cargo test --locked
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-nextest@0.9.148
+      # The ci profile in .config/nextest.toml: a timeout per test, one rerun for the tests in
+      # tests/, flaky ones reported. The crate is a binary only, so there are no doctests, which
+      # nextest wouldn't run.
+      - run: cargo nextest run --locked --profile ci
+      # The failed and flaky tests in the run's summary, and a warning on the pull request for
+      # each test that passed only on its rerun.
+      - name: Report
+        if: ${{ !cancelled() && hashFiles('target/nextest/ci/junit.xml') != '' }}
+        env:
+          OS: ${{ matrix.os }}
+        run: |
+          python3 -I - target/nextest/ci/junit.xml <<'EOF'
+          import os, sys, xml.etree.ElementTree as ET
+
+          run = ET.parse(sys.argv[1]).getroot()
+          failed, flaky = [], []
+          for case in run.iter("testcase"):
+              name = f"{case.get('classname').split('::', 1)[-1]} {case.get('name')}"
+              # A rerun keeps the first attempt's failure as <flakyFailure>; a test that failed
+              # in the end (or passed on the rerun where that counts as failing) has <failure>.
+              first = case.find("flakyFailure")
+              last = next((e for e in case if e.tag in ("failure", "error")), None)
+              if last is not None:
+                  failed.append((name, (last if first is None else first).get("message")))
+              elif first is not None:
+                  flaky.append((name, first.get("message")))
+                  print(f"::warning title=Flaky test::{name} failed, then passed on its rerun")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as out:
+              out.write(f"### Tests on {os.environ['OS']}: {run.get('tests')} run, "
+                        f"{len(failed)} failed, {len(flaky)} flaky\n")
+              for title, cases in (("Failed", failed), ("Failed, then passed on the rerun", flaky)):
+                  if cases:
+                      out.write(f"\n{title}:\n\n")
+                      out.writelines(f"- `{n}`: {m}\n" for n, m in cases)
+          EOF
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: junit-${{ matrix.os }}
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
       # The install script and `taskman update` against fake releases on a local server.
       - run: cargo build --locked && scripts/test-install.sh
 
   # How much of the code the tests run, in the run's summary and as a notice on the pull request.
-  # A report, not a gate. Linux only, as macOS minutes are billed.
+  # A report, not a gate. Linux only, as macOS minutes are billed. With cargo test rather than
+  # nextest: a process per test would write a profile per test, and contributors run the script
+  # without nextest.
   coverage:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04

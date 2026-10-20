@@ -17,6 +17,7 @@ Rust 1.88 or newer (edition 2024; the code uses `let` chains). With rustup, a cl
 ```bash
 cargo build                 # debug build: target/debug/taskman
 cargo test                  # unit tests live next to the code; tests/ drives the binary in a pty
+cargo nextest run --profile ci  # the tests as CI runs them, if you have cargo-nextest (.config/nextest.toml)
 cargo fmt                   # CI fails on unformatted code (rustfmt.toml)
 cargo clippy --all-targets -- -D warnings  # as CI runs it: zero warnings
 scripts/test-install.sh     # install.sh and `taskman update` against fake releases (after cargo build)
@@ -24,7 +25,9 @@ scripts/coverage.sh         # coverage per file, test-install.sh included (cargo
 cargo about generate --locked --fail about.hbs -o LICENSE-THIRD-PARTY   # after a dependency change (cargo install cargo-about --locked --features cli)
 ```
 
-CI runs fmt, clippy, the tests and the install script's tests on Linux and macOS, checks the oldest supported Rust on Linux, runs `cargo deny` (deny.toml) for advisories, bans (wildcard versions; duplicate versions warn), licences and sources, and checks that `LICENSE-THIRD-PARTY` (the notices of the crates in the binary, which the release archives carry and `taskman --licenses` prints) matches `Cargo.lock`: after a dependency change, regenerate it with the `cargo about` command above and commit it. It also reports coverage on Linux, in the run's summary and as a notice on the pull request; nothing fails on the figure, but a change to logic should come with tests that run it.
+CI runs fmt, clippy, the tests and the install script's tests on Linux and macOS (the tests weekly too), checks the oldest supported Rust on Linux, runs `cargo deny` (deny.toml) for advisories, bans (wildcard versions; duplicate versions warn), licences and sources, and checks that `LICENSE-THIRD-PARTY` (the notices of the crates in the binary, which the release archives carry and `taskman --licenses` prints) matches `Cargo.lock`: after a dependency change, regenerate it with the `cargo about` command above and commit it. It also reports coverage on Linux, in the run's summary and as a notice on the pull request; nothing fails on the figure, but a change to logic should come with tests that run it.
+
+CI runs the tests with cargo-nextest (`.config/nextest.toml`): each test in a process of its own, with a time limit. A test from `tests/` that fails runs once more, and if it passes then it shows as flaky in the run's summary and as a warning on the pull request, and the run passes; in `tests/ownership.rs` and `tests/stopping.rs`, which guard one copy of a session, a pass on the rerun still fails the run. `cargo test` runs the same tests, without the reruns.
 
 Code that parses what others write (tracker responses, ticket files, keys and links, the text `src/untrusted.rs` cleans) has property tests (`proptest`) beside its example tests: they state what must hold for any input, like "no terminal control character survives `clean`". The Jira and Linear clients are tested against recorded responses served locally (`src/replay.rs`), kept in `tests/fixtures/`: trim them by hand and use mock data only (`acme`, `ENG-52`, `example.atlassian.net`), never a real workspace's output. No test calls a real tracker.
 
