@@ -74,17 +74,33 @@ Run the same command again to update. Or build from a clone: `cargo install --lo
 
 ### Uninstall
 
-While taskman runs, `taskman close --merged` closes every merged ticket and removes the worktrees taskman created for them where nothing would be lost. Then quit taskman (`ctrl+a q`, then Enter) so its sessions stop, and remove what it keeps:
+`taskman uninstall` removes taskman in one step. Before it, while taskman runs, `taskman close --merged` closes every merged ticket and removes the worktrees taskman created for them where nothing would be lost. Then quit taskman (`ctrl+a q`, then Enter): the command refuses while taskman runs, as its sessions would carry on.
+
+It lists what it will remove, then asks two questions, each No unless you answer yes. First, **"Remove taskman (the program)?"**: no stops there, and nothing is removed. Then, **"Also remove your projects, accounts, saved state and tokens?"**: no keeps them where they are, and a reinstall picks up where you left off. Where there's no terminal to ask in, pass the answers: `--yes` removes the program only, and `--yes --purge` your data and tokens too. `--purge` alone asks once, about both.
+
+**The program** goes when it's the install script's copy (or one `taskman update` installed). A copy installed with cargo or Homebrew, a development build, or one in a folder taskman can't write to stays, and the command says how to remove it (`cargo uninstall taskman-app` for cargo). The program can remove itself while it runs: Linux and macOS keep a running program's file until it ends.
+
+Your data and tokens go together, with `--purge` or yes to the second question, so no account is left pointing at a token that's gone:
+
+- **Accounts and settings:** `~/.config/taskman` (`$XDG_CONFIG_HOME/taskman` if that's set), with the tokens the account form saved in files there. With `TASKMAN_CONFIG`, that file, and only the token files its accounts read in the `tokens` folder beside it.
+- **Projects, tickets and session state:** `~/.local/state/taskman` (`$XDG_STATE_HOME/taskman` if that's set), with the sessions' status files, the inbox and `panics.log`.
+- **Tokens in the keychain** that its accounts read, saved through the account form.
+
+It never follows a link: one inside those folders is removed, not what it leads to, and when one of the folders or files is itself a link, `--purge` refuses and says which. A file an account's own `cmd:` reads is yours and stays.
+
+What stays, because it's yours, and the command lists it:
+
+- Your repositories and branches.
+- The worktrees taskman made that are still there, each with the command that removes it (`git -C <repository> worktree remove <path>`), for once you've kept what you need from it. When a project put them in the repository's folder, taskman added a `# taskman worktrees` line and the folder under it to `.git/info/exclude`; delete both if you like.
+- The sessions' conversations in `~/.claude` and `~/.codex`, which belong to Claude Code and Codex.
+- **Lines you added yourself** to your shell's startup file: an `export …_TOKEN=` or `export …_API_KEY=` line, and the PATH line the install script suggested (it never writes one).
+
+To remove the data later, once the program is gone, or to remove taskman by hand (quit it first):
 
 - **The program:** `rm ~/.local/bin/taskman` for the install script's copy (or wherever `TASKMAN_BIN_DIR` put it; `command -v taskman` says where), or `cargo uninstall taskman-app` for a cargo install.
-- **Accounts and settings:** `rm -r ~/.config/taskman` (`$XDG_CONFIG_HOME/taskman` if that's set), or the file `TASKMAN_CONFIG` names.
+- **Accounts, settings and tokens in files:** `rm -r ~/.config/taskman` (`$XDG_CONFIG_HOME/taskman` if that's set), or the file `TASKMAN_CONFIG` names and the `tokens` folder beside it.
 - **Projects, tickets and session state:** `rm -r ~/.local/state/taskman` (`$XDG_STATE_HOME/taskman` if that's set).
-- **Tokens in the keychain,** saved through the account form: on macOS, `while security delete-generic-password -s taskman >/dev/null 2>&1; do :; done` deletes them one by one until none is left; on Linux, `secret-tool clear service taskman`.
-- **Tokens in files,** saved through the account form where there's no keychain: they're in `~/.config/taskman/tokens/`, which removing the config folder removes too (with `TASKMAN_CONFIG`, the `tokens` folder beside that file).
-- **Lines you added yourself** to your shell's startup file: an `export …_TOKEN=` or `export …_API_KEY=` line, and the PATH line the install script suggested (it never writes one).
-- **Worktrees inside the repository:** when a project put them in the repository's folder, taskman added a `# taskman worktrees` line and the folder under it to `.git/info/exclude`; delete both if you like.
-
-What stays, because it's yours: your repositories and branches, the worktrees taskman didn't remove (`git worktree remove <path>` from the repository, once you've kept what you need from them), and the sessions' conversations in `~/.claude` and `~/.codex`, which belong to Claude Code and Codex.
+- **Tokens in the keychain:** on macOS, `while security delete-generic-password -s taskman >/dev/null 2>&1; do :; done` deletes them one by one until none is left; on Linux, `secret-tool clear service taskman`.
 
 ## First run
 

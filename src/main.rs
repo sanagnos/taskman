@@ -42,6 +42,7 @@ mod ticket_key;
 mod token_file;
 mod tracker;
 mod ui;
+mod uninstall;
 mod untrusted;
 mod update;
 mod util;
@@ -323,6 +324,7 @@ fn main() -> anyhow::Result<()> {
         Some("move") => std::process::exit(local::run(&args[2..])),
         Some("resume") => std::process::exit(resume::run(&args[2..])),
         Some("update") => std::process::exit(update::run(&args[2..])),
+        Some("uninstall") => std::process::exit(uninstall::run(&args[2..])),
         Some("-V" | "--version") => {
             cli::out!("taskman {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
@@ -388,6 +390,10 @@ fn main() -> anyhow::Result<()> {
             cli::out!(
                 "       taskman update       install the latest release (--force reinstalls it)"
             );
+            cli::out!(
+                "       taskman uninstall    remove the program, and if you say so your data and tokens"
+            );
+            cli::out!("                            (--yes, --purge; --help for more)");
             cli::out!("       taskman --version    print the version");
             cli::out!(
                 "       taskman --licenses   print the licenses of the third-party code in the binary"

@@ -757,7 +757,7 @@ fn is_homebrew(exe: &Path) -> bool {
     exe.components().any(|c| c.as_os_str() == "Cellar")
 }
 
-fn installs(exe: &Path, cargo_bin: &Path, writable: bool) -> Installs {
+pub(crate) fn installs(exe: &Path, cargo_bin: &Path, writable: bool) -> Installs {
     if is_dev_build(exe) {
         Installs::DevBuild
     } else if is_homebrew(exe) {
@@ -771,7 +771,7 @@ fn installs(exe: &Path, cargo_bin: &Path, writable: bool) -> Installs {
     }
 }
 
-fn cargo_bin() -> PathBuf {
+pub(crate) fn cargo_bin() -> PathBuf {
     let home = std::env::var_os("CARGO_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| store::home().join(".cargo"));
@@ -781,7 +781,7 @@ fn cargo_bin() -> PathBuf {
 
 /// An install writes a file beside the binary and renames it over, so the folder is what has to
 /// be writable.
-fn writable(dir: &Path) -> bool {
+pub(crate) fn writable(dir: &Path) -> bool {
     let probe = dir.join(format!(".taskman-write-test-{}", std::process::id()));
     let ok = std::fs::File::create(&probe).is_ok();
     let _ = std::fs::remove_file(&probe);

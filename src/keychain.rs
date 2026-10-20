@@ -221,6 +221,15 @@ impl Keychain {
         ))
     }
 
+    /// The command that deletes item `name` by hand, for when `delete` couldn't. Names need no
+    /// quoting (`is_name`).
+    pub fn delete_command(&self, name: &str) -> String {
+        match self.kind {
+            Kind::MacOs => format!("security delete-generic-password -s {SERVICE} -a {name}"),
+            Kind::SecretService => format!("secret-tool clear service {SERVICE} account {name}"),
+        }
+    }
+
     fn run(
         &self,
         args: &[&str],
@@ -318,6 +327,18 @@ mod tests {
             let e = check_token(bad).unwrap_err();
             assert!(e.starts_with("That doesn't look like a token") && !e.contains(bad), "{e}");
         }
+    }
+
+    #[test]
+    fn says_how_to_delete_an_item_by_hand() {
+        assert_eq!(
+            stubbed(Kind::MacOs).0.delete_command("jira-1"),
+            "security delete-generic-password -s taskman -a jira-1"
+        );
+        assert_eq!(
+            stubbed(Kind::SecretService).0.delete_command("jira-1"),
+            "secret-tool clear service taskman account jira-1"
+        );
     }
 
     #[test]
