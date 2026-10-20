@@ -1,0 +1,1 @@
+- Updated rustls-webpki and webpki-roots for two certificate advisories (RUSTSEC-2026-0381, RUSTSEC-2026-0382), which could let a distrusted intermediate certificate be accepted on taskman's own connections to Jira, Linear and GitHub releases.
