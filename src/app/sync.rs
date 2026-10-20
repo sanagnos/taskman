@@ -552,7 +552,7 @@ impl App {
         // stop it, and the next try finds the worktree it finished.
         let pending = tv.t.pending_worktree.get_or_insert_default();
         let base = pending.base.clone();
-        let ours = pending.making.as_ref() == Some(&folder);
+        let ours = pending.making.as_ref().is_some_and(|f| worktree::same_path(f, &folder));
         pending.making = Some(folder.clone());
         let started = match &access {
             Access::Client(c) if c.remote() => {

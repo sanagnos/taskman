@@ -212,8 +212,9 @@ fn a_hand_made_worktree_found_as_the_ticket_is_added_stays_when_it_closes() {
     let (p, wt) = hand_made_worktree(&mut app);
     let added = app.add_ticket(p, "ENG-5".into(), store::Cli::Claude, true, None, true);
     assert!(matches!(added, Ok(crate::app::ticket::Added::New(_))));
+    // Where git lists it: its real path.
     let t = &saved().tickets[app.sel];
-    assert_eq!((&t.cwd, t.branch.as_deref()), (&wt, Some("ENG-5")));
+    assert_eq!((&t.cwd, t.branch.as_deref()), (&wt.canonicalize().unwrap(), Some("ENG-5")));
     assert!(!t.created_worktree && t.pending_worktree.is_none());
     closes_keeping(&mut app, &wt);
 }

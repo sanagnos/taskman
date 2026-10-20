@@ -988,6 +988,14 @@ mod tests {
         // started making it there before. Someone else's folder isn't touched.
         assert!(!create(&repo, &folder, "ENG-52-fix-login", None, false).unwrap().made);
         assert!(create(&repo, &folder, "ENG-52-fix-login", None, true).unwrap().made);
+        // Found by its real path when it's named through a symlink, as on macOS.
+        let linked = root.with_extension("link");
+        let _ = std::fs::remove_file(&linked);
+        std::os::unix::fs::symlink(&root, &linked).unwrap();
+        let via_link = linked.join(folder.file_name().unwrap());
+        assert!(!create(&repo, &via_link, "ENG-52-fix-login", None, false).unwrap().made);
+        assert!(create(&repo, &via_link, "ENG-52-fix-login", None, true).unwrap().made);
+        std::fs::remove_file(&linked).unwrap();
         std::fs::create_dir_all(root.join("acme-web-ENG-9")).unwrap();
         assert!(
             create(&repo, &folder_path(BESIDE, &repo, "ENG-9"), "ENG-9", None, false)

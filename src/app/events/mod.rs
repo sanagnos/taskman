@@ -143,10 +143,13 @@ fn sh(dir: &std::path::Path, cmd: &str) {
 }
 
 /// Adds project web, a git repository of this test's with no tracker, so its tickets' branches
-/// are their keys. Returns the project and its main checkout.
+/// are their keys. Returns the project and its main checkout, reached through a symlink, as
+/// macOS's temporary folder is: git lists worktrees by their real paths.
 fn web_project(app: &mut App) -> (usize, std::path::PathBuf) {
-    let repo = store::state_dir().join("web");
-    std::fs::create_dir_all(&repo).unwrap();
+    let real = store::state_dir().join("real");
+    std::fs::create_dir_all(real.join("web")).unwrap();
+    std::os::unix::fs::symlink(&real, store::state_dir().join("linked")).unwrap();
+    let repo = store::state_dir().join("linked/web");
     sh(&repo, "git init -q -b main && git commit -q --allow-empty -m init");
     let web = serde_json::json!({ "name": "web", "repo": repo });
     app.projects.push(serde_json::from_value(web).unwrap());
