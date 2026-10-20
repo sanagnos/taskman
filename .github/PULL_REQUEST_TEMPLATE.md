@@ -16,5 +16,5 @@
 - [ ] `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` pass
 - [ ] Changed screen snapshots (`src/ui/snapshots/`) reviewed
 - [ ] docs/architecture.md updated if files or structure changed
-- [ ] docs/guide.md and CHANGELOG.md ("Unreleased") updated if users would notice the change
+- [ ] docs/guide.md updated, and a file added under changelog.d/, if users would notice the change
 - [ ] Mock names only (`ENG-52`, `acme`) in code, tests and docs
