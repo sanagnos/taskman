@@ -111,6 +111,15 @@ impl Cli {
         }
     }
 
+    /// The key that shows the whole conversation, rows the pane's history has dropped included:
+    /// Claude's transcript mode, Codex's transcript view. The default of each; both can rebind it.
+    pub fn transcript_key(self) -> &'static str {
+        match self {
+            Cli::Claude => "ctrl+o",
+            Cli::Codex => "ctrl+t",
+        }
+    }
+
     /// What a session is started with to report its state through `taskman hook`, run as `exe`:
     /// the `--settings` JSON for Claude, with the allow-list; the `-c` overrides for Codex.
     pub fn hooks(self, exe: &Path) -> Vec<String> {

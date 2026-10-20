@@ -354,6 +354,44 @@ fn page_up_and_down_scroll_the_session_or_reach_one_that_wants_the_mouse() {
     assert_eq!(scrolled(&app), half as usize);
 }
 
+/// Scrolled to the top of a history that has dropped rows, the pane says where the rest is, in
+/// the CLI's words, and stops saying it when scrolled down; none of it reaches the session.
+#[test]
+fn the_top_of_a_trimmed_history_points_to_the_clis_transcript() {
+    let (mut app, to_session) = at_eng_52();
+    let hint = "Older output: ctrl+o shows Claude's full transcript";
+    let to_top = |app: &mut App| {
+        // Half a pane a press: enough of them for the whole history.
+        for _ in 0..2 * crate::store::SCROLLBACK / usize::from(app.areas.claude.height / 2) {
+            prefix(app, KeyCode::PageUp);
+        }
+    };
+    let s = app.tickets[app.sel].session.as_ref().unwrap();
+    let lines: String = (1..=100).map(|n| format!("line {n}\r\n")).collect();
+    s.output(lines.as_bytes());
+    to_top(&mut app);
+    let screen = draw(&mut app, 80, 24);
+    assert!(screen.contains("line 1 ") && !screen.contains(hint), "{screen}");
+
+    let s = app.tickets[app.sel].session.as_ref().unwrap();
+    let lines: String =
+        (101..=crate::store::SCROLLBACK + 200).map(|n| format!("line {n}\r\n")).collect();
+    s.output(lines.as_bytes());
+    to_top(&mut app);
+    let screen = draw(&mut app, 80, 24);
+    assert!(screen.contains(hint) && !screen.contains("line 1 "), "{screen}");
+    prefix(&mut app, KeyCode::PageDown);
+    let screen = draw(&mut app, 80, 24);
+    assert!(screen.contains("lines back") && !screen.contains(hint), "{screen}");
+    assert_eq!(sent(&to_session), "");
+
+    // Codex's key for a Codex session.
+    app.tickets[app.sel].t.cli = crate::store::Cli::Codex;
+    to_top(&mut app);
+    let screen = draw(&mut app, 80, 24);
+    assert!(screen.contains("Older output: ctrl+t shows Codex's full transcript"), "{screen}");
+}
+
 #[test]
 fn the_links_list_opens_the_link_picked() {
     let mut app = acme_app();

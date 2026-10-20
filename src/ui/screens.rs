@@ -206,6 +206,21 @@ fn session_running_in_claudes_background() {
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 
+/// A session scrolled to the top of a history that has dropped rows: under the badge, the hint
+/// names Claude's transcript.
+#[test]
+fn session_at_the_top_of_a_trimmed_history() {
+    let mut app = acme_app();
+    select(&mut app, "ENG-70");
+    draw(&mut app, 80, 24);
+    let lines: String =
+        (1..=crate::store::SCROLLBACK + 100).map(|n| format!("line {n}\n")).collect();
+    attach(&mut app, "ENG-70", &lines);
+    let s = app.tickets[app.sel].session.as_ref().unwrap();
+    s.scroll(i32::MAX);
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
 /// Its owner lock couldn't be taken, so the session didn't start.
 #[test]
 fn session_without_its_lock() {

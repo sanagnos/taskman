@@ -1,0 +1,1 @@
+- Scrolled back to the oldest row a session's pane still holds, once older rows have dropped off its history, the pane says which key opens the CLI's full transcript: `ctrl+o` in Claude Code, `ctrl+t` in Codex.

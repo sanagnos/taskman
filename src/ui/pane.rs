@@ -5,7 +5,7 @@ use super::{dim, selection_bg, spinner, yellow};
 use crate::app::{AgentState, App, Away, Level, Mode, TicketView, Toast};
 use crate::keys::prefix;
 use crate::session::{End, Exit};
-use crate::store::tilde;
+use crate::store::{Cli, tilde};
 use crate::untrusted;
 use crate::util::{line_width, truncate, width};
 use ratatui::Frame;
@@ -326,12 +326,19 @@ fn draw_session(
                 width: w.min(area.width),
                 height: 1,
             };
+            let style = Style::new().fg(Color::Black).bg(Color::Yellow);
             // Clear drops the links marked under it.
             f.render_widget(Clear, r);
-            f.render_widget(
-                Paragraph::new(msg).style(Style::new().fg(Color::Black).bg(Color::Yellow)),
-                r,
-            );
+            f.render_widget(Paragraph::new(msg).style(style), r);
+            // Under the badge: a pane rarely has room for both on one row.
+            if let Some(hint) = transcript_hint(screen, tv.t.cli)
+                && area.height > 1
+            {
+                let w = (width(&hint) as u16).min(area.width);
+                let r = Rect { x: r.right().saturating_sub(w), y: area.y + 1, width: w, height: 1 };
+                f.render_widget(Clear, r);
+                f.render_widget(Paragraph::new(truncate(&hint, usize::from(w))).style(style), r);
+            }
         }
     }
     if ended {
@@ -347,6 +354,19 @@ fn draw_session(
             .map_or(0, |(last, _)| last as u16 + 1);
         draw_ended(f, tv, area, used);
     }
+}
+
+/// Where the rest of the conversation is, for a view scrolled to the oldest row of a history that
+/// has dropped rows: the CLI keeps it all. None on the alternate screen, which keeps no history.
+fn transcript_hint(screen: &vt100::Screen, cli: Cli) -> Option<String> {
+    let held = screen.scrollback_len();
+    // vt100 doesn't count the rows it drops. A full history has dropped its oldest, or will with
+    // the next row; one that a clear (ESC[3J) or a taller pane emptied a little shows no hint
+    // until it fills again.
+    let trimmed = held > 0 && held == screen.scrollback_capacity();
+    (trimmed && screen.scrollback() == held && !screen.alternate_screen()).then(|| {
+        format!(" Older output: {} shows {}'s full transcript ", cli.transcript_key(), cli.label())
+    })
 }
 
 /// Why the session ended and what to do now, over the pane below row `used`, or at its top when
@@ -625,6 +645,40 @@ pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
 mod tests {
     use super::*;
     use ratatui::buffer::Buffer;
+
+    /// The hint shows at the oldest row of a full history only, names each CLI's key, and goes
+    /// with a clear of the history and on the alternate screen.
+    #[test]
+    fn the_transcript_hint_shows_at_the_top_of_a_full_history() {
+        let mut parser = vt100::Parser::new(crate::term::dim(2), crate::term::dim(20), 3);
+        let top = |parser: &mut vt100::Parser, cli| {
+            parser.screen_mut().set_scrollback(usize::MAX);
+            let hint = transcript_hint(parser.screen(), cli);
+            parser.screen_mut().set_scrollback(0);
+            hint
+        };
+        parser.process(b"1\r\n2\r\n3\r\n");
+        assert_eq!(parser.screen().scrollback_len(), 2);
+        assert_eq!(top(&mut parser, Cli::Claude), None);
+        parser.process(b"4\r\n5\r\n6\r\n");
+        assert_eq!(
+            top(&mut parser, Cli::Claude).as_deref(),
+            Some(" Older output: ctrl+o shows Claude's full transcript ")
+        );
+        assert_eq!(
+            top(&mut parser, Cli::Codex).as_deref(),
+            Some(" Older output: ctrl+t shows Codex's full transcript ")
+        );
+        // A row short of the top.
+        parser.screen_mut().set_scrollback(2);
+        assert_eq!(transcript_hint(parser.screen(), Cli::Claude), None);
+        parser.process(b"\x1b[3J");
+        assert_eq!(top(&mut parser, Cli::Claude), None);
+        parser.process(b"7\r\n8\r\n9\r\n10\r\n11\r\n");
+        assert!(top(&mut parser, Cli::Claude).is_some());
+        parser.process(b"\x1b[?1049h");
+        assert_eq!(top(&mut parser, Cli::Claude), None);
+    }
 
     /// The rest of a line cleared while underline is on: the blank cells take the background
     /// colour and nothing else (the vt100 fork's back colour erase), so no underline is drawn
