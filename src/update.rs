@@ -8,7 +8,7 @@
 //! is a breaking one) whose attestation gh verified; anything else it only announces.
 
 use crate::cli::{Arg, Lexer};
-use crate::{proc, store, util};
+use crate::{net, proc, store, util};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -250,8 +250,7 @@ fn either<T>(
 /// An agent for one request and its redirects. It keeps no connections: GitHub redirects downloads
 /// to another host anyway, and ureq would reuse one an HTTP/1.0 server is about to close.
 fn agent(timeout: Duration, redirects: u32) -> ureq::Agent {
-    let config =
-        ureq::Agent::config_builder().timeout_global(Some(timeout)).max_redirects(redirects);
+    let config = net::config(timeout).max_redirects(redirects);
     config.max_idle_connections(0).build().into()
 }
 
@@ -264,22 +263,6 @@ fn http_error(url: &str, e: ureq::Error) -> String {
     }
 }
 
-/// The connection closed under the request: a server can close one it kept open as the client
-/// reuses it, and a network can drop one.
-fn dropped(e: &ureq::Error) -> bool {
-    use std::io::ErrorKind::*;
-    matches!(e, ureq::Error::Io(e) if matches!(e.kind(), UnexpectedEof | ConnectionReset | ConnectionAborted | BrokenPipe))
-}
-
-/// `request`'s result, asked once more when the connection dropped. `request` builds its own agent,
-/// so the second try starts on a new connection.
-fn retry_dropped<T>(mut request: impl FnMut() -> Result<T, ureq::Error>) -> Result<T, ureq::Error> {
-    match request() {
-        Err(e) if dropped(&e) => request(),
-        result => result,
-    }
-}
-
 /// The tag in GitHub's redirect from `releases/latest` (`…/releases/tag/v1.2.3`).
 fn tag_from_location(location: &str) -> Option<String> {
     let tag = location.rsplit_once("/tag/")?.1.split(['?', '#']).next()?;
@@ -288,8 +271,8 @@ fn tag_from_location(location: &str) -> Option<String> {
 
 fn latest_https(timeout: Duration) -> Result<String, String> {
     let url = format!("{}/latest", releases_url());
-    let resp =
-        retry_dropped(|| agent(timeout, 0).get(&url).call()).map_err(|e| http_error(&url, e))?;
+    let resp = net::retry_dropped(|| agent(timeout, 0).get(&url).call())
+        .map_err(|e| http_error(&url, e))?;
     let location = resp.headers().get("location").and_then(|l| l.to_str().ok());
     location.and_then(tag_from_location).ok_or_else(|| format!("{url} doesn't lead to a release"))
 }
@@ -321,7 +304,7 @@ fn download_https(tag: &str, name: &str) -> Result<Vec<u8>, String> {
             .limit(MAX_DOWNLOAD)
             .read_to_vec()
     };
-    retry_dropped(get).map_err(|e| http_error(&url, e))
+    net::retry_dropped(get).map_err(|e| http_error(&url, e))
 }
 
 fn download_gh(tag: &str, name: &str) -> Result<Vec<u8>, GhError> {
@@ -1246,29 +1229,6 @@ mod tests {
             either(Err("x wasn't found".into()), failed),
             Err::<(u8, Via), _>("x wasn't found; through gh: HTTP 404".into())
         );
-    }
-
-    #[test]
-    fn retries_once_when_the_connection_drops() {
-        use std::io::ErrorKind::*;
-        let io = |kind| ureq::Error::Io(std::io::Error::new(kind, "x"));
-        // How many times retry_dropped asks when the tries fail with `errors` in turn, and whether
-        // it succeeds.
-        let tries = |mut errors: Vec<ureq::Error>| {
-            errors.reverse();
-            let mut n = 0;
-            let ok = retry_dropped(|| {
-                n += 1;
-                errors.pop().map_or(Ok(()), Err)
-            });
-            (n, ok.is_ok())
-        };
-        assert_eq!(tries(vec![]), (1, true));
-        assert_eq!(tries(vec![io(UnexpectedEof)]), (2, true));
-        assert_eq!(tries(vec![io(ConnectionReset), io(BrokenPipe)]), (2, false));
-        assert_eq!(tries(vec![io(ConnectionRefused)]), (1, false));
-        assert_eq!(tries(vec![ureq::Error::StatusCode(404)]), (1, false));
-        assert_eq!(tries(vec![ureq::Error::HostNotFound]), (1, false));
     }
 
     fn state(latest: &str, installed: Option<(&str, &str)>) -> State {

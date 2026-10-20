@@ -16,6 +16,7 @@ mod keys;
 mod linear;
 mod links;
 mod local;
+mod net;
 mod notify;
 mod proc;
 mod proctree;
