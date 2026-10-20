@@ -127,6 +127,7 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 |---|---|
 | `docs/` | the user guide, this map, design decisions, roadmap, and `taskman.gif`, the demo |
 | `AGENTS.md`, `CLAUDE.md` | the instructions for coding agents; `CLAUDE.md` only imports `AGENTS.md` |
+| `CHANGELOG.md`, `changelog.d/` | what each release changed, its section the release's notes; what's merged but not released, a file per change, which `scripts/release.sh` moves into CHANGELOG.md under the version, so pull requests don't conflict on one file |
 | `CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md` | how to contribute, what taskman trusts and how to report a vulnerability (and verify a release), where to ask for help |
 | `.github/` | the CI and release workflows, issue and pull request templates, Dependabot, `CODEOWNERS` |
 | `deny.toml` | cargo-deny's settings, checked in CI: advisories, bans, the accepted licenses and sources |

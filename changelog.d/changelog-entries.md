@@ -1,0 +1,1 @@
+- For contributors: a pull request now notes its change in a file of its own under `changelog.d/` instead of a line under "Unreleased" in CHANGELOG.md, so pull requests no longer conflict there. `scripts/release.sh` moves the files into the version's section, in the order they were merged.

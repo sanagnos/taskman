@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Cuts a taskman release: waits for CI on main to pass, dates the changelog, bumps the version,
-# checks the build and tests, commits, tags and pushes.
+# Cuts a taskman release: waits for CI on main to pass, joins the changelog's entries under the
+# version and date, bumps the version, checks the build and tests, commits, tags and pushes.
 # Pushing the tag starts the Release workflow, which builds the binaries and publishes the release
 # with the version's changelog section as its notes once CI has passed on the release commit too;
 # if GitHub doesn't start it within a minute, the script starts it by hand for the tag.
@@ -21,9 +21,32 @@ cd "$(dirname "$0")/.."
 git fetch -q origin
 [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || { echo "main isn't in sync with origin/main; pull or push first." >&2; exit 1; }
 ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null || { echo "$tag already exists." >&2; exit 1; }
-# The release notes are the changelog's "Unreleased" entries, so there must be some.
+# The release notes are this version's entries: a file for each change in changelog.d/, so pull
+# requests don't all edit one place in CHANGELOG.md, and any lines left under "## Unreleased" there,
+# where they were added before. So there must be some.
+# The files are listed in the order they were merged: by the commit on main that last added each,
+# oldest first, then by name (a merge commit adds what its branch added; a file renamed on a
+# branch counts as added by the merge, not as renamed).
+fragments() {
+  git log --reverse --first-parent -m --no-renames --diff-filter=A --name-only --format= \
+    -- changelog.d | perl -e '
+    while (<STDIN>) { chomp; $at{$_} = $n++ if length }
+    chomp(my @files = `git ls-files changelog.d`);
+    print "$_\n" for sort { ($at{$a} // $n) <=> ($at{$b} // $n) or $a cmp $b }
+      grep { $_ ne "changelog.d/README.md" } @files;'
+}
 unreleased="$(awk '/^## /{p = ($0 == "## Unreleased"); next} p' CHANGELOG.md)"
-grep -q '^- ' <<<"$unreleased" || { echo "CHANGELOG.md has no entries under \"## Unreleased\"; add what changed first." >&2; exit 1; }
+if [ -z "$(fragments)" ] && ! grep -q '^- ' <<<"$unreleased"; then
+  echo "Nothing to release: changelog.d/ has no entries. Add what changed first (see changelog.d/README.md)." >&2
+  exit 1
+fi
+# Each file is one or more lines of the notes' list.
+bad="$(fragments | perl -ne 'chomp; open my $f, "<", $_ or die "$_: $!\n"; local $/;
+  print "  $_\n" unless <$f> =~ /\A\s*- \S/')"
+if [ -n "$bad" ]; then
+  printf 'These files in changelog.d/ must start with "- ", as a line of CHANGELOG.md does:\n%s\n' "$bad" >&2
+  exit 1
+fi
 
 # OWNER/NAME, from Cargo.toml's `repository`.
 repo="$(sed -n 's|^repository = "https://github.com/\(.*\)"|\1|p' Cargo.toml)"
@@ -61,13 +84,29 @@ echo "CI passed on main at $sha."
 
 # The version line in [package] is the first one in Cargo.toml (perl: same behaviour on macOS and Linux).
 perl -0pi -e "s/^version = \"[^\"]*\"/version = \"$version\"/m" Cargo.toml
-# CHANGELOG.md's "Unreleased" entries become this version's, dated, under a new empty "Unreleased".
-perl -0pi -e "s/^## Unreleased\n/## Unreleased\n\n## $version - $(date +%Y-%m-%d)\n/m" CHANGELOG.md
+# This version's section of CHANGELOG.md, dated, above the last one: the lines left under
+# "## Unreleased", which goes, then the files in changelog.d/ in the order above, which go too.
+fragments | perl -e '
+  my ($version, $date) = @ARGV;
+  chomp(my @files = <STDIN>);
+  local $/;
+  open my $in, "<", "CHANGELOG.md" or die "CHANGELOG.md: $!\n";
+  my $log = <$in>;
+  my @entries;
+  push @entries, $1 if $log =~ s/^## Unreleased\n(.*?)(?=^## |\z)//ms;
+  for (@files) { open my $f, "<", $_ or die "$_: $!\n"; push @entries, scalar <$f> }
+  my $notes = join "\n", grep { length } map { s/\A\s+|\s+\z//gr } @entries;
+  $log =~ s/^(?=## )/## $version - $date\n\n$notes\n\n/m
+    or $log .= "\n## $version - $date\n\n$notes\n";
+  open my $out, ">", "CHANGELOG.md" or die "CHANGELOG.md: $!\n";
+  print $out $log;
+  unlink(@files) == @files or die "Could not delete the files in changelog.d/.\n";
+' "$version" "$(date +%Y-%m-%d)"
 cargo build --quiet            # also updates Cargo.lock, which the release build checks with --locked
 cargo test --quiet
 [ "$(./target/debug/taskman --version)" = "taskman $version" ]
 
-git add Cargo.toml Cargo.lock CHANGELOG.md
+git add Cargo.toml Cargo.lock CHANGELOG.md changelog.d
 git commit -q -m "Release $tag"
 git tag -a "$tag" -m "taskman $tag"
 git push -q origin main "$tag"
