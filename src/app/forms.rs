@@ -9,7 +9,6 @@ use super::settings::prefix_hint;
 use super::sync::Msg;
 use super::{App, Mode};
 use crate::keys;
-use crate::store::Provider;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::sync::mpsc;
 
@@ -373,8 +372,7 @@ impl App {
                 }
                 FormKind::AccountSettings(i) => {
                     let account = self.config.accounts.get(i);
-                    let provider = account.map_or(Provider::Jira, |a| a.provider);
-                    let site = form.value("Site");
+                    let (provider, site) = (form_provider(form), form.value("Site"));
                     account_rows(form, provider, &site, account, self.keychain.as_ref());
                 }
                 _ => {}
