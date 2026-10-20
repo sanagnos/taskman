@@ -1,0 +1,1 @@
+- A git, gh or token command that runs past its time limit now stops with everything it started (ssh, a credential helper) also where there's no `kill` program, as in slim container images. Before, what it started could keep running, and keep writing into a worktree taskman had already reported as failed.

@@ -81,11 +81,19 @@ fn run_inner(cmd: &mut Command, input: Option<Vec<u8>>, timeout: Duration) -> io
 
 /// Stops `child`'s whole process group (a hung `git fetch` waits on ssh, say) and says why.
 fn stop(child: &mut Child, timeout: Duration) -> io::Error {
-    let _ = Command::new("kill")
-        .args(["-KILL", "--", &format!("-{}", child.id())])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    // A system call, not the `kill` program, which minimal images (debian:*-slim) don't have. The
+    // child leads a group of its own (`process_group(0)`), so its pid is the group's id, and it
+    // isn't reaped until the wait below, so that id can't pass to another group meanwhile. The
+    // guard keeps a negated 0, 1 or our own group from signalling anything else.
+    // SAFETY: getpgrp takes nothing and can't fail; it reads or writes no memory of ours.
+    let ours = unsafe { libc::getpgrp() };
+    if let Ok(group) = libc::pid_t::try_from(child.id())
+        && group > 1
+        && group != ours
+    {
+        // SAFETY: kill only sends a signal; it reads or writes no memory.
+        unsafe { libc::kill(-group, libc::SIGKILL) };
+    }
     let _ = child.kill();
     let _ = child.wait();
     io::Error::new(
@@ -120,11 +128,31 @@ mod tests {
 
     #[test]
     fn gives_up_and_stops_what_it_started() {
+        let dir = std::env::temp_dir().join(format!("taskman-proc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pids = dir.join("pids");
         let start = Instant::now();
-        // The background sleep holds the pipes open after the shell is gone, as a daemon might.
-        let err = sh("sleep 30 & sleep 30", Duration::from_millis(300)).unwrap_err();
+        // The background sleep is the shell's child, as ssh is git's, and holds the pipes open.
+        let script = format!("sleep 30 & echo $$ $! > '{}'; sleep 30", pids.display());
+        let err = sh(&script, Duration::from_secs(1)).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::TimedOut);
         assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
+        let pids: Vec<libc::pid_t> = std::fs::read_to_string(&pids)
+            .unwrap()
+            .split_whitespace()
+            .map(|p| p.parse().unwrap())
+            .collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(pids.len(), 2);
+        // Killed, the background sleep lingers only until its new parent reaps it.
+        let gone = Instant::now() + Duration::from_secs(5);
+        for pid in pids {
+            // SAFETY: signal 0 sends nothing, only checks the process is there.
+            while unsafe { libc::kill(pid, 0) } == 0 {
+                assert!(Instant::now() < gone, "{pid} is still running");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
     }
 
     #[test]
