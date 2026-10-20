@@ -8,7 +8,7 @@ use crate::links::Linked;
 use crate::store::Cli;
 use crate::tracker::Access;
 use crate::untrusted;
-use crate::util::{ago, ago_str, parse_ts, truncate};
+use crate::util::{ago, ago_str, ago_words, parse_ts, truncate};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -39,12 +39,7 @@ fn freshness<T>(r: &Remote<T>) -> Line<'static> {
     match r.fetched_at {
         Some(t) => {
             // Minute buckets, so the label changes at most once a minute.
-            let s = t.elapsed().as_secs();
-            let age = match s {
-                0..60 => "just now".to_string(),
-                60..3600 => format!("{}m ago", s / 60),
-                _ => format!("{}h ago", s / 3600),
-            };
+            let age = ago_words(i64::try_from(t.elapsed().as_secs()).unwrap_or(i64::MAX));
             let style = if r.error.is_some() { Style::new().fg(Color::Red) } else { dim() };
             Line::from(Span::styled(format!(" updated {age} "), style))
         }

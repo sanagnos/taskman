@@ -6,9 +6,10 @@
 use super::sync::Msg;
 use super::ticket::{Added, merged_head, own_worktree};
 use super::tickets::Closed;
-use super::{AgentAsk, App, FormKind, Mode, parse_key};
+use super::{AgentAsk, App, FormKind, Mode};
 use crate::session::Reaper;
 use crate::store::{self, Base, Cli, Ticket};
+use crate::ticket_key;
 use crate::{add, close, github, resume, untrusted, util, worktree};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -158,7 +159,7 @@ impl App {
                 .map(|item| match item {
                     // The command checks it too, but anything can write to the inbox.
                     add::Item::Ticket { key, .. }
-                        if parse_key(key).as_deref() != Some(key.as_str()) =>
+                        if ticket_key::parse(key).as_deref() != Some(key.as_str()) =>
                     {
                         (untrusted::line(key), None)
                     }
@@ -342,7 +343,7 @@ impl App {
                 }
                 // The command checks it too, but anything can write to the inbox.
                 add::Item::Ticket { key, .. }
-                    if parse_key(key).as_deref() != Some(key.as_str()) =>
+                    if ticket_key::parse(key).as_deref() != Some(key.as_str()) =>
                 {
                     add::Line::err(format!("{} isn't a ticket key", untrusted::line(key)))
                 }

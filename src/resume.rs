@@ -8,10 +8,11 @@
 //! the file says once nobody holds it tells whether the session last ran outside. Outside, the CLI
 //! holds the lock too (`Hold::share`): killing this command must not free a session still running.
 
-use crate::app::{self, parse_key};
+use crate::app;
 use crate::cli::{self, Arg, Lexer};
 use crate::status::{self, Here, Scope};
 use crate::store::{self, Saved, Ticket};
+use crate::ticket_key;
 use std::io::{Read, Seek, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
@@ -246,7 +247,7 @@ pub fn command_line<'a>(
     if shared {
         line += &format!(" --project {}", quote(project));
     }
-    if t.agent.is_some() && parse_key(name).is_some() {
+    if t.agent.is_some() && ticket_key::parse(name).is_some() {
         line += " --agent";
     } else if t.agent.is_none() && all.iter().any(|o| is_agent(o, &t.key)) {
         line += " --ticket";
@@ -322,7 +323,7 @@ fn find<'a>(
     scope: Scope,
     saved: &'a Saved,
 ) -> Result<&'a Ticket, String> {
-    let ticket = match parse_key(key) {
+    let ticket = match ticket_key::parse(key) {
         Some(k) if kind != Some(Kind::Agent) => {
             Some(status::locate(&k, saved, scope).and_then(|(t, project)| {
                 t.ok_or_else(|| {

@@ -3,7 +3,7 @@
 
 use crate::resume::Hold;
 use crate::store::{self, Provider};
-use crate::{github, proc, untrusted};
+use crate::{git, github, proc, untrusted};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
@@ -208,9 +208,7 @@ pub fn create(
 /// the user's language until its files are checked out, and that's how `Worktree::unfinished`
 /// knows one that was stopped.
 fn add(repo: &Path, args: &[&str]) -> std::io::Result<Output> {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(repo).args(["worktree", "add"]).args(args).env("LC_ALL", "C");
-    proc::run(&mut cmd, GIT_LIMIT)
+    proc::run(git::command(repo).args(["worktree", "add"]).args(args).env("LC_ALL", "C"), GIT_LIMIT)
 }
 
 /// Removes a worktree whose `git worktree add` never finished, so it can be made again. Its
@@ -434,9 +432,7 @@ fn hidden_changes(path: &Path) -> Result<Vec<(PathBuf, &'static str)>, String> {
             input.extend_from_slice(file.as_os_str().as_bytes());
             input.push(b'\n');
         }
-        let mut cmd = Command::new("git");
-        cmd.arg("-C").arg(path).args(["hash-object", "--stdin-paths"]);
-        let o = hashed(&mut cmd, input)?;
+        let o = hashed(git::command(path).args(["hash-object", "--stdin-paths"]), input)?;
         let hashes = String::from_utf8_lossy(&o.stdout);
         let hashes: Vec<&str> = hashes.lines().collect();
         if hashes.len() != files.len() {
@@ -457,9 +453,7 @@ fn hidden_changes(path: &Path) -> Result<Vec<(PathBuf, &'static str)>, String> {
 
 /// The id git gives `content` as a blob, in the repository's own hash.
 fn hash_object(repo: &Path, content: &[u8]) -> Result<String, String> {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(repo).args(["hash-object", "--stdin"]);
-    let o = hashed(&mut cmd, content.to_vec())?;
+    let o = hashed(git::command(repo).args(["hash-object", "--stdin"]), content.to_vec())?;
     Ok(String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
@@ -555,16 +549,10 @@ pub fn remove(
         return Err("its branch moved after the check".into());
     }
     let f = check.path.to_string_lossy();
-    let mut cmd = Command::new("git");
     // git's own refusal runs `git status` with the repository's settings, so it's told to look for
     // untracked files too (see `STATUS`); the check above already did, this is the last guard.
-    cmd.arg("-C").arg(repo).args([
-        "-c",
-        "status.showUntrackedFiles=normal",
-        "worktree",
-        "remove",
-        &f,
-    ]);
+    let mut cmd = git::command(repo);
+    cmd.args(["-c", "status.showUntrackedFiles=normal", "worktree", "remove", &f]);
     hold.share(&mut cmd);
     match proc::run(&mut cmd, GIT_LIMIT) {
         Ok(o) if o.status.success() => {}
@@ -664,7 +652,7 @@ fn default_branch(repo: &Path) -> Option<String> {
     if let Some(b) = local_default_branch(repo) {
         return Some(b);
     }
-    let o = git_within(repo, &["ls-remote", "--symref", "origin", "HEAD"], FETCH_LIMIT)
+    let o = git::run(repo, &["ls-remote", "--symref", "origin", "HEAD"], FETCH_LIMIT)
         .ok()
         .filter(|o| o.status.success())?;
     let text = String::from_utf8_lossy(&o.stdout);
@@ -712,15 +700,11 @@ const FETCH_LIMIT: Duration = Duration::from_secs(30);
 const GIT_LIMIT: Duration = Duration::from_secs(300);
 
 fn fetch(repo: &Path) -> bool {
-    ok(&git_within(repo, &["fetch", "--quiet", "origin"], FETCH_LIMIT))
+    ok(&git::run(repo, &["fetch", "--quiet", "origin"], FETCH_LIMIT))
 }
 
 fn git(repo: &Path, args: &[&str]) -> std::io::Result<Output> {
-    git_within(repo, args, GIT_LIMIT)
-}
-
-fn git_within(repo: &Path, args: &[&str], limit: Duration) -> std::io::Result<Output> {
-    proc::run(Command::new("git").arg("-C").arg(repo).args(args), limit)
+    git::run(repo, args, GIT_LIMIT)
 }
 
 fn ok(out: &std::io::Result<Output>) -> bool {
@@ -1483,7 +1467,7 @@ mod tests {
         assert!(check_format("{repo}-{KEY}").unwrap_err().contains("{repo}"));
     }
 
-    /// A ticket key, as `parse_key` accepts it, in any case.
+    /// A ticket key, as `ticket_key::parse` accepts it, in any case.
     fn key() -> impl Strategy<Value = String> {
         "[A-Za-z][A-Za-z0-9_]{0,6}-[0-9]{1,5}"
     }

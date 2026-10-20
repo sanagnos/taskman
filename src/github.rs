@@ -14,7 +14,7 @@ const GIT_LIMIT: Duration = Duration::from_secs(30);
 const GH_LIMIT: Duration = Duration::from_secs(30);
 
 fn git(dir: &Path, args: &[&str]) -> std::io::Result<Output> {
-    proc::run(Command::new("git").arg("-C").arg(dir).args(args), GIT_LIMIT)
+    crate::git::run(dir, args, GIT_LIMIT)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

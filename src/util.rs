@@ -74,7 +74,19 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 
 /// "now", "5m", "3h", "2d", "6w".
 pub fn ago(ts: i64) -> String {
-    let s = (now() - ts).max(0);
+    short_age(now() - ts)
+}
+
+/// "just now", "5m ago", "3h ago": `secs` seconds ago, in words, in [`ago`]'s buckets.
+pub fn ago_words(secs: i64) -> String {
+    match short_age(secs).as_str() {
+        "now" => "just now".into(),
+        a => format!("{a} ago"),
+    }
+}
+
+fn short_age(secs: i64) -> String {
+    let s = secs.max(0);
     match s {
         0..60 => "now".into(),
         60..3600 => format!("{}m", s / 60),
@@ -284,6 +296,29 @@ mod tests {
         assert_eq!(parse_ts("2024-03-01T13:00:00.123+0100"), Some(1709294400));
         assert_eq!(parse_ts("2024-03-01T07:00:00-05:00"), Some(1709294400));
         assert_eq!(parse_ts("garbage"), None);
+    }
+
+    #[test]
+    fn says_how_long_ago_in_buckets() {
+        let (m, h, d, w) = (60, 3600, 86400, 604800);
+        let cases = [
+            (-5, "just now"),
+            (0, "just now"),
+            (m - 1, "just now"),
+            (m, "1m ago"),
+            (h - 1, "59m ago"),
+            (h, "1h ago"),
+            (d - 1, "23h ago"),
+            (d, "1d ago"),
+            (2 * w - 1, "13d ago"),
+            (2 * w, "2w ago"),
+        ];
+        for (secs, words) in cases {
+            assert_eq!(ago_words(secs), words, "{secs}s");
+        }
+        assert_eq!(ago_words(i64::MAX), format!("{}w ago", i64::MAX / w));
+        assert_eq!(ago(now() - h), "1h");
+        assert_eq!(ago(now()), "now");
     }
 
     proptest! {

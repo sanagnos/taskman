@@ -2,10 +2,9 @@
 //! means, and the ticket key an input names in it (`taskman add`, `move`, `close`, `status`,
 //! `resume` and `update`).
 
-use crate::app::parse_key;
 use crate::status::{self, Here, real};
 use crate::store::{self, Project, Saved, Ticket};
-use crate::untrusted;
+use crate::{ticket_key, untrusted};
 use std::path::Path;
 
 /// Like println!, but a reader that stops early (`taskman --help | head`) isn't a panic: the line
@@ -121,7 +120,10 @@ pub(crate) fn pick_project(
     if let Some(p) = context(me, saved, here) {
         return Ok(p);
     }
-    let Some(prefix) = inputs.iter().find_map(|i| parse_key(i)).map(|k| prefix_of(&k).to_string())
+    let Some(prefix) = inputs
+        .iter()
+        .find_map(|i| ticket_key::parse(i))
+        .map(|k| ticket_key::prefix_of(&k).to_string())
     else {
         return if projects.len() == 1 {
             Ok(0)
@@ -223,10 +225,6 @@ pub(crate) fn confine(p: usize, own: Option<usize>, saved: &Saved) -> Result<(),
     }
 }
 
-fn prefix_of(key: &str) -> &str {
-    key.rsplit_once('-').map_or(key, |(p, _)| p)
-}
-
 fn has_prefix(p: &Project, prefix: &str) -> bool {
     p.tracker.as_ref().is_some_and(|t| !t.key.is_empty() && t.key.eq_ignore_ascii_case(prefix))
 }
@@ -240,20 +238,20 @@ pub(crate) fn resolve_key(input: &str, p: usize, projects: &[Project]) -> Result
         return key;
     }
     let prefix = project.tracker.as_ref().map(|t| t.key.to_uppercase()).filter(|k| !k.is_empty());
-    if !input.is_empty() && input.chars().all(|c| c.is_ascii_digit()) {
-        return prefix.map(|pre| format!("{pre}-{input}")).ok_or_else(|| {
+    if ticket_key::is_number(input) {
+        return prefix.map(|pre| ticket_key::join(&pre, input)).ok_or_else(|| {
             format!("{input}: project {} has no ticket prefix; pass the whole key", project.name)
         });
     }
-    let key =
-        parse_key(input).ok_or_else(|| format!("{input} isn't a ticket number, key or link"))?;
+    let key = ticket_key::parse(input)
+        .ok_or_else(|| format!("{input} isn't a ticket number, key or link"))?;
     let Some(pre) = prefix else { return Ok(key) };
-    if prefix_of(&key) == pre {
+    if ticket_key::prefix_of(&key) == pre {
         return Ok(key);
     }
     let theirs = projects
         .iter()
-        .find(|q| has_prefix(q, prefix_of(&key)))
+        .find(|q| has_prefix(q, ticket_key::prefix_of(&key)))
         .map(|q| format!("; for project {0}, pass --project {0}", q.name))
         .unwrap_or_default();
     Err(format!("{key} doesn't belong to {}'s tracker ({pre}){theirs}", project.name))
@@ -617,61 +615,6 @@ pub(crate) mod tests {
                     names.iter().map(|n| project(n, &format!("/src/{n}"), "")).collect();
                 for (i, p) in projects.iter().enumerate() {
                     prop_assert_eq!(project_named(&projects, &p.name), Ok(i), "{}", p.name);
-                }
-            }
-        }
-    }
-
-    mod keys {
-        use super::parse_key;
-        use proptest::prelude::*;
-
-        /// A ticket key in any case, and its canonical form.
-        fn key() -> impl Strategy<Value = (String, String)> {
-            "[A-Za-z][A-Za-z0-9_]{0,6}-[0-9]{1,5}".prop_map(|k| (k.clone(), k.to_uppercase()))
-        }
-
-        proptest! {
-            #![proptest_config(ProptestConfig::with_cases(256))]
-
-            #[test]
-            fn keys_parse_alone_and_in_links(
-                (key, upper) in key(),
-                (other, _) in key(),
-                space in "[ \t]{0,2}",
-                // Slugs and workspaces can end in a number, so they can read as keys too.
-                words in "[a-z]{1,8}(-[a-z0-9]{1,8}){0,3}",
-                workspace in "[a-z][a-z0-9-]{0,10}",
-                comment in "[0-9]{1,6}",
-                dir in "[a-z]{1,8}",
-            ) {
-                for input in [
-                    format!("{space}{key}{space}"),
-                    format!("https://example.atlassian.net/browse/{key}"),
-                    format!("https://example.atlassian.net/jira/software/projects/ENG/boards/1?selectedIssue={key}"),
-                    format!("https://example.atlassian.net/browse/{key}?focusedCommentId={comment}"),
-                    format!("https://example.atlassian.net/browse/{key}?focusedCommentId={comment}#comment-{comment}"),
-                    format!("https://example.atlassian.net/browse/{key}#{other}"),
-                    format!("https://linear.app/{workspace}/issue/{key}/{words}"),
-                    format!("https://linear.app/{workspace}/issue/{key}/{words}#comment-{comment}"),
-                    format!("linear.app/{workspace}/issue/{key}"),
-                    // Unknown links: the first key in the path.
-                    format!("https://example.com/{dir}/{key}/{other}?id={other}#{other}"),
-                    // A key in the fragment only when the path and query have none.
-                    format!("https://example.com/{dir}?page={comment}#{key}/{other}"),
-                ] {
-                    prop_assert_eq!(parse_key(&input), Some(upper.clone()), "{}", input);
-                }
-            }
-
-            #[test]
-            fn what_parses_is_a_key(input in "(\\PC|[-/=?&# ]|[A-Za-z]{1,3}-[0-9]{1,3}){0,12}") {
-                if let Some(k) = parse_key(&input) {
-                    let (p, n) = k.split_once('-').unwrap();
-                    prop_assert!(p.starts_with(|c: char| c.is_ascii_uppercase()), "{k}");
-                    prop_assert!(p.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'), "{k}");
-                    prop_assert!(!n.is_empty() && n.chars().all(|c| c.is_ascii_digit()), "{k}");
-                    prop_assert_eq!(parse_key(&k), Some(k.clone()));
                 }
             }
         }
