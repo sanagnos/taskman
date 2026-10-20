@@ -58,7 +58,6 @@ mod ticket;
 mod tickets;
 pub mod toasts;
 
-pub use add_form::parse_key;
 pub use forms::{Field, Form, FormKind, List};
 pub use launch::{NESTED_ENV, launch_id};
 pub use poll::{AgentState, Status};

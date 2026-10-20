@@ -4,6 +4,7 @@
 //! worktree's remotes would pick.
 
 use crate::github;
+use crate::ticket_key;
 use crate::tracker::{self, COMMENTS, Comment, Created, FetchError, Issue, LinkedPr, Listed};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -56,25 +57,17 @@ impl Repo {
     }
 }
 
-/// The issue number in a key: 12 in `WEB-12`.
-pub fn number(key: &str) -> Option<u64> {
-    let (prefix, n) = key.rsplit_once('-')?;
-    (!prefix.is_empty() && !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
-        .then(|| n.parse().ok())
-        .flatten()
-}
-
 /// The key that `input` names when it's written the GitHub way: `#12`, `acme/web#12`, or an
 /// issue's link. A link or reference to another repository, or to a pull request, is refused
 /// with the reason. None for anything else (`12`, `WEB-12`), which reads as any tracker's key.
 pub fn key_from_input(input: &str, prefix: &str, repo: &Repo) -> Option<Result<String, String>> {
     let s = input.trim();
     let key = |n: &str| match n.parse::<u64>() {
-        Ok(n) if !prefix.is_empty() => Ok(format!("{}-{n}", prefix.to_uppercase())),
+        Ok(n) if !prefix.is_empty() => Ok(ticket_key::join(prefix, n)),
         Ok(_) => Err(format!("{s}: the project has no ticket prefix; set one in its settings")),
         Err(_) => Err(format!("{s} isn't an issue number")),
     };
-    let digits = |n: &str| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit());
+    let digits = ticket_key::is_number;
     if let Some(n) = s.strip_prefix('#') {
         return digits(n).then(|| key(n));
     }
@@ -273,7 +266,7 @@ impl GithubConfig {
     /// `text` (`markdown_to_text` for a panel).
     pub fn fetch(&self, key: &str, text: fn(&str) -> String) -> Result<Issue, FetchError> {
         let repo = self.repo.spec();
-        let n = number(key).ok_or_else(|| format!("{key} has no issue number"))?;
+        let n = ticket_key::number(key).ok_or_else(|| format!("{key} has no issue number"))?;
         let not_found =
             || FetchError::NotFound(format!("{key} not found: {repo} has no issue #{n}"));
         let d = self
@@ -360,7 +353,7 @@ fn parse_issue(i: &Value, text: fn(&str) -> String) -> Issue {
 /// The issue `create` opened, from GitHub's answer; `place` is where it was opened.
 fn parse_created(out: &str, prefix: &str, place: &str) -> Result<Created, String> {
     let v: Value = serde_json::from_str(out).unwrap_or(Value::Null);
-    let key = v["number"].as_u64().map(|n| format!("{}-{n}", prefix.to_uppercase()));
+    let key = v["number"].as_u64().map(|n| ticket_key::join(prefix, n));
     Created::read(key.as_deref(), v["html_url"].as_str().unwrap_or(""), place)
 }
 
@@ -368,12 +361,11 @@ fn parse_open(d: &Value, prefix: &str) -> Result<Vec<Listed>, String> {
     let issues =
         d["repository"]["issues"]["nodes"].as_array().ok_or("GitHub returned no issues")?;
     let me = d["viewer"]["login"].as_str().unwrap_or("");
-    let prefix = prefix.to_uppercase();
     Ok(issues
         .iter()
         .filter_map(|i| {
             Some(Listed {
-                key: format!("{prefix}-{}", i["number"].as_u64()?),
+                key: ticket_key::join(prefix, i["number"].as_u64()?),
                 title: i["title"].as_str().unwrap_or("").to_string(),
                 mine: !me.is_empty()
                     && i["assignees"]["nodes"]
@@ -490,15 +482,6 @@ pub(crate) mod tests {
             assert_eq!(k(s), None, "{s}");
         }
         assert!(matches!(key_from_input("#12", "", &repo), Some(Err(_))));
-    }
-
-    #[test]
-    fn reads_numbers_from_keys() {
-        assert_eq!(number("WEB-12"), Some(12));
-        assert_eq!(number("A_1-7"), Some(7));
-        assert_eq!(number("WEB-"), None);
-        assert_eq!(number("12"), None);
-        assert_eq!(number("WEB-1x"), None);
     }
 
     #[test]
@@ -695,7 +678,7 @@ pub(crate) mod tests {
             let repo = Repo::parse("acme/web").unwrap();
             if let Some(Ok(key)) = key_from_input(&s, "WEB", &repo) {
                 prop_assert!(key.starts_with("WEB-"));
-                prop_assert!(number(&key).is_some());
+                prop_assert!(ticket_key::number(&key).is_some());
             }
         }
 

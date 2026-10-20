@@ -1,10 +1,10 @@
 //! Linear GraphQL client: one issue with its comments, in the same shape as the other trackers.
 
+use crate::net;
 use crate::tracker::{
     self, CHOICE_PAGES, COMMENTS, Choice, Comment, Created, FetchError, Issue, Listed,
 };
 use serde_json::{Value, json};
-use std::time::Duration;
 
 const ENDPOINT: &str = "https://api.linear.app/graphql";
 
@@ -23,26 +23,20 @@ impl LinearConfig {
 
     /// A client for the API at `endpoint`: Linear's, or a test's recorded responses.
     fn at(endpoint: &str, key: &str) -> Self {
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(20)))
-            .http_status_as_error(false)
-            .build()
-            .into();
+        let agent = net::config(net::TRACKER_TIMEOUT).http_status_as_error(false).build().into();
         Self { endpoint: endpoint.to_string(), key: key.to_string(), agent }
     }
 
+    /// A query, asked again if the connection drops: it changes nothing, unlike `create`'s
+    /// mutation.
     fn query(&self, query: &str, variables: &Value) -> Result<Value, FetchError> {
-        let (status, v) = self.send(query, variables).map_err(|e| failed(&e))?;
+        let (status, v) =
+            net::retry_dropped(|| self.send(query, variables)).map_err(|e| failed(&e))?;
         answer(status, &v)
     }
 
     /// Posts a query; its status and body.
     fn send(&self, query: &str, variables: &Value) -> Result<(u16, Value), ureq::Error> {
-        // A safety net: unit tests reach only `replay`'s server, even through an App's background
-        // fetch.
-        if cfg!(test) && !self.endpoint.starts_with("http://127.0.0.1:") {
-            return Err(ureq::Error::ConnectionFailed);
-        }
         let mut resp = self
             .agent
             .post(&self.endpoint)
@@ -565,6 +559,27 @@ mod tests {
         // Nothing listens: the error says so, for Codex's sandbox to be explained.
         let down = Client::Linear(LinearConfig::at(&replay::closed(), "lin_api_mock"));
         assert!(down.create("ENG", "Fix it", "").unwrap_err().cut_off);
+    }
+
+    #[test]
+    fn asks_again_when_a_query_drops_but_never_the_mutation() {
+        let team = include_str!("../tests/fixtures/linear/team.json");
+        let created = include_str!("../tests/fixtures/linear/created.json");
+        let server = replay::serve(vec![
+            (replay::DROP, ""),
+            (200, include_str!("../tests/fixtures/linear/issue.json")),
+            (200, "{}"),
+        ]);
+        assert_eq!(client(&server).fetch("ENG-52", Text::Plain).unwrap().assignee, "Ana Example");
+        assert_eq!(server.requests().len(), 3);
+        let server = replay::serve(vec![(replay::DROP, ""), (200, team), (200, created)]);
+        assert_eq!(client(&server).create("ENG", "Fix it", "").unwrap().key, "ENG-53");
+        assert_eq!(server.requests().len(), 3);
+        // The mutation may have made the issue before the connection dropped.
+        let server = replay::serve(vec![(200, team), (replay::DROP, ""), (200, created)]);
+        let e = client(&server).create("ENG", "Fix it", "").unwrap_err();
+        assert!(e.message.contains("may have been created anyway"), "{}", e.message);
+        assert_eq!(server.requests().len(), 2);
     }
 
     #[test]

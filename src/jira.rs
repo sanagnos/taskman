@@ -1,12 +1,12 @@
 //! Jira Cloud REST client: one issue with its comments, rendered to plain text.
 
+use crate::net;
 use crate::tracker::{
     self, CHOICE_PAGES, COMMENTS, Choice, Comment, Created, FetchError, Issue, Listed,
 };
 use crate::util::parse_ts;
 use base64::Engine;
 use serde_json::{Value, json};
-use std::time::Duration;
 
 #[derive(Clone)]
 pub struct JiraConfig {
@@ -18,10 +18,7 @@ pub struct JiraConfig {
 impl JiraConfig {
     pub fn new(base: &str, email: &str, token: &str) -> Self {
         let auth = base64::engine::general_purpose::STANDARD.encode(format!("{email}:{token}"));
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(20)))
-            .build()
-            .into();
+        let agent = net::config(net::TRACKER_TIMEOUT).build().into();
         Self { base: base.trim_end_matches('/').to_string(), auth, agent }
     }
 
@@ -31,19 +28,16 @@ impl JiraConfig {
 
     /// `get` with query parameters, encoded.
     fn get_with(&self, path: &str, query: &[(&str, &str)]) -> Result<Value, ureq::Error> {
-        // A safety net: unit tests reach only `replay`'s server, even through an App's background
-        // fetch.
-        if cfg!(test) && !self.base.starts_with("http://127.0.0.1:") {
-            return Err(ureq::Error::ConnectionFailed);
-        }
-        self.agent
-            .get(&format!("{}{path}", self.base))
-            .query_pairs(query.iter().copied())
-            .header("Authorization", &format!("Basic {}", self.auth))
-            .header("Accept", "application/json")
-            .call()?
-            .body_mut()
-            .read_json()
+        net::retry_dropped(|| {
+            self.agent
+                .get(&format!("{}{path}", self.base))
+                .query_pairs(query.iter().copied())
+                .header("Authorization", &format!("Basic {}", self.auth))
+                .header("Accept", "application/json")
+                .call()?
+                .body_mut()
+                .read_json()
+        })
     }
 
     /// Whether a Jira project with this key exists and is visible to the account. Errors other
@@ -101,10 +95,8 @@ impl JiraConfig {
     }
 
     /// `create`'s POST, answered whatever its status, as Jira says in the body why it refused.
+    /// Never asked again: a request that dropped may have made the ticket.
     fn post(&self, path: &str, body: &Value) -> Result<(u16, Value), ureq::Error> {
-        if cfg!(test) && !self.base.starts_with("http://127.0.0.1:") {
-            return Err(ureq::Error::ConnectionFailed);
-        }
         let mut resp = self
             .agent
             .post(&format!("{}{path}", self.base))
@@ -702,6 +694,26 @@ mod tests {
     }
 
     #[test]
+    fn asks_again_when_a_read_drops_but_never_a_create() {
+        let project = include_str!("../tests/fixtures/jira/project.json");
+        let created = include_str!("../tests/fixtures/jira/created.json");
+        let server = replay::serve(vec![
+            (replay::DROP, ""),
+            (200, include_str!("../tests/fixtures/jira/issue.json")),
+        ]);
+        assert_eq!(client(&server).fetch("ENG-52", Text::Plain).unwrap().assignee, "Ana Example");
+        assert_eq!(server.requests().len(), 2);
+        let server = replay::serve(vec![(replay::DROP, ""), (200, project), (201, created)]);
+        assert_eq!(client(&server).create("ENG", "Fix it", "").unwrap().key, "ENG-53");
+        assert_eq!(server.requests().len(), 3);
+        // The POST may have made the ticket before the connection dropped.
+        let server = replay::serve(vec![(200, project), (replay::DROP, ""), (201, created)]);
+        let e = client(&server).create("ENG", "Fix it", "").unwrap_err();
+        assert!(e.message.contains("may have been created anyway"), "{}", e.message);
+        assert_eq!(server.requests().len(), 2);
+    }
+
+    #[test]
     fn lists_the_projects_a_page_at_a_time() {
         let server = replay::serve(vec![
             (200, include_str!("../tests/fixtures/jira/projects-1.json")),
@@ -951,7 +963,7 @@ mod tests {
         #[test]
         fn a_created_ticket_has_a_key(v in any_json()) {
             if let Ok(made) = parse_created(&v, "https://example.atlassian.net", "ENG") {
-                prop_assert!(crate::tracker::is_prefix(made.key.split('-').next().unwrap()));
+                prop_assert!(crate::ticket_key::well_formed(&made.key));
             }
             let key = json!({ "key": "ENG-53", "id": v });
             prop_assert_eq!(parse_created(&key, "", "ENG").unwrap().key, "ENG-53");

@@ -36,8 +36,13 @@ impl Server {
     }
 }
 
-/// Answers one connection per response, in order, each with that status and JSON body. A request
-/// is recorded before it's answered, so once the client has its answer, `requests` has it.
+/// The status that answers nothing: the connection closes once the request is read, as a dropped
+/// one does.
+pub const DROP: u16 = 0;
+
+/// Answers one connection per response, in order, each with that status and JSON body (`DROP` for
+/// none). A request is recorded before it's answered, so once the client has its answer,
+/// `requests` has it.
 pub fn serve(responses: Vec<(u16, &'static str)>) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -48,6 +53,9 @@ pub fn serve(responses: Vec<(u16, &'static str)>) -> Server {
             let mut reader = BufReader::new(stream);
             let Some(request) = read_request(&mut reader) else { return };
             let _ = tx.send(request);
+            if status == DROP {
+                continue;
+            }
             let mut stream = reader.into_inner();
             let _ = write!(
                 stream,

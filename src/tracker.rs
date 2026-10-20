@@ -7,6 +7,7 @@ use crate::jira::{self, JiraConfig};
 use crate::linear::{self, LinearConfig};
 use crate::local;
 use crate::store::{self, Account, Config, Project, Provider, Tracker};
+use crate::ticket_key;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -264,16 +265,10 @@ pub fn choosing<'a>(choices: &'a [Choice], input: &str) -> Vec<&'a Choice> {
 /// Keys that read as a ticket prefix, each once, sorted: one the tracker wrote some other way
 /// can't be a prefix, and is left out.
 pub(crate) fn tidy_choices(mut choices: Vec<Choice>) -> Vec<Choice> {
-    choices.retain(|c| is_prefix(&c.key));
+    choices.retain(|c| ticket_key::is_prefix(&c.key));
     choices.sort_by(|a, b| a.key.cmp(&b.key));
     choices.dedup_by(|a, b| a.key == b.key);
     choices
-}
-
-/// Whether `s` reads as a ticket prefix: letters, digits or `_`, starting with a letter.
-pub fn is_prefix(s: &str) -> bool {
-    s.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// An open issue, as the Add form lists it.
@@ -289,7 +284,7 @@ pub struct Listed {
 impl Listed {
     /// The number in its key: 12 in `ENG-12`.
     pub fn number(&self) -> Option<u64> {
-        github_issues::number(&self.key)
+        ticket_key::number(&self.key)
     }
 }
 
@@ -304,7 +299,7 @@ pub fn mine_first(issues: &mut [Listed]) {
 pub fn matching<'a>(issues: &'a [Listed], input: &str) -> Vec<&'a Listed> {
     let s = input.trim();
     let digits = s.strip_prefix('#').unwrap_or(s);
-    if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+    if ticket_key::is_number(digits) {
         return issues
             .iter()
             .filter(|i| i.number().is_some_and(|n| n.to_string().starts_with(digits)))
@@ -320,16 +315,6 @@ pub fn matching<'a>(issues: &'a [Listed], input: &str) -> Vec<&'a Listed> {
         .collect()
 }
 
-/// Whether a key reads as one: letters, digits or `_` starting with a letter, a dash, a number.
-fn well_formed(key: &str) -> bool {
-    key.split_once('-').is_some_and(|(p, n)| {
-        p.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-            && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-            && !n.is_empty()
-            && n.chars().all(|c| c.is_ascii_digit())
-    })
-}
-
 impl Client {
     /// The open issues the Add form lists (`Tracker::lists_open`), those assigned to you first:
     /// Jira's project and Linear's team whose key is `prefix`, the GitHub repository's, or the
@@ -342,7 +327,7 @@ impl Client {
             Client::Github(c) => c.open_issues(prefix)?,
         };
         // A key names a worktree and a branch: one the tracker wrote some other way is left out.
-        issues.retain(|l| well_formed(&l.key));
+        issues.retain(|l| ticket_key::well_formed(&l.key));
         mine_first(&mut issues);
         Ok(issues)
     }
@@ -361,7 +346,7 @@ impl Client {
         if title.is_empty() {
             return Err("give the new ticket a title".into());
         }
-        if !is_prefix(prefix) {
+        if !ticket_key::is_prefix(prefix) {
             return Err(format!(
                 "the project has no ticket prefix; set one in its settings in taskman ({} ,)",
                 crate::keys::prefix()
@@ -393,7 +378,9 @@ impl Created {
     /// where the ticket was made, for when they don't.
     pub(crate) fn read(key: Option<&str>, at: &str, place: &str) -> Result<Created, String> {
         match key {
-            Some(key) if well_formed(key) => Ok(Created { key: key.into(), at: at.into() }),
+            Some(key) if ticket_key::well_formed(key) => {
+                Ok(Created { key: key.into(), at: at.into() })
+            }
             _ => Err(maybe_created(
                 &format!("the answer gave no ticket key taskman can read ({key:?})"),
                 place,
@@ -685,7 +672,7 @@ impl Provider {
 
     /// A ticket key as the tracker writes it: GitHub's `#12` for `WEB-12`.
     pub fn written_key(self, key: &str) -> String {
-        match (self, github_issues::number(key)) {
+        match (self, ticket_key::number(key)) {
             (Provider::Github, Some(n)) => format!("#{n}"),
             _ => key.to_string(),
         }
@@ -842,7 +829,7 @@ impl Tracker {
             Provider::Jira => Some(format!("{}/browse/{key}", store::jira_base(&self.site))),
             Provider::Linear => Some(format!("https://linear.app/{}/issue/{key}", self.site)),
             Provider::Local => None,
-            Provider::Github => Some(self.github_repo()?.issue_url(github_issues::number(key)?)),
+            Provider::Github => Some(self.github_repo()?.issue_url(ticket_key::number(key)?)),
         }
     }
 
@@ -873,10 +860,7 @@ impl Tracker {
     /// The issue that `key`'s PR closes, when the tracker is the repository's own issues: the PR
     /// lookup tries the PRs GitHub links to it first.
     pub fn closes(&self, key: &str) -> Option<crate::github::Closes> {
-        Some(crate::github::Closes {
-            repo: self.github_repo()?,
-            number: github_issues::number(key)?,
-        })
+        Some(crate::github::Closes { repo: self.github_repo()?, number: ticket_key::number(key)? })
     }
 
     /// A Local files tracker's board in the project folder `repo`: never a worktree's copy.
@@ -972,7 +956,7 @@ mod tests {
     }
 
     #[test]
-    fn puts_yours_first_and_leaves_out_keys_that_dont_read_as_keys() {
+    fn puts_yours_first() {
         let mut issues = vec![
             listed("ENG-71", "Export", false),
             listed("ENG-64", "Login", true),
@@ -982,12 +966,6 @@ mod tests {
         mine_first(&mut issues);
         let keys: Vec<&str> = issues.iter().map(|l| l.key.as_str()).collect();
         assert_eq!(keys, ["ENG-64", "ENG-12", "ENG-71", "ENG-58"]);
-        for good in ["ENG-12", "A_1-7", "web-3"] {
-            assert!(well_formed(good), "{good}");
-        }
-        for bad in ["ENG-", "-12", "1ENG-2", "ENG-1x", "ENG 1-2", "ENG-1; rm", "#12", ""] {
-            assert!(!well_formed(bad), "{bad}");
-        }
     }
 
     #[test]
@@ -1090,7 +1068,7 @@ mod tests {
         ) {
             let choices = tidy_choices(names.iter().map(|(k, n)| choice(k, n)).collect());
             prop_assert!(choices.windows(2).all(|w| w[0].key < w[1].key));
-            prop_assert!(choices.iter().all(|c| is_prefix(&c.key)));
+            prop_assert!(choices.iter().all(|c| ticket_key::is_prefix(&c.key)));
             let found = choosing(&choices, &input);
             let at: Vec<usize> =
                 found.iter().map(|f| choices.iter().position(|c| c == *f).unwrap()).collect();
