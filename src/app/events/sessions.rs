@@ -343,9 +343,10 @@ fn a_status_record_counts_only_from_the_sessions_own_start() {
     write_status("ENG-52", &record("working", "sid-52", None));
     reread(&mut app);
     assert_eq!(app.tickets[i].status.state, AgentState::Working);
-    // Restarted (`prefix R`), nothing runs in the pane yet: the old start's end doesn't make the
-    // session that's about to start look ended.
+    // Restarted (`prefix R`, which asks first while it's working), nothing runs in the pane
+    // yet: the old start's end doesn't make the session that's about to start look ended.
     prefix(&mut app, KeyCode::Char('R'));
+    app.on_key(key(KeyCode::Enter));
     write_status("ENG-52", &record("ended", "sid-52", Some("1-7")));
     reread(&mut app);
     assert_eq!(app.tickets[i].status.state, AgentState::NotStarted);
@@ -404,6 +405,85 @@ fn restarting_stops_the_session_and_keeps_its_claim() {
     assert_eq!(app.tickets[j].status.state, AgentState::NotStarted);
     prefix(&mut app, KeyCode::Char('R'));
     assert_eq!(toast(&app), Some("Restarting Codex session…"));
+}
+
+/// A restart cuts short a turn under way or a question to the user, so `prefix R` asks first
+/// then; Esc keeps the session as it was.
+#[test]
+fn restarting_a_session_that_works_or_needs_you_asks_first() {
+    let (mut app, to_session) = at_eng_52();
+    let i = app.sel;
+    for state in [AgentState::Working, AgentState::Needs] {
+        app.tickets[i].status.state = state;
+        prefix(&mut app, KeyCode::Char('R'));
+        assert!(
+            matches!(&app.mode, Mode::ConfirmRestart((_, key)) if key == "ENG-52"),
+            "{state:?}"
+        );
+        // A stray key doesn't answer it, and doesn't reach the session.
+        app.on_key(key(KeyCode::Char('y')));
+        assert!(matches!(app.mode, Mode::ConfirmRestart(_)));
+        app.on_key(key(KeyCode::Esc));
+        assert!(matches!(app.mode, Mode::Normal));
+        let tv = &app.tickets[i];
+        assert!(tv.session.is_some() && tv.status.state == state, "{state:?}");
+    }
+    prefix(&mut app, KeyCode::Char('R'));
+    // The turn ends while the dialog is open: it says so, and Enter still restarts.
+    app.tickets[i].status.state = AgentState::Done;
+    let screen = draw(&mut app, 80, 24);
+    assert!(screen.contains("Its turn has ended, so nothing is cut short."), "{screen}");
+    app.on_key(key(KeyCode::Enter));
+    assert!(matches!(app.mode, Mode::Normal));
+    assert_eq!(toast(&app), Some("Restarting Claude session…"));
+    let tv = &app.tickets[i];
+    assert!(tv.session.is_none() && tv.status.state == AgentState::NotStarted);
+    assert_eq!(sent(&to_session), "", "the keys answered the dialog");
+}
+
+/// The dialog holds the ticket, not its place in the list: Enter restarts that one, and nothing
+/// once it's gone.
+#[test]
+fn the_restart_dialog_restarts_the_ticket_it_asked_about() {
+    let (mut app, _) = at_eng_52();
+    let i = app.sel;
+    app.tickets[i].status.state = AgentState::Working;
+    prefix(&mut app, KeyCode::Char('R'));
+    // Something else is selected by the time it's answered.
+    app.select(index(&app, "ENG-53"));
+    app.on_key(key(KeyCode::Enter));
+    assert!(app.tickets[i].session.is_none());
+    assert_eq!(app.tickets[i].status.state, AgentState::NotStarted);
+
+    let (mut app, _) = at_eng_52();
+    app.tickets[app.sel].status.state = AgentState::Working;
+    prefix(&mut app, KeyCode::Char('R'));
+    app.mode = Mode::ConfirmRestart(("/src/acme".into(), "ENG-99".into()));
+    app.on_key(key(KeyCode::Enter));
+    assert!(matches!(app.mode, Mode::Normal));
+    assert!(app.tickets[app.sel].session.is_some(), "restarted another ticket");
+}
+
+/// Idle, its turn done or ended, a session has nothing a restart would cut short: `prefix R`
+/// restarts it at once.
+#[test]
+fn restarting_a_session_with_nothing_under_way_doesnt_ask() {
+    for state in [AgentState::Idle, AgentState::Done, AgentState::Exited] {
+        let (mut app, _) = at_eng_52();
+        app.tickets[app.sel].status.state = state;
+        prefix(&mut app, KeyCode::Char('R'));
+        assert!(matches!(app.mode, Mode::Normal), "{state:?}");
+        assert_eq!(toast(&app), Some("Restarting Claude session…"));
+        assert!(app.tickets[app.sel].session.is_none(), "{state:?}");
+    }
+    // Its CLI gone, a session still marked working has nothing left to lose.
+    let (mut app, _) = at_eng_52();
+    let tv = &mut app.tickets[app.sel];
+    tv.status.state = AgentState::Working;
+    tv.session.as_mut().unwrap().exit(1);
+    prefix(&mut app, KeyCode::Char('R'));
+    assert!(matches!(app.mode, Mode::Normal));
+    assert_eq!(toast(&app), Some("Restarting Claude session…"));
 }
 
 #[test]

@@ -90,6 +90,8 @@ pub enum Mode {
     ConfirmDeleteProject(usize),
     ConfirmDeleteAccount(usize),
     ConfirmQuit,
+    /// `prefix R` on a session that's working or needs the user, which restarting interrupts.
+    ConfirmRestart(Id),
     /// A `taskman add` that adds a project agent or sets an agent's role, waiting for the user.
     ConfirmAgent(Box<AgentAsk>),
     /// A session just handed off, inside tmux: open `taskman resume` in a new window?

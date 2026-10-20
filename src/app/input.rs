@@ -222,6 +222,7 @@ impl App {
             | Mode::ConfirmDeleteProject(_)
             | Mode::ConfirmDeleteAccount(_)
             | Mode::ConfirmQuit
+            | Mode::ConfirmRestart(_)
                 if !matches!(key.code, KeyCode::Enter | KeyCode::Esc) =>
             {
                 return;
@@ -316,6 +317,19 @@ impl App {
                 self.mode = Mode::Normal;
                 return;
             }
+            Mode::ConfirmRestart(_) => {
+                let Mode::ConfirmRestart(id) = std::mem::replace(&mut self.mode, Mode::Normal)
+                else {
+                    unreachable!()
+                };
+                // By its id: the list may have changed under the dialog.
+                if key.code == KeyCode::Enter
+                    && let Some(i) = self.tickets.iter().position(|tv| tv.t.is(&id.0, &id.1))
+                {
+                    self.restart_with_toast(i);
+                }
+                return;
+            }
         }
 
         let is_prefix = keys::prefix().matches(&key);
@@ -370,7 +384,7 @@ impl App {
             _ if key.code == KeyCode::Enter && tv.background.is_some() => {
                 self.stop_background_copy();
             }
-            _ if key.code == KeyCode::Enter => self.restart_session(),
+            _ if key.code == KeyCode::Enter => self.restart_session(self.sel),
             _ => {}
         }
     }
@@ -479,11 +493,12 @@ impl App {
                         self.warn("It's running in another terminal: quit it there, then press Enter here");
                     }
                     Some(Away::HandedOff | Away::Back) => self.bring_back(),
-                    None => {
-                        let cli = self.tickets[self.sel].t.cli.label();
-                        self.restart_session();
-                        self.toast(format!("Restarting {cli} session…"));
+                    // A turn under way, or a question to the user, would be lost: ask first.
+                    None if self.tickets[self.sel].busy() => {
+                        let t = &self.tickets[self.sel].t;
+                        self.mode = Mode::ConfirmRestart((t.repo.clone(), t.key.clone()));
                     }
+                    None => self.restart_with_toast(self.sel),
                 }
             }
             KeyCode::Char('t') if !self.tickets.is_empty() => self.hand_off(),

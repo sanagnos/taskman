@@ -8,7 +8,7 @@
 use crate::app::test_support::{
     acme_app, attach, attach_crashed, attach_ended, draw, draw_colours, key, long_sidebar, offline,
 };
-use crate::app::{AgentAsk, Mode, SettingsItem};
+use crate::app::{AgentAsk, AgentState, Mode, SettingsItem};
 use crate::store::Saved;
 use crate::worktree::RemoveCheck;
 use crossterm::event::KeyCode;
@@ -333,6 +333,24 @@ fn quit_dialog_waiting_for_a_worktree_removal() {
     let mut app = acme_app();
     let _removal = crate::app::test_support::removing(&mut app, &["ENG-48"]);
     app.mode = Mode::ConfirmQuit;
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
+/// `prefix R` on a session that's working asks first, saying what restarting cuts short.
+#[test]
+fn restart_dialog_while_working() {
+    let mut app = acme_app();
+    let i = app.sel;
+    app.tickets[i].status.state = AgentState::Working;
+    app.mode = Mode::ConfirmRestart(("/src/acme".into(), "ENG-52".into()));
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
+/// ENG-53 needs the user: restarting leaves what it asked unanswered.
+#[test]
+fn restart_dialog_while_it_needs_you() {
+    let mut app = acme_app();
+    app.mode = Mode::ConfirmRestart(("/src/acme".into(), "ENG-53".into()));
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 

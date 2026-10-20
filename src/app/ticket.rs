@@ -412,6 +412,13 @@ impl TicketView {
         changed
     }
 
+    /// Whether its session is running a turn or waiting on the user, which a restart would cut
+    /// short: `prefix R` asks first.
+    pub fn busy(&self) -> bool {
+        self.session.as_ref().is_some_and(|s| !s.exited())
+            && matches!(self.status.state, AgentState::Working | AgentState::Needs)
+    }
+
     pub fn needs_attention(&self) -> bool {
         // Outside, it can still be waiting on you; handed off or back, it waits for Enter alone.
         match self.away {

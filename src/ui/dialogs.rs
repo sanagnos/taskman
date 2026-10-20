@@ -136,6 +136,24 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &mut App) {
             };
             draw_confirm(f, "Quit taskman?", &detail);
         }
+        Mode::ConfirmRestart((repo, key)) => {
+            let Some(tv) = app.tickets.iter().find(|tv| tv.t.is(repo, key)) else { return };
+            // Read as it's drawn: the turn may end while the dialog is open.
+            let lost = match tv.status.state {
+                AgentState::Working => {
+                    "It's working: its current turn ends, and any command it's running is stopped part-way."
+                }
+                AgentState::Needs => {
+                    "It's waiting on you: what it asked goes unanswered, and its current turn stops."
+                }
+                _ => "Its turn has ended, so nothing is cut short.",
+            };
+            draw_confirm(
+                f,
+                &format!("Restart {}?", tv.t.display()),
+                &format!("{lost} The conversation resumes."),
+            );
+        }
         Mode::ConfirmAgent(ask) => {
             let (question, body) = agent_ask_text(ask);
             draw_confirm_lines(f, &question, body, &[("Enter", "approve"), ("Esc", "decline")]);

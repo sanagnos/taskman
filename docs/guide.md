@@ -161,6 +161,7 @@ The Add form opens on Type, set to Agent; ←/→ switches it to Ticket. What yo
 | `ctrl+a v` | open the session's history in `$EDITOR` |
 | `ctrl+a l` | the ticket's links (issue, PR, checks), then the session's, newest first: Enter opens one, `c` copies it |
 | `ctrl+a ~` | notices: the last 200 messages the footer showed, newest first, with how long ago; ↑/↓ and PgUp/PgDn scroll, any other key closes |
+| `ctrl+a R` | restart the session on the same conversation; while it's working or needs you, it asks first, as that turn or question would be cut short |
 | `ctrl+a t` | continue the session in another terminal (see [taskman resume](#continuing-a-session-in-another-terminal-taskman-resume)) |
 | `ctrl+a a` | send the prefix itself to the session |
 

@@ -5,6 +5,7 @@ What changed in each release; a release's notes on GitHub are its section here. 
 ## Unreleased
 
 - The list of recent footer messages moved from `ctrl+a L` to `ctrl+a ~` (tmux's key for its messages; `l` and `L` were easy to mix up) and is called notices: it opens with a line saying what it holds, and the ctrl+a menu, Help and the short-window pointer (`ctrl+a ~ lists it`) say so. The menu's `w` reads "waiting on you".
+- `ctrl+a R` asks before restarting a session that's working or waiting on you, since the restart stops its turn part-way, or leaves its question unanswered; Enter restarts, Esc keeps it running. An idle or ended session restarts at once, as before.
 
 ## 0.1.17 - 2026-10-19
 

@@ -196,12 +196,21 @@ impl App {
         store::session_name(t, &self.projects, self.tickets.iter().map(|tv| &tv.t), &running)
     }
 
-    /// `ctrl+a R`: stops the session; the next tick starts it again, once its CLI is gone.
-    pub(super) fn restart_session(&mut self) {
-        if let Some(tv) = self.tickets.get_mut(self.sel) {
+    /// `ctrl+a R`: stops ticket `i`'s session; the next tick starts it again, once its CLI is
+    /// gone.
+    pub(super) fn restart_session(&mut self, i: usize) {
+        if let Some(tv) = self.tickets.get_mut(i) {
             tv.stop_session();
             tv.status.state = AgentState::NotStarted;
         }
+    }
+
+    /// `restart_session`, saying so.
+    pub(super) fn restart_with_toast(&mut self, i: usize) {
+        let Some(tv) = self.tickets.get(i) else { return };
+        let cli = tv.t.cli.label();
+        self.restart_session(i);
+        self.toast(format!("Restarting {cli} session…"));
     }
 
     /// Enter on a session that ended because Claude runs its conversation in the background:
