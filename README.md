@@ -44,6 +44,8 @@ Use tmux or screen with `ctrl+a`? Pick another prefix in Settings. The [guide](d
 
 AI lets you work on many tickets at once: a few projects, a few tickets each, a Claude or Codex session per ticket. But each ticket is really three windows: the **session** doing the work, the **ticket** in Jira, Linear or GitHub Issues where the comments land, and the **pull request** on GitHub with its checks and reviews. With *N* projects and *M* tickets each, that's *N × M × 3* windows and tabs, and the window juggling, not your capacity to direct the work, is what slows you down.
 
+https://github.com/user-attachments/assets/b816ee0d-78ca-480a-9b64-3cf072f4c383
+
 taskman organises the work the way you think about it, **project → ticket**, and shows each ticket's three side by side:
 
 ```text
