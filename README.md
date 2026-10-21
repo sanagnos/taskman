@@ -26,7 +26,7 @@ Prebuilt binaries cover macOS and Linux on x86_64 and arm64, WSL included ([Plat
 
 - **Claude Code**, installed and logged in (`claude` on your PATH), and **git**.
 - Optional: the **GitHub CLI** (`gh`, logged in) for the PR panel, and **Codex** (`codex`) to run some sessions in Codex instead.
-- Optional: a **Jira or Linear plugin** in Claude Code (an MCP server in Codex) if you want sessions to comment on or move their tickets; taskman reads tickets without one.
+- Optional: your tracker's **GitHub integration**, to move tickets on their own as their PRs open and merge, and its **Claude Code plugin** (an MCP server in Codex) for sessions to comment on or move tickets themselves. taskman reads tickets without either.
 - A wide terminal: about 150 columns gives the session room beside the panels. It works down to 80x24, where the sidebar folds and the panels hide. On Windows, use Windows Terminal with WSL.
 
 ## Quick start
