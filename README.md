@@ -2,7 +2,7 @@
 
 **One window for all your parallel Claude and Codex work: every ticket's session, issue and PR in one place.**
 
-https://github.com/user-attachments/assets/91479d13-8671-4676-a53d-403ce580c604
+https://github.com/user-attachments/assets/e9f81fee-9f05-477f-a4d3-e2e7c7181337
 
 taskman is a terminal UI for working on several tickets at once. Each ticket gets the real `claude` CLI (or `codex`) working in its own git worktree, with its Jira, Linear, GitHub or Local files issue and its GitHub PR beside it. The sidebar tells you which session needs you, and project agents coordinate the tickets by messaging their sessions.
 
