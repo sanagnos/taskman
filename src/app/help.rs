@@ -273,7 +273,7 @@ impl App {
                 feature_url(),
             ),
             link(
-                "Security problem",
+                "Security",
                 "Report it privately",
                 "a security advisory, seen only by the maintainers".into(),
                 security_url(),

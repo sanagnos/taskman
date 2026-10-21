@@ -1,0 +1,1 @@
+- Settings → Help & feedback: each link's hint now lines up with the link above it, and the security link's label is just Security.

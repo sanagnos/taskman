@@ -42,7 +42,7 @@ fn the_bug_link_opens_the_bug_form_filled_in() {
     for (label, path) in [
         ("Guide", "/blob/main/docs/guide.md"),
         ("Feature", "/issues/new?template=feature.yml"),
-        ("Security problem", "/security/advisories/new"),
+        ("Security", "/security/advisories/new"),
     ] {
         focus(&mut app, label);
         app.on_key(key(KeyCode::Enter));
@@ -87,7 +87,7 @@ fn over_ssh_the_link_is_copied_rather_than_opened() {
     let mut app = acme_app();
     app.machine.as_mut().unwrap().ssh = true;
     let opened = browser(&mut app);
-    on_link(&mut app, "Security problem");
+    on_link(&mut app, "Security");
     app.on_key(key(KeyCode::Enter));
     settle(&mut app);
     assert!(opened.lock().unwrap().is_empty());
