@@ -10,7 +10,7 @@ Everything beyond the [README](../README.md)'s quick start: setting projects and
 - [Agents](#agents)
 - Commands: [`taskman status`](#sessions-read-their-ticket-taskman-status), [`taskman add`](#adding-tickets-from-a-shell-or-a-session-taskman-add), [`taskman close`](#closing-tickets-from-a-shell-or-a-session-taskman-close)
 - [Local files](#local-files-tickets-without-an-account), [GitHub Issues](#github-issues-the-repositorys-own-issues) and [Codex sessions](#codex-sessions)
-- [How it works](#how-it-works)
+- [How it works](#how-it-works) and [when Claude Code or Codex changes](#when-claude-code-or-codex-changes)
 
 ## Install
 
@@ -475,3 +475,19 @@ So keep a project's tickets on one CLI, and use the other for one-offs, like a r
 - **Resume.** The hooks also record the session id, so after a restart a ticket resumes its last conversation when you select it (`claude --resume`, `codex resume`). Two sessions never share one: if Claude Code switches an agent onto another session's conversation (a rare bug with agents in one folder), taskman keeps the agent's own and tells you to restart it.
 - **Quitting.** SIGTERM, SIGHUP and SIGINT quit like `ctrl+a q`: the terminal is restored, the sessions stopped, and a worktree still being removed or created gets up to 30 seconds to finish; a second signal ends taskman at once. Closing the terminal (or losing the SSH connection) stops taskman and its sessions too, within 3 seconds. `ctrl+a q` first waits for worktrees still being removed, and for git to finish creating the worktree of a ticket you closed meanwhile (unless closed with `--keep-worktree`), and says so; if taskman stops some other way meanwhile, git finishes the removal and the ticket can't be added back into that folder until it's done. A crash in one session's output ends that session only; the error goes to `~/.local/state/taskman/panics.log`. A crash in background work (fetching a ticket or its PR, creating a worktree, testing a connection) shows as that work's error, with a red message pointing to the same file, and `ctrl+a r` (Enter, for a worktree) tries again.
 - State (projects, tickets) lives in `~/.local/state/taskman/tickets.json`. If it or the accounts file can't be read (a typo, or written by a newer taskman in a format this one doesn't read), taskman says so and doesn't start, leaving the file as it is. Settings a newer taskman added and this one doesn't know are kept when it saves. Only one taskman runs per state folder: a second one is refused, since each would overwrite the other's saves.
+
+## When Claude Code or Codex changes
+
+Each session is the real CLI, so a new Claude Code or Codex version works in taskman as it does in a terminal. What taskman adds depends on a few things the CLIs provide:
+
+- **Hooks**, passed to Claude with `--settings` and to Codex with `-c` (with the hook trust Codex expects), which tell taskman when a session is working, waiting on you or done, and which conversation to resume.
+- **The session's output**, for what fires no hook: Claude's "Interrupted" line after Esc or ctrl+c, and a working session that's gone quiet for 8 seconds.
+- **The command-line options** taskman starts sessions with (`--settings`, `--name`, `--resume`; `-c` and `codex resume`): one a CLI drops or renames needs a taskman update.
+- **Claude Code's own session messaging,** for agents.
+
+These were last checked with Claude Code 2.1.296 and Codex 0.162 on Linux; [design.md](design.md#status-comes-from-hooks-passed-with---settings) has the details and the [roadmap's known gaps](roadmap.md#known-gaps) what hasn't been checked. If a CLI changes its hooks, its output or its messaging:
+
+- **Keeps working:** the session itself, with every command, prompt and plugin, and the ticket and PR panels on their regular refresh.
+- **Degrades:** the state in the sidebar ("needs you", "your turn", working) can lag or be wrong, an interrupt may show only once the session has gone quiet, panels no longer refresh the moment a session pushes, a restart may start a new conversation instead of resuming, and agents may not reach other sessions.
+
+If you see that after a CLI update, [open an issue](https://github.com/sanagnos/taskman/issues/new/choose) with `taskman --version` and `claude --version` or `codex --version`.
