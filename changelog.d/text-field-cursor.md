@@ -1,0 +1,1 @@
+- Text fields in forms have a cursor: ←/→ move it, Home and End go to the ends, ctrl+←/→ (or alt+←/→) move a word, Delete deletes after it and ctrl+w the word before it, and typing and pasting go in where it is. Branch's presets are listed under it while it's focused, to pick with ↑/↓ and Enter, rather than cycled with ←/→.

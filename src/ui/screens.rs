@@ -565,6 +565,53 @@ fn add_form() {
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 
+/// A name too long for the form, the cursor moved into it: the value scrolls to show the cursor,
+/// cut either side.
+#[test]
+fn add_form_editing_a_long_name() {
+    let mut app = acme_app();
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(key(KeyCode::Char('n')));
+    let name = "reviewer for the release notes of every acme web app, its docs site and the guide";
+    name.chars().for_each(|c| app.on_key(key(KeyCode::Char(c))));
+    app.on_key(key(KeyCode::Home));
+    (0..70).for_each(|_| app.on_key(key(KeyCode::Right)));
+    assert_snapshot!(crate::app::test_support::draw_cursor(&mut app, 80, 24));
+}
+
+/// An agent's role wraps; the cursor is on the line it's in.
+#[test]
+fn add_form_editing_a_role() {
+    let mut app = acme_app();
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(key(KeyCode::Char('n')));
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Down));
+    let role = "Review every pull request on the acme web app for missing tests and unclear names, \
+        and say what to change in a comment";
+    role.chars().for_each(|c| app.on_key(key(KeyCode::Char(c))));
+    (0..30).for_each(|_| app.on_key(key(KeyCode::Left)));
+    assert_snapshot!(crate::app::test_support::draw_cursor(&mut app, 80, 24));
+}
+
+/// Branch's presets, listed under it while it's focused, one highlighted with ↓.
+#[test]
+fn project_settings_branch_presets() {
+    let mut app = acme_app();
+    app.open_settings(SettingsItem::Project(0), true);
+    crate::app::test_support::answer_choices(&mut app, Ok(&[("ENG", "Engineering")]));
+    for _ in 0..20 {
+        let Mode::Settings(s) = &app.mode else { panic!("Settings closed") };
+        if s.form.fields[s.form.focus].label == "Branch" {
+            break;
+        }
+        app.on_key(crate::app::test_support::key(KeyCode::Tab));
+    }
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Down));
+    assert_snapshot!(crate::app::test_support::draw_cursor(&mut app, 120, 40));
+}
+
 // ---- first run: a new project with Jira, signed in, to its Jira project ---------------------
 
 /// A first run's app: no projects, and a keychain if `keychain`.

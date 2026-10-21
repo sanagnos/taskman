@@ -426,6 +426,18 @@ pub(crate) fn draw(app: &mut App, w: u16, h: u16) -> String {
         .collect()
 }
 
+/// As `draw`, followed by where the cursor was put, for a screen that shows one: its row and
+/// column, and the cell it's on.
+pub(crate) fn draw_cursor(app: &mut App, w: u16, h: u16) -> String {
+    use ratatui::backend::Backend as _;
+    let text = draw(app, w, h);
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|f| ui::draw(f, app)).unwrap();
+    let at = term.backend_mut().get_cursor_position().unwrap();
+    let on = term.backend().buffer()[at].symbol().to_string();
+    format!("{text}\ncursor at row {}, column {}, on {on:?}\n", at.y, at.x)
+}
+
 /// As `draw`, followed by the screen's colours: a letter a cell for each pair of foreground and
 /// background (`.` for the terminal's own), and what each letter is. A version longer than 0.0.0
 /// takes more cells than `draw`'s `v0.0.0`; those show as `.`, so the map doesn't change with it.

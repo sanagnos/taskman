@@ -324,7 +324,7 @@ pub(super) fn worktree_hints(form: &mut Form, repo: &Path) {
             } else {
                 String::new()
             };
-            format!("e.g. {example}{own} · ←/→ presets")
+            format!("e.g. {example}{own}")
         }
     };
     let format = if inside { worktree::INSIDE } else { worktree::BESIDE };
@@ -596,7 +596,9 @@ impl App {
         let wanted = self.sign_in(form);
         if form.choices.as_ref().is_some_and(|c| Some(&c.asked) != wanted.as_ref()) {
             form.choices = None;
-            if let Some(f) = form.fields.iter_mut().find(|f| f.list.picks > 0) {
+            if let Some(f) =
+                form.fields.iter_mut().find(|f| f.list.picks > 0 && f.presets.is_empty())
+            {
                 f.list = List::default();
             }
         }

@@ -570,6 +570,28 @@ fn a_name_typed_on_type_fills_the_agents_name() {
     assert_eq!(selected(&app), "notes-lead");
 }
 
+/// A key made by typing in the middle of a name switches to a ticket too, with the cursor where
+/// it was; and what's typed on a choice goes in at that cursor.
+#[test]
+fn a_key_typed_mid_name_switches_to_a_ticket_keeping_the_cursor() {
+    let mut app = acme_app();
+    prefix(&mut app, KeyCode::Char('n'));
+    type_text(&mut app, "eng7");
+    assert_eq!((focused(&app), field(&app, "Type").as_str()), ("Name", "Agent"));
+    app.on_key(key(KeyCode::Left));
+    type_text(&mut app, "-");
+    assert_eq!((focused(&app), field(&app, "Type").as_str()), ("Ticket", "Ticket"));
+    let cursor = |app: &App| {
+        let Mode::Form(f) = &app.mode else { panic!("no form open") };
+        f.field("Ticket").unwrap().cursor()
+    };
+    assert_eq!((field(&app, "Ticket").as_str(), cursor(&app)), ("eng-7", 4));
+    focus(&mut app, "CLI");
+    type_text(&mut app, "1");
+    assert_eq!(focused(&app), "Ticket");
+    assert_eq!((field(&app, "Ticket").as_str(), cursor(&app)), ("eng-17", 5));
+}
+
 #[test]
 fn a_key_or_link_for_the_name_switches_to_a_ticket_and_another_key_stays_a_name() {
     let mut app = acme_app();

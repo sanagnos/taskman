@@ -539,3 +539,113 @@ fn a_check_that_panics_says_so_and_enter_checks_again() {
     assert!(checking(&app));
     settle_until(&mut app, |app| !checking(app));
 }
+
+// ---- text fields: a cursor ------------------------------------------------------------------
+
+/// The focused field's value, with `|` where its cursor is.
+fn with_cursor(app: &App) -> String {
+    let form = match &app.mode {
+        Mode::Form(f) => f,
+        Mode::Settings(s) => &s.form,
+        _ => panic!("no form open"),
+    };
+    let f = &form.fields[form.focus];
+    let mut value = f.value.clone();
+    value.insert(f.cursor(), '|');
+    value
+}
+
+fn with(code: KeyCode, modifiers: KeyModifiers) -> crossterm::event::KeyEvent {
+    crossterm::event::KeyEvent::new(code, modifiers)
+}
+
+#[test]
+fn text_fields_edit_at_the_cursor() {
+    let mut app = acme_app();
+    prefix(&mut app, KeyCode::Char('n'));
+    type_text(&mut app, "docs writer");
+    assert_eq!((focused(&app), with_cursor(&app).as_str()), ("Name", "docs writer|"));
+    // ←/→ move the cursor in text; they change no choice.
+    for _ in 0..7 {
+        app.on_key(key(KeyCode::Left));
+    }
+    assert_eq!(with_cursor(&app), "docs| writer");
+    app.on_key(key(KeyCode::Right));
+    app.on_key(key(KeyCode::Backspace));
+    type_text(&mut app, "-x");
+    assert_eq!(with_cursor(&app), "docs-x|writer");
+    app.on_key(key(KeyCode::Backspace));
+    app.on_key(key(KeyCode::Delete));
+    assert_eq!(with_cursor(&app), "docs-|riter");
+    app.on_key(with(KeyCode::Left, KeyModifiers::CONTROL));
+    assert_eq!(with_cursor(&app), "|docs-riter");
+    app.on_key(with(KeyCode::Right, KeyModifiers::ALT));
+    assert_eq!(with_cursor(&app), "docs|-riter");
+    app.on_key(key(KeyCode::End));
+    app.on_key(ctrl('w'));
+    assert_eq!(with_cursor(&app), "docs-|");
+    // A paste goes in at the cursor too.
+    app.on_key(key(KeyCode::Home));
+    app.on_paste("acme-");
+    assert_eq!(with_cursor(&app), "acme-|docs-");
+    app.on_key(ctrl('u'));
+    assert_eq!(with_cursor(&app), "|");
+    assert_eq!((focused(&app), field(&app, "Type").as_str()), ("Name", "Agent"));
+}
+
+/// Branch's presets, listed under it while it's focused. One picked puts the cursor at the end, as
+/// any change but the keys' does.
+#[test]
+fn branchs_presets_are_listed_under_it_to_pick() {
+    let mut app = acme_app();
+    app.open_settings(crate::app::SettingsItem::Project(0), true);
+    answer_choices(&mut app, Ok(&[("ENG", "Engineering")]));
+    focus(&mut app, "Branch");
+    let presets = crate::worktree::BRANCH_PRESETS.map(String::from);
+    let listed = |app: &App| settings_form(app).field("Branch").unwrap().list.lines.clone();
+    assert_eq!(listed(&app), presets);
+    // ←/→ move the cursor rather than cycle the presets.
+    app.on_key(key(KeyCode::Left));
+    assert_eq!(with_cursor(&app), "{tracker|}");
+    // ↓ highlights one, and Enter puts it in the field, to edit or save.
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(with_cursor(&app), "{KEY}-{slug}|");
+    assert!(toast(&app).is_none(), "saved on picking");
+    assert_eq!(listed(&app), presets);
+    app.on_key(key(KeyCode::Home));
+    type_text(&mut app, "fix/");
+    assert_eq!(with_cursor(&app), "fix/|{KEY}-{slug}");
+    // Leaving with one highlighted takes it; leaving drops the list.
+    for _ in 0..3 {
+        app.on_key(key(KeyCode::Down));
+    }
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(field(&app, "Branch"), "feature/{KEY}-{slug}");
+    assert!(focused(&app) != "Branch" && listed(&app).is_empty());
+    // ↑ from the first preset goes back to what's typed, and on to the field above, taking none.
+    focus(&mut app, "Branch");
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Up));
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(field(&app, "Branch"), "feature/{KEY}-{slug}");
+    assert_eq!(focused(&app), "New tickets");
+}
+
+/// A token's cursor moves as any text's, but its word moves stop at nothing in it.
+#[test]
+fn a_masked_fields_word_moves_go_to_its_ends() {
+    let mut app = acme_app();
+    with_keychain(&mut app);
+    prefix(&mut app, KeyCode::Char('A'));
+    fill(&mut app, "Token", "ATATT-mock-1");
+    app.on_key(key(KeyCode::Left));
+    app.on_key(key(KeyCode::Backspace));
+    assert_eq!(with_cursor(&app), "ATATT-mock|1");
+    app.on_key(with(KeyCode::Left, KeyModifiers::CONTROL));
+    assert_eq!(with_cursor(&app), "|ATATT-mock1");
+    app.on_key(with(KeyCode::Right, KeyModifiers::CONTROL));
+    app.on_key(ctrl('w'));
+    assert_eq!(with_cursor(&app), "|");
+}

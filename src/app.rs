@@ -44,6 +44,7 @@ mod inbox;
 mod input;
 mod jump;
 mod launch;
+mod line_edit;
 mod mouse;
 mod poll;
 mod projects;

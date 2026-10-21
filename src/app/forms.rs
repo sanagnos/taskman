@@ -4,19 +4,30 @@
 
 use super::accounts::{account_defaults, account_rows, form_provider};
 use super::add_form;
+use super::line_edit::{self, Edit};
 use super::projects::Choices;
 use super::settings::prefix_hint;
 use super::sync::Msg;
 use super::{App, Mode};
 use crate::keys;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::cell::Cell;
 use std::sync::mpsc;
 
-/// A form field: free text, or a choice cycled with ←/→ when `choices` is non-empty. An
-/// `editable` choice is text with presets: ←/→ cycles them, typing edits.
+/// A form field: free text, with a cursor, or a choice cycled with ←/→ when `choices` is
+/// non-empty.
 pub struct Field {
     pub label: &'static str,
     pub value: String,
+    /// Where the cursor is in `value`, as `line_edit` places it, with a hash of the value it was
+    /// placed in: any other change to the value (a pick from a list, a value filled in for you)
+    /// puts the cursor at the end, without each of them having to. A hash rather than a copy, so a
+    /// token cleared from its field isn't kept here. None is the end too.
+    pub(crate) caret: Option<(usize, u64)>,
+    /// The first grapheme drawn of a single-line value too wide for the form, or the first line
+    /// of a prose one: kept from frame to frame, so the value scrolls only when the cursor would
+    /// leave what's shown.
+    pub view: Cell<usize>,
     pub hint: String,
     pub choices: Vec<String>,
     /// What each choice stands for, when that isn't its text: an account's id.
@@ -25,7 +36,9 @@ pub struct Field {
     pub cut_middle: bool,
     /// Sentences rather than a name: wraps within the value column instead of being cut.
     pub prose: bool,
-    pub editable: bool,
+    /// Values for a text field listed under it while it's focused, to pick with ↑/↓ and Enter:
+    /// Branch's formats.
+    pub presets: Vec<String>,
     /// A heading drawn above the field, starting a group.
     pub section: Option<&'static str>,
     /// Not shown or focused, but keeps its value: a project's tracker fields while it has none.
@@ -98,12 +111,14 @@ impl Field {
         Self {
             label,
             value: value.into(),
+            caret: None,
+            view: Cell::new(0),
             hint: hint.into(),
             choices: Vec::new(),
             ids: Vec::new(),
             cut_middle: false,
             prose: false,
-            editable: false,
+            presets: Vec::new(),
             section: None,
             hidden: false,
             list: List::default(),
@@ -124,8 +139,7 @@ impl Field {
 
     pub(super) fn presets(label: &'static str, presets: &[&str], value: impl Into<String>) -> Self {
         Self {
-            choices: presets.iter().map(|p| p.to_string()).collect(),
-            editable: true,
+            presets: presets.iter().map(|p| p.to_string()).collect(),
             ..Self::text(label, value, "")
         }
     }
@@ -136,7 +150,44 @@ impl Field {
 
     /// Whether typing edits the value.
     pub fn is_text(&self) -> bool {
-        self.choices.is_empty() || self.editable
+        self.choices.is_empty()
+    }
+
+    /// The cursor: a byte offset in `value`, on a grapheme boundary.
+    pub fn cursor(&self) -> usize {
+        match &self.caret {
+            Some((at, of)) if *of == hash(&self.value) => *at,
+            _ => self.value.len(),
+        }
+    }
+
+    pub(super) fn edit(&mut self, edit: Edit) {
+        let (at, words) = (self.cursor(), !self.masked);
+        let at = line_edit::apply(&mut self.value, at, edit, words);
+        self.place(at);
+    }
+
+    fn insert(&mut self, text: &str) {
+        let at = self.cursor();
+        let at = line_edit::insert(&mut self.value, at, text);
+        self.place(at);
+    }
+
+    fn place(&mut self, at: usize) {
+        self.caret = (at < self.value.len()).then(|| (at, hash(&self.value)));
+    }
+
+    /// Lists the presets under the field while it's `focused`, keeping the highlight.
+    fn list_presets(&mut self, focused: bool) {
+        let at = self.list.at.filter(|_| focused);
+        self.list = match focused {
+            true => List { lines: self.presets.clone(), picks: self.presets.len(), at, top: 0 },
+            false => List::default(),
+        };
+    }
+
+    fn highlighted_preset(&self) -> Option<String> {
+        self.presets.get(self.list.at?).cloned()
     }
 
     fn cycle(&mut self, step: isize) {
@@ -158,6 +209,11 @@ impl Field {
         let i = self.choices.iter().position(|c| *c == self.value)?;
         self.ids.get(i).map(String::as_str)
     }
+}
+
+fn hash(value: &str) -> u64 {
+    use std::hash::BuildHasher as _;
+    std::hash::BuildHasherDefault::<std::hash::DefaultHasher>::default().hash_one(value)
 }
 
 pub enum FormKind {
@@ -289,7 +345,7 @@ pub(super) enum Check {
 pub(super) fn paste_into(form: &mut Form, text: &str) {
     let field = &mut form.fields[form.focus];
     if field.is_text() {
-        field.value.push_str(text.trim());
+        field.insert(text.trim());
         form.edited();
     }
 }
@@ -303,10 +359,10 @@ impl App {
             _ => return,
         };
         let before = form.focus;
-        let is_choice = !form.fields[form.focus].choices.is_empty();
         let is_text = form.fields[form.focus].is_text();
         let ticket_form = matches!(form.kind, FormKind::Ticket);
         let url = form.fields[form.focus].url.clone();
+        let preset = form.fields[form.focus].highlighted_preset();
         let values: Vec<String> = form.fields.iter().map(|f| f.value.clone()).collect();
         let name = form.field("Name").map(|f| f.value.clone());
         match key.code {
@@ -319,6 +375,10 @@ impl App {
             KeyCode::Enter | KeyCode::Char('c') if !ctrl && url.is_some() => {
                 self.open_link(url.unwrap_or_default(), key.code != KeyCode::Enter);
                 return;
+            }
+            // A preset picked goes into the field, to save or to edit.
+            KeyCode::Enter if preset.is_some() => {
+                form.fields[form.focus].value = preset.unwrap_or_default();
             }
             // ↑/↓ pick from the focused field's list, if it has one, and past its ends move between
             // fields, as they do otherwise, but never round from the last to the first. Tab
@@ -342,26 +402,33 @@ impl App {
             }
             KeyCode::Tab | KeyCode::Down => form.focus = form.next_focus(1),
             KeyCode::BackTab | KeyCode::Up => form.focus = form.next_focus(-1),
-            KeyCode::Left if is_choice => form.fields[form.focus].cycle(-1),
-            KeyCode::Right | KeyCode::Char(' ') if is_choice && !is_text => {
-                form.fields[form.focus].cycle(1);
-            }
-            KeyCode::Right if is_choice => form.fields[form.focus].cycle(1),
+            KeyCode::Left if !is_text => form.fields[form.focus].cycle(-1),
+            KeyCode::Right | KeyCode::Char(' ') if !is_text => form.fields[form.focus].cycle(1),
             // What's typed on the Add form's choices (it opens on Type) is the ticket or the name.
             KeyCode::Char(c) if !ctrl && !is_text && ticket_form => {
                 add_form::focus_text(form);
-                form.fields[form.focus].value.push(c);
+                form.fields[form.focus].edit(Edit::Insert(c));
             }
-            KeyCode::Backspace if is_text => {
-                form.fields[form.focus].value.pop();
-            }
-            KeyCode::Char('u') if ctrl && is_text => form.fields[form.focus].value.clear(),
-            KeyCode::Char(c) if !ctrl && is_text => form.fields[form.focus].value.push(c),
             KeyCode::Enter => {
                 self.submit_form();
                 return;
             }
+            _ if is_text => {
+                if let Some(edit) = Edit::from_key(&key) {
+                    form.fields[form.focus].edit(edit);
+                }
+            }
             _ => {}
+        }
+        // Leaving a field with a preset highlighted takes it, as leaving a list of choices does.
+        if form.focus != before
+            && let Some(p) = form.fields[before].highlighted_preset()
+        {
+            form.fields[before].value = p;
+        }
+        let focus = form.focus;
+        for (i, f) in form.fields.iter_mut().enumerate().filter(|(_, f)| !f.presets.is_empty()) {
+            f.list_presets(i == focus);
         }
         form.save_anyway = false;
         if form.fields.iter().map(|f| &f.value).ne(values.iter()) {

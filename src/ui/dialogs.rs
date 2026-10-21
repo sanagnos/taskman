@@ -12,6 +12,8 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap};
+use std::cell::Cell;
+use unicode_segmentation::UnicodeSegmentation as _;
 
 /// The dialog over the screen in `app.mode`, if any.
 pub(super) fn draw_dialog(f: &mut Frame, app: &mut App) {
@@ -623,15 +625,20 @@ fn join_and(items: &[String]) -> String {
 }
 
 /// The keys a form takes while one of its fields, `focused`, is being edited: ↑/↓ while it lists
-/// issues to pick from, else ←/→ for a choice.
+/// issues or presets to pick from, ←/→ for a choice.
 fn editing_keys(focused: &crate::app::Field) -> Vec<(&'static str, &'static str)> {
     if focused.url.is_some() {
         return vec![("Enter", "open"), ("c", "copy the link"), ("Tab", "next")];
     }
-    let mut keys = vec![("Enter", "save"), ("Tab", "next field")];
+    let enter = if focused.list.at.is_some() && !focused.presets.is_empty() {
+        ("Enter", "pick")
+    } else {
+        ("Enter", "save")
+    };
+    let mut keys = vec![enter, ("Tab", "next field")];
     if focused.list.picks > 0 {
         keys.insert(0, ("↑/↓", "choose"));
-    } else {
+    } else if !focused.is_text() {
         keys.push(("←/→", "change choice"));
     }
     keys
@@ -720,54 +727,45 @@ fn form_lines(
         let mut more = Vec::new();
         if field.prose {
             // One column kept for the cursor, as below.
-            let mut lines = wrap_prose(&field.value, room.saturating_sub(1));
-            if lines.len() > PROSE_LINES {
-                if focused {
-                    // Scrolled to the end, where the cursor is.
-                    lines.drain(..lines.len() - PROSE_LINES);
-                } else {
-                    // The line after the last didn't fit on it, so joined they're cut with `…`.
-                    let last = format!("{} {}", lines[PROSE_LINES - 1], lines[PROSE_LINES]);
-                    lines.truncate(PROSE_LINES);
-                    lines[PROSE_LINES - 1] = truncate(&last, room.saturating_sub(1));
-                }
-            }
+            let gs: Vec<&str> = field.value.graphemes(true).collect();
+            let ranges = wrapped(&gs, room.saturating_sub(1));
+            let mut lines: Vec<String> = ranges.iter().map(|r| gs[r.clone()].concat()).collect();
             if focused {
-                let last = lines.len() - 1;
-                cursor = Some((text.len() + last, (label_w + util::width(&lines[last])) as u16));
+                let at = grapheme_at(&field.value, field.cursor());
+                let on = line_of(&ranges, at);
+                // Scrolled to keep the cursor's line in view.
+                let most = ranges.len().saturating_sub(PROSE_LINES);
+                let top = field.view.get().min(on).max((on + 1).saturating_sub(PROSE_LINES));
+                let top = top.min(most);
+                field.view.set(top);
+                lines = lines.drain(top..).take(PROSE_LINES).collect();
+                let col = util::width(&gs[ranges[on].start..at].concat());
+                cursor = Some((text.len() + on - top, (label_w + col) as u16));
+            } else if lines.len() > PROSE_LINES {
+                // The line after the last didn't fit on it, so joined they're cut with `…`.
+                let last = format!("{} {}", lines[PROSE_LINES - 1], lines[PROSE_LINES]);
+                lines.truncate(PROSE_LINES);
+                lines[PROSE_LINES - 1] = truncate(&last, room.saturating_sub(1));
             }
             let mut lines = lines.into_iter();
             row.push(Span::raw(lines.next().unwrap_or_default()));
             more.extend(lines.map(|l| Line::from(format!("{:label_w$}{l}", ""))));
         } else if field.is_text() {
-            // Text with presets: the arrows say ←/→ cycles them, the cursor says typing edits.
-            let presets = !field.choices.is_empty();
-            let arrow = |s: &str| {
-                Span::styled(
-                    s.to_string(),
-                    if focused { Style::new().fg(Color::Cyan) } else { dim() },
-                )
-            };
-            if presets {
-                row.push(arrow("‹ "));
-            }
-            // The cursor is at the end, so a value being typed keeps its end in view; one room
-            // is kept for the cursor. A secret shows as a dot a character.
-            let dots = field.masked.then(|| "•".repeat(field.value.chars().count()));
-            let value = match (&dots, focused) {
-                (Some(d), true) => truncate_start(d, room.saturating_sub(1)),
-                (Some(d), false) => truncate(d, room),
-                (None, true) => truncate_start(&field.value, room.saturating_sub(1)),
-                (None, false) => fit(field, room),
+            // A secret shows as a dot a character.
+            let dots = field.masked.then(|| "•".repeat(field.value.graphemes(true).count()));
+            let shown = dots.as_deref().unwrap_or(&field.value);
+            let (value, col) = if focused {
+                let gs: Vec<&str> = shown.graphemes(true).collect();
+                in_view(&gs, grapheme_at(&field.value, field.cursor()), &field.view, room)
+            } else if dots.is_some() {
+                (truncate(shown, room), 0)
+            } else {
+                (fit(field, room), 0)
             };
             if focused {
-                let open = if presets { 2 } else { 0 };
-                cursor = Some((text.len(), (label_w + open + util::width(&value)) as u16));
+                cursor = Some((text.len(), (label_w + col) as u16));
             }
             row.push(Span::raw(value));
-            if presets {
-                row.push(arrow(" ›"));
-            }
         } else {
             let style = if focused {
                 Style::new().fg(Color::Black).bg(Color::Cyan)
@@ -853,9 +851,14 @@ const PROSE_LINES: usize = 4;
 /// between graphemes. The space a line breaks at is dropped, but every other character is kept, a
 /// trailing space too, so the end of the last line is where typing continues.
 fn wrap_prose(s: &str, room: usize) -> Vec<String> {
-    use unicode_segmentation::UnicodeSegmentation as _;
-    let room = room.max(1);
     let gs: Vec<&str> = s.graphemes(true).collect();
+    wrapped(&gs, room).into_iter().map(|r| gs[r].concat()).collect()
+}
+
+/// The graphemes of each line `gs` wrap into, as `wrap_prose` wraps them: one line at least, and
+/// each line's end where the next starts, or the space between them.
+fn wrapped(gs: &[&str], room: usize) -> Vec<std::ops::Range<usize>> {
+    let room = room.max(1);
     let mut lines = Vec::new();
     let mut start = 0;
     loop {
@@ -869,19 +872,19 @@ fn wrap_prose(s: &str, room: usize) -> Vec<String> {
             end += 1;
         }
         if end == gs.len() {
-            lines.push(gs[start..].concat());
+            lines.push(start..gs.len());
             return lines;
         }
         // A space just past a full line breaks there too.
         match (start + 1..=end).rev().find(|&i| gs[i] == " ") {
             Some(i) => {
-                lines.push(gs[start..i].concat());
+                lines.push(start..i);
                 start = i + 1;
             }
             None => {
                 // A character wider than the room goes on a line of its own.
                 let end = end.max(start + 1);
-                lines.push(gs[start..end].concat());
+                lines.push(start..end);
                 if end == gs.len() {
                     return lines;
                 }
@@ -889,6 +892,68 @@ fn wrap_prose(s: &str, room: usize) -> Vec<String> {
             }
         }
     }
+}
+
+/// The line of `lines` (as `wrapped` gives them) the cursor before grapheme `at` is on: on the
+/// space a line broke at, it's at the end of that line.
+fn line_of(lines: &[std::ops::Range<usize>], at: usize) -> usize {
+    let on = |l: usize| {
+        at < lines[l].end
+            || at == lines[l].end && lines.get(l + 1).is_none_or(|next| next.start > at)
+    };
+    (0..lines.len()).find(|&l| on(l)).unwrap_or(lines.len() - 1)
+}
+
+/// How many graphemes of `s` come before the byte offset `at`.
+fn grapheme_at(s: &str, at: usize) -> usize {
+    s.grapheme_indices(true).take_while(|&(i, _)| i < at).count()
+}
+
+/// A focused value's graphemes `gs` in `room` columns, with the cursor before grapheme `at` (after
+/// the last at the end): all of them when they fit with a column for the cursor, else a window that
+/// shows the cursor, with `…` where it cuts. `start` is the window's first grapheme, kept from the
+/// last frame so the value scrolls only when the cursor would leave it. What's drawn, and the
+/// cursor's column in it.
+fn in_view(gs: &[&str], at: usize, start: &Cell<usize>, room: usize) -> (String, usize) {
+    let n = gs.len();
+    // Columns up to each grapheme.
+    let cols: Vec<usize> = std::iter::once(0)
+        .chain(gs.iter().scan(0, |w, g| {
+            *w += util::width(g);
+            Some(*w)
+        }))
+        .collect();
+    let w = |r: std::ops::Range<usize>| cols[r.end] - cols[r.start];
+    if cols[n] < room {
+        start.set(0);
+        return (gs.concat(), cols[at]);
+    }
+    let lead = |s: usize| usize::from(s > 0);
+    // What a window from `s` needs to show the cursor: the `…` before, the graphemes up to the
+    // cursor, the one under it and a `…` after it, or a column after the end.
+    let needs = |s: usize| {
+        lead(s) + w(s..at) + if at < n { w(at..at + 1) + usize::from(at + 1 < n) } else { 1 }
+    };
+    let mut s = start.get().min(at);
+    while s < at && needs(s) > room {
+        s += 1;
+    }
+    // Back while what's after it still fits: a value cut shorter shows more of what's before.
+    while s > 0 && lead(s - 1) + w(s - 1..n) + usize::from(at == n) <= room {
+        s -= 1;
+    }
+    start.set(s);
+    let mut end = at;
+    while end < n && lead(s) + w(s..end + 1) + usize::from(end + 1 < n) <= room {
+        end += 1;
+    }
+    let shown = format!(
+        "{}{}{}",
+        if s > 0 { "…" } else { "" },
+        gs[s..end].concat(),
+        if end < n { "…" } else { "" }
+    );
+    (truncate(&shown, room), lead(s) + w(s..at))
 }
 
 /// A field's value cut to `room` columns: at the end, or for `cut_middle` in the middle of what
@@ -1256,10 +1321,14 @@ mod tests {
             ],
         );
         let keys = |form: &Form| editing_keys(&form.fields[form.focus]);
+        // ←/→ move the cursor in text, and change a choice.
+        assert_eq!(keys(&form), [("Enter", "save"), ("Tab", "next field")]);
+        form.focus = 1;
         assert_eq!(
             keys(&form),
             [("Enter", "save"), ("Tab", "next field"), ("←/→", "change choice")]
         );
+        form.focus = 0;
         form.fields[0].list.picks = 3;
         assert_eq!(keys(&form), [("↑/↓", "choose"), ("Enter", "save"), ("Tab", "next field")]);
         // At the bottom of the form, broken between hints at its width.
@@ -1404,6 +1473,89 @@ mod tests {
             // An empty last line is where typing goes after a space the line broke at.
             let last = lines.last().unwrap();
             proptest::prop_assert!(!last.is_empty() || s.is_empty() || s.ends_with(' '));
+        }
+    }
+
+    /// The window `in_view` shows of `value` in `room` columns as the cursor goes to each of
+    /// `cursors` in turn, with the cursor drawn as `|`.
+    fn views(value: &str, room: usize, cursors: &[usize]) -> Vec<String> {
+        let gs: Vec<&str> = value.graphemes(true).collect();
+        let start = Cell::new(0);
+        cursors
+            .iter()
+            .map(|&at| {
+                let (shown, col) = in_view(&gs, at, &start, room);
+                let mut gs: Vec<&str> = shown.graphemes(true).collect();
+                let i = (0..=gs.len()).find(|&i| util::width(&gs[..i].concat()) == col).unwrap();
+                gs.insert(i, "|");
+                gs.concat()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_long_value_scrolls_to_keep_the_cursor_in_view() {
+        // All of it while it fits with a column for the cursor.
+        assert_eq!(views("abcde", 6, &[5, 2]), ["abcde|", "ab|cde"]);
+        // At the end, then back: the window moves only once the cursor would leave it.
+        assert_eq!(
+            views("abcdefghij", 6, &[10, 7, 6, 5, 2, 0, 3, 5, 6]),
+            [
+                "…ghij|",
+                "…fg|hij",
+                "…f|ghij",
+                "…|fghij",
+                "…|cdef…",
+                "|abcde…",
+                "abc|de…",
+                "…cde|f…",
+                "…def|g…"
+            ]
+        );
+        // Wide characters take two columns, and never half a window.
+        assert_eq!(views("日本語のテキスト", 7, &[8, 0]), ["…スト|", "|日本語…"]);
+    }
+
+    #[test]
+    fn the_cursor_is_on_the_line_its_grapheme_wrapped_to() {
+        let gs: Vec<&str> = "fix the login page".graphemes(true).collect();
+        let lines = wrapped(&gs, 8);
+        assert_eq!(lines, [0..7, 8..13, 14..18]);
+        // On the space a line broke at: at the end of that line.
+        let on: Vec<usize> = [0, 7, 8, 13, 14, 18].iter().map(|&at| line_of(&lines, at)).collect();
+        assert_eq!(on, [0, 0, 1, 1, 2, 2]);
+        // A word split with no space: the cursor between its halves starts the next line.
+        let gs: Vec<&str> = "abcdefghij".graphemes(true).collect();
+        let lines = wrapped(&gs, 4);
+        assert_eq!(lines, [0..4, 4..8, 8..10]);
+        assert_eq!([3, 4, 10].map(|at| line_of(&lines, at)), [0, 1, 2]);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(300))]
+
+        /// Whatever the value, the room (from 4 columns, room for a wide character between `…`s),
+        /// the cursor and where the last window started, what's drawn fits, and the cursor is in
+        /// it on the grapheme it's before.
+        #[test]
+        fn the_cursor_is_always_in_view(
+            parts in proptest::collection::vec(
+                proptest::sample::select(vec!["a", "b", " ", "日", "👍", "e\u{301}"]),
+                0..40,
+            ),
+            at in 0usize..41,
+            start in 0usize..41,
+            room in 4usize..20,
+        ) {
+            let at = at.min(parts.len());
+            let (shown, col) = in_view(&parts, at, &Cell::new(start), room);
+            proptest::prop_assert!(util::width(&shown) <= room, "{shown:?} wider than {room}");
+            proptest::prop_assert!(col < room, "cursor at {col} of {room}");
+            let gs: Vec<&str> = shown.graphemes(true).collect();
+            let i = (0..=gs.len()).find(|&i| util::width(&gs[..i].concat()) == col);
+            proptest::prop_assert!(i.is_some(), "cursor inside a grapheme of {shown:?}");
+            let under = gs.get(i.unwrap()).copied();
+            proptest::prop_assert_eq!(under, parts.get(at).copied(), "{:?}", shown);
         }
     }
 
