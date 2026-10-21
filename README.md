@@ -2,7 +2,7 @@
 
 **One window for all your parallel Claude and Codex work: every ticket's session, issue and PR in one place.**
 
-![taskman: three projects on Jira, Linear and Local files, a stacked ticket, a session waiting on you, and a project agent messaging a ticket](https://github.com/sanagnos/taskman/raw/main/docs/taskman.gif)
+https://github.com/user-attachments/assets/91479d13-8671-4676-a53d-403ce580c604
 
 <sub>Made-up projects and tickets; the Claude sessions are real.</sub>
 
@@ -44,8 +44,6 @@ Use tmux or screen with `ctrl+a`? Pick another prefix in Settings. The [guide](d
 
 AI lets you work on many tickets at once: a few projects, a few tickets each, a Claude or Codex session per ticket. But each ticket is really three windows: the **session** doing the work, the **ticket** in Jira, Linear or GitHub Issues where the comments land, and the **pull request** on GitHub with its checks and reviews. With *N* projects and *M* tickets each, that's *N × M × 3* windows and tabs, and the window juggling, not your capacity to direct the work, is what slows you down.
 
-https://github.com/user-attachments/assets/b816ee0d-78ca-480a-9b64-3cf072f4c383
-
 taskman organises the work the way you think about it, **project → ticket**, and shows each ticket's three side by side:
 
 ```text
@@ -67,6 +65,8 @@ taskman organises the work the way you think about it, **project → ticket**, a
 - **Agents carry the coordination.** A planner can split the work into tickets, start a session for each and follow up with them, so you direct the work instead of relaying it.
 
 ## How
+
+![taskman: three projects on Jira, Linear and Local files, a stacked ticket, a session waiting on you, and a project agent messaging a ticket](https://github.com/sanagnos/taskman/raw/main/docs/taskman.gif)
 
 - **Ticket:** an issue with its own session, its own git worktree and its PR beside it. The session reads its ticket and PR fresh with `taskman status`, so it needs no tracker tools of its own.
 - **Session:** the real `claude` (or `codex`) CLI, not a wrapper, so every command, skill and plugin works. It resumes where it left off when taskman restarts.
