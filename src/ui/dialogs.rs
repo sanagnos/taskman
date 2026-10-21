@@ -782,12 +782,14 @@ fn form_lines(
         }
         text.push(Line::from(row));
         text.extend(more);
-        // A long hint wraps under the value too, not under the labels.
-        let hint_room = (width as usize).saturating_sub(label_w);
+        // A long hint wraps under the value too, not under the labels; under a link's text, past
+        // the button's padding.
+        let indent = label_w + usize::from(field.url.is_some());
+        let hint_room = (width as usize).saturating_sub(indent);
         text.extend(
             wrap_prose(&field.hint, hint_room)
                 .into_iter()
-                .map(|l| Line::from(Span::styled(format!("{:label_w$}{l}", ""), dim()))),
+                .map(|l| Line::from(Span::styled(format!("{:indent$}{l}", ""), dim()))),
         );
         for (before, label, url) in &field.links {
             // A URL shown as itself starts a line of its own, so it wraps as late as it can, and
@@ -797,7 +799,7 @@ fn form_lines(
                     wrap_prose(before, hint_room)
                         .into_iter()
                         .filter(|l| !l.is_empty())
-                        .map(|l| Line::from(Span::styled(format!("{:label_w$}{l}", ""), dim()))),
+                        .map(|l| Line::from(Span::styled(format!("{:indent$}{l}", ""), dim()))),
                 );
                 label.clone()
             } else {
@@ -806,7 +808,7 @@ fn form_lines(
             for l in wrap_prose(&shown, hint_room) {
                 linked.push((text.len(), url.clone()));
                 text.push(Line::from(vec![
-                    Span::raw(format!("{:label_w$}", "")),
+                    Span::raw(format!("{:indent$}", "")),
                     Span::styled(l, dim().add_modifier(ratatui::style::Modifier::UNDERLINED)),
                 ]));
             }
