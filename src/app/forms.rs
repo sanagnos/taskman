@@ -37,6 +37,8 @@ pub struct Field {
     /// Lines under the hint that link somewhere: the text before the link, and the link's text
     /// and URL.
     pub links: Vec<(String, String, String)>,
+    /// A link the field is: drawn as a button, which Enter opens and `c` copies.
+    pub url: Option<String>,
 }
 
 /// Lines listed under a field's hint: the Add form's open issues, which ↑/↓ move a highlight
@@ -107,6 +109,7 @@ impl Field {
             list: List::default(),
             masked: false,
             links: Vec::new(),
+            url: None,
         }
     }
 
@@ -170,6 +173,8 @@ pub enum FormKind {
     RenameAgent(usize),
     /// Settings that aren't about a project or an account.
     General,
+    /// Links to the guide and the issue forms.
+    Help,
 }
 
 pub struct Form {
@@ -301,6 +306,7 @@ impl App {
         let is_choice = !form.fields[form.focus].choices.is_empty();
         let is_text = form.fields[form.focus].is_text();
         let ticket_form = matches!(form.kind, FormKind::Ticket);
+        let url = form.fields[form.focus].url.clone();
         let values: Vec<String> = form.fields.iter().map(|f| f.value.clone()).collect();
         let name = form.field("Name").map(|f| f.value.clone());
         match key.code {
@@ -310,6 +316,10 @@ impl App {
             }
             // Enter again while the check runs would start a second one.
             KeyCode::Enter if form.checking.is_some() => return,
+            KeyCode::Enter | KeyCode::Char('c') if !ctrl && url.is_some() => {
+                self.open_link(url.unwrap_or_default(), key.code != KeyCode::Enter);
+                return;
+            }
             // ↑/↓ pick from the focused field's list, if it has one, and past its ends move between
             // fields, as they do otherwise, but never round from the last to the first. Tab
             // always moves.
@@ -437,6 +447,8 @@ impl App {
                 self.rename_agent(i, &form.value("Name"))
             }
             FormKind::General => self.submit_general(&form),
+            // Enter on a link opens it (`form_key`).
+            FormKind::Help => Ok(()),
         };
         match result {
             Err(e) => {

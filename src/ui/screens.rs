@@ -530,6 +530,17 @@ fn settings_general() {
     assert_snapshot!(draw(&mut app, 100, 34));
 }
 
+/// Settings → Help & feedback, on the bug link: the guide and the issue forms, with what the bug
+/// form gets filled in.
+#[test]
+fn settings_help() {
+    let mut app = acme_app();
+    draw(&mut app, 100, 34);
+    app.open_settings(SettingsItem::Help, true);
+    app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Tab));
+    assert_snapshot!(draw(&mut app, 100, 34));
+}
+
 /// Sleeping sessions are a quiet glyph; one that finished a turn nobody has looked at keeps
 /// saying so.
 #[test]

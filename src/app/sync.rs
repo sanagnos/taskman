@@ -146,6 +146,8 @@ pub(super) enum Msg {
     /// `claude stop` finished for a session blocked by a background copy: its ticket, the start
     /// it belongs to and the outcome.
     BackgroundStopped(Id, String, Result<(), String>),
+    /// What the bug report link fills in about the machine was looked up.
+    Machine(super::help::Machine),
 }
 
 /// Runs the work of a thread whose message something waits for: a panel loading, a form checking,
@@ -388,6 +390,7 @@ impl App {
                 // Saved, for the next start's first frame.
                 Msg::Gh(repo, gh) => changed |= self.github.insert(repo, gh) != Some(gh),
                 Msg::Keychain(k) => self.keychain_probed(k),
+                Msg::Machine(m) => self.machine_found(m),
                 Msg::Scanned(id, launch, kind, found) => self.scanned(&id, &launch, kind, found),
                 Msg::BackgroundStopped(id, launch, res) => {
                     self.background_stopped(&id, &launch, res);

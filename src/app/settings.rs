@@ -1,6 +1,6 @@
-//! The Settings popover (`prefix ,`): its list of General, projects and accounts, the keys that
-//! move through it, and the General form (the prefix key, updates, notifications). Also the tip,
-//! once, when tmux or GNU screen has taskman's prefix too.
+//! The Settings popover (`prefix ,`): its list of General, projects, accounts and Help & feedback,
+//! the keys that move through it, and the General form (the prefix key, updates, notifications).
+//! Also the tip, once, when tmux or GNU screen has taskman's prefix too.
 
 use super::accounts::first_account_provider;
 use super::sleep::{after_choices, after_label, cap_choices, cap_label};
@@ -18,10 +18,11 @@ pub enum SettingsItem {
     NewProject,
     Account(usize),
     NewAccount,
+    Help,
 }
 
-/// The Settings popover: updates, projects and accounts on the left, the selected one's form on
-/// the right.
+/// The Settings popover: updates, projects, accounts and Help & feedback on the left, the selected
+/// one's form on the right.
 pub struct Settings {
     pub items: Vec<SettingsItem>,
     pub cursor: usize,
@@ -128,6 +129,7 @@ impl App {
         v.push(SettingsItem::NewProject);
         v.extend((0..self.config.accounts.len()).map(SettingsItem::Account));
         v.push(SettingsItem::NewAccount);
+        v.push(SettingsItem::Help);
         v
     }
 
@@ -140,6 +142,7 @@ impl App {
             SettingsItem::NewAccount => {
                 self.new_account_form(first_account_provider(), String::new())
             }
+            SettingsItem::Help => self.help_form(),
         }
     }
 
@@ -151,6 +154,9 @@ impl App {
             SettingsItem::Account(i) if i >= self.config.accounts.len() => SettingsItem::NewAccount,
             _ => item,
         };
+        if item == SettingsItem::Help {
+            self.ask_machine();
+        }
         self.settings_show(item, self.form_for(item), editing);
         if editing {
             self.project_form_opened();
@@ -193,6 +199,9 @@ impl App {
                 let up = matches!(key.code, KeyCode::Up | KeyCode::Char('k'));
                 let cursor = step(s, if up { -1 } else { 1 });
                 let item = s.items[cursor];
+                if item == SettingsItem::Help {
+                    self.ask_machine();
+                }
                 let form = self.form_for(item);
                 if let Mode::Settings(s) = &mut self.mode {
                     s.cursor = cursor;

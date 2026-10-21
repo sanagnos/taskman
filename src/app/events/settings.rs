@@ -14,9 +14,9 @@ fn the_settings_list_wraps_around_and_keeps_the_cursor_in_view() {
     assert!(draw(&mut app, 80, 24).contains("Prefix and updates"));
     // ↑ from the first item goes to the last, scrolled into view.
     app.on_key(key(KeyCode::Up));
-    assert_eq!(cursor(&app), SettingsItem::NewAccount);
+    assert_eq!(cursor(&app), SettingsItem::Help);
     let screen = draw(&mut app, 80, 24);
-    assert!(screen.contains("▸ + new account"), "{screen}");
+    assert!(screen.contains("▸ Help & feedback"), "{screen}");
     assert!(!screen.contains("Prefix and updates"), "{screen}");
     // ↓ from the last goes back to the first, at the top of the list again.
     app.on_key(key(KeyCode::Down));

@@ -39,6 +39,7 @@ mod add_form;
 #[cfg(test)]
 mod events;
 mod forms;
+pub(crate) mod help;
 mod inbox;
 mod input;
 mod jump;
@@ -262,6 +263,10 @@ pub struct App {
     /// Whether that check has answered: until it has, the account form offers no File, which on a
     /// machine with a keychain would be the wrong place.
     pub keychain_probed: bool,
+    /// What the bug report link fills in about the machine (`help::Machine`), once looked up.
+    pub machine: Option<help::Machine>,
+    /// Whether that lookup has started: it runs once, when Help & feedback first shows.
+    machine_asked: bool,
     /// What the terminal said about its colours at start (`theme::ask`), and the theme drawn
     /// with: from that and `config.theme` (`apply_theme`).
     pub probe: theme::Probe,
@@ -359,6 +364,8 @@ impl App {
             checks: 0,
             keychain: None,
             keychain_probed: false,
+            machine: None,
+            machine_asked: false,
             probe: theme::Probe::default(),
             theme,
         }

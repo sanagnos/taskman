@@ -1,0 +1,1 @@
+- Settings has a Help & feedback page: it opens the guide, the bug and feature forms, and a private security report on GitHub. The bug form comes filled in with the taskman, Claude Code or Codex versions, the OS and the terminal. Over SSH, or with no browser, it copies the link instead.

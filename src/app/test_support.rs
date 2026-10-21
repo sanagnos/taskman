@@ -46,6 +46,14 @@ pub(crate) fn offline(saved: Saved) -> App {
     app.notifier = Arc::new(|_, _| false);
     // As if the keychain check had found none; a test of the wait before it sets this back.
     app.keychain_probed = true;
+    // As if the bug report's lookup had answered, so no test runs the CLIs.
+    app.machine = Some(crate::app::help::Machine {
+        cli: "Claude Code 2.1.3".into(),
+        os: "Ubuntu 24.04.1 LTS".into(),
+        terminal: Some("Windows Terminal".into()),
+        inside: None,
+        ssh: false,
+    });
     app
 }
 
@@ -390,9 +398,6 @@ pub(crate) fn reaped(app: &mut App) {
     }
 }
 
-/// Draws the App on a screen `w` by `h` and returns it as text, one quoted line per row. The
-/// spinner shows its first frame and the version 0.0.0, so neither changes a snapshot, and links
-/// (OSC 8, see `links::mark`) are left out to keep it readable.
 /// A worktree removal for tickets `names` that runs until the sender returned is dropped.
 pub(crate) fn removing(app: &mut App, names: &[&str]) -> std::sync::mpsc::Sender<()> {
     let (tx, rx) = std::sync::mpsc::channel::<()>();
@@ -401,14 +406,21 @@ pub(crate) fn removing(app: &mut App, names: &[&str]) -> std::sync::mpsc::Sender
     tx
 }
 
+/// Draws the App on a screen `w` by `h` and returns it as text, one quoted line per row. The
+/// spinner shows its first frame and the version 0.0.0 (in the sidebar and in Help & feedback's bug
+/// link), so neither changes a snapshot, and links (OSC 8, see `links::mark`) are left out to keep
+/// it readable.
 pub(crate) fn draw(app: &mut App, w: u16, h: u16) -> String {
     lay_out(app, w, h);
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| ui::draw(f, app)).unwrap();
     let version = format!("v{}", env!("CARGO_PKG_VERSION"));
     let fixed = format!("{:<1$}", "v0.0.0", version.len());
+    let named = format!("taskman {}", env!("CARGO_PKG_VERSION"));
+    let named_fixed = format!("{:<1$}", "taskman 0.0.0", named.len());
     without_links(&term.backend().to_string())
         .replace(&version, &fixed)
+        .replace(&named, &named_fixed)
         .chars()
         .map(|c| if ui::SPINNER.iter().any(|f| f.starts_with(c)) { '⠋' } else { c })
         .collect()

@@ -625,6 +625,9 @@ fn join_and(items: &[String]) -> String {
 /// The keys a form takes while one of its fields, `focused`, is being edited: ↑/↓ while it lists
 /// issues to pick from, else ←/→ for a choice.
 fn editing_keys(focused: &crate::app::Field) -> Vec<(&'static str, &'static str)> {
+    if focused.url.is_some() {
+        return vec![("Enter", "open"), ("c", "copy the link"), ("Tab", "next")];
+    }
     let mut keys = vec![("Enter", "save"), ("Tab", "next field")];
     if focused.list.picks > 0 {
         keys.insert(0, ("↑/↓", "choose"));
@@ -771,7 +774,11 @@ fn form_lines(
             } else {
                 Style::new().bold()
             };
-            row.push(Span::styled(format!("‹ {} ›", fit(field, room)), style));
+            // A link is a button: nothing to cycle.
+            let value = fit(field, room);
+            let shown =
+                if field.url.is_some() { format!(" {value} ") } else { format!("‹ {value} ›") };
+            row.push(Span::styled(shown, style));
         }
         text.push(Line::from(row));
         text.extend(more);
@@ -898,14 +905,16 @@ fn fit(field: &crate::app::Field, room: usize) -> String {
     }
 }
 
-/// Settings: updates, projects and accounts listed on the left, the selected one's form on
-/// the right.
+/// Settings: updates, projects, accounts and Help & feedback listed on the left, the selected one's
+/// form on the right.
 fn draw_settings(f: &mut Frame, app: &mut App) {
     let Mode::Settings(s) = &app.mode else { return };
     let deletable =
         matches!(s.items[s.cursor], SettingsItem::Project(_) | SettingsItem::Account(_));
     let mut keys = if s.editing {
         editing_keys(&s.form.fields[s.form.focus])
+    } else if s.items[s.cursor] == SettingsItem::Help {
+        vec![("↑/↓", "choose"), ("Enter", "pick a link")]
     } else {
         vec![("↑/↓", "choose"), ("Enter", "edit")]
     };
@@ -946,6 +955,7 @@ fn draw_settings(f: &mut Frame, app: &mut App) {
             SettingsItem::NewProject if app.projects.is_empty() => Some("PROJECTS"),
             SettingsItem::Account(0) => Some("ACCOUNTS"),
             SettingsItem::NewAccount if app.config.accounts.is_empty() => Some("ACCOUNTS"),
+            SettingsItem::Help => Some("HELP"),
             _ => None,
         };
         if let Some(title) = heading {
@@ -972,6 +982,7 @@ fn draw_settings(f: &mut Frame, app: &mut App) {
                 (a.who(), a.provider.label().to_string(), false)
             }
             SettingsItem::NewAccount => ("+ new account".to_string(), String::new(), true),
+            SettingsItem::Help => ("Help & feedback".to_string(), String::new(), false),
         };
         let selected = row == s.cursor;
         let room = w.saturating_sub(util::width(&right) + 2);

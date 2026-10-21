@@ -112,6 +112,8 @@ The prefix is `ctrl+a` (`ctrl+a a` sends a literal one). Use tmux or screen with
 
 Everything is set up in **Settings** (`ctrl+a ,`): the prefix key, updates, sleeping, the theme, projects and accounts are listed on the left, the selected one's settings on the right. ↑/↓ choose, Enter edits, Enter again saves, `ctrl+d` deletes, Esc goes back. `ctrl+a P` and `ctrl+a A` open it on a new project or a new account.
 
+**Help & feedback**, last in the list, opens the guide and the repository's issue forms on GitHub: **Report a bug**, **Request a feature**, and **Report it privately** for a security problem (a private security advisory). The bug form comes filled in with what taskman knows: its version, the Claude Code or Codex version, the OS and the terminal with its size; the page says what before you open it. Enter opens the link in your browser and `c` copies it. Over SSH, or with no browser to open, Enter copies the link and shows it on the page instead.
+
 A **project** is one folder: usually a repository's main checkout, but any folder works. Adding one takes only its path. Without a tracker it has agents only; pick Jira or Linear under **Tracker** to add tickets, and the form asks, in this order, for the site, the account to sign in with, then the project or team its tickets are in. Local files asks only for its folder and prefix (see [Local files](#local-files-tickets-without-an-account)), and GitHub Issues only for the prefix (see [GitHub Issues](#github-issues-the-repositorys-own-issues)). The project's page also says whether its tickets get a PR panel and which GitHub repo it reads (`acme/web`), and if not, why: `gh` missing or logged out, no GitHub remote, or not a git repository. The repo is the one `gh` picks from the git remotes; in a fork with `origin` and `upstream` that is `upstream` unless you run `gh repo set-default` in the repo. Deleting a project closes its tickets; the folder, worktrees and branches stay.
 
 - **Site** (Jira): `your-site.atlassian.net`. **Workspace** (Linear): the part after `linear.app/`.
@@ -169,7 +171,7 @@ The Add form opens on Type, set to Agent; ←/→ switches it to Ticket. What yo
 | `ctrl+a w` | list every session waiting on you, oldest first, with how long, why and what it asks (see below) |
 | `ctrl+a /` | jump to a ticket, agent or project by typing (see below) |
 | `ctrl+a n` / `x` | add / close a ticket |
-| `ctrl+a ,` | settings: prefix key, updates, notifications, projects and accounts |
+| `ctrl+a ,` | settings: prefix key, updates, notifications, projects and accounts; help and feedback |
 | `ctrl+a P` / `A` / `z` | new project / new account / fold the current project |
 | `ctrl+a j` / `c` / `g` / `b` | toggle the tracker panel, its comments, the PR panel; collapse the sidebar. On an agent, `j`, `c` and `g` change the panels tickets show, and say so; its board shows while the tracker or PR panel is on |
 | `ctrl+a o` / `p` | open the ticket / PR in your browser (a Local files ticket opens in `$EDITOR`) |

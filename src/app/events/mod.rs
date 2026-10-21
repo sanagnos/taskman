@@ -17,6 +17,7 @@ use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEven
 mod accounts;
 mod add_form;
 mod forms;
+mod help;
 mod inbox;
 mod input;
 mod jump;
@@ -193,17 +194,15 @@ fn field(app: &App, label: &str) -> String {
 }
 
 fn focused(app: &App) -> &'static str {
-    let Mode::Form(f) = &app.mode else { panic!("no form open") };
-    f.fields[f.focus].label
+    match &app.mode {
+        Mode::Settings(s) => s.form.fields[s.form.focus].label,
+        Mode::Form(f) => f.fields[f.focus].label,
+        _ => panic!("no form open"),
+    }
 }
 
 /// Moves the open form's focus to its field `label`, as Tab does.
 fn focus(app: &mut App, label: &str) {
-    let focused = |app: &App| match &app.mode {
-        Mode::Settings(s) => s.form.fields[s.form.focus].label,
-        Mode::Form(f) => f.fields[f.focus].label,
-        _ => panic!("no form open"),
-    };
     for _ in 0..10 {
         if focused(app) == label {
             return;

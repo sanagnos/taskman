@@ -111,7 +111,7 @@ These were last checked with Claude Code 2.1.296 and Codex 0.162 on Linux; [desi
 - **Keeps working:** the session itself, with every command, prompt and plugin, and the ticket and PR panels on their regular refresh.
 - **Degrades:** the state in the sidebar ("needs you", "your turn", working) can lag or be wrong, an interrupt may show only once the session has gone quiet, panels no longer refresh the moment a session pushes, a restart may start a new conversation instead of resuming, and agents may not reach other sessions.
 
-If you see that after a CLI update, [open an issue](https://github.com/sanagnos/taskman/issues/new/choose) with `taskman --version` and `claude --version` or `codex --version`.
+If you see that after a CLI update, [open an issue](https://github.com/sanagnos/taskman/issues/new/choose) with `taskman --version` and `claude --version` or `codex --version`, or use **Report a bug** in Settings → Help & feedback, which fills them in.
 
 ## Learn more
 
