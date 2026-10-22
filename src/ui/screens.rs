@@ -64,6 +64,18 @@ fn ticket_on_a_light_terminal() {
     assert_snapshot!(draw_colours(&mut app, 100, 30));
 }
 
+/// Comments hidden with the prefix and `c`: one line says so, where they'd be.
+#[test]
+fn tracker_panel_with_its_comments_hidden() {
+    let mut app = acme_app();
+    app.prefs.show_comments = false;
+    draw(&mut app, 160, 40);
+    attach(&mut app, "ENG-52", SESSION);
+    let screen = draw(&mut app, 160, 40);
+    assert!(screen.contains("── 2 comments hidden · ctrl+a c shows them ──"), "{screen}");
+    assert_snapshot!(screen);
+}
+
 /// Its review threads too, as the tracker panel is off.
 #[test]
 fn pr_panel() {

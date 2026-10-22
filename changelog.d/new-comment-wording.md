@@ -1,0 +1,1 @@
+- A ticket's new comments are counted in plain words that name the tracker: `2 new Jira comments`, `1 new PR comment`, or `2 new Jira comments, 1 on the PR` (`3 new comments` where that doesn't fit). With the tracker panel's comments hidden, a line where they'd be says how many there are and that `ctrl+a c` shows them.

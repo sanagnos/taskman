@@ -334,7 +334,8 @@ fn sidebar_rows(
                     Span::raw(pad),
                     badge,
                 ]));
-                let new = if selected { None } else { new_label(tv) };
+                // The tag keeps its width, with ` · ` after it; what follows gets the rest.
+                let new = if selected { None } else { new_label(app, tv, w.saturating_sub(6)) };
                 if let Some(title) = &title {
                     let title_style = if selected { Style::new() } else { dim() };
                     let mut row = vec![marker.clone(), Span::raw(" ")];
