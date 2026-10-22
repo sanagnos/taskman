@@ -295,7 +295,7 @@ When you add a ticket that has no worktree yet, taskman creates one: it fetches 
 
 - **Already has one:** a worktree whose branch has the key (`ENG-52-…`, or `change/ENG-52` from a workflow that makes its own) is used as it is; the Add form shows it. Once taskman has created a ticket's worktree, that one stays the ticket's, even if another with its key appears later.
 - **Don't want one:** set Worktree to "Don't create" on the Add form; the session runs in the main checkout, as do agents.
-- **No remote, or the fetch fails** (or takes over 30 seconds): the branch starts from your local `HEAD`, and a message says so. Without a remote, the Add form's Base says so before you add the ticket (`from HEAD (master): no remote`).
+- **No remote, or the fetch fails** (or takes over 30 seconds): the branch starts from your local `HEAD`, and a message says so, and why. git runs without a terminal, so it can't ask for anything: an ssh key with a passphrase has to be in ssh-agent (`ssh-add`), and an https remote needs a credential helper (`gh auth setup-git` for GitHub). Without a remote, the Add form's Base says so before you add the ticket (`from HEAD (master): no remote`).
 - **The folder already exists** and isn't the ticket's worktree, or git fails: nothing is touched and the session doesn't start; its pane says why. Fix it and press Enter to try again, or press `ctrl+a M` to run the session in the main checkout instead. If taskman quits before the worktree is made, it carries on at the next start.
 
 ### Stacked tickets
