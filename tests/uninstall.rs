@@ -444,3 +444,66 @@ fn purge_finds_its_token_files_however_their_folder_was_spelled() {
     // The folder's empty now, so it goes too.
     assert!(gone(&dir.join("tokens")), "{stdout}");
 }
+
+/// An empty XDG variable is unset, as the XDG spec says: the folders are the defaults under the
+/// home folder, never a `taskman` in the folder it's run from, such as a checkout of taskman.
+#[test]
+fn an_empty_xdg_state_home_never_names_a_folder_in_the_current_directory() {
+    let dir = scratch_dir("uninstall-empty-xdg");
+    let cwd = dir.join("work");
+    let checkout = cwd.join("taskman");
+    std::fs::create_dir_all(checkout.join("src")).unwrap();
+    std::fs::write(checkout.join("src/main.rs"), "fn main() {}\n").unwrap();
+    let state = dir.join("home/.local/state/taskman");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(state.join("tickets.json"), "{}").unwrap();
+    let mut cmd = taskman(&dir);
+    cmd.env("XDG_STATE_HOME", "")
+        .env("XDG_CONFIG_HOME", "")
+        .env_remove("TASKMAN_CONFIG")
+        .current_dir(&cwd);
+    let out = run(cmd, &["--purge", "--yes"]);
+    let stdout = text(&out.stdout);
+    assert!(out.status.success(), "{stdout}{}", text(&out.stderr));
+    assert!(
+        checkout.join("src/main.rs").exists(),
+        "uninstall --purge removed ./taskman:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("  - your projects, tickets and session state: ~/.local/state/taskman\n"),
+        "{stdout}"
+    );
+    assert!(gone(&state), "{stdout}");
+}
+
+/// A relative `TASKMAN_CONFIG` names a different file in each folder: --purge refuses it rather
+/// than remove whatever file of that name is where it's run.
+#[test]
+fn purge_refuses_a_relative_config_file() {
+    let dir = scratch_dir("uninstall-relative-config");
+    let cwd = dir.join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::write(cwd.join("config.json"), r#"{"theirs": true}"#).unwrap();
+    let state = seed_state(&dir);
+    let cmd = || {
+        let mut cmd = taskman(&dir);
+        cmd.env("TASKMAN_CONFIG", "config.json").current_dir(&cwd);
+        cmd
+    };
+    let why =
+        "config.json isn't a full path, so what it names depends on the folder you run taskman in";
+
+    let out = run(cmd(), &["--purge", "--yes"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = text(&out.stderr);
+    assert!(stderr.starts_with(&format!("taskman uninstall: {why}")), "{stderr}");
+    assert!(out.stdout.is_empty());
+
+    let out = run(cmd(), &["--yes"]);
+    let stdout = text(&out.stdout);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(stdout.contains(&format!("Your data and tokens stay: {why}")), "{stdout}");
+
+    assert_eq!(std::fs::read_to_string(cwd.join("config.json")).unwrap(), r#"{"theirs": true}"#);
+    assert!(state.join("tickets.json").exists());
+}

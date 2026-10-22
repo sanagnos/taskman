@@ -119,6 +119,9 @@ pub(super) enum Msg {
     Close(String, add::Request),
     /// A `taskman close` request finished; the toast.
     Closed(String),
+    /// The tickets a session's `taskman add --new` asked for, which the user approved, were
+    /// created or not: the request's inbox id, the request, and each one's outcome in order.
+    Created(String, add::Request, Vec<Result<crate::tracker::Created, String>>),
     /// Whether a project's folder can show PRs, checked again.
     Gh(PathBuf, github::Gh),
     /// An account's token, read from its source (`env:`, `cmd:` or `keychain:`).
@@ -365,6 +368,7 @@ impl App {
                 }
                 Msg::Close(id, req) => self.closing.push_back((id, req)),
                 Msg::Closed(text) => toasts.push((Level::Info, text)),
+                Msg::Created(id, req, made) => self.created(&id, &req, made),
                 Msg::Notify(text) => {
                     let tmux = std::env::var_os("TMUX").is_some_and(|v| !v.is_empty());
                     self.notify_out.push(crate::notify::escape(&text, tmux));

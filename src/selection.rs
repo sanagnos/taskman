@@ -835,13 +835,10 @@ fn tmux_clipboard_off() -> bool {
 /// Runs `cmd` with `data` on its stdin and says whether it succeeded. Not `proc::run`: xclip and
 /// wl-copy leave a process behind that holds the clipboard, and it would keep output pipes open.
 fn pipe(cmd: &[&str], data: Vec<u8>) -> bool {
-    use std::os::unix::process::CommandExt;
-    let Ok(mut child) = Command::new(cmd[0])
-        .args(&cmd[1..])
+    let Ok(mut child) = crate::proc::own_session(Command::new(cmd[0]).args(&cmd[1..]))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .process_group(0)
         .spawn()
     else {
         return false;

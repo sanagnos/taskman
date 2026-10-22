@@ -10,9 +10,9 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Runs `cmd` to the end and returns its output, like `Command::output`, except that it:
-/// - reads stdin from /dev/null and runs in a process group of its own, so it can't read from or
-///   take over the terminal the TUI owns;
-/// - has git and gh fail rather than prompt for credentials;
+/// - reads stdin from /dev/null and runs in a session of its own ([`own_session`]), so it can't
+///   reach the terminal the TUI owns;
+/// - has git, gh and ssh fail rather than prompt for credentials;
 /// - gives up after `timeout`, stopping the whole group, with an error of kind `TimedOut`.
 ///
 /// Failing to start keeps `Command::spawn`'s error, so `NotFound` still says it isn't installed.
@@ -28,10 +28,14 @@ pub fn run_with_input(cmd: &mut Command, input: Vec<u8>, timeout: Duration) -> i
 
 fn run_inner(cmd: &mut Command, input: Option<Vec<u8>>, timeout: Duration) -> io::Result<Output> {
     let deadline = Instant::now() + timeout;
-    let mut child = cmd
+    // Without a terminal, ssh asks with an askpass program instead. Kept for a user who chose one
+    // (some desktops set SSH_ASKPASS); otherwise ssh tries a built-in default, a bare X window.
+    if ["SSH_ASKPASS", "SSH_ASKPASS_REQUIRE"].iter().all(|v| std::env::var_os(v).is_none()) {
+        cmd.env("SSH_ASKPASS_REQUIRE", "never");
+    }
+    let mut child = own_session(cmd)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GH_PROMPT_DISABLED", "1")
-        .process_group(0)
         .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -79,10 +83,29 @@ fn run_inner(cmd: &mut Command, input: Option<Vec<u8>>, timeout: Duration) -> io
     }
 }
 
+/// Starts `cmd` in a session of its own, which has no controlling terminal: opening /dev/tty
+/// fails, so a program that asks there (ssh for a passphrase or a new host, gpg with pinentry-tty)
+/// fails at once instead of writing over the screen and spinning on input the TUI reads. A process
+/// group alone isn't enough: it stays in taskman's session, and raw mode leaves TOSTOP off. The
+/// child also leads a process group, whose id is its pid, so [`stop`] can end all it started. The
+/// `pre_exec` makes std fork rather than posix_spawn, a cost design.md weighs.
+pub fn own_session(cmd: &mut Command) -> &mut Command {
+    // SAFETY: the closure runs in the child between fork and exec; it allocates nothing and calls
+    // only setsid, which is async-signal-safe.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        })
+    }
+}
+
 /// Stops `child`'s whole process group (a hung `git fetch` waits on ssh, say) and says why.
 fn stop(child: &mut Child, timeout: Duration) -> io::Error {
     // A system call, not the `kill` program, which minimal images (debian:*-slim) don't have. The
-    // child leads a group of its own (`process_group(0)`), so its pid is the group's id, and it
+    // child leads a group of its own (`own_session`), so its pid is the group's id, and it
     // isn't reaped until the wait below, so that id can't pass to another group meanwhile. The
     // guard keeps a negated 0, 1 or our own group from signalling anything else.
     // SAFETY: getpgrp takes nothing and can't fail; it reads or writes no memory of ours.
@@ -124,6 +147,70 @@ mod tests {
         let out = sh("cat; echo $GIT_TERMINAL_PROMPT$GH_PROMPT_DISABLED", Duration::from_secs(10))
             .unwrap();
         assert_eq!(out.stdout, b"01\n");
+    }
+
+    /// Re-run in a terminal of its own, as the test harness has none: there, the test can open
+    /// /dev/tty and a program `run` starts can't.
+    #[test]
+    fn a_program_cannot_reach_the_terminal() {
+        if std::env::var_os("TASKMAN_PROC_IN_PTY").is_some() {
+            let ours = std::fs::OpenOptions::new().write(true).open("/dev/tty").is_ok();
+            let probe = "test -e /dev/tty && : > /dev/tty && echo reachable";
+            let out = sh(probe, Duration::from_secs(10)).unwrap();
+            println!("ours={ours} theirs={}.", String::from_utf8_lossy(&out.stdout).trim());
+            return;
+        }
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        let (mut m, mut s) = (-1, -1);
+        // SAFETY: openpty writes two descriptors into `m` and `s`; the null name, termios and
+        // window size are optional.
+        let r = unsafe {
+            libc::openpty(
+                &mut m,
+                &mut s,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(r, 0, "openpty: {}", io::Error::last_os_error());
+        // SAFETY: openpty succeeded, so both are open descriptors that nothing else owns.
+        let (master, slave) = unsafe { (OwnedFd::from_raw_fd(m), OwnedFd::from_raw_fd(s)) };
+        // SAFETY: sets a flag on a descriptor this test owns; it reads or writes no memory.
+        unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) };
+        let mut cmd = Command::new(std::env::current_exe().unwrap());
+        cmd.args(["--exact", "proc::tests::a_program_cannot_reach_the_terminal", "--nocapture"])
+            .env("TASKMAN_PROC_IN_PTY", "1")
+            .stdin(Stdio::from(slave.try_clone().unwrap()))
+            .stdout(Stdio::from(slave.try_clone().unwrap()))
+            .stderr(Stdio::from(slave));
+        // SAFETY: the closure runs in the child between fork and exec; it allocates nothing and
+        // calls only setsid and ioctl, which are async-signal-safe.
+        unsafe {
+            cmd.pre_exec(|| {
+                #[cfg_attr(
+                    target_os = "macos",
+                    expect(
+                        clippy::cast_lossless,
+                        reason = "TIOCSCTTY is a u32 on macOS and ioctl's request type on Linux, \
+                                  where From would be a useless conversion"
+                    )
+                )]
+                let request = libc::TIOCSCTTY as _;
+                if libc::setsid() < 0 || libc::ioctl(0, request, 0) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut child = cmd.spawn().unwrap();
+        // Our copies of the terminal's end closed, reading stops when the test's do (EIO).
+        drop(cmd);
+        let mut out = Vec::new();
+        let _ = std::fs::File::from(master).read_to_end(&mut out);
+        assert!(child.wait().unwrap().success());
+        let out = String::from_utf8_lossy(&out);
+        assert!(out.contains("ours=true theirs=."), "{out}");
     }
 
     #[test]
