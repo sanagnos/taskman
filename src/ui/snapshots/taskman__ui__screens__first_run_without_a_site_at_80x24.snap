@@ -1,0 +1,30 @@
+---
+source: src/ui/screens.rs
+expression: screen
+---
+" taskman    │                                                                   "
+" ╭ Settings ──────────────────────────────────────────────────────────────────╮ "
+" │ GENERAL                      │ New project                                 │ "
+" │  Prefix and updates   notify │ ↑ 5 more                                    │ "
+" │                              │          with                               │ "
+" │ PROJECTS                     │ Keep in  ‹ Keychain ›                       │ "
+" │▸ + new project               │          ←/→: your macOS Keychain, or a     │ "
+" │                              │          variable or command of yours       │ "
+" │ ACCOUNTS                     │ Token                                       │ "
+" │  + new account               │          paste it here; taskman puts it in  │ "
+" │                              │          your macOS Keychain                │ "
+" │ HELP                         │          Get a token:                       │ "
+" │  Help & feedback             │          https://id.atlassian.com/manage-pro│ "
+" │                              │          file/security/api-tokens           │ "
+" │                              │ Project  xyz                                │ "
+" │                              │          listed once taskman can sign in; or│ "
+" │                              │          type its key (ENG for ENG-12)      │ "
+" │                              │                                             │ "
+" │                              │ Enter the Jira site, like                   │ "
+" │                              │ your-site.atlassian.net                     │ "
+" │                              │ Enter save   Tab next field                 │ "
+" │                              │ Esc back to list                            │ "
+" ╰────────────────────────────────────────────────────────────────────────────╯ "
+" ^a menu · ^a ^a next waiting · ^a ? help                                       "
+
+cursor at row 14, column 46, on " "

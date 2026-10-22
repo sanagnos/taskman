@@ -155,6 +155,7 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &mut App) {
                 &format!("{lost} The conversation resumes."),
             );
         }
+        Mode::ConfirmAgent(ask) if !ask.req.new_tickets().is_empty() => draw_new_ask(f, app),
         Mode::ConfirmAgent(_) => draw_agent_ask(f, app),
         Mode::OfferTmux((repo, key)) => {
             let Some(i) = app.tickets.iter().position(|tv| tv.t.is(repo, key)) else { return };
@@ -467,8 +468,8 @@ fn ask_width(f: &Frame, keys: &[(&str, &str)]) -> u16 {
 /// A dialog asking about text someone else wrote, such as an agent's role: the question, the
 /// `note` on what answering does and the keys stay on screen, and the body between them, in rows
 /// already wrapped to the dialog's width (`ask_width`), scrolls when the screen can't fit it, an
-/// edge row saying how many rows are hidden past it. On a screen too short for that, the note
-/// goes first.
+/// edge row saying how many rows are hidden past it (`draw_scrolled`). On a screen too short for
+/// that, the note goes first.
 fn draw_ask(
     f: &mut Frame,
     question: &str,
@@ -499,35 +500,89 @@ fn draw_ask(
     if around(note.len(), keys.len()) + LEAST.min(body.len()) > room {
         note.clear();
     }
-    let total = body.len();
-    let view_h = room.saturating_sub(around(note.len(), keys.len())).max(LEAST).min(total);
-    view.max = total.saturating_sub(view_h);
-    view.page = view_h.saturating_sub(2).max(1);
-    view.top = view.top.min(view.max);
-    let (first, end) = shown_rows(view.top, total, view_h);
-    let hidden = |arrow: &str, n: usize| {
-        let lines = if n == 1 { "line" } else { "lines" };
-        Line::from(Span::styled(format!("{arrow} {n} more {lines}"), dim()))
-    };
-    let mut text = head;
-    text.push(Line::from(""));
-    if first > 0 {
-        text.push(hidden("↑", first));
-    }
-    text.extend(body.into_iter().skip(first).take(end - first));
-    if end < total {
-        text.push(hidden("↓", total - end));
-    }
+    let view_h = room.saturating_sub(around(note.len(), keys.len())).max(LEAST).min(body.len());
+    let mut foot = Vec::new();
     if !note.is_empty() {
-        text.push(Line::from(""));
-        text.extend(note);
+        foot.push(Line::from(""));
+        foot.extend(note);
     }
-    text.push(Line::from(""));
-    text.extend(keys);
-    let h = u16::try_from(text.len()).unwrap_or(u16::MAX) + 2 + DIALOG_PAD_H;
-    let r = centered(f, w, h);
+    foot.push(Line::from(""));
+    foot.extend(keys);
+    let rows = head.len() + 1 + view_h + foot.len();
+    let r = centered(f, w, u16::try_from(rows).unwrap_or(u16::MAX) + 2 + DIALOG_PAD_H);
     f.render_widget(Clear, r);
-    f.render_widget(Paragraph::new(text).block(dialog("Confirm").padding(DIALOG_PAD)), r);
+    let block = dialog("Confirm").padding(DIALOG_PAD);
+    let area = block.inner(r);
+    f.render_widget(block, r);
+    // The question and a blank row, then the body scrolling above the note and keys.
+    let head_h = u16::try_from(head.len() + 1).unwrap_or(u16::MAX).min(area.height);
+    f.render_widget(Paragraph::new(head), Rect { height: head_h, ..area });
+    let mut text = Scrolled { foot, ..Scrolled::default() };
+    body.into_iter().for_each(|l| text.body.push(l));
+    let below = Rect { y: area.y + head_h, height: area.height - head_h, ..area };
+    draw_scrolled(f, below, &text, view);
+}
+
+/// The most of a new ticket's title or description the dialog shows: far more than a ticket
+/// needs, and it scrolls, but drawing stays quick whatever a request holds. A longer one says how
+/// much is left out.
+const NEW_SHOWN: usize = 20_000;
+
+const NEW_ASK_NOTE: &str = "Sessions run taskman add without asking you, and text they read, such as an issue or \
+     a PR comment, can tell them to put a secret in a ticket. Approve it only if you expect it and it holds nothing \
+     private.";
+
+/// The dialog for tickets a session's `taskman add --new` asked to create: who asks, and each
+/// one's title and description in full, since the tracker publishes them under the user's
+/// account.
+fn draw_new_ask(f: &mut Frame, app: &mut App) {
+    let Mode::ConfirmAgent(ask) = &app.mode else { return };
+    let project = app.projects.iter().find(|p| p.repo == ask.req.repo);
+    let tracker = project.and_then(|p| p.tracker.as_ref()).map(|t| t.provider.label());
+    let place = tracker.unwrap_or("the tracker");
+    let Mode::ConfirmAgent(ask) = &mut app.mode else { return };
+    let keys = [("Enter", "create"), ("Esc", "decline")];
+    let inner = usize::from(ask_width(f, &keys).saturating_sub(2 + DIALOG_PAD_W)).max(1);
+    let (question, body) = new_ask_text(ask, place, inner);
+    draw_ask(f, &question, body, NEW_ASK_NOTE, &keys, &mut ask.view);
+}
+
+/// The question and the body for tickets to create in `place` (the tracker), in rows `width`
+/// columns wide.
+fn new_ask_text(ask: &AgentAsk, place: &str, width: usize) -> (String, Vec<Line<'static>>) {
+    let wanted = ask.req.new_tickets();
+    let from = ask
+        .req
+        .from
+        .as_deref()
+        .map_or("taskman add".to_string(), |f| truncate(&untrusted::line(f), FROM_SHOWN));
+    let question = match wanted.len() {
+        1 => format!("{from} asks to create a ticket in {place}"),
+        n => format!("{from} asks to create {n} tickets in {place}"),
+    };
+    let intro = "taskman creates it with the project's account, as you, then adds it and starts its session.";
+    let mut body: Vec<Line> = wrap_words(intro, width).into_iter().map(Line::from).collect();
+    let quote = |text: &str, body: &mut Vec<Line<'static>>| {
+        let shown: String = text.chars().take(NEW_SHOWN).collect();
+        body.extend(quoted(&shown, width));
+        let more = text.chars().count().saturating_sub(NEW_SHOWN);
+        if more > 0 {
+            let more = format!("… and {more} more characters, not shown");
+            body.push(Line::from(Span::styled(more, Style::new().bold())));
+        }
+    };
+    for (title, description) in wanted {
+        body.push(Line::from(""));
+        body.push(Line::from(Span::styled("Title", dim())));
+        quote(title, &mut body);
+        body.push(Line::from(Span::styled("Description", dim())));
+        if description.trim().is_empty() {
+            body.push(Line::from(Span::styled("(none)", dim())));
+        } else {
+            quote(description, &mut body);
+        }
+    }
+    (question, body)
 }
 
 fn centered(f: &Frame, w: u16, h: u16) -> Rect {
@@ -760,9 +815,9 @@ fn draw_form(f: &mut Frame, app: &App) {
     let mut keys = editing_keys(&form.fields[form.focus]);
     keys.extend([("ctrl+u", "clear"), ("Esc", "cancel")]);
     let w = (78 + DIALOG_PAD_W).min(f.area().width.saturating_sub(2));
-    // The note can wrap on a narrow terminal; size to the wrapped text so the key row still shows.
+    // Sized to the wrapped text, notes and hints included; on a shorter screen the form scrolls.
     let inner_w = w.saturating_sub(2 + DIALOG_PAD_W);
-    let rows = form_rows(form_lines(form, true, &keys, inner_w).0.lines, inner_w);
+    let rows = form_lines(form, true, &keys, inner_w).rows(inner_w);
     let r = centered(f, w, rows + 2 + DIALOG_PAD_H);
     f.render_widget(Clear, r);
     let block = dialog(form.title).padding(DIALOG_PAD);
@@ -771,25 +826,12 @@ fn draw_form(f: &mut Frame, app: &App) {
     render_form(f, form, inner, true, &keys);
 }
 
-/// Draws a form's note, fields with hints, error and key line into `area`. `active` shows the
-/// focused field and the text cursor.
+/// Draws a form's note, fields with hints, error and key line into `area`, scrolled to show the
+/// focused field when it's taller. `active` shows the focused field and the text cursor.
 fn render_form(f: &mut Frame, form: &Form, area: Rect, active: bool, keys: &[(&str, &str)]) {
-    let (text, cursor) = form_lines(form, active, keys, area.width);
-    if let Some((line, col)) = cursor {
-        let row = form_rows(text.lines[..line].to_vec(), area.width);
-        let x = (area.x + col).min(area.right().saturating_sub(1));
-        f.set_cursor_position((x, area.y + row));
-    }
-    let paragraph = |lines| Paragraph::new(lines).wrap(Wrap { trim: false });
-    if !text.urls().is_empty() {
-        let mut coded = ratatui::buffer::Buffer::empty(area);
-        ratatui::widgets::Widget::render(paragraph(text.coded(0)), area, &mut coded);
-        f.render_widget(paragraph(text.lines.clone()), area);
-        let urls: Vec<&str> = text.urls().iter().map(String::as_str).collect();
-        crate::links::mark_coded(f.buffer_mut(), &coded, area, &urls);
-    } else {
-        f.render_widget(paragraph(text.lines), area);
-    }
+    let mut view = form.view.get();
+    draw_scrolled(f, area, &form_lines(form, active, keys, area.width), &mut view);
+    form.view.set(view);
 }
 
 /// Rows `lines` take wrapped at `width`, as `render_form` draws them.
@@ -797,18 +839,122 @@ fn form_rows(lines: Vec<Line>, width: u16) -> u16 {
     Paragraph::new(lines).wrap(Wrap { trim: false }).line_count(width.max(1)) as u16
 }
 
-/// A form's lines with their links, and the focused text field's line and column for the cursor
-/// when `active`. Values are cut to fit `width` and hints wrap under them, so neither runs under
-/// the labels; notes wrap across the whole width.
-fn form_lines(
-    form: &Form,
-    active: bool,
-    keys: &[(&str, &str)],
-    width: u16,
-) -> (crate::links::Linked, Option<(usize, u16)>) {
+/// Text that scrolls above lines that don't: a form, with its error and keys under it, or an
+/// approval dialog's body, with its note and keys.
+#[derive(Default)]
+struct Scrolled {
+    /// What scrolls, with its links.
+    body: crate::links::Linked,
+    /// Under it, on screen however far it scrolls.
+    foot: Vec<Line<'static>>,
+    /// A text field's line in `body` and column, for the cursor.
+    cursor: Option<(usize, u16)>,
+    /// What to keep in view however the view was scrolled before: a form's focused field.
+    focus: Option<Focus>,
+    /// The lines in `body` that start an entry, a form's fields: the edge rows count the entries
+    /// scrolled past, or with none the lines.
+    starts: Option<Vec<usize>>,
+}
+
+impl Scrolled {
+    /// Rows it takes unscrolled, wrapped at `width`.
+    fn rows(&self, width: u16) -> u16 {
+        form_rows(self.body.lines.clone(), width) + form_rows(self.foot.clone(), width)
+    }
+}
+
+/// What to keep in view: the lines of a form's focused field, the line above them to show too
+/// when there's room (its section's heading, or the note above the first field), and the line
+/// in them that must show whatever the room: the cursor's, or the highlighted entry of a list.
+struct Focus {
+    lines: std::ops::Range<usize>,
+    header: Option<usize>,
+    at: usize,
+}
+
+/// Draws `text`'s body wrapped in `area` from `view.top`, and its foot under it: right under it
+/// while it fits, and pinned to the bottom of `area` when it doesn't, the body scrolling above it
+/// with an edge row where it goes on. Scrolls to its focus first, if any, and sets `view.max`
+/// and `view.page` for the keys that scroll it. Puts the text cursor on the cursor's line when
+/// that's shown.
+fn draw_scrolled(f: &mut Frame, area: Rect, text: &Scrolled, view: &mut Scroll) {
+    let width = area.width.max(1);
+    let body = &text.body;
+    // The row each line starts on, and after the last the rows they all take.
+    let mut row_of = vec![0];
+    for line in &body.lines {
+        row_of.push(row_of[row_of.len() - 1] + usize::from(form_rows(vec![line.clone()], width)));
+    }
+    let total = row_of[row_of.len() - 1];
+    let foot_h = form_rows(text.foot.clone(), width).min(area.height);
+    let view_h = usize::from(area.height - foot_h);
+    view.max = total.saturating_sub(view_h);
+    view.page = view_h.saturating_sub(2).max(1);
+    let mut top = view.top.min(view.max);
+    if let Some(show) = &text.focus {
+        let rows = |lines: std::ops::Range<usize>| row_of[lines.start]..row_of[lines.end];
+        let header = show.header.map(|h| row_of[h]);
+        top = scroll_to_show(top, total, view_h, rows(show.lines.clone()), header);
+        top = scroll_to_show(top, total, view_h, rows(show.at..show.at + 1), None);
+    }
+    view.top = top;
+    let (first, end) = shown_rows(top, total, view_h);
+    let at_row = |row: usize| area.y + (row - top) as u16;
+    let edge = |arrow: &str, rows: std::ops::Range<usize>| {
+        let line = match &text.starts {
+            // As the sidebar's, but in line with the text rather than a column in.
+            Some(starts) => {
+                let n = starts.iter().filter(|&&l| rows.contains(&row_of[l])).count();
+                more_line(arrow, n, false, 0).to_string().trim_start().to_string()
+            }
+            None => {
+                let n = rows.len();
+                format!("{arrow} {n} more {}", if n == 1 { "line" } else { "lines" })
+            }
+        };
+        Paragraph::new(Line::from(Span::styled(line, dim())))
+    };
+    if first > top {
+        f.render_widget(edge("↑", 0..first), Rect { height: 1, ..area });
+    }
+    if end < total && view_h > 0 {
+        f.render_widget(edge("↓", end..total), Rect { y: at_row(end), height: 1, ..area });
+    }
+    let shown = Rect { y: at_row(first), height: (end - first) as u16, ..area };
+    let paragraph =
+        |lines| Paragraph::new(lines).wrap(Wrap { trim: false }).scroll((first as u16, 0));
+    if !body.urls().is_empty() {
+        let mut coded = ratatui::buffer::Buffer::empty(shown);
+        ratatui::widgets::Widget::render(paragraph(body.coded(0)), shown, &mut coded);
+        f.render_widget(paragraph(body.lines.clone()), shown);
+        let urls: Vec<&str> = body.urls().iter().map(String::as_str).collect();
+        crate::links::mark_coded(f.buffer_mut(), &coded, shown, &urls);
+    } else {
+        f.render_widget(paragraph(body.lines.clone()), shown);
+    }
+    let under = Rect { y: area.y + total.min(view_h) as u16, height: foot_h, ..area };
+    f.render_widget(Paragraph::new(text.foot.clone()).wrap(Wrap { trim: false }), under);
+    if let Some((line, col)) = text.cursor
+        && (first..end).contains(&row_of[line])
+    {
+        let x = (area.x + col).min(area.right().saturating_sub(1));
+        f.set_cursor_position((x, at_row(row_of[line])));
+    }
+}
+
+/// Narrower than its labels and this, a form puts each field's value and hint under its label
+/// rather than beside it, so neither is squeezed into a few columns.
+const VALUE_MIN: usize = 30;
+
+/// A form's lines, with what's focused when `active`. Values are cut to fit `width` and hints
+/// wrap under them, so neither runs under the labels; notes wrap across the whole width.
+fn form_lines(form: &Form, active: bool, keys: &[(&str, &str)], width: u16) -> Scrolled {
     let label_w =
         form.fields.iter().filter(|f| !f.hidden).map(|f| util::width(f.label)).max().unwrap_or(8)
             + 2;
+    let stacked = usize::from(width) < label_w + VALUE_MIN;
+    // The column values and hints start at.
+    let col = if stacked { 2 } else { label_w };
     let mut text: Vec<Line> = Vec::new();
     // The lines that link somewhere, each linked whole after its indent (span 1).
     let mut linked: Vec<(usize, String)> = Vec::new();
@@ -819,21 +965,33 @@ fn form_lines(
         );
         text.push(Line::from(""));
     }
-    let mut cursor = None;
+    let (mut cursor, mut focus, mut starts) = (None, None, Vec::new());
     for (i, field) in form.fields.iter().enumerate().filter(|(_, f)| !f.hidden) {
+        // The first field's header is the note above it, if any.
+        let mut header = starts.is_empty().then_some(0);
         if let Some(title) = field.section {
             text.push(Line::from(""));
+            header = Some(text.len());
             text.push(Line::from(Span::styled(
                 title.to_string(),
                 dim().add_modifier(ratatui::style::Modifier::BOLD),
             )));
         }
+        let start = text.len();
+        starts.push(start);
         let focused = active && i == form.focus;
         let label_style = if focused { Style::new().fg(Color::Cyan).bold() } else { Style::new() };
-        let mut row = vec![Span::styled(pad(field.label, label_w), label_style)];
+        let mut row = if stacked {
+            text.push(Line::from(Span::styled(field.label.to_string(), label_style)));
+            vec![Span::raw(" ".repeat(col))]
+        } else {
+            vec![Span::styled(pad(field.label, label_w), label_style)]
+        };
+        // The line that must show while the field is focused: the cursor's, or a list's highlight.
+        let mut at = text.len();
         // Room for the value after the label and the ‹ › around a choice or presets.
         let arrows = if field.choices.is_empty() { 0 } else { 4 };
-        let room = (width as usize).saturating_sub(label_w + arrows);
+        let room = (width as usize).saturating_sub(col + arrows);
         // A prose value's lines after its first, indented to start under the value.
         let mut more = Vec::new();
         if field.prose {
@@ -842,16 +1000,16 @@ fn form_lines(
             let ranges = wrapped(&gs, room.saturating_sub(1));
             let mut lines: Vec<String> = ranges.iter().map(|r| gs[r.clone()].concat()).collect();
             if focused {
-                let at = grapheme_at(&field.value, field.cursor());
-                let on = line_of(&ranges, at);
+                let here = grapheme_at(&field.value, field.cursor());
+                let on = line_of(&ranges, here);
                 // Scrolled to keep the cursor's line in view.
                 let most = ranges.len().saturating_sub(PROSE_LINES);
                 let top = field.view.get().min(on).max((on + 1).saturating_sub(PROSE_LINES));
                 let top = top.min(most);
                 field.view.set(top);
                 lines = lines.drain(top..).take(PROSE_LINES).collect();
-                let col = util::width(&gs[ranges[on].start..at].concat());
-                cursor = Some((text.len() + on - top, (label_w + col) as u16));
+                let c = util::width(&gs[ranges[on].start..here].concat());
+                cursor = Some((text.len() + on - top, (col + c) as u16));
             } else if lines.len() > PROSE_LINES {
                 // The line after the last didn't fit on it, so joined they're cut with `…`.
                 let last = format!("{} {}", lines[PROSE_LINES - 1], lines[PROSE_LINES]);
@@ -860,12 +1018,12 @@ fn form_lines(
             }
             let mut lines = lines.into_iter();
             row.push(Span::raw(lines.next().unwrap_or_default()));
-            more.extend(lines.map(|l| Line::from(format!("{:label_w$}{l}", ""))));
+            more.extend(lines.map(|l| Line::from(format!("{:col$}{l}", ""))));
         } else if field.is_text() {
             // A secret shows as a dot a character.
             let dots = field.masked.then(|| "•".repeat(field.value.graphemes(true).count()));
             let shown = dots.as_deref().unwrap_or(&field.value);
-            let (value, col) = if focused {
+            let (value, c) = if focused {
                 let gs: Vec<&str> = shown.graphemes(true).collect();
                 in_view(&gs, grapheme_at(&field.value, field.cursor()), &field.view, room)
             } else if dots.is_some() {
@@ -874,7 +1032,7 @@ fn form_lines(
                 (fit(field, room), 0)
             };
             if focused {
-                cursor = Some((text.len(), (label_w + col) as u16));
+                cursor = Some((text.len(), (col + c) as u16));
             }
             row.push(Span::raw(value));
         } else {
@@ -893,7 +1051,7 @@ fn form_lines(
         text.extend(more);
         // A long hint wraps under the value too, not under the labels; under a link's text, past
         // the button's padding.
-        let indent = label_w + usize::from(field.url.is_some());
+        let indent = col + usize::from(field.url.is_some());
         let hint_room = (width as usize).saturating_sub(indent);
         text.extend(
             wrap_prose(&field.hint, hint_room)
@@ -924,37 +1082,43 @@ fn form_lines(
         }
         // The highlighted issue on the sidebar's selected card's background, across the room.
         let highlighted = field.list.highlighted().filter(|_| focused);
+        if let Some(h) = highlighted {
+            at = text.len() + h;
+        }
         text.extend(field.list.lines.iter().enumerate().map(|(n, l)| {
             let l = truncate(l, hint_room);
             match highlighted {
                 Some(h) if h == n => Line::from(vec![
-                    Span::raw(format!("{:label_w$}", "")),
+                    Span::raw(format!("{:col$}", "")),
                     Span::styled(pad(&l, hint_room), Style::new().bg(selection_bg())),
                 ]),
-                _ => Line::from(format!("{:label_w$}{l}", "")),
+                _ => Line::from(format!("{:col$}{l}", "")),
             }
         }));
+        if focused {
+            if let Some((line, _)) = cursor {
+                at = line;
+            }
+            focus = Some(Focus { lines: start..text.len(), header, at });
+        }
     }
-    text.push(Line::from(""));
-    match &form.error {
+    let mut foot = vec![Line::from("")];
+    foot.push(match &form.error {
         _ if form.checking.is_some() => {
-            text.push(Line::from(Span::styled(
-                format!("{} Checking the connection…", spinner()),
-                dim(),
-            )));
+            Line::from(Span::styled(format!("{} Checking the connection…", spinner()), dim()))
         }
-        Some(e) => text.push(Line::from(Span::styled(e.clone(), Style::new().fg(Color::Red)))),
-        None => text.push(Line::from("")),
-    }
-    text.extend(key_rows(keys, usize::from(width)));
-    let mut out = crate::links::Linked::default();
+        Some(e) => Line::from(Span::styled(e.clone(), Style::new().fg(Color::Red))),
+        None => Line::from(""),
+    });
+    foot.extend(key_rows(keys, usize::from(width)));
+    let mut body = crate::links::Linked::default();
     for (n, line) in text.into_iter().enumerate() {
-        out.push(line);
+        body.push(line);
         for (_, url) in linked.iter().filter(|(l, _)| *l == n) {
-            out.link(1, url);
+            body.link(1, url);
         }
     }
-    (out, cursor)
+    Scrolled { body, foot, cursor, focus, starts: Some(starts) }
 }
 
 /// The most lines a prose field takes; a longer one scrolls while typed and is cut otherwise.
@@ -1100,11 +1264,11 @@ fn draw_settings(f: &mut Frame, app: &mut App) {
         keys.push(("ctrl+d", "delete"));
     }
     keys.push(("Esc", if s.editing { "back to list" } else { "close" }));
-    // Tall enough for the form, wrapped hints and keys included, so its error and key lines
-    // always show; 3 rows for the borders and the pane title. The form is as wide as the dialog
+    // Tall enough for the form, wrapped hints and keys included, within the screen: a taller
+    // form scrolls. 3 rows for the borders and the pane title. The form is as wide as the dialog
     // `centered` gives, less its borders, the list and the pane's border and gap.
     let form_w = 108u16.min(f.area().width.saturating_sub(2)).saturating_sub(2 + 30 + 2);
-    let rows = form_rows(form_lines(&s.form, s.editing, &keys, form_w).0.lines, form_w);
+    let rows = form_lines(&s.form, s.editing, &keys, form_w).rows(form_w);
     let r = centered(f, 108, (rows + 3).max(28));
     f.render_widget(Clear, r);
     let block = dialog("Settings");
@@ -1447,8 +1611,8 @@ mod tests {
         // At the bottom of the form, broken between hints at its width.
         let mut all = keys(&form);
         all.extend([("ctrl+u", "clear"), ("Esc", "cancel")]);
-        let (lines, _) = form_lines(&form, true, &all, 40);
-        let text: Vec<String> = lines.lines.iter().map(|l| l.to_string()).collect();
+        let foot = form_lines(&form, true, &all, 40).foot;
+        let text: Vec<String> = foot.iter().map(|l| l.to_string()).collect();
         assert_eq!(
             text[text.len() - 2..],
             ["↑/↓ choose   Enter save   Tab next field", "ctrl+u clear   Esc cancel"]
@@ -1504,8 +1668,8 @@ mod tests {
             Form::new(FormKind::Project, "Project", vec![Field::text("Path", path, ""), account]);
         let width = 50;
         let rows = |form: &Form| {
-            let (lines, cursor) = form_lines(form, true, &[], width);
-            let lines = lines.lines;
+            let Scrolled { body, cursor, .. } = form_lines(form, true, &[], width);
+            let lines = body.lines;
             assert_eq!(form_rows(lines.clone(), width), lines.len() as u16, "a line wrapped");
             (lines.iter().map(|l| l.to_string()).collect::<Vec<_>>(), cursor)
         };
@@ -1526,8 +1690,7 @@ mod tests {
         let hint = "e.g. ~/work/clients/acme/repositories/acme-web-frontend-monorepo-ENG-52 on ENG-52-fix-login";
         let form = Form::new(FormKind::Project, "Project", vec![Field::text("Folder", "", hint)]);
         let width = 40;
-        let (lines, _) = form_lines(&form, false, &[], width);
-        let lines = lines.lines;
+        let lines = form_lines(&form, false, &[], width).body.lines;
         assert_eq!(form_rows(lines.clone(), width), lines.len() as u16, "a line wrapped");
         let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         assert_eq!(
@@ -1540,6 +1703,41 @@ mod tests {
             ]
             .map(String::from)
         );
+    }
+
+    #[test]
+    fn narrow_forms_put_values_and_hints_under_their_labels() {
+        use crate::app::{Field, FormKind};
+        let fields = vec![
+            Field::text("Sleep idle sessions after", "1 hour", "unselected this long"),
+            Field::text("Theme", "dark", "or light"),
+        ];
+        let mut form = Form::new(FormKind::Project, "General", fields);
+        focus_on(&mut form, "Theme");
+        let text = |width| {
+            let t = form_lines(&form, true, &[], width);
+            let lines: Vec<String> = t.body.lines.iter().map(|l| l.to_string()).collect();
+            (lines, t.cursor, t.focus.map(|f| (f.lines, f.at)), t.starts.unwrap_or_default())
+        };
+        // Room for the labels and a value of `VALUE_MIN`: beside them.
+        let (lines, cursor, focus, starts) = text(27 + VALUE_MIN as u16);
+        assert_eq!(lines[0], "Sleep idle sessions after  1 hour");
+        assert_eq!(lines[1], "                           unselected this long");
+        assert_eq!((cursor, focus, starts), (Some((2, 31)), Some((2..4, 2)), vec![0, 2]));
+        // Narrower, under them: hints keep the width rather than a few columns.
+        let (lines, cursor, focus, starts) = text(26 + VALUE_MIN as u16);
+        assert_eq!(
+            lines,
+            [
+                "Sleep idle sessions after",
+                "  1 hour",
+                "  unselected this long",
+                "Theme",
+                "  dark",
+                "  or light"
+            ]
+        );
+        assert_eq!((cursor, focus, starts), (Some((4, 6)), Some((3..6, 4)), vec![0, 3]));
     }
 
     #[test]
@@ -1680,8 +1878,7 @@ mod tests {
         let field = Field { list, ..Field::text("Ticket", "", "") };
         let form = Form::new(FormKind::Ticket, "Add", vec![field]);
         let bg = |active: bool| -> Vec<bool> {
-            let (lines, _) = form_lines(&form, active, &[], 40);
-            let lines = lines.lines;
+            let lines = form_lines(&form, active, &[], 40).body.lines;
             let shaded = |l: &Line| l.spans.iter().any(|s| s.style.bg == Some(selection_bg()));
             lines[2..5].iter().map(shaded).collect()
         };
@@ -1700,8 +1897,8 @@ mod tests {
         focus_on(&mut form, "Role");
         let width = 40;
         let lines = |form: &Form| {
-            let (lines, cursor) = form_lines(form, true, &[], width);
-            let lines = lines.lines;
+            let Scrolled { body, cursor, .. } = form_lines(form, true, &[], width);
+            let lines = body.lines;
             assert_eq!(form_rows(lines.clone(), width), lines.len() as u16, "a line wrapped");
             (lines.iter().map(|l| l.to_string()).collect::<Vec<_>>(), cursor)
         };

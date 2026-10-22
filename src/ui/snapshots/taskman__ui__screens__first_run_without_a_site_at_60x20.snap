@@ -1,0 +1,26 @@
+---
+source: src/ui/screens.rs
+expression: screen
+---
+" taskman    │                                               "
+" ╭ Settings ──────────────────────────────────────────────╮ "
+" │ GENERAL                  │ New project                 │ "
+" │  Prefix and upda… notify │ ↑ 7 more                    │ "
+" │                          │   Get a token:              │ "
+" │ PROJECTS                 │   https://id.atlassian.com/m│ "
+" │▸ + new project           │   anage-profile/security/api│ "
+" │                          │   -tokens                   │ "
+" │ ACCOUNTS                 │ Project                     │ "
+" │  + new account           │   xyz                       │ "
+" │                          │   listed once taskman can   │ "
+" │ HELP                     │   sign in; or type its key  │ "
+" │  Help & feedback         │   (ENG for ENG-12)          │ "
+" │                          │                             │ "
+" │                          │ Enter the Jira site, like   │ "
+" │                          │ your-site.atlassian.net     │ "
+" │                          │ Enter save   Tab next field │ "
+" │                          │ Esc back to list            │ "
+" ╰────────────────────────────────────────────────────────╯ "
+" ^a menu · ^a ^a next waiting · ^a ? help                   "
+
+cursor at row 9, column 35, on " "

@@ -228,7 +228,7 @@ impl App {
                 else {
                     unreachable!()
                 };
-                self.answer_agent(&ask, key.code == KeyCode::Enter);
+                self.answer_ask(*ask, key.code == KeyCode::Enter);
                 return;
             }
             Mode::Links(_) => {

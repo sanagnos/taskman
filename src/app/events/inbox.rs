@@ -11,7 +11,7 @@ fn agent_request(role: &str) -> add::Request {
 }
 
 fn ask(app: &mut App, req: add::Request) {
-    app.asking.push_back((req, false));
+    app.asking.push_back(("0001".into(), req, false));
     app.ask_next();
     let Mode::ConfirmAgent(ask) = &mut app.mode else { panic!("no dialog") };
     // As if it had been open a while.
@@ -35,7 +35,7 @@ fn the_heartbeat_is_rewritten_once_a_second_not_on_every_pass() {
 #[test]
 fn an_agent_waits_for_the_users_approval() {
     let mut app = acme_app();
-    app.asking.push_back((agent_request("Run the tests"), false));
+    app.asking.push_back(("0001".into(), agent_request("Run the tests"), false));
     // Not while a prefix command is under way.
     app.on_key(ctrl('a'));
     app.ask_next();
@@ -310,4 +310,133 @@ fn a_close_whose_lookup_panics_still_closes() {
     assert_eq!(app.tickets[i].pr.error.as_deref(), Some(BUG));
     app.close_next();
     assert!(!app.tickets.iter().any(|tv| tv.t.key == "ENG-70"));
+}
+
+// ---- tickets a session's `taskman add --new` asked to create --------------------------------
+
+/// A session's request to create a ticket whose description carries a secret.
+fn new_ticket_request(id: &str) {
+    request(
+        id,
+        &serde_json::json!({
+            "repo": "/src/acme", "from": "✦ lead", "worktree": false,
+            "reply_by": crate::util::now() + 60,
+            "items": [{ "kind": "new", "title": "Build log", "description": "API_KEY=sk-mock-123" }],
+        }),
+    );
+}
+
+/// acme's Linear, answering with a team and an issue it created, ENG-90.
+fn linear(app: &mut App) -> crate::replay::Server {
+    let server = crate::replay::serve(vec![
+        (200, include_str!("../../../tests/fixtures/linear/team.json")),
+        (
+            200,
+            r#"{"data":{"issueCreate":{"success":true,"issue":{"identifier":"ENG-90","url":"https://linear.app/acme/issue/ENG-90/build-log"}}}}"#,
+        ),
+    ]);
+    let client =
+        crate::tracker::Client::Linear(crate::linear::LinearConfig::at(&server.url, "lin_mock"));
+    app.trackers.serve(&app.config, &app.projects[0], client);
+    server
+}
+
+/// The dialog for the request taken from the inbox, as if it had been open a while.
+fn asked_to_create(app: &mut App) {
+    app.take_inbox();
+    app.ask_next();
+    let Mode::ConfirmAgent(ask) = &mut app.mode else { panic!("no dialog") };
+    assert_eq!(ask.req.new_tickets(), [("Build log", "API_KEY=sk-mock-123")]);
+    ask.shown = ago(crate::app::ASK_ARMS.as_secs_f32()).unwrap();
+}
+
+#[test]
+fn a_sessions_new_ticket_reaches_the_tracker_only_once_approved() {
+    let mut app = acme_app();
+    let server = linear(&mut app);
+    new_ticket_request("0007");
+    asked_to_create(&mut app);
+    let replied = store::state_dir().join("inbox/0007.reply.json");
+    assert!(!replied.exists(), "answered before the user did");
+    assert!(server.requests().is_empty(), "the tracker was asked before the user approved");
+
+    app.on_key(key(KeyCode::Enter));
+    assert!(matches!(app.mode, Mode::Normal));
+    assert_eq!(toast(&app), Some("Creating \"Build log\" in Linear"));
+    settle_until(&mut app, |app| app.tickets.iter().any(|tv| tv.t.key == "ENG-90"));
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    let input = &requests[1].json()["variables"]["input"];
+    assert_eq!(
+        (input["title"].as_str(), input["description"].as_str()),
+        (Some("Build log"), Some("API_KEY=sk-mock-123"))
+    );
+    let lines = reply("0007");
+    assert_eq!(
+        lines[0],
+        add::Line::ok("Created ENG-90: https://linear.app/acme/issue/ENG-90/build-log")
+    );
+    assert!(
+        lines[1].ok && lines[1].text.starts_with("Added ENG-90 \"Build log\" to acme"),
+        "{lines:?}"
+    );
+    assert_eq!(toast(&app), Some("Created ENG-90 for ✦ lead"));
+    assert_eq!(selected(&app), "ENG-52", "an added ticket doesn't take the pane");
+    assert!(saved().tickets.iter().any(|t| t.key == "ENG-90"));
+}
+
+#[test]
+fn a_declined_new_ticket_is_never_created() {
+    let mut app = acme_app();
+    let server = linear(&mut app);
+    new_ticket_request("0008");
+    asked_to_create(&mut app);
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(toast(&app), Some("Declined creating \"Build log\" from ✦ lead"));
+    assert_eq!(
+        reply("0008"),
+        [add::Line::err(
+            "the user declined creating \"Build log\" in taskman; nothing was created"
+        )]
+    );
+    assert!(app.rx.try_recv().is_err(), "a thread started");
+    assert!(server.requests().is_empty(), "the tracker was asked");
+    assert!(!app.tickets.iter().any(|tv| tv.t.key == "ENG-90"));
+}
+
+/// A project without a tracker, or one no longer in taskman, has nowhere to create the ticket:
+/// the command hears so at once, and the user isn't asked.
+#[test]
+fn a_new_ticket_with_no_tracker_to_create_it_in_is_refused_at_once() {
+    let mut app = acme_app();
+    for (id, repo) in [("0009", "/src/notes"), ("0010", "/src/gone")] {
+        request(
+            id,
+            &serde_json::json!({
+                "repo": repo, "reply_by": crate::util::now() + 60,
+                "items": [{ "kind": "new", "title": "Build log" }],
+            }),
+        );
+    }
+    app.take_inbox();
+    assert!(app.asking.is_empty());
+    let notes = reply("0009");
+    assert!(!notes[0].ok && notes[0].text.starts_with("notes has no tracker"), "{notes:?}");
+    let gone = reply("0010");
+    assert!(!gone[0].ok && gone[0].text.contains("no longer in taskman"), "{gone:?}");
+}
+
+/// The command never sends a new ticket with others to add, but anything can write to the inbox:
+/// one that reaches the adding code isn't created.
+#[test]
+fn a_new_ticket_is_created_only_through_the_dialog() {
+    let mut app = acme_app();
+    let req: add::Request = serde_json::from_value(serde_json::json!({
+        "repo": "/src/acme", "reply_by": crate::util::now() + 60,
+        "items": [{ "kind": "new", "title": "Build log" }],
+    }))
+    .unwrap();
+    let (lines, toast) = app.add_requested(&req, false);
+    assert!(!lines[0].ok && lines[0].text.contains("waits for the user's approval"), "{lines:?}");
+    assert_eq!(toast, None);
 }
