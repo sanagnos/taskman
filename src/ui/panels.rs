@@ -201,6 +201,18 @@ pub(super) fn draw_jira(f: &mut Frame, app: &mut App, area: Rect) {
                     dim(),
                 )));
             }
+        } else if !local && !issue.comments.is_empty() {
+            // The setting is saved, so a press long forgotten would leave a ticket that looks
+            // like it has none.
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "── {} hidden · {} c shows them ──",
+                    count(issue.comments.len(), "comment", "comments"),
+                    prefix()
+                ),
+                dim(),
+            )));
         }
     } else if let Some(e) = &tv.jira.error {
         lines.push(Line::from(Span::styled(format!("⚠ {e}"), Style::new().fg(Color::Red))));
@@ -324,8 +336,8 @@ pub(super) fn draw_board(f: &mut Frame, app: &mut App, area: Rect) {
         }
         let used: usize = head.iter().map(|s| width(&s.content)).sum();
         let new = |n: String| Span::styled(n, Style::new().fg(yellow()).bold());
-        // On a line of its own where it would wrap.
-        let below = match new_label(tv) {
+        // On a line of its own where it would wrap; shortened where even that is too narrow.
+        let below = match new_label(app, tv, w.saturating_sub(2)) {
             Some(n) if used + 2 + width(&n) <= w => {
                 head.push(new(format!("  {n}")));
                 None

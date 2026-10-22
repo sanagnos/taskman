@@ -1,0 +1,1 @@
+- A ticket's new comments are counted in plain words: `3 new comments` on its sidebar card, and on an agent's board by where they are, naming the tracker: `2 new Jira comments`, `1 new PR comment`, or `2 new Jira comments, 1 on the PR`. With the tracker panel's comments hidden, a line where they'd be says how many there are and that `ctrl+a c` shows them.
