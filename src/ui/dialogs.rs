@@ -155,6 +155,7 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &mut App) {
                 &format!("{lost} The conversation resumes."),
             );
         }
+        Mode::ConfirmAgent(ask) if !ask.req.new_tickets().is_empty() => draw_new_ask(f, app),
         Mode::ConfirmAgent(_) => draw_agent_ask(f, app),
         Mode::OfferTmux((repo, key)) => {
             let Some(i) = app.tickets.iter().position(|tv| tv.t.is(repo, key)) else { return };
@@ -528,6 +529,68 @@ fn draw_ask(
     let r = centered(f, w, h);
     f.render_widget(Clear, r);
     f.render_widget(Paragraph::new(text).block(dialog("Confirm").padding(DIALOG_PAD)), r);
+}
+
+/// The most of a new ticket's title or description the dialog shows: far more than a ticket
+/// needs, and it scrolls, but drawing stays quick whatever a request holds. A longer one says how
+/// much is left out.
+const NEW_SHOWN: usize = 20_000;
+
+const NEW_ASK_NOTE: &str = "Sessions run taskman add without asking you, and text they read, such as an issue or \
+     a PR comment, can tell them to put a secret in a ticket. Approve it only if you expect it and it holds nothing \
+     private.";
+
+/// The dialog for tickets a session's `taskman add --new` asked to create: who asks, and each
+/// one's title and description in full, since the tracker publishes them under the user's
+/// account.
+fn draw_new_ask(f: &mut Frame, app: &mut App) {
+    let Mode::ConfirmAgent(ask) = &app.mode else { return };
+    let project = app.projects.iter().find(|p| p.repo == ask.req.repo);
+    let tracker = project.and_then(|p| p.tracker.as_ref()).map(|t| t.provider.label());
+    let place = tracker.unwrap_or("the tracker");
+    let Mode::ConfirmAgent(ask) = &mut app.mode else { return };
+    let keys = [("Enter", "create"), ("Esc", "decline")];
+    let inner = usize::from(ask_width(f, &keys).saturating_sub(2 + DIALOG_PAD_W)).max(1);
+    let (question, body) = new_ask_text(ask, place, inner);
+    draw_ask(f, &question, body, NEW_ASK_NOTE, &keys, &mut ask.view);
+}
+
+/// The question and the body for tickets to create in `place` (the tracker), in rows `width`
+/// columns wide.
+fn new_ask_text(ask: &AgentAsk, place: &str, width: usize) -> (String, Vec<Line<'static>>) {
+    let wanted = ask.req.new_tickets();
+    let from = ask
+        .req
+        .from
+        .as_deref()
+        .map_or("taskman add".to_string(), |f| truncate(&untrusted::line(f), FROM_SHOWN));
+    let question = match wanted.len() {
+        1 => format!("{from} asks to create a ticket in {place}"),
+        n => format!("{from} asks to create {n} tickets in {place}"),
+    };
+    let intro = "taskman creates it with the project's account, as you, then adds it and starts its session.";
+    let mut body: Vec<Line> = wrap_words(intro, width).into_iter().map(Line::from).collect();
+    let quote = |text: &str, body: &mut Vec<Line<'static>>| {
+        let shown: String = text.chars().take(NEW_SHOWN).collect();
+        body.extend(quoted(&shown, width));
+        let more = text.chars().count().saturating_sub(NEW_SHOWN);
+        if more > 0 {
+            let more = format!("… and {more} more characters, not shown");
+            body.push(Line::from(Span::styled(more, Style::new().bold())));
+        }
+    };
+    for (title, description) in wanted {
+        body.push(Line::from(""));
+        body.push(Line::from(Span::styled("Title", dim())));
+        quote(title, &mut body);
+        body.push(Line::from(Span::styled("Description", dim())));
+        if description.trim().is_empty() {
+            body.push(Line::from(Span::styled("(none)", dim())));
+        } else {
+            quote(description, &mut body);
+        }
+    }
+    (question, body)
 }
 
 fn centered(f: &Frame, w: u16, h: u16) -> Rect {

@@ -180,6 +180,10 @@ fn agent_brief_head(
             } else {
                 ""
             }
+            + " `taskman add --new` waits for the user to approve the new ticket in taskman, as its title and \
+               description are published in the tracker: the command waits up to a minute and prints the new key, \
+               or that the user declined (then don't create it another way). If they haven't answered by then, it \
+               says so, and `taskman status` lists the ticket once they approve."
             + if t.cli.sandboxed() { SANDBOX_STATE_NOTE } else { "" },
     );
     lines
@@ -196,7 +200,7 @@ fn file_changes(cli: Cli) -> String {
     };
     format!(
         "Work that changes code or files goes to a ticket session, not this one: create a ticket for it (`taskman add \
-         --new \"Title\"` creates one and adds its session), then {brief}. Make the change here yourself only when the \
+         --new \"Title\"` creates one, once the user approves it, and adds its session), then {brief}. Make the change here yourself only when the \
          user asks you to, or your role says you may."
     )
 }
@@ -373,7 +377,7 @@ impl App {
             lines.push(format!(
                 "The project's tracker is Local files: each ticket is a markdown file on the board {}, one subfolder per column \
                  ({columns}). The board is the one in the project folder; a worktree's copy of it isn't. `taskman add --new \"Title\"` \
-                 creates a ticket in todo and adds its session; `taskman move <KEY> COLUMN` moves one. Neither commits anything.",
+                 creates a ticket in todo, once the user approves it, and adds its session; `taskman move <KEY> COLUMN` moves one. Neither commits anything.",
                 store::tilde(&board)
             ));
         }
@@ -888,6 +892,11 @@ mod tests {
                 lines[0].starts_with(rule) && lines[0].contains("`taskman add --new \"Title\"`")
             );
             assert!(lines[0].contains("then brief that session."), "{provider}: {}", lines[0]);
+            assert!(lines[0].contains("once the user approves it"), "{provider}: {}", lines[0]);
+            assert!(
+                b.contains("`taskman add --new` waits for the user to approve"),
+                "{provider}: {b}"
+            );
             assert!(!b.contains("your own tools"), "{provider}: {b}");
         }
         // A Codex agent can't message the ticket's session, so the ticket carries the brief.

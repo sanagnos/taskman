@@ -96,7 +96,8 @@ pub enum Mode {
     ConfirmQuit,
     /// `prefix R` on a session that's working or needs the user, which restarting interrupts.
     ConfirmRestart(Id),
-    /// A `taskman add` that adds a project agent or sets an agent's role, waiting for the user.
+    /// A `taskman add` that adds a project agent, sets an agent's role or, from a session, creates
+    /// a ticket, waiting for the user.
     ConfirmAgent(Box<AgentAsk>),
     /// A session just handed off, inside tmux: open `taskman resume` in a new window?
     OfferTmux(Id),
@@ -121,10 +122,14 @@ pub struct LinkList {
     pub top: usize,
 }
 
-/// An agent `taskman add` asked for. A session can run `taskman add` without a prompt, and text it
-/// read (an issue, a PR comment) can tell it to, so an agent, which starts at once with its role
-/// in its system prompt, waits for the user. See `take_inbox`.
+/// An agent `taskman add` asked for, or a ticket a session's `taskman add --new` asked to create.
+/// A session can run `taskman add` without a prompt, and text it read (an issue, a PR comment) can
+/// tell it to, so an agent, which starts at once with its role in its system prompt, waits for the
+/// user; so does a new ticket, whose title and description go to the tracker under the user's
+/// account and can carry anything the session can read. See `take_inbox`.
 pub struct AgentAsk {
+    /// The request's inbox id: a ticket to create is answered once the user has.
+    pub id: String,
     pub req: add::Request,
     /// Whether the agent is open already, so the request only changes its role.
     pub open: bool,
@@ -134,7 +139,8 @@ pub struct AgentAsk {
     /// Whether the request was queued while taskman was closed: decided as it was taken, since by
     /// the time the user answers, the command has usually stopped waiting either way.
     pub closed: bool,
-    /// How far the role is scrolled, when the dialog doesn't fit it.
+    /// How far the body (a role, or a new ticket's title and description) is scrolled, when the
+    /// dialog doesn't fit it.
     pub view: Scroll,
 }
 
@@ -266,9 +272,9 @@ pub struct App {
     /// While the close dialog is open: why the ticket's worktree couldn't be checked (git failed),
     /// so the dialog offers nothing and says so; the worktree stays.
     pub close_unchecked: Option<String>,
-    /// Agents `taskman add` asked for, oldest first, each waiting for its dialog, with whether it
-    /// was queued while taskman was closed (`AgentAsk::closed`).
-    asking: std::collections::VecDeque<(add::Request, bool)>,
+    /// Agents and new tickets `taskman add` asked for, by inbox id, oldest first, each waiting for
+    /// its dialog, with whether it was queued while taskman was closed (`AgentAsk::closed`).
+    asking: std::collections::VecDeque<(String, add::Request, bool)>,
     /// `taskman close` requests whose PRs were looked up, by inbox id, waiting until nothing
     /// refers to a ticket by its place in the list (`close_next`).
     closing: std::collections::VecDeque<(String, add::Request)>,
