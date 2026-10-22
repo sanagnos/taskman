@@ -1,0 +1,1 @@
+- `taskman status` now also strips variation selectors and zero-width characters, which can hide instructions in a title or comment, keeping the ones emoji need. A newline in a Local files file or column name no longer starts a line of its own in `taskman status` or `taskman move`.
