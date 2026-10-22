@@ -213,6 +213,11 @@ fn a_second_taskman_is_refused() {
     let tickets = dir.join("state/taskman/tickets.json");
     let tui = Tui::start("a_second_taskman_is_refused", &dir, stubbed(&dir), LIMIT);
     tui.wait_text("stub ready for ENG-1");
+    // The GitHub check at startup saves what it found whenever it finishes, the session ready or
+    // not: compare with the file from after that.
+    tui.wait_until("the GitHub check wasn't saved", || {
+        std::fs::read_to_string(&tickets).is_ok_and(|t| t.contains("\"not_git\""))
+    });
     let saved = std::fs::read_to_string(&tickets).unwrap();
 
     let second = taskman(&dir).stdin(Stdio::null()).output().unwrap();
