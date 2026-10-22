@@ -9,6 +9,8 @@
 # release, to build one again after deleting it or after CI on its commit was re-run (or started
 # by hand) and passed:
 #   gh workflow run release.yml -f tag=v1.2.3
+# A run for a tag that already has a published release builds nothing and ends green: that's the
+# tag push GitHub delivered late, after the release script had started a run by hand.
 # That runs this file as it is on main. A tag from before rust-toolchain.toml and the dist profile
 # needs the workflow it was tagged with: add --ref v1.2.3.
 #
@@ -47,12 +49,16 @@ concurrency:
     release-${{ inputs.dry_run && format('dry-run-{0}', github.sha)
     || inputs.tag || github.ref_name }}
   cancel-in-progress: false
+  # Runs for one tag wait their turn, all of them: with the default queue of one, a third run
+  # would cancel the one waiting, leaving a red run on the release commit.
+  queue: max
 
 jobs:
   # What to build: the tag's commit, or in a dry run the commit it was started on. Checked here,
   # before a runner is taken for each build. Reads Cargo.toml through the API; runs no project code.
   # Each job after it has the tag as TAG: the one pushed or given when started by hand, or in a
   # dry run Cargo.toml's version as a tag, which names the archives and each binary must say.
+  # `done` is true when the tag already has a published release, and the other jobs then skip.
   version:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -61,6 +67,7 @@ jobs:
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       ref: ${{ steps.version.outputs.ref }}
+      done: ${{ steps.version.outputs.done }}
     steps:
       - name: Name the version
         id: version
@@ -94,6 +101,16 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          # A release's runs queue one after another (concurrency above), so one that finds the
+          # tag released came after the run that released it: a tag push GitHub delivered after
+          # the release script had given up on it and started a run by hand. Skipped, not failed
+          # or cancelled, so the release commit stays green. A draft is a failed run's, which
+          # this one replaces. Only a published release has draft false; a missing one is a 404.
+          if [ "$DRY_RUN" != true ] \
+            && [ "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .draft 2>/dev/null)" = false ]; then
+            echo "::notice title=Already released::$tag already has a published release, so this run builds nothing. To build it again, delete the release first (gh release delete $tag)."
+            echo "done=true" >> "$GITHUB_OUTPUT"
+          fi
 
   # CI on main must have passed on the tag's commit. Releases are immutable and every install
   # updates to the new one within the hour, so a broken one can only be replaced by another
@@ -105,6 +122,7 @@ jobs:
   # and doesn't fail on it.
   ci:
     needs: version
+    if: ${{ needs.version.outputs.done != 'true' }}
     runs-on: ubuntu-24.04
     env:
       TAG: ${{ needs.version.outputs.tag }}
@@ -115,6 +133,12 @@ jobs:
       actions: read
       contents: read
     steps:
+      # While GitHub has trouble its answers flap: a run it listed can be missing from the next
+      # answer, so once a run has been seen, an empty answer or a failed gh is no news. A run can
+      # also stay in progress for hours after its last job ended; one whose jobs have all passed,
+      # and still hasn't ended ten minutes later, has passed. When the wait runs out, this job
+      # fails, and running it again resumes the release with the builds already made:
+      #   gh run rerun <this run> --failed
       - name: Wait for CI on the tag's commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -125,49 +149,80 @@ jobs:
             sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$TAG" --jq .sha)" branch=main
             echo "$TAG is $sha"
           fi
+          rerun="carry on with this release: gh run rerun $GITHUB_RUN_ID --failed"
           start=$(date +%s)
+          seen=""
+          passed_at=""
+          last=""
           while :; do
-            # "status|conclusion|url" of a run on the branch, pushed or started by hand (null
-            # when there's none): one that passed, else one still going, else the latest. The
-            # conclusion is empty until it ends.
+            # "id|status|conclusion|url" of a run on the branch, pushed or started by hand
+            # ("null|null|null|null" when there's none): one that passed, else one still going,
+            # else the latest. The conclusion is empty until it ends.
             run="$(gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$sha" \
-              --branch "$branch" --limit 10 --json event,status,conclusion,url --jq '
+              --branch "$branch" --limit 10 --json databaseId,event,status,conclusion,url --jq '
                 map(select(.event == "push" or .event == "workflow_dispatch"))
                 | (map(select(.conclusion == "success")) + map(select(.status != "completed"))
                   + .)[0] // {}
-                | "\(.status)|\(.conclusion)|\(.url)"')"
-            IFS='|' read -r status conclusion url <<<"$run"
+                | "\(.databaseId)|\(.status)|\(.conclusion)|\(.url)"')" || run=""
+            IFS='|' read -r id status conclusion url <<<"$run"
+            now=$(date +%s)
             if [ "$DRY_RUN" = true ]; then
-              echo "CI on $branch at $sha, as a release would read it: ${run/#null|*/no run}"
+              case "$status" in
+                "" | null) found="no run" ;;
+                *) found="$status ${conclusion:+$conclusion }$url" ;;
+              esac
+              echo "CI on $branch at $sha, as a release would read it: $found"
               exit 0
             fi
-            if [ "$status" = completed ]; then
-              if [ "$conclusion" = success ]; then
-                echo "CI passed on $sha: $url"
-                exit 0
-              fi
-              echo "CI on $sha ended $conclusion: $url" >&2
-              echo "Fix main and release a new version, or re-run CI and start this again." >&2
+            case "$status" in
+              completed)
+                if [ "$conclusion" = success ]; then
+                  echo "CI passed on $sha: $url"
+                  exit 0
+                fi
+                echo "CI on $sha ended $conclusion: $url" >&2
+                echo "Fix main and release a new version, or re-run CI; once it has passed, $rerun" >&2
+                exit 1
+                ;;
+              "" | null)
+                if [ -z "$seen" ] && [ $((now - start)) -gt 600 ]; then
+                  echo "No CI run on main for $sha. While it's main's latest commit, start one" \
+                    "(gh workflow run ci.yml --ref main); once it has passed, $rerun" >&2
+                  exit 1
+                fi
+                ;;
+              *)
+                seen="$url"
+                passed="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs?per_page=100" \
+                  --jq '.total_count > 0 and all(.jobs[]; .status == "completed"
+                    and (.conclusion | IN("success", "skipped")))')" || passed=""
+                if [ "$passed" = true ]; then
+                  passed_at="${passed_at:-$now}"
+                  if [ $((now - passed_at)) -ge 600 ]; then
+                    echo "Every job of CI on $sha passed, though GitHub still says the run is $status: $url"
+                    exit 0
+                  fi
+                else
+                  passed_at=""
+                fi
+                ;;
+            esac
+            if [ $((now - start)) -gt 3000 ]; then
+              echo "CI on $sha hasn't finished: ${seen:-no run}. Once it has passed, or a run" \
+                "started by hand (gh workflow run ci.yml --ref main) has, $rerun" >&2
               exit 1
             fi
-            waited=$(( $(date +%s) - start ))
-            if [ "$status" = null ] && [ "$waited" -gt 600 ]; then
-              echo "No CI run on main for $sha. While it's main's latest commit, start one" \
-                "(gh workflow run ci.yml --ref main) and then this again" \
-                "(gh workflow run release.yml -f tag=$TAG)." >&2
-              exit 1
+            if [ "${seen:-not started}" != "$last" ]; then
+              last="${seen:-not started}"
+              echo "Waiting for CI on $sha: $last"
             fi
-            if [ "$waited" -gt 3000 ]; then
-              echo "CI on $sha hasn't finished: $url. Start this again once it has, or once" \
-                "a run started by hand (gh workflow run ci.yml --ref main) has passed." >&2
-              exit 1
-            fi
-            echo "Waiting for CI on $sha: ${url/#null/not started}"
             sleep 30
           done
 
+  # The check and release jobs after it skip when it does, as needs skip jobs whose needs skipped.
   build:
     needs: version
+    if: ${{ needs.version.outputs.done != 'true' }}
     permissions:
       contents: read
     strategy:
@@ -363,8 +418,8 @@ jobs:
           path: SHA256SUMS
           if-no-files-found: error
 
-  # The only job that can write. Skipped in a dry run, and whenever a build, the check or CI
-  # failed: nothing is published, attested or drafted.
+  # The only job that can write. Skipped in a dry run, for a tag already released, and whenever a
+  # build, the check or CI failed: nothing is published, attested or drafted.
   release:
     needs: [version, ci, check]
     if: ${{ !inputs.dry_run }}
@@ -390,6 +445,28 @@ jobs:
             echo "The archives aren't the ones SHA256SUMS lists." >&2
             exit 1
           fi
+
+      # Before anything is attested. The version job skips a released tag; this is in case one
+      # was released by hand while the builds ran.
+      - name: Check the tag has no release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          api="repos/$GITHUB_REPOSITORY/releases"
+          if gh api "$api/tags/$TAG" --silent 2>/dev/null; then
+            echo "$TAG already has a release; delete it first to build it again." >&2
+            exit 1
+          fi
+          # Creating a release for a missing tag would tag the default branch instead.
+          if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --silent; then
+            echo "$TAG isn't a tag of $GITHUB_REPOSITORY." >&2
+            exit 1
+          fi
+          # A run that failed part-way may have left a draft; the one published must be this run's.
+          for id in $(gh api "$api?per_page=100" --paginate \
+            --jq ".[] | select(.draft and .tag_name == \"$TAG\") | .id"); do
+            gh api -X DELETE "$api/$id"
+          done
 
       # Signed statements that this workflow built each file from the tag, kept by GitHub, so
       # `gh attestation verify` can tell a release's files from ones built anywhere else.
@@ -424,21 +501,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           api="repos/$GITHUB_REPOSITORY/releases"
-          if gh api "$api/tags/$TAG" --silent 2>/dev/null; then
-            echo "$TAG already has a release; delete it first to build it again." >&2
-            exit 1
-          fi
-          # Creating a release for a missing tag would tag the default branch instead.
-          if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --silent; then
-            echo "$TAG isn't a tag of $GITHUB_REPOSITORY." >&2
-            exit 1
-          fi
-          # A run that failed part-way may have left a draft; the one published must be this run's.
-          for id in $(gh api "$api?per_page=100" --paginate \
-            --jq ".[] | select(.draft and .tag_name == \"$TAG\") | .id"); do
-            gh api -X DELETE "$api/$id"
-          done
-
           if grep -q '[^[:space:]]' notes.md; then
             jq -n --arg tag "$TAG" --rawfile body notes.md \
               '{tag_name: $tag, name: "taskman \($tag)", body: $body, draft: true}'

@@ -95,6 +95,8 @@ jobs:
           if-no-files-found: ignore
       # The install script and `taskman update` against fake releases on a local server.
       - run: cargo build --locked && scripts/test-install.sh
+      # The release script against a local origin, with gh and cargo faked.
+      - run: scripts/test-release.sh
 
   # How much of the code the tests run, in the run's summary and as a notice on the pull request.
   # A report, not a gate: its failure leaves the run green, as cargo test has no rerun for a flaky
