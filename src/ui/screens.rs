@@ -794,6 +794,64 @@ fn first_run_5_connected() {
     assert_snapshot!(draw(&mut app, 120, 40));
 }
 
+/// The first-run Jira form taller than the screen, as a user goes through it: Tab to Project,
+/// type a key and Enter with no site. The form scrolls to Project, and its error and keys stay
+/// at the bottom.
+fn first_run_without_a_site(w: u16, h: u16) -> String {
+    let mut app = first_run(true);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(key(KeyCode::Char('P')));
+    draw(&mut app, w, h);
+    app.on_key(key(KeyCode::Tab));
+    app.on_key(key(KeyCode::Right));
+    for _ in 0..6 {
+        app.on_key(key(KeyCode::Tab));
+        draw(&mut app, w, h);
+    }
+    "xyz".chars().for_each(|c| app.on_key(key(KeyCode::Char(c))));
+    app.on_key(key(KeyCode::Enter));
+    crate::app::test_support::draw_cursor(&mut app, w, h)
+}
+
+#[test]
+fn first_run_without_a_site_at_80x24() {
+    let screen = first_run_without_a_site(80, 24);
+    for want in ["Project  xyz", "Enter the Jira site", "Esc back to list"] {
+        assert!(screen.contains(want), "{want:?} not shown:\n{screen}");
+    }
+    assert_snapshot!(screen);
+}
+
+/// At 60 columns each value and hint goes under its label: a hint keeps a line's width.
+#[test]
+fn first_run_without_a_site_at_60x20() {
+    let screen = first_run_without_a_site(60, 20);
+    for want in ["xyz", "Enter the Jira site", "Esc back to list"] {
+        assert!(screen.contains(want), "{want:?} not shown:\n{screen}");
+    }
+    assert_snapshot!(screen);
+}
+
+/// Settings → General at 80x24, on its last field: scrolled to it, with the fields above counted.
+#[test]
+fn settings_general_at_80x24() {
+    let mut app = acme_app();
+    app.open_settings(SettingsItem::General, true);
+    for _ in 0..6 {
+        app.on_key(key(KeyCode::Down));
+        draw(&mut app, 80, 24);
+    }
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
+/// Settings → General at 60x20, on its first field.
+#[test]
+fn settings_general_at_60x20() {
+    let mut app = acme_app();
+    app.open_settings(SettingsItem::General, true);
+    assert_snapshot!(draw(&mut app, 60, 20));
+}
+
 /// Deleting an account whose token is in the keychain offers to delete that too.
 #[test]
 fn delete_account_with_its_keychain_item() {

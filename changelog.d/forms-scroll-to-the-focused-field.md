@@ -1,0 +1,1 @@
+- In a short window, such as 80x24, the Settings and Add forms scroll to keep the field you're on in view, and their error and keys stay on screen: the Jira and Linear forms of a first run no longer type into fields you can't see. In a narrow one, each value and its hint go under the label instead of being squeezed beside it.

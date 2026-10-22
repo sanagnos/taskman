@@ -138,8 +138,9 @@ pub struct AgentAsk {
     pub view: Scroll,
 }
 
-/// A view scrolled by `top` rows: the notices, and an approval dialog's body.
-#[derive(Default)]
+/// A view scrolled by `top` rows: the notices, an approval dialog's body, and a form taller than
+/// its pane.
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Scroll {
     pub top: usize,
     /// The most `top` can be, and how many rows a page is, as last drawn.

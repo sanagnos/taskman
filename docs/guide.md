@@ -110,7 +110,7 @@ The prefix is `ctrl+a` (`ctrl+a a` sends a literal one). Use tmux or screen with
 
 ## Set up
 
-Everything is set up in **Settings** (`ctrl+a ,`): the prefix key, updates, sleeping, the theme, projects and accounts are listed on the left, the selected one's settings on the right. ↑/↓ choose, Enter edits, Enter again saves, `ctrl+d` deletes, Esc goes back. `ctrl+a P` and `ctrl+a A` open it on a new project or a new account.
+Everything is set up in **Settings** (`ctrl+a ,`): the prefix key, updates, sleeping, the theme, projects and accounts are listed on the left, the selected one's settings on the right. ↑/↓ choose, Enter edits, Enter again saves, `ctrl+d` deletes, Esc goes back. `ctrl+a P` and `ctrl+a A` open it on a new project or a new account. In a window too short for a form, here or in the Add form, the form scrolls to keep the field you're on in view, with its error and keys below it; in a narrow one, each value and its hint go under the label.
 
 In this and every form, Tab and ↑/↓ move between fields and ←/→ change a choice (shown in `‹ ›`). In a text field, ←/→ move the cursor, Home and End go to the start and end, ctrl+←/→ (or alt+←/→) move a word, Backspace and Delete delete before and after the cursor, ctrl+w deletes the word before it and ctrl+u clears the field; typing and pasting go in at the cursor. A token's field takes the same keys, but its word moves go to its start and end.
 

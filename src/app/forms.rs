@@ -256,6 +256,9 @@ pub struct Form {
     /// The ticket prefix a project form filled in itself, which it may change again until the user
     /// types another.
     pub(super) suggested: Option<String>,
+    /// How far a form taller than its pane is scrolled: kept from frame to frame, as `Field::view`
+    /// is, so the form moves only when the focused field would leave the view.
+    pub view: Cell<super::Scroll>,
 }
 
 impl Form {
@@ -273,6 +276,7 @@ impl Form {
             stored: None,
             choices: None,
             suggested: None,
+            view: Cell::default(),
         }
     }
 
