@@ -642,6 +642,17 @@ impl Provider {
         }
     }
 
+    /// What a comment on one of its tickets is called beside the PR's: GitHub's are on the issue,
+    /// as the PR's are on GitHub too. Local files have no comments, so theirs is never shown.
+    pub fn comment_noun(self) -> &'static str {
+        match self {
+            Provider::Jira => "Jira comment",
+            Provider::Linear => "Linear comment",
+            Provider::Github => "issue comment",
+            Provider::Local => "comment",
+        }
+    }
+
     /// Whether it's reached with an account's credentials; Local files are read from the project,
     /// and GitHub Issues through gh's own login.
     pub fn needs_account(self) -> bool {

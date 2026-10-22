@@ -302,18 +302,45 @@ fn badge(state: AgentState, seen: bool, new: bool) -> Span<'static> {
     }
 }
 
-/// A faint background for the selected card, the footer and a focused field (`Theme::selection`).
-/// A ticket's new comments and reviews, by where they are: `3 new on issue`, `1 new on PR`, or
-/// `2 issue · 1 PR new`; None when there are none.
-fn new_label(tv: &TicketView) -> Option<String> {
-    match tv.new_counts() {
-        (0, 0) => None,
-        (n, 0) => Some(format!("{n} new on issue")),
-        (0, n) => Some(format!("{n} new on PR")),
-        (issue, pr) => Some(format!("{issue} issue · {pr} PR new")),
-    }
+/// A ticket's new comments and reviews, by where they are, in at most `room` columns where it
+/// can be (`new_wording`); None when there are none.
+fn new_label(app: &App, tv: &TicketView, room: usize) -> Option<String> {
+    let noun = app
+        .project_of(&tv.t)
+        .and_then(|p| app.projects[p].tracker.as_ref())
+        .map_or("issue comment", |t| t.provider.comment_noun());
+    let (issue, pr) = tv.new_counts();
+    new_wording(issue, pr, noun, room)
 }
 
+/// `2 new Jira comments`, `1 new PR comment` (reviews count as comments), `2 new Jira comments, 1
+/// on the PR`; just `3 new comments` when that's wider than `room`.
+fn new_wording(issue: usize, pr: usize, noun: &str, room: usize) -> Option<String> {
+    let s = |n: usize| if n == 1 { "" } else { "s" };
+    let full = match (issue, pr) {
+        (0, 0) => return None,
+        (n, 0) => format!("{n} new {noun}{}", s(n)),
+        (0, n) => format!("{n} new PR comment{}", s(n)),
+        (i, p) => format!("{i} new {noun}{}, {p} on the PR", s(i)),
+    };
+    if crate::util::width(&full) <= room {
+        return Some(full);
+    }
+    Some(total_wording(issue + pr))
+}
+
+/// A ticket's new comments and reviews, wherever they are: `3 new comments`. The sidebar's, so
+/// the card's title keeps its room; the board says where they are (`new_label`).
+fn new_total(tv: &TicketView) -> Option<String> {
+    let (issue, pr) = tv.new_counts();
+    (issue + pr > 0).then(|| total_wording(issue + pr))
+}
+
+fn total_wording(n: usize) -> String {
+    format!("{n} new comment{}", if n == 1 { "" } else { "s" })
+}
+
+/// A faint background for the selected card, the footer and a focused field (`Theme::selection`).
 fn selection_bg() -> Color {
     crate::theme::current().selection
 }
@@ -503,5 +530,56 @@ mod tests {
         let none = layout(screen, &prefs, (false, false));
         assert_eq!((none.jira, none.gh), (None, None));
         assert_eq!(none.claude.x + none.claude.width, screen.width);
+    }
+
+    #[test]
+    fn new_comments_are_counted_by_where_they_are() {
+        let wide = 80;
+        let say = |issue, pr| new_wording(issue, pr, "Jira comment", wide);
+        assert_eq!(say(0, 0), None);
+        assert_eq!(say(1, 0).as_deref(), Some("1 new Jira comment"));
+        assert_eq!(say(2, 0).as_deref(), Some("2 new Jira comments"));
+        assert_eq!(say(0, 1).as_deref(), Some("1 new PR comment"));
+        assert_eq!(say(0, 2).as_deref(), Some("2 new PR comments"));
+        assert_eq!(say(2, 1).as_deref(), Some("2 new Jira comments, 1 on the PR"));
+        assert_eq!(say(1, 3).as_deref(), Some("1 new Jira comment, 3 on the PR"));
+    }
+
+    #[test]
+    fn new_comments_name_the_tracker() {
+        use crate::store::Provider;
+        let say = |p: Provider| new_wording(1, 0, p.comment_noun(), 80).unwrap();
+        assert_eq!(say(Provider::Jira), "1 new Jira comment");
+        assert_eq!(say(Provider::Linear), "1 new Linear comment");
+        // Not just "new comment", so it isn't taken for the PR's.
+        assert_eq!(say(Provider::Github), "1 new issue comment");
+        let both = |p: Provider| new_wording(2, 2, p.comment_noun(), 80).unwrap();
+        assert_eq!(both(Provider::Linear), "2 new Linear comments, 2 on the PR");
+        assert_eq!(both(Provider::Github), "2 new issue comments, 2 on the PR");
+    }
+
+    #[test]
+    fn new_comments_too_wide_are_only_counted() {
+        let say = |issue, pr, room| new_wording(issue, pr, "Jira comment", room).unwrap();
+        let full = "2 new Jira comments, 1 on the PR";
+        assert_eq!(say(2, 1, full.len()), full);
+        assert_eq!(say(2, 1, full.len() - 1), "3 new comments");
+        assert_eq!(say(1, 0, 10), "1 new comment");
+        assert_eq!(say(0, 2, 10), "2 new comments");
+    }
+
+    #[test]
+    fn the_sidebar_counts_new_comments_without_saying_where() {
+        let mut app = acme_app();
+        let i = |app: &App, key: &str| app.tickets.iter().position(|tv| tv.t.key == key).unwrap();
+        let total = |app: &App, key: &str| new_total(&app.tickets[i(app, key)]);
+        // On the issue and the PR, on the PR, and on the issue.
+        assert_eq!(total(&app, "ENG-53").as_deref(), Some("3 new comments"));
+        assert_eq!(total(&app, "ENG-61").as_deref(), Some("3 new comments"));
+        assert_eq!(total(&app, "ENG-70").as_deref(), Some("2 new comments"));
+        // Selecting marks them read.
+        app.select(i(&app, "ENG-70"));
+        assert_eq!(total(&app, "ENG-70"), None);
+        assert_eq!(total_wording(1), "1 new comment");
     }
 }
