@@ -1,0 +1,1 @@
+- The dialog that approves an agent from `taskman add --agent` keeps its keys on screen on small terminals: a long role scrolls with ↑/↓ and says how many lines are hidden. Every line of the role has a `│` bar in front, so none can pass for taskman's own text, and approving after the command stopped waiting no longer says it was added "while taskman was closed".

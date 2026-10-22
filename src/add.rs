@@ -82,8 +82,8 @@ pub struct Request {
     /// The ticket the tickets stack on (`--on`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
-    /// Unix time the command stops waiting: a reply after it has no reader, and the request was
-    /// queued while taskman was closed.
+    /// Unix time the command stops waiting: a reply after it has no reader, and a request already
+    /// past it when taskman takes it was queued while taskman was closed.
     pub reply_by: i64,
     /// Close the items instead of adding them (`taskman close`).
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -37,15 +37,6 @@ pub struct Logged {
     pub ts: i64,
 }
 
-/// `prefix ~`: the log, newest first, scrolled by `top` rows.
-#[derive(Default)]
-pub struct LogView {
-    pub top: usize,
-    /// The most `top` can be, and how many rows a page is, as last drawn.
-    pub max: usize,
-    pub page: usize,
-}
-
 impl App {
     pub fn toast(&mut self, msg: impl Into<String>) {
         self.show(Level::Info, msg.into(), SHOWN);
@@ -105,7 +96,7 @@ impl App {
         if self.toast_log.is_empty() {
             self.toast("Nothing has been shown yet");
         } else {
-            self.mode = super::Mode::Log(LogView::default());
+            self.mode = super::Mode::Log(super::Scroll::default());
         }
     }
 }

@@ -470,15 +470,46 @@ fn close_dialog_keeping_the_worktree() {
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 
+fn ask_for_agent(app: &mut crate::app::App, role: &str) {
+    let req = serde_json::from_value(serde_json::json!({
+        "repo": "/src/acme", "from": "✦ lead", "reply_by": 0,
+        "items": [{ "kind": "agent", "name": "tester", "role": role }],
+    }))
+    .unwrap();
+    let shown = Instant::now();
+    let view = Default::default();
+    app.mode =
+        Mode::ConfirmAgent(Box::new(AgentAsk { req, open: false, shown, closed: false, view }));
+}
+
 #[test]
 fn agent_approval() {
     let mut app = acme_app();
-    let req = serde_json::from_value(serde_json::json!({
-        "repo": "/src/acme", "from": "✦ lead", "reply_by": 0,
-        "items": [{ "kind": "agent", "name": "tester", "role": "Run the test suite on each PR and report failures" }],
-    }))
-    .unwrap();
-    app.mode = Mode::ConfirmAgent(Box::new(AgentAsk { req, open: false, shown: Instant::now() }));
+    ask_for_agent(&mut app, "Run the test suite on each PR and report failures");
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
+/// A role longer than the dialog has room for: the question, the note and the keys stay, and
+/// the role scrolls between them, every row of it behind the quote bar.
+fn long_role() -> String {
+    let para = "Review every pull request in the acme repository and report findings to the lead. ";
+    let role = format!("{}\n\n{}", para.repeat(4).trim(), para.repeat(4));
+    role.chars().take(600).collect()
+}
+
+#[test]
+fn agent_approval_with_a_long_role() {
+    let mut app = acme_app();
+    ask_for_agent(&mut app, &long_role());
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
+#[test]
+fn agent_approval_with_a_long_role_scrolled_to_the_end() {
+    let mut app = acme_app();
+    ask_for_agent(&mut app, &long_role());
+    draw(&mut app, 80, 24);
+    app.on_key(key(KeyCode::End));
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 

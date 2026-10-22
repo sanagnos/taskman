@@ -6,7 +6,7 @@
 use super::sync::Msg;
 use super::ticket::{Added, merged_head, own_worktree};
 use super::tickets::Closed;
-use super::{AgentAsk, App, FormKind, Mode};
+use super::{AgentAsk, App, FormKind, Mode, Scroll};
 use crate::session::Reaper;
 use crate::store::{self, Base, Ticket};
 use crate::ticket_key;
@@ -50,16 +50,20 @@ impl App {
         }
         let mut toasts = Vec::new();
         for (id, req) in add::take() {
+            // Past the time the command waits for a reply as it's taken: it was queued while
+            // taskman was closed. Decided here, as an agent's request is past it by the time the
+            // user has read the dialog.
+            let closed = add::queued(&req, util::now());
             if req.close.is_some() {
                 self.close_requested(id, req);
                 continue;
             }
             if req.agent().is_some() {
                 add::reply(&id, &req, &add::asked(&req, self.agent_open(&req)));
-                self.asking.push_back(req);
+                self.asking.push_back((req, closed));
                 continue;
             }
-            let (lines, toast) = self.add_requested(&req);
+            let (lines, toast) = self.add_requested(&req, closed);
             add::reply(&id, &req, &lines);
             toasts.extend(toast);
             self.dirty.store(true, Ordering::Relaxed);
@@ -284,10 +288,17 @@ impl App {
         if !matches!(self.mode, Mode::Normal) || self.prefix {
             return;
         }
-        let Some(req) = self.asking.pop_front() else { return };
+        let Some((req, closed)) = self.asking.pop_front() else { return };
         let open = self.agent_open(&req);
         self.selection = None;
-        self.mode = Mode::ConfirmAgent(Box::new(AgentAsk { req, open, shown: Instant::now() }));
+        let shown = Instant::now();
+        self.mode = Mode::ConfirmAgent(Box::new(AgentAsk {
+            req,
+            open,
+            shown,
+            closed,
+            view: Scroll::default(),
+        }));
         self.dirty.store(true, Ordering::Relaxed);
     }
 
@@ -299,14 +310,15 @@ impl App {
 
     /// The user's answer to an agent `taskman add` asked for. The command was answered when the
     /// request came in, so this only toasts.
-    pub(super) fn answer_agent(&mut self, req: &add::Request, yes: bool) {
+    pub(super) fn answer_agent(&mut self, ask: &AgentAsk, yes: bool) {
+        let req = &ask.req;
         let name = req.agent().map(|(n, _)| store::slug(n)).unwrap_or_default();
         if !yes {
             let from = req.from.as_ref().map_or(String::new(), |f| format!(" from {f}"));
             self.toast(format!("Declined ✦ {name}{from}"));
             return;
         }
-        let (lines, toast) = self.add_requested(req);
+        let (lines, toast) = self.add_requested(req, ask.closed);
         match lines.iter().find(|l| !l.ok) {
             Some(err) => self.error(format!("✦ {name}: {}", untrusted::line(&err.text))),
             None => {
@@ -317,8 +329,13 @@ impl App {
         }
     }
 
-    /// Adds a request's tickets or agent; returns the reply and what the toast says.
-    fn add_requested(&mut self, req: &add::Request) -> (Vec<add::Line>, Option<String>) {
+    /// Adds a request's tickets or agent; returns the reply and what the toast says, which says
+    /// so when the request was queued while taskman was `closed`.
+    fn add_requested(
+        &mut self,
+        req: &add::Request,
+        closed: bool,
+    ) -> (Vec<add::Line>, Option<String>) {
         let Some(p) = self.projects.iter().position(|p| p.repo == req.repo) else {
             let e = format!("the project in {} is no longer in taskman", store::tilde(&req.repo));
             return (
@@ -393,8 +410,7 @@ impl App {
         }
         let toast = (!added.is_empty()).then(|| {
             let who = req.from.as_ref().map_or("Added".to_string(), |f| format!("{f} added"));
-            let queued =
-                if add::queued(req, util::now()) { " while taskman was closed" } else { "" };
+            let queued = if closed { " while taskman was closed" } else { "" };
             format!("{who} {}{queued}", added.join(", "))
         });
         (lines, toast)
