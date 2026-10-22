@@ -1,0 +1,1 @@
+- `taskman add --new` run by a session no longer creates the ticket by itself: taskman shows you the title and description and creates the ticket only when you approve, so text a session read can't have it publish a secret as an issue. The command waits up to a minute and prints the new key, or says you declined. From your own shell, `--new` creates the ticket at once as before.

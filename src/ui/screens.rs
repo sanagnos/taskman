@@ -470,16 +470,19 @@ fn close_dialog_keeping_the_worktree() {
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 
-fn ask_for_agent(app: &mut crate::app::App, role: &str) {
+/// Opens the approval dialog for a `taskman add` request with these `items`.
+fn ask(app: &mut crate::app::App, from: &str, items: &serde_json::Value) {
     let req = serde_json::from_value(serde_json::json!({
-        "repo": "/src/acme", "from": "✦ lead", "reply_by": 0,
-        "items": [{ "kind": "agent", "name": "tester", "role": role }],
+        "repo": "/src/acme", "from": from, "reply_by": 0, "items": items,
     }))
     .unwrap();
-    let shown = Instant::now();
-    let view = Default::default();
-    app.mode =
-        Mode::ConfirmAgent(Box::new(AgentAsk { req, open: false, shown, closed: false, view }));
+    let (id, shown, view) = ("0001".into(), Instant::now(), Default::default());
+    let ask = AgentAsk { id, req, open: false, shown, closed: false, view };
+    app.mode = Mode::ConfirmAgent(Box::new(ask));
+}
+
+fn ask_for_agent(app: &mut crate::app::App, role: &str) {
+    ask(app, "✦ lead", &serde_json::json!([{ "kind": "agent", "name": "tester", "role": role }]));
 }
 
 #[test]
@@ -511,6 +514,35 @@ fn agent_approval_with_a_long_role_scrolled_to_the_end() {
     draw(&mut app, 80, 24);
     app.on_key(key(KeyCode::End));
     assert_snapshot!(draw(&mut app, 80, 24));
+}
+
+/// A session's `taskman add --new`: the title and description in full, behind the quote bar,
+/// since the tracker publishes them under the user's account.
+#[test]
+fn new_ticket_approval() {
+    let mut app = acme_app();
+    let description = "The build fails on CI:\n\nAPI_KEY=sk-mock-123";
+    let new =
+        serde_json::json!({ "kind": "new", "title": "Build log", "description": description });
+    ask(&mut app, "✦ lead", &serde_json::json!([new]));
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
+/// A description longer than the dialog shows: it scrolls between the question and the keys,
+/// and past `NEW_SHOWN` characters it says how many are left out.
+#[test]
+fn new_ticket_approval_with_a_long_description() {
+    let mut app = acme_app();
+    let description = "Steps to reproduce the failure. ".repeat(30);
+    let new =
+        serde_json::json!({ "kind": "new", "title": "Flaky test", "description": description });
+    ask(&mut app, "ENG-52", &serde_json::json!([new]));
+    assert_snapshot!(draw(&mut app, 80, 24));
+    app.on_key(key(KeyCode::End));
+    assert_snapshot!(
+        "new_ticket_approval_with_a_long_description_scrolled_to_the_end",
+        draw(&mut app, 80, 24)
+    );
 }
 
 #[test]

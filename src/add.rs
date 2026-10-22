@@ -20,14 +20,16 @@ const USAGE: &str = "Usage: taskman add KEY... [options]
 Adds tickets to taskman as the Add form does, with the project's worktree settings, without
 switching to them. If taskman isn't running, they're added when it starts. An agent, or a new
 role, waits for the user to approve it in taskman; its session then starts at once, so the agent
-that asked can message it.
+that asked can message it. So does --new run in a session taskman started: the command waits up
+to a minute for the user's answer.
 
   KEY             a ticket number (52), key (ENG-52) or link; several at once
   --new TITLE     create a ticket titled TITLE with the project's account, then add it: in
                   Linear's team or Jira's project the prefix names (Jira: a Task), the GitHub
                   repository, or a Local files board's todo column (in the project folder, never
                   a worktree's copy); repeatable. A failed create isn't retried: check the
-                  tracker before running it again
+                  tracker before running it again. From a session, taskman shows the user the
+                  title and description and creates the ticket only once they approve
   --description TEXT
                   with one --new: the new ticket's description (Markdown)
   --agent NAME    a project agent instead of a ticket
@@ -45,6 +47,9 @@ that asked can message it.
 
 /// How long the command waits for the TUI's reply.
 const WAIT: Duration = Duration::from_secs(5);
+/// How long a session's `--new` waits for the user to approve or decline the ticket: short of
+/// Claude Code's two minutes for a command, so the session hears the answer.
+const ASK_WAIT: Duration = Duration::from_secs(60);
 /// The TUI rewrites the `alive` file once a second; one older than this means it isn't running.
 /// So does one further than this in the future: a killed TUI leaves the file, and after the clock
 /// steps back it would otherwise look alive until the clock caught up, refusing every start.
@@ -60,8 +65,8 @@ const STALE_REPLY: Duration = Duration::from_secs(60);
 const MAX_REQUEST: u64 = 1024 * 1024;
 /// What requests the TUI understands, written in the `alive` file so a command run after an
 /// update doesn't ask an older TUI for something it would drop. 2 added `base`, 3 an agent's
-/// `role`, 4 `close`.
-const INBOX_FORMAT: u32 = 4;
+/// `role`, 4 `close`, 5 `new` items.
+const INBOX_FORMAT: u32 = 5;
 
 /// What the command asks the TUI to add, all to one project. Unknown fields are refused rather
 /// than dropped, so a TUI older than the command says so instead of half doing it.
@@ -117,6 +122,14 @@ pub enum Item {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         role: Option<String>,
     },
+    /// A ticket for the TUI to create in the project's tracker, then add: a session's `--new`,
+    /// which waits for the user to approve it.
+    New {
+        title: String,
+        /// Markdown, empty for none.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        description: String,
+    },
 }
 
 impl Request {
@@ -124,9 +137,34 @@ impl Request {
     pub fn agent(&self) -> Option<(&str, Option<&str>)> {
         self.items.iter().find_map(|i| match i {
             Item::Agent { name, role } => Some((name.as_str(), role.as_deref())),
-            Item::Ticket { .. } => None,
+            Item::Ticket { .. } | Item::New { .. } => None,
         })
     }
+
+    /// The tickets to create, each a title and description: the TUI asks the user before creating
+    /// them.
+    pub fn new_tickets(&self) -> Vec<(&str, &str)> {
+        self.items
+            .iter()
+            .filter_map(|i| match i {
+                Item::New { title, description } => Some((title.as_str(), description.as_str())),
+                Item::Ticket { .. } | Item::Agent { .. } => None,
+            })
+            .collect()
+    }
+}
+
+/// The reply to a request to create tickets the user declined.
+pub fn declined(req: &Request) -> Vec<Line> {
+    req.new_tickets()
+        .into_iter()
+        .map(|(title, _)| {
+            Line::err(format!(
+                "the user declined creating \"{}\" in taskman; nothing was created",
+                untrusted::line(title)
+            ))
+        })
+        .collect()
 }
 
 /// The reply to a request for an agent, sent before the user answers: the command doesn't wait
@@ -220,7 +258,9 @@ fn read_alive() -> Option<Alive> {
 /// Why the running TUI can't take this request, if it can't: it's older than the command.
 fn too_old(req: &Request, alive: &Alive) -> Option<String> {
     let role = req.items.iter().any(|i| matches!(i, Item::Agent { role: Some(_), .. }));
-    let (needs, flag) = if req.close.is_some() {
+    let (needs, flag) = if !req.new_tickets().is_empty() {
+        (5, "--new from a session")
+    } else if req.close.is_some() {
         (4, "taskman close")
     } else if role {
         (3, "--role")
@@ -381,6 +421,9 @@ fn add(args: &[String]) -> Result<bool, String> {
     let mut items = Vec::new();
     // Tickets `--new` created, which must not be lost if the request then can't be sent.
     let mut created: Vec<String> = Vec::new();
+    // A session's `--new`: the TUI asks the user, as text the session read may be what asked for
+    // the ticket, and its description can carry anything the session can read.
+    let mut asks = Vec::new();
     if let Some(name) = &a.agent {
         let name = store::slug(name);
         if name.is_empty() {
@@ -399,7 +442,15 @@ fn add(args: &[String]) -> Result<bool, String> {
         }
         let client = Client::for_project(&store::load_config()?, project);
         let mut warned = false;
-        if !a.new.is_empty() {
+        if !a.new.is_empty() && session_repo.is_some() {
+            for title in &a.new {
+                if title.is_empty() {
+                    return Err("give the new ticket a title".into());
+                }
+                let description = a.description.clone().unwrap_or_default();
+                asks.push(Item::New { title: title.clone(), description });
+            }
+        } else if !a.new.is_empty() {
             let c = match &client {
                 Ok(Some(c)) => c,
                 Ok(None) => {
@@ -473,23 +524,26 @@ fn add(args: &[String]) -> Result<bool, String> {
             items.push(Item::Ticket { key, title });
         }
     }
-    if items.is_empty() {
-        return Ok(all_ok);
-    }
-
-    let req = Request {
+    let req = |items| Request {
         repo: project.repo.clone(),
         from: session.as_deref().map(|s| from(s, me)),
         items,
         cli: a.cli,
         worktree: a.worktree,
-        base,
+        base: base.clone(),
         reply_by: 0,
         close: None,
     };
-    let lines = submit(req, WAIT, codex).map_err(|e| not_added(e, &created))?;
-    for line in lines {
-        show(line);
+    if !items.is_empty() {
+        let lines = submit(req(items), WAIT, codex).map_err(|e| not_added(e, &created))?;
+        for line in lines {
+            show(line);
+        }
+    }
+    if !asks.is_empty() {
+        for line in submit(req(asks), ASK_WAIT, codex)? {
+            show(line);
+        }
     }
     Ok(all_ok)
 }
@@ -667,9 +721,16 @@ fn wait(id: &str, wait_for: Duration) -> Option<Vec<Line>> {
 
 /// What to print for a request no reply came for: it stays queued.
 fn waiting_lines(req: &Request, alive: bool) -> Vec<Line> {
-    let whats: Vec<String> = match req.close {
+    let waits = |what: String| {
+        Line::ok(if alive {
+            format!("taskman didn't answer in time; {what} when it does.")
+        } else {
+            format!("taskman isn't running; {what} when it starts.")
+        })
+    };
+    match req.close {
         Some(c) if req.items.is_empty() && c.merged => {
-            vec!["it closes the project's merged tickets".into()]
+            vec![waits("it closes the project's merged tickets".into())]
         }
         Some(c) => req
             .items
@@ -678,33 +739,33 @@ fn waiting_lines(req: &Request, alive: bool) -> Vec<Line> {
                 let name = match item {
                     Item::Ticket { key, .. } => key.clone(),
                     Item::Agent { name, .. } => format!("✦ {name}"),
+                    Item::New { title, .. } => untrusted::line(title),
                 };
-                if c.merged {
+                waits(if c.merged {
                     format!("{name} closes if its PR has merged")
                 } else {
                     format!("{name} closes")
-                }
+                })
             })
             .collect(),
         None => req
             .items
             .iter()
             .map(|item| match item {
-                Item::Ticket { key, .. } => format!("{key} is added"),
-                Item::Agent { name, .. } => format!("it asks the user to approve ✦ {name}"),
+                Item::Ticket { key, .. } => waits(format!("{key} is added")),
+                Item::Agent { name, .. } => waits(format!("it asks the user to approve ✦ {name}")),
+                // taskman has the request: the user hasn't answered.
+                Item::New { title, .. } if alive => Line::ok(format!(
+                    "The user hasn't answered yet. If they approve \"{}\", taskman creates and adds it; `taskman status` lists it then.",
+                    untrusted::line(title)
+                )),
+                Item::New { title, .. } => waits(format!(
+                    "it asks the user to approve creating \"{}\"",
+                    untrusted::line(title)
+                )),
             })
             .collect(),
-    };
-    whats
-        .into_iter()
-        .map(|what| {
-            Line::ok(if alive {
-                format!("taskman didn't answer in time; {what} when it does.")
-            } else {
-                format!("taskman isn't running; {what} when it starts.")
-            })
-        })
-        .collect()
+    }
 }
 
 #[cfg(test)]
@@ -837,6 +898,59 @@ mod tests {
         let mut json = serde_json::to_value(&stacked).unwrap();
         json["later"] = true.into();
         assert!(serde_json::from_value::<Request>(json).is_err());
+    }
+
+    /// A session's `--new` is a request for the TUI to create the ticket once the user approves;
+    /// a TUI before format 5 would add none of it, so it's refused before it's sent.
+    #[test]
+    fn a_sessions_new_ticket_goes_to_taskman_to_create() {
+        let req = Request {
+            repo: "/src/acme-web".into(),
+            from: Some("ENG-52".into()),
+            items: vec![Item::New {
+                title: "Build log".into(),
+                description: "API_KEY=sk-mock-123".into(),
+            }],
+            cli: Cli::Claude,
+            worktree: None,
+            base: None,
+            reply_by: 100,
+            close: None,
+        };
+        assert_eq!(req.new_tickets(), [("Build log", "API_KEY=sk-mock-123")]);
+        assert_eq!(req.agent(), None);
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(
+            json["items"][0],
+            serde_json::json!({ "kind": "new", "title": "Build log", "description": "API_KEY=sk-mock-123" })
+        );
+        assert_eq!(serde_json::from_value::<Request>(json).unwrap(), req);
+        let bare: Item = serde_json::from_str(r#"{"kind":"new","title":"Fix"}"#).unwrap();
+        assert_eq!(bare, Item::New { title: "Fix".into(), description: String::new() });
+
+        assert!(
+            too_old(&req, &Alive { version: "1.3.0".into(), inbox: 4 }).unwrap().starts_with(
+                "taskman 1.3.0 is running, which doesn't know --new from a session yet"
+            )
+        );
+        assert_eq!(too_old(&req, &Alive { version: "1.4.0".into(), inbox: INBOX_FORMAT }), None);
+
+        assert_eq!(
+            declined(&req),
+            [Line::err("the user declined creating \"Build log\" in taskman; nothing was created")]
+        );
+        assert_eq!(
+            waiting_lines(&req, true),
+            [Line::ok(
+                "The user hasn't answered yet. If they approve \"Build log\", taskman creates and adds it; `taskman status` lists it then."
+            )]
+        );
+        assert_eq!(
+            waiting_lines(&req, false),
+            [Line::ok(
+                "taskman isn't running; it asks the user to approve creating \"Build log\" when it starts."
+            )]
+        );
     }
 
     #[test]
