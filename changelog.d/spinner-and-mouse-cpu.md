@@ -1,0 +1,1 @@
+- On Linux and WSL, taskman uses less processor time while a spinner shows or the selected session prints: it no longer polls the terminal over and over in the millisecond before each frame. Moving the mouse over taskman no longer redraws the screen.
