@@ -1,6 +1,6 @@
 //! The sidebar: the projects, their cards, and the list's scrolling.
 
-use super::{dim, new_label, pr_spans, selection_bg, sidebar_badge, state_badge, yellow};
+use super::{dim, new_total, pr_spans, selection_bg, sidebar_badge, state_badge, yellow};
 use crate::app::{App, Hit, Mode, Piece, TicketView};
 use crate::keys::prefix;
 use crate::untrusted;
@@ -334,8 +334,7 @@ fn sidebar_rows(
                     Span::raw(pad),
                     badge,
                 ]));
-                // The tag keeps its width, with ` · ` after it; what follows gets the rest.
-                let new = if selected { None } else { new_label(app, tv, w.saturating_sub(6)) };
+                let new = if selected { None } else { new_total(tv) };
                 if let Some(title) = &title {
                     let title_style = if selected { Style::new() } else { dim() };
                     let mut row = vec![marker.clone(), Span::raw(" ")];

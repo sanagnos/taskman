@@ -326,8 +326,18 @@ fn new_wording(issue: usize, pr: usize, noun: &str, room: usize) -> Option<Strin
     if crate::util::width(&full) <= room {
         return Some(full);
     }
-    let n = issue + pr;
-    Some(format!("{n} new comment{}", s(n)))
+    Some(total_wording(issue + pr))
+}
+
+/// A ticket's new comments and reviews, wherever they are: `3 new comments`. The sidebar's, so
+/// the card's title keeps its room; the board says where they are (`new_label`).
+fn new_total(tv: &TicketView) -> Option<String> {
+    let (issue, pr) = tv.new_counts();
+    (issue + pr > 0).then(|| total_wording(issue + pr))
+}
+
+fn total_wording(n: usize) -> String {
+    format!("{n} new comment{}", if n == 1 { "" } else { "s" })
 }
 
 /// A faint background for the selected card, the footer and a focused field (`Theme::selection`).
@@ -556,5 +566,20 @@ mod tests {
         assert_eq!(say(2, 1, full.len() - 1), "3 new comments");
         assert_eq!(say(1, 0, 10), "1 new comment");
         assert_eq!(say(0, 2, 10), "2 new comments");
+    }
+
+    #[test]
+    fn the_sidebar_counts_new_comments_without_saying_where() {
+        let mut app = acme_app();
+        let i = |app: &App, key: &str| app.tickets.iter().position(|tv| tv.t.key == key).unwrap();
+        let total = |app: &App, key: &str| new_total(&app.tickets[i(app, key)]);
+        // On the issue and the PR, on the PR, and on the issue.
+        assert_eq!(total(&app, "ENG-53").as_deref(), Some("3 new comments"));
+        assert_eq!(total(&app, "ENG-61").as_deref(), Some("3 new comments"));
+        assert_eq!(total(&app, "ENG-70").as_deref(), Some("2 new comments"));
+        // Selecting marks them read.
+        app.select(i(&app, "ENG-70"));
+        assert_eq!(total(&app, "ENG-70"), None);
+        assert_eq!(total_wording(1), "1 new comment");
     }
 }
