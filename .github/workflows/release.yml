@@ -6,7 +6,8 @@
 # run on its runner said the tag's version.
 #
 # Runs when a version tag (v1.2.3) is pushed. It can also be started by hand for a tag without a
-# release, to build one again after deleting it or after CI on its commit was re-run and passed:
+# release, to build one again after deleting it or after CI on its commit was re-run (or started
+# by hand) and passed:
 #   gh workflow run release.yml -f tag=v1.2.3
 # That runs this file as it is on main. A tag from before rust-toolchain.toml and the dist profile
 # needs the workflow it was tagged with: add --ref v1.2.3.
@@ -98,13 +99,16 @@ jobs:
   # updates to the new one within the hour, so a broken one can only be replaced by another
   # version; and an admin's push to main skips the required checks but still runs CI. The release
   # script pushes the release commit and its tag together, so CI on it is usually still running:
-  # this waits for it. Runs no project code, alongside the builds. A dry run has no tag to wait on.
+  # this waits for it. A run started by hand counts as well as a pushed one, for when GitHub drops
+  # the push event or a run never ends. Runs no project code, alongside the builds. A dry run has
+  # no tag: it looks once at CI on its own commit and branch, to show what a release would read,
+  # and doesn't fail on it.
   ci:
     needs: version
-    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-24.04
     env:
       TAG: ${{ needs.version.outputs.tag }}
+      DRY_RUN: ${{ inputs.dry_run }}
     # CI's slowest job has 30 minutes, after waiting for a runner.
     timeout-minutes: 60
     permissions:
@@ -115,16 +119,28 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$TAG" --jq .sha)"
-          echo "$TAG is $sha"
+          if [ "$DRY_RUN" = true ]; then
+            sha="$GITHUB_SHA" branch="$GITHUB_REF_NAME"
+          else
+            sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$TAG" --jq .sha)" branch=main
+            echo "$TAG is $sha"
+          fi
           start=$(date +%s)
           while :; do
-            # "status|conclusion|url" of the latest run (null when there's none); the conclusion
-            # is empty until it ends.
+            # "status|conclusion|url" of a run on the branch, pushed or started by hand (null
+            # when there's none): one that passed, else one still going, else the latest. The
+            # conclusion is empty until it ends.
             run="$(gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$sha" \
-              --event push --branch main --limit 1 --json status,conclusion,url \
-              --jq '.[0] // {} | "\(.status)|\(.conclusion)|\(.url)"')"
+              --branch "$branch" --limit 10 --json event,status,conclusion,url --jq '
+                map(select(.event == "push" or .event == "workflow_dispatch"))
+                | (map(select(.conclusion == "success")) + map(select(.status != "completed"))
+                  + .)[0] // {}
+                | "\(.status)|\(.conclusion)|\(.url)"')"
             IFS='|' read -r status conclusion url <<<"$run"
+            if [ "$DRY_RUN" = true ]; then
+              echo "CI on $branch at $sha, as a release would read it: ${run/#null|*/no run}"
+              exit 0
+            fi
             if [ "$status" = completed ]; then
               if [ "$conclusion" = success ]; then
                 echo "CI passed on $sha: $url"
@@ -136,11 +152,14 @@ jobs:
             fi
             waited=$(( $(date +%s) - start ))
             if [ "$status" = null ] && [ "$waited" -gt 600 ]; then
-              echo "No CI run on main for $sha: release a commit that CI passed on main." >&2
+              echo "No CI run on main for $sha. While it's main's latest commit, start one" \
+                "(gh workflow run ci.yml --ref main) and then this again" \
+                "(gh workflow run release.yml -f tag=$TAG)." >&2
               exit 1
             fi
             if [ "$waited" -gt 3000 ]; then
-              echo "CI on $sha hasn't finished: $url. Start this again once it has." >&2
+              echo "CI on $sha hasn't finished: $url. Start this again once it has, or once" \
+                "a run started by hand (gh workflow run ci.yml --ref main) has passed." >&2
               exit 1
             fi
             echo "Waiting for CI on $sha: ${url/#null/not started}"

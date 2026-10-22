@@ -1,6 +1,9 @@
 # Formatting, lints, tests and a coverage report on every pull request and every push to main,
 # and every week the tests again and a dependency check, so a new runner image or toolchain and
-# new security advisories show up without a pull request.
+# new security advisories show up without a pull request. It can be started by hand too, for when
+# GitHub drops a push event or a run never ends: `gh workflow run ci.yml --ref main`.
+# The release gates (scripts/release.sh, release.yml's ci job) read the conclusion of a run on
+# main for the commit, pushed or started by hand: a job that's only a report mustn't fail it.
 # Actions are pinned by commit; Dependabot proposes updates (.github/dependabot.yml).
 name: CI
 
@@ -10,14 +13,19 @@ on:
   pull_request:
   schedule:
     - cron: "17 6 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.ref }}
-  # A newer push to a pull request replaces its run. A push to main always finishes: a release
-  # tagged right after a merge used to cancel the merge commit's run.
+  # A newer push to a pull request replaces its run. Anything else is grouped by commit, so each
+  # commit on main keeps a run of its own that finishes: a release tagged right after a merge used
+  # to cancel the merge commit's run, and a group per branch still cancels a run waiting in it when
+  # a third push comes.
+  group: >-
+    ci-${{ github.event_name }}-${{
+    github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -89,11 +97,13 @@ jobs:
       - run: cargo build --locked && scripts/test-install.sh
 
   # How much of the code the tests run, in the run's summary and as a notice on the pull request.
-  # A report, not a gate. Linux only, as macOS minutes are billed. With cargo test rather than
-  # nextest: a process per test would write a profile per test, and contributors run the script
-  # without nextest.
+  # A report, not a gate: its failure leaves the run green, as cargo test has no rerun for a flaky
+  # test the way nextest's ci profile has. Linux only, as macOS minutes are billed. With cargo test
+  # rather than nextest: a process per test would write a profile per test, and contributors run
+  # the script without nextest.
   coverage:
     if: github.event_name != 'schedule'
+    continue-on-error: true
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:

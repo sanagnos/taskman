@@ -51,15 +51,25 @@ fi
 # OWNER/NAME, from Cargo.toml's `repository`.
 repo="$(sed -n 's|^repository = "https://github.com/\(.*\)"|\1|p' Cargo.toml)"
 
+# "status|conclusion|url" of a CI run on main at a commit, pushed or started by hand (null when
+# there's none): one that passed, else one still going, else the latest. As release.yml reads it.
+ci_run() {
+  gh run list -R "$repo" --workflow ci.yml --commit "$1" --branch main --limit 10 \
+    --json event,status,conclusion,url --jq '
+      map(select(.event == "push" or .event == "workflow_dispatch"))
+      | (map(select(.conclusion == "success")) + map(select(.status != "completed")) + .)[0] // {}
+      | "\(.status)|\(.conclusion)|\(.url)"'
+}
+
 # CI on main must have passed on the commit being released. The release commit only adds the
 # version and the changelog; the Release workflow waits for CI on that one before it publishes.
+# GitHub sometimes drops a push event: with no run after two minutes, this starts one by hand on
+# main, which is this commit (checked above).
 sha="$(git rev-parse HEAD)"
 start=$(date +%s)
+dispatched=""
 while :; do
-  # "status|conclusion|url" of the latest run (null when there's none).
-  run="$(gh run list -R "$repo" --workflow ci.yml --commit "$sha" --event push --branch main \
-    --limit 1 --json status,conclusion,url --jq '.[0] // {} | "\(.status)|\(.conclusion)|\(.url)"')"
-  IFS='|' read -r status conclusion url <<<"$run"
+  IFS='|' read -r status conclusion url <<<"$(ci_run "$sha")"
   if [ "$status" = completed ]; then
     [ "$conclusion" = success ] && break
     echo "CI on main didn't pass at $sha ($conclusion): $url. Fix it or re-run it first." >&2
@@ -67,8 +77,14 @@ while :; do
   fi
   waited=$(( $(date +%s) - start ))
   if [ "$status" = null ] && [ "$waited" -gt 120 ]; then
-    echo "No CI run on main for $sha; push it to main first." >&2
-    exit 1
+    if [ -n "$dispatched" ]; then
+      echo "No CI run on main for $sha, even started by hand. Check https://www.githubstatus.com, then run this again." >&2
+      exit 1
+    fi
+    echo "No CI run on main for $sha; starting one by hand."
+    gh workflow run ci.yml -R "$repo" --ref main
+    dispatched=1
+    start=$(date +%s)
   fi
   if [ "$waited" -gt 3600 ]; then
     echo "CI on main hasn't finished at $sha: $url" >&2
@@ -126,6 +142,19 @@ if [ -n "$started" ]; then
 else
   echo "The tag push didn't start the Release workflow; starting it by hand for $tag."
   gh workflow run release.yml -R "$repo" -f tag="$tag"
+fi
+
+# The push to main should start CI on the release commit, which the Release workflow waits for
+# (and gives up on after 10 minutes with no run). If it hasn't within two minutes, start it by hand.
+sha="$(git rev-parse HEAD)"
+ci_started=""
+for _ in $(seq 1 24); do
+  [ "$(ci_run "$sha")" != "null|null|null" ] && { ci_started=1; break; }
+  sleep 5
+done
+if [ -z "$ci_started" ]; then
+  echo "The push to main didn't start CI; starting it by hand on main."
+  gh workflow run ci.yml -R "$repo" --ref main
 fi
 echo "It publishes once CI passes on the release commit."
 echo "Follow the build: gh run list -R $repo --workflow release.yml --limit 1   (then gh run watch <id>)"
