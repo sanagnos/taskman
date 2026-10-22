@@ -151,8 +151,16 @@ impl Plan {
 /// Whether there's something at `path`, refusing a link: taskman removes only its own files and
 /// folders, and reads none through a link either, so it never reaches what a link leads to. Only
 /// `path` itself is taskman's: a link above it (macOS's /var, a home folder reached through one)
-/// is where the user keeps it, and is used as it is.
+/// is where the user keeps it, and is used as it is. A relative path is refused too: what it
+/// names depends on the folder taskman is run from, which may hold a folder of the user's
+/// called taskman.
 fn own(path: &Path) -> Result<bool, String> {
+    if !path.is_absolute() {
+        return Err(format!(
+            "{} isn't a full path, so what it names depends on the folder you run taskman in. Set TASKMAN_CONFIG (or HOME) to a full path, then run taskman uninstall again.",
+            path.display()
+        ));
+    }
     match std::fs::symlink_metadata(path) {
         Ok(m) if m.file_type().is_symlink() => {
             let to = std::fs::read_link(path)

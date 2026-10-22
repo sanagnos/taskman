@@ -46,7 +46,7 @@ Where there's no keychain (WSL, a server), the account form can instead write a 
 
 The account form refuses a source that is none of these, before testing or saving anything.
 
-The config file (`~/.config/taskman/config.json`, or `TASKMAN_CONFIG`) and the state folder (`~/.local/state/taskman`) are created readable by you only.
+The config file (`~/.config/taskman/config.json`, or `TASKMAN_CONFIG`) and the state folder (`~/.local/state/taskman`) are created readable by you only. A save keeps the file's permissions, and writes through a link to the file it leads to rather than replacing the link. An empty or relative `XDG_STATE_HOME` or `XDG_CONFIG_HOME` is ignored, so neither folder is ever one in the folder taskman runs from, and `taskman uninstall --purge` removes only full paths.
 
 ### Updates
 
