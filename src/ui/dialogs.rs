@@ -2,7 +2,7 @@
 
 use super::sidebar::{more_line, scroll_to_show, shown_rows};
 use super::{asleep, badge, dim, selection_bg, spinner};
-use crate::app::{AgentAsk, AgentState, App, Form, Level, Mode, SettingsItem, toasts};
+use crate::app::{AgentAsk, AgentState, App, Form, Level, Mode, Scroll, SettingsItem, toasts};
 use crate::keys::prefix;
 use crate::store::tilde;
 use crate::untrusted;
@@ -155,10 +155,7 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &mut App) {
                 &format!("{lost} The conversation resumes."),
             );
         }
-        Mode::ConfirmAgent(ask) => {
-            let (question, body) = agent_ask_text(ask);
-            draw_confirm_lines(f, &question, body, &[("Enter", "approve"), ("Esc", "decline")]);
-        }
+        Mode::ConfirmAgent(_) => draw_agent_ask(f, app),
         Mode::OfferTmux((repo, key)) => {
             let Some(i) = app.tickets.iter().position(|tv| tv.t.is(repo, key)) else { return };
             let line = app.resume_line(i);
@@ -386,37 +383,151 @@ fn draw_log(f: &mut Frame, app: &mut App) {
 /// The most of a role the dialog shows; a longer one says how much is left out.
 const ROLE_SHOWN: usize = 600;
 
+/// The most of who asks that the question shows: anything can write the inbox.
+const FROM_SHOWN: usize = 40;
+
+const AGENT_ASK_NOTE: &str = "Sessions run taskman add without asking you, and text they read, such as an issue or \
+     a PR comment, can tell them to. Approve it only if you expect it.";
+
 /// The dialog for an agent `taskman add` asked for: who asks, the agent, and its role in full
 /// (up to `ROLE_SHOWN`), since the role goes into the agent's system prompt.
-fn agent_ask_text(ask: &AgentAsk) -> (String, Vec<Line<'static>>) {
+fn draw_agent_ask(f: &mut Frame, app: &mut App) {
+    let Mode::ConfirmAgent(ask) = &mut app.mode else { return };
+    let keys = [("Enter", "approve"), ("Esc", "decline")];
+    let inner = usize::from(ask_width(f, &keys).saturating_sub(2 + DIALOG_PAD_W)).max(1);
+    let (question, body) = agent_ask_text(ask, inner);
+    draw_ask(f, &question, body, AGENT_ASK_NOTE, &keys, &mut ask.view);
+}
+
+/// The question and the body, in rows `width` columns wide.
+fn agent_ask_text(ask: &AgentAsk, width: usize) -> (String, Vec<Line<'static>>) {
     let (name, role) = ask.req.agent().unwrap_or_default();
     let name = crate::store::slug(name);
-    let from = ask.req.from.as_deref().map_or("taskman add".to_string(), untrusted::line);
+    let from = ask
+        .req
+        .from
+        .as_deref()
+        .map_or("taskman add".to_string(), |f| truncate(&untrusted::line(f), FROM_SHOWN));
     let question = match (ask.open, role) {
         (true, Some(_)) => format!("{from} asks to change ✦ {name}'s role"),
         _ => format!("{from} asks to add agent ✦ {name}"),
     };
-    let mut body = vec![Line::from(match (ask.open, role) {
+    let intro = match (ask.open, role) {
         (true, Some(_)) => "The role goes into its startup brief when its session next starts:",
         (true, None) => "It's open already, so this changes nothing.",
         (false, Some(_)) => "Its session starts at once, with this role in its startup brief:",
         (false, None) => "Its session starts at once in the project's main checkout.",
-    })];
+    };
+    let mut body: Vec<Line> = wrap_words(intro, width).into_iter().map(Line::from).collect();
     if let Some(role) = role {
         let shown: String = role.chars().take(ROLE_SHOWN).collect();
-        body.extend(untrusted::block(&shown, 2).lines().map(|l| Line::from(l.to_string())));
+        body.extend(quoted(&shown, width));
         let more = role.chars().count().saturating_sub(ROLE_SHOWN);
         if more > 0 {
-            body.push(Line::from(Span::styled(format!("  … and {more} more characters"), dim())));
+            body.push(Line::from(Span::styled(format!("… and {more} more characters"), dim())));
         }
     }
-    body.push(Line::from(""));
-    body.push(Line::from(Span::styled(
-        "Sessions run taskman add without asking you, and text they read, such as an issue or a PR comment, can tell \
-         them to. Approve it only if you expect it.",
-        dim(),
-    )));
     (question, body)
+}
+
+/// Text someone else wrote, such as an agent's role, in rows `width` columns wide that each start
+/// with a quote bar. It's wrapped here rather than by the paragraph, since a row the paragraph
+/// wrapped would start at the dialog's margin and could pass for taskman's own; cleaned as
+/// `untrusted::block` cleans it, and a run of blank lines kept to one.
+fn quoted(text: &str, width: usize) -> Vec<Line<'static>> {
+    let bar = || Span::styled("│ ", dim());
+    let mut rows = Vec::new();
+    let mut blank = false;
+    for line in untrusted::clean(text).trim().lines() {
+        if line.trim().is_empty() {
+            if !blank {
+                rows.push(Line::from(bar()));
+            }
+            blank = true;
+            continue;
+        }
+        blank = false;
+        for row in wrap_words(line, width.saturating_sub(2)) {
+            rows.push(Line::from(vec![bar(), Span::raw(row).italic()]));
+        }
+    }
+    rows
+}
+
+/// The hints of a dialog whose body scrolls: the scroll keys before `keys`.
+fn with_scroll<'a>(keys: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
+    std::iter::once(("↑/↓", "scroll")).chain(keys.iter().copied()).collect()
+}
+
+/// `draw_ask`'s width: `confirm_width`, with room for the scroll keys whether they show or not.
+fn ask_width(f: &Frame, keys: &[(&str, &str)]) -> u16 {
+    confirm_width(f, &with_scroll(keys))
+}
+
+/// A dialog asking about text someone else wrote, such as an agent's role: the question, the
+/// `note` on what answering does and the keys stay on screen, and the body between them, in rows
+/// already wrapped to the dialog's width (`ask_width`), scrolls when the screen can't fit it, an
+/// edge row saying how many rows are hidden past it. On a screen too short for that, the note
+/// goes first.
+fn draw_ask(
+    f: &mut Frame,
+    question: &str,
+    body: Vec<Line<'static>>,
+    note: &str,
+    keys: &[(&str, &str)],
+    view: &mut Scroll,
+) {
+    let w = ask_width(f, keys);
+    let inner = usize::from(w.saturating_sub(2 + DIALOG_PAD_W)).max(1);
+    let head: Vec<Line> =
+        wrap_words(question, inner).into_iter().map(|l| Line::from(l.bold())).collect();
+    let mut note: Vec<Line> =
+        wrap_words(note, inner).into_iter().map(|l| Line::from(Span::styled(l, dim()))).collect();
+    // Rows inside the border and padding, with a row of the screen left above and below.
+    let room = usize::from(f.area().height.saturating_sub(2 + 2 + DIALOG_PAD_H));
+    // The question, the note and the keys, each with a blank row after the one before.
+    let around =
+        |note: usize, keys: usize| head.len() + 1 + note + usize::from(note > 0) + 1 + keys;
+    let plain = key_rows(keys, inner);
+    let keys = if around(note.len(), plain.len()) + body.len() <= room {
+        plain
+    } else {
+        key_rows(&with_scroll(keys), inner)
+    };
+    // At least a few rows of the body, so an edge row has rows beside it.
+    const LEAST: usize = 3;
+    if around(note.len(), keys.len()) + LEAST.min(body.len()) > room {
+        note.clear();
+    }
+    let total = body.len();
+    let view_h = room.saturating_sub(around(note.len(), keys.len())).max(LEAST).min(total);
+    view.max = total.saturating_sub(view_h);
+    view.page = view_h.saturating_sub(2).max(1);
+    view.top = view.top.min(view.max);
+    let (first, end) = shown_rows(view.top, total, view_h);
+    let hidden = |arrow: &str, n: usize| {
+        let lines = if n == 1 { "line" } else { "lines" };
+        Line::from(Span::styled(format!("{arrow} {n} more {lines}"), dim()))
+    };
+    let mut text = head;
+    text.push(Line::from(""));
+    if first > 0 {
+        text.push(hidden("↑", first));
+    }
+    text.extend(body.into_iter().skip(first).take(end - first));
+    if end < total {
+        text.push(hidden("↓", total - end));
+    }
+    if !note.is_empty() {
+        text.push(Line::from(""));
+        text.extend(note);
+    }
+    text.push(Line::from(""));
+    text.extend(keys);
+    let h = u16::try_from(text.len()).unwrap_or(u16::MAX) + 2 + DIALOG_PAD_H;
+    let r = centered(f, w, h);
+    f.render_widget(Clear, r);
+    f.render_widget(Paragraph::new(text).block(dialog("Confirm").padding(DIALOG_PAD)), r);
 }
 
 fn centered(f: &Frame, w: u16, h: u16) -> Rect {

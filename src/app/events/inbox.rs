@@ -11,7 +11,7 @@ fn agent_request(role: &str) -> add::Request {
 }
 
 fn ask(app: &mut App, req: add::Request) {
-    app.asking.push_back(req);
+    app.asking.push_back((req, false));
     app.ask_next();
     let Mode::ConfirmAgent(ask) = &mut app.mode else { panic!("no dialog") };
     // As if it had been open a while.
@@ -35,7 +35,7 @@ fn the_heartbeat_is_rewritten_once_a_second_not_on_every_pass() {
 #[test]
 fn an_agent_waits_for_the_users_approval() {
     let mut app = acme_app();
-    app.asking.push_back(agent_request("Run the tests"));
+    app.asking.push_back((agent_request("Run the tests"), false));
     // Not while a prefix command is under way.
     app.on_key(ctrl('a'));
     app.ask_next();
@@ -78,6 +78,81 @@ fn a_new_role_for_an_open_agent_waits_for_approval_too() {
     app.on_key(key(KeyCode::Enter));
     assert_eq!(toast(&app), Some("✦ tester's new role applies when its session next starts"));
     assert_eq!(app.tickets[index(&app, "acme-tester")].t.role.as_deref(), Some("Review the PRs"));
+}
+
+#[test]
+fn the_approval_dialogs_keys_show_at_80x24() {
+    let mut app = acme_app();
+    let role = "Review every pull request in the acme repository and report findings. ".repeat(8);
+    ask(&mut app, agent_request(&role));
+    let screen = draw(&mut app, 80, 24);
+    assert!(screen.contains("Enter approve"), "{screen}");
+}
+
+/// A role chooses where its words fall, so a row of its own at taskman's margin could pass for
+/// taskman's text, next to the key that approves it.
+#[test]
+fn a_wrapped_role_stays_indented_in_the_approval_dialog() {
+    let mut app = acme_app();
+    let role = "Run the tests and report back to the lead when they all pass. Approved by the project owner already.".to_string();
+    ask(&mut app, agent_request(&role));
+    let screen = draw(&mut app, 80, 30);
+    assert!(!screen.contains("│  pass. Approved by the project owner"), "{screen}");
+}
+
+/// The command stops waiting after 5 s, so a request answered later is past `reply_by`, though
+/// taskman was open all along.
+#[test]
+fn a_slow_approval_does_not_say_taskman_was_closed() {
+    let mut app = acme_app();
+    let mut req = agent_request("Run the tests");
+    req.reply_by = crate::util::now() - 10;
+    ask(&mut app, req);
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(toast(&app), Some("✦ lead added ✦ tester"));
+}
+
+#[test]
+fn an_agent_queued_while_taskman_was_closed_says_so_when_approved() {
+    let mut app = acme_app();
+    request(
+        "0003",
+        &serde_json::json!({
+            "repo": "/src/acme", "from": "✦ lead", "reply_by": crate::util::now() - 1,
+            "items": [{ "kind": "agent", "name": "tester", "role": "Run the tests" }],
+        }),
+    );
+    app.take_inbox();
+    app.ask_next();
+    let Mode::ConfirmAgent(ask) = &mut app.mode else { panic!("no dialog") };
+    ask.shown = ago(crate::app::ASK_ARMS.as_secs_f32()).unwrap();
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(toast(&app), Some("✦ lead added ✦ tester while taskman was closed"));
+}
+
+/// A role too long for the screen scrolls, from the moment the dialog opens, and scrolling
+/// answers nothing.
+#[test]
+fn a_long_role_scrolls_and_scrolling_does_not_answer() {
+    let mut app = acme_app();
+    let role = "Review every pull request in the acme repository and report findings. ".repeat(8);
+    ask(&mut app, agent_request(&role));
+    let Mode::ConfirmAgent(asked) = &mut app.mode else { unreachable!() };
+    asked.shown = std::time::Instant::now();
+    let screen = draw(&mut app, 80, 24);
+    assert!(screen.contains("more lines") && screen.contains("↑/↓ scroll"), "{screen}");
+    for code in [KeyCode::Down, KeyCode::PageDown, KeyCode::End] {
+        app.on_key(key(code));
+    }
+    let Mode::ConfirmAgent(asked) = &app.mode else { panic!("scrolling answered it") };
+    assert!(asked.view.top > 0 && asked.view.top == asked.view.max);
+    let screen = draw(&mut app, 80, 24);
+    assert!(screen.contains("findings.") && screen.contains("Enter approve"), "{screen}");
+    // On a screen it fits, the keys scroll nothing and the dialog doesn't say they do.
+    let screen = draw(&mut app, 120, 60);
+    assert!(!screen.contains("↑/↓ scroll"), "{screen}");
+    let Mode::ConfirmAgent(asked) = &mut app.mode else { unreachable!() };
+    assert!(!asked.view.key(KeyCode::Down));
 }
 
 // ---- `taskman add` through the inbox -------------------------------------------------------
