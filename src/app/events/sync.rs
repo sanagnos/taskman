@@ -61,7 +61,7 @@ fn fetched_comments_count_as_new_until_seen() {
     // Selecting the ticket, then leaving it, marks them seen.
     app.select(index(&app, "ENG-61"));
     app.select(index(&app, "ENG-52"));
-    assert_eq!(app.tickets[index(&app, "ENG-61")].new_count(), 0);
+    assert_eq!(app.tickets[index(&app, "ENG-61")].new_counts(), (0, 0));
     assert!(
         saved().tickets[index(&app, "ENG-61")]
             .seen_jira
@@ -69,6 +69,49 @@ fn fetched_comments_count_as_new_until_seen() {
             .unwrap()
             .contains(&"c9".to_string())
     );
+}
+
+/// The selected ticket's comments are read as they arrive, and keep their marker until it's left;
+/// a ticket out of sight counts them as new.
+#[test]
+fn a_refresh_of_the_selected_ticket_is_read_at_once() {
+    let mut app = acme_app();
+    let i = index(&app, "ENG-61");
+    app.select(i);
+    assert_eq!(app.tickets[i].new_counts(), (0, 0));
+    let mut issue = crate::app::test_support::issue("ENG-61");
+    issue
+        .comments
+        .insert(0, crate::tracker::Comment { id: "c9".into(), ..issue.comments[0].clone() });
+    let n = fetching(&mut app, "ENG-61");
+    app.tx.send(Msg::Jira(n, id(&app, "ENG-61"), Ok(issue.clone()))).unwrap();
+    app.drain_messages();
+    let tv = &app.tickets[i];
+    assert!(tv.new_counts() == (0, 0) && tv.is_new_jira("c9"));
+    assert!(saved().tickets[i].seen_jira.as_ref().unwrap().contains(&"c9".to_string()));
+    // Left, the marker goes; what lands after that is new.
+    app.select(index(&app, "ENG-52"));
+    assert!(!app.tickets[i].is_new_jira("c9"));
+    issue
+        .comments
+        .insert(0, crate::tracker::Comment { id: "c10".into(), ..issue.comments[0].clone() });
+    let n = fetching(&mut app, "ENG-61");
+    app.tx.send(Msg::Jira(n, id(&app, "ENG-61"), Ok(issue))).unwrap();
+    app.drain_messages();
+    assert_eq!(app.tickets[i].new_counts(), (1, 0));
+}
+
+/// Closing the selected ticket selects another without `select`: it's read all the same.
+#[test]
+fn the_ticket_selected_after_a_close_is_read() {
+    let mut app = acme_app();
+    let i = index(&app, "ENG-53");
+    app.select(i);
+    assert!(app.tickets[index(&app, "ENG-61")].new_counts() != (0, 0));
+    app.close_at(i).unwrap().hold.unwrap();
+    assert_eq!(app.tickets[app.sel].t.key, "ENG-61");
+    assert_eq!(app.tickets[app.sel].new_counts(), (0, 0));
+    assert_eq!(saved().tickets[app.sel].seen_jira, app.tickets[app.sel].t.seen_jira);
 }
 
 #[test]

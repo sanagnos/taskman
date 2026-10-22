@@ -264,6 +264,7 @@ impl App {
     /// waits for a worktree without the event loop (`main::shutdown`).
     pub fn drain_messages(&mut self) {
         let mut changed = false;
+        let mut fetched = false;
         let mut toasts = Vec::new();
         while let Ok(msg) = self.rx.try_recv() {
             self.dirty.store(true, Ordering::Relaxed);
@@ -280,6 +281,7 @@ impl App {
                     }
                     tv.jira.finish(res);
                     changed |= tv.baseline_seen();
+                    fetched = true;
                 }
                 Msg::Pr(n, (repo, key), res, worktree) => {
                     let Some(tv) = self.tickets.iter_mut().find(|tv| tv.t.is(&repo, &key)) else {
@@ -296,6 +298,7 @@ impl App {
                         changed |= self.github.insert(tv.t.repo.clone(), gh) != Some(gh);
                     }
                     changed |= tv.take_pr(*res, worktree);
+                    fetched = true;
                 }
                 Msg::Worktree(n, (repo, key), res, base) => {
                     let closed = self.closed_creating.remove(&n);
@@ -433,6 +436,9 @@ impl App {
                     }
                 }
             }
+        }
+        if fetched {
+            changed |= self.mark_selected();
         }
         if changed {
             self.save();

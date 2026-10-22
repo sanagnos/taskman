@@ -26,7 +26,7 @@ expression: screen
 " │    ctrl+a j / c / g  toggle the tracker panel, its comments, the PR panel  │ "
 " │    ctrl+a o / p      open ticket / PR in your browser                      │ "
 " │    ctrl+a r          refresh tracker and GitHub now                        │ "
-" │    ctrl+a m          mark new comments on this ticket as read              │ "
+" │    ctrl+a m          take the ● off comments that were new on this ticket  │ "
 " │    ctrl+a R / t      restart the session / hand it to another terminal     │ "
 " │    ctrl+a M          run in the main checkout when the worktree failed     │ "
 " │    ctrl+a e          rename the current agent                              │ "

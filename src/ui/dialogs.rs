@@ -1118,7 +1118,7 @@ fn draw_help(f: &mut Frame, app: &mut App) {
         ("j / c / g", "toggle the tracker panel, its comments, the PR panel"),
         ("o / p", "open ticket / PR in your browser"),
         ("r", "refresh tracker and GitHub now"),
-        ("m", "mark new comments on this ticket as read"),
+        ("m", "take the ● off comments that were new on this ticket"),
         ("R / t", "restart the session / hand it to another terminal"),
         ("M", "run in the main checkout when the worktree failed"),
         ("e", "rename the current agent"),

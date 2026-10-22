@@ -208,7 +208,7 @@ impl App {
         self.projects[p].collapsed = false;
         if focus {
             if let Some(prev) = self.tickets.get_mut(self.sel) {
-                prev.mark_seen(&self.prefs);
+                prev.leave();
             }
             self.sel = i;
         } else {
@@ -456,6 +456,9 @@ impl App {
             self.closed_creating.insert(tv.creation_id, closed);
         }
         self.selection = None;
+        if self.mark_selected() {
+            self.save();
+        }
         Ok(Closed { hold, reaper })
     }
 

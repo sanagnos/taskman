@@ -303,6 +303,17 @@ fn badge(state: AgentState, seen: bool, new: bool) -> Span<'static> {
 }
 
 /// A faint background for the selected card, the footer and a focused field (`Theme::selection`).
+/// A ticket's new comments and reviews, by where they are: `3 new on issue`, `1 new on PR`, or
+/// `2 issue · 1 PR new`; None when there are none.
+fn new_label(tv: &TicketView) -> Option<String> {
+    match tv.new_counts() {
+        (0, 0) => None,
+        (n, 0) => Some(format!("{n} new on issue")),
+        (0, n) => Some(format!("{n} new on PR")),
+        (issue, pr) => Some(format!("{issue} issue · {pr} PR new")),
+    }
+}
+
 fn selection_bg() -> Color {
     crate::theme::current().selection
 }

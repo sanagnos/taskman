@@ -561,17 +561,14 @@ impl App {
         if self.agent_has_no("comments to mark as read") {
             return;
         }
-        let prefs = self.prefs.clone();
         let Some(tv) = self.tickets.get_mut(self.sel) else { return };
-        let before = tv.new_count();
-        tv.mark_seen(&prefs);
-        let left = tv.new_count();
-        self.save();
-        match (before, left) {
-            (0, _) => self.toast("Nothing new on this ticket"),
-            (_, 0) => self.toast("Marked as read"),
-            (_, n) => self.toast(format!("{n} still new in hidden panels")),
+        // Selecting it read everything already: what's left is the markers.
+        let saved = tv.mark_seen();
+        let marked = tv.clear_fresh();
+        if saved {
+            self.save();
         }
+        self.toast(if marked { "Marked as read" } else { "Nothing new on this ticket" });
     }
 
     fn toggle(&mut self, f: impl Fn(&mut UiPrefs) -> &mut bool) {

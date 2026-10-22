@@ -490,7 +490,7 @@ impl App {
             return;
         }
         if let Some(tv) = self.tickets.get_mut(self.sel) {
-            tv.mark_seen(&self.prefs);
+            tv.mark_seen();
         }
         self.save();
         self.quit = true;
@@ -668,7 +668,7 @@ impl App {
         if i != self.sel {
             self.selection = None;
             if let Some(prev) = self.tickets.get_mut(self.sel) {
-                prev.mark_seen(&self.prefs);
+                prev.leave();
             }
             self.sel = i;
             if let Some(p) = self.project_of(&self.tickets[i].t) {
@@ -677,10 +677,20 @@ impl App {
             let tv = &mut self.tickets[i];
             tv.status.seen = true;
             tv.new = false;
+            // Read once it's in front of the user, whatever its panels show; a refresh that
+            // lands while it stays selected is read too (`mark_selected`).
+            tv.mark_seen();
             tv.jira.request_if_older_than(STALE, true);
             tv.pr.request_if_older_than(STALE, true);
             self.save();
         }
+    }
+
+    /// Marks the selected ticket's comments and reviews read, as `select` does: for a refresh that
+    /// landed while it's selected, or a selection that moved without `select` (the ticket closed
+    /// or its project removed). Returns whether anything changed, to save.
+    pub(super) fn mark_selected(&mut self) -> bool {
+        self.tickets.get_mut(self.sel).is_some_and(TicketView::mark_seen)
     }
 
     /// Moves through visible tickets in sidebar order.

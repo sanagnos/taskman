@@ -601,6 +601,7 @@ impl App {
                     tv.jira.finish(res);
                     tv.local_file = seen;
                     changed |= tv.baseline_seen();
+                    changed |= i == self.sel && tv.mark_seen();
                 }
                 Err(e) => {
                     if tv.jira.error.as_ref() == Some(&e) && tv.jira.data.is_none() {

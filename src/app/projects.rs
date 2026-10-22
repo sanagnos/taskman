@@ -1005,6 +1005,9 @@ impl App {
             // Its CLI may still be stopping: a quit waits for it.
             self.keep_reaper((tv.t.repo.clone(), tv.t.key.clone()), tv.take_reaper());
         }
+        if self.mark_selected() {
+            self.save();
+        }
         self.rebuild_clients();
         self.toast(format!("Deleted project {}", project.name));
     }

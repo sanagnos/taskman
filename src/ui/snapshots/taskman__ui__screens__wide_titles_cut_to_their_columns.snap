@@ -15,15 +15,15 @@ expression: "draw(&mut app, 160, 40)"
 "┃ #128 ✗1 ✓2 ✎chg            │                                                                             │ ── Comments (2) · 1 new ──                        │"
 "                             │                                                                             │                                                   │"
 "  ENG-53         ▲ needs you │                                                                             │ ● Sam Okafor · 3h                                 │"
-"  3 new · ログイン画面のマ…  │                                                                             │ Can the link carry the page the user came from?   │" Hidden by multi-width symbols: [(11, " "), (13, " "), (15, " "), (17, " "), (19, " "), (21, " "), (23, " "), (25, " ")]
+"  2 issue · 1 PR new · ログ… │                                                                             │ Can the link carry the page the user came from?   │" Hidden by multi-width symbols: [(24, " "), (26, " ")]
 "  #129 →ENG-52 draft ◷1      │                                                                             │                                                   │"
 "                             │                                                                             │ Dana Reyes · 2d                                   │"
 "  ENG-61           ⠋ working │                                                                             │ Design is in the spec.                            │"
-"  3 new · ログイン画面のマ…  │                                                                             │                                                   │" Hidden by multi-width symbols: [(11, " "), (13, " "), (15, " "), (17, " "), (19, " "), (21, " "), (23, " "), (25, " ")]
+"  3 new on PR · ログイン画…  │                                                                             │                                                   │" Hidden by multi-width symbols: [(17, " "), (19, " "), (21, " "), (23, " "), (25, " ")]
 "  #137 ✗1 ✓2 ✎chg            │                                                                             │ 3 older comments not loaded; o opens the ticket.  │"
 "                             │                                                                             │                                                   │"
 "  ENG-70            ■ exited │                                                                             ╰────────── ^a r refresh · o open · c hide comments ╯"
-"  2 new · ログイン画面のマ…  │                                                                             ╭ GitHub PR #128 open ──────────── updated just now ╮" Hidden by multi-width symbols: [(11, " "), (13, " "), (15, " "), (17, " "), (19, " "), (21, " "), (23, " "), (25, " ")]
+"  2 new on issue · ログイン… │                                                                             ╭ GitHub PR #128 open ──────────── updated just now ╮" Hidden by multi-width symbols: [(20, " "), (22, " "), (24, " "), (26, " ")]
 "  no PR yet                  │                                                                             │ Sign in with a magic link                         │"
 "                             │                                                                             │ eng-52-login → main                               │"
 "▸ notes (1)                ● │                                                                             │ ✎ changes requested                               │"

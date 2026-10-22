@@ -1,6 +1,6 @@
 //! The sidebar: the projects, their cards, and the list's scrolling.
 
-use super::{dim, pr_spans, selection_bg, sidebar_badge, state_badge, yellow};
+use super::{dim, new_label, pr_spans, selection_bg, sidebar_badge, state_badge, yellow};
 use crate::app::{App, Hit, Mode, Piece, TicketView};
 use crate::keys::prefix;
 use crate::untrusted;
@@ -334,13 +334,13 @@ fn sidebar_rows(
                     Span::raw(pad),
                     badge,
                 ]));
-                let new = if selected { 0 } else { tv.new_count() };
+                let new = if selected { None } else { new_label(tv) };
                 if let Some(title) = &title {
                     let title_style = if selected { Style::new() } else { dim() };
                     let mut row = vec![marker.clone(), Span::raw(" ")];
                     let mut room = w.saturating_sub(3);
-                    if new > 0 {
-                        let tag = format!("{new} new · ");
+                    if let Some(new) = &new {
+                        let tag = format!("{new} · ");
                         room = room.saturating_sub(width(&tag));
                         row.push(Span::styled(tag, Style::new().fg(yellow()).bold()));
                     }
@@ -350,9 +350,11 @@ fn sidebar_rows(
                 // Agents have no PR line: a name, and a title when Claude has set one.
                 if !agent {
                     let mut pr = vec![marker, Span::raw(" ")];
-                    if title.is_none() && new > 0 {
+                    if title.is_none()
+                        && let Some(new) = &new
+                    {
                         pr.push(Span::styled(
-                            format!("{new} new · "),
+                            format!("{new} · "),
                             Style::new().fg(yellow()).bold(),
                         ));
                     }
