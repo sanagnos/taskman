@@ -50,7 +50,7 @@ mod worktree;
 
 use crossterm::event::{
     self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-    EnableFocusChange, EnableMouseCapture, Event, KeyboardEnhancementFlags,
+    EnableFocusChange, EnableMouseCapture, Event, KeyboardEnhancementFlags, MouseEventKind,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
@@ -213,7 +213,7 @@ impl Tty {
             len += 1;
         }
         let fds = &mut fds[..len];
-        match filedescriptor::poll(fds, Some(timeout)) {
+        match filedescriptor::poll(fds, Some(whole_millis(timeout))) {
             // An error is a signal arriving; the caller checks for those.
             Ok(0) | Err(_) if !held => return Input::Idle,
             _ => {}
@@ -250,6 +250,14 @@ impl Tty {
             (false, true) => Input::Idle,
         }
     }
+}
+
+/// `timeout` rounded up to whole milliseconds. poll (Linux) takes milliseconds and
+/// `filedescriptor` truncates to them, so a wait under one would return at once: the loop would
+/// spend the last millisecond before each frame passing again and again. Zero stays zero.
+fn whole_millis(timeout: Duration) -> Duration {
+    let ms = timeout.as_nanos().div_ceil(1_000_000);
+    Duration::from_millis(ms.try_into().unwrap_or(u64::MAX))
 }
 
 /// Empties a wake-up pipe. Writes collate, so one read usually takes them all.
@@ -686,20 +694,34 @@ fn read_input(app: &mut app::App) -> std::io::Result<bool> {
         return Ok(false);
     }
     loop {
-        match event::read()? {
-            Event::Key(k) => app.on_key(keys::normalize(k)),
-            Event::Paste(s) => app.on_paste(&s),
-            Event::Mouse(m) => app.on_mouse(m),
-            Event::FocusGained => app.focused = Some(true),
-            Event::FocusLost => app.focused = Some(false),
-            Event::Resize(..) => {}
-        }
+        on_event(app, event::read()?);
         if !event::poll(Duration::ZERO)? {
             break;
         }
     }
-    app.dirty.store(true, Ordering::Relaxed);
     Ok(true)
+}
+
+/// Hands one event to the app, asking for a frame if it may have changed the screen.
+fn on_event(app: &mut app::App, ev: Event) {
+    let redraw = redraws(&ev);
+    match ev {
+        Event::Key(k) => app.on_key(keys::normalize(k)),
+        Event::Paste(s) => app.on_paste(&s),
+        Event::Mouse(m) => app.on_mouse(m),
+        Event::FocusGained => app.focused = Some(true),
+        Event::FocusLost => app.focused = Some(false),
+        Event::Resize(..) => {}
+    }
+    if redraw {
+        app.dirty.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Whether an event may change the screen. The pointer moving with no button held doesn't: the
+/// mouse mode reports every move (a real mouse sends 60-120 a second), and nothing handles them.
+fn redraws(ev: &Event) -> bool {
+    !matches!(ev, Event::Mouse(m) if m.kind == MouseEventKind::Moved)
 }
 
 /// Whether NO_COLOR asks for no colours: set and not empty, as no-color.org says.
@@ -786,6 +808,31 @@ mod tests {
         assert_eq!(frame_due(Due { animated: true, ..none }), SPIN);
         // Nothing: the clock, for the ages.
         assert_eq!(frame_due(none), TICK);
+    }
+
+    #[test]
+    fn a_wait_rounds_up_to_whole_milliseconds() {
+        assert_eq!(whole_millis(Duration::ZERO), Duration::ZERO);
+        // Under a microsecond too, which rounding from microseconds would leave at zero.
+        assert_eq!(whole_millis(Duration::from_nanos(1)), Duration::from_millis(1));
+        assert_eq!(whole_millis(Duration::from_micros(900)), Duration::from_millis(1));
+        assert_eq!(whole_millis(Duration::from_millis(16)), Duration::from_millis(16));
+        assert_eq!(whole_millis(Duration::from_nanos(16_000_001)), Duration::from_millis(17));
+        assert!(whole_millis(Duration::MAX) >= Duration::from_secs(u64::MAX / 1000));
+    }
+
+    #[test]
+    fn a_bare_mouse_move_draws_nothing_and_a_drag_does() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent};
+        let mut app = app::test_support::acme_app();
+        let mouse = |kind| {
+            Event::Mouse(MouseEvent { kind, column: 40, row: 10, modifiers: KeyModifiers::NONE })
+        };
+        app.take_redraw();
+        on_event(&mut app, mouse(MouseEventKind::Moved));
+        assert!(!app.dirty.load(Ordering::Relaxed));
+        on_event(&mut app, mouse(MouseEventKind::Drag(MouseButton::Left)));
+        assert!(app.dirty.load(Ordering::Relaxed));
     }
     use std::os::fd::{FromRawFd, OwnedFd};
 
@@ -892,6 +939,20 @@ mod tests {
         let start = Instant::now();
         assert_eq!(tty.wait_held(Duration::from_secs(5)), Input::Woken);
         assert!(start.elapsed() < Duration::from_secs(1), "returned after {:?}", start.elapsed());
+    }
+
+    #[test]
+    fn tty_wait_waits_out_a_timeout_under_a_millisecond() {
+        let (_master, slave) = pty();
+        let tty = Tty { fd: slave.as_raw_fd(), _file: None, resized: None, woken: None };
+        let wait = Duration::from_micros(900);
+        let start = Instant::now();
+        let mut passes = 0;
+        while start.elapsed() < wait {
+            assert_eq!(tty.wait(wait.saturating_sub(start.elapsed())), Input::Idle);
+            passes += 1;
+        }
+        assert!(passes <= 2, "{passes} waits in {wait:?}");
     }
 
     #[test]
