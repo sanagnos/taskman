@@ -509,7 +509,10 @@ fn open_state() -> Result<(store::Lock, store::Saved, store::Config), String> {
     if add::running_elsewhere() {
         return Err(store::already_running(&store::state_dir(), ""));
     }
-    Ok((lock, store::load()?, store::load_config()?))
+    let state = (lock, store::load()?, store::load_config()?);
+    // Commands count taskman as running from here, before its first frame (`add::tui_running`).
+    add::heartbeat();
+    Ok(state)
 }
 
 /// Restores the terminal on a panic of the main thread, which ends the TUI. Other threads (a

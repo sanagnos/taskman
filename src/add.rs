@@ -289,6 +289,17 @@ pub fn running_elsewhere() -> bool {
     running(std::fs::metadata(alive_file()).and_then(|m| m.modified()).ok(), SystemTime::now())
 }
 
+/// Whether the TUI runs on this state folder, for a command leaving it a request: it holds the
+/// state folder's lock (`store::locked`) and hasn't removed `alive`, which it writes once it has
+/// the lock and removes as it quits, or it keeps `alive` fresh, as a release from before the lock
+/// does. Not by the heartbeat's age alone: that's the file's time on the wall clock, which can
+/// step forward by seconds (WSL resyncs its clock every half minute or so, by about 2.5 s), and a
+/// command would then say taskman isn't running while it is.
+fn tui_running() -> bool {
+    let alive = std::fs::metadata(alive_file()).and_then(|m| m.modified()).ok();
+    (alive.is_some() && store::locked()) || running(alive, SystemTime::now())
+}
+
 /// The TUI is quitting: commands from now on queue without waiting.
 pub fn stopped() {
     let _ = std::fs::remove_file(alive_file());
@@ -569,7 +580,7 @@ pub(crate) fn submit(
     codex: bool,
 ) -> Result<Vec<Line>, String> {
     // With taskman closed nothing waits, so a taskman starting a moment later doesn't reply.
-    let alive = running_elsewhere();
+    let alive = tui_running();
     req.reply_by =
         if alive { util::now() + wait_for.as_secs().cast_signed() + 1 } else { util::now() - 1 };
     if alive && let Some(e) = read_alive().and_then(|a| too_old(&req, &a)) {
@@ -1102,6 +1113,36 @@ mod tests {
         // Caught empty or part-way through an older build's rewrite: not a format, so asked again.
         assert_eq!(parse_alive(""), None);
         assert_eq!(parse_alive(&json[..json.len() / 2]), None);
+    }
+
+    /// A command counts taskman as running while it holds the state folder's lock and `alive` is
+    /// there, however old the file looks: its time is read on the wall clock, which can step
+    /// forward by seconds.
+    #[test]
+    fn taskman_runs_while_it_holds_the_lock() {
+        let age = |secs| {
+            let f = std::fs::File::options().write(true).open(alive_file()).unwrap();
+            f.set_modified(SystemTime::now() - Duration::from_secs(secs)).unwrap();
+        };
+        assert!(!tui_running(), "nothing there");
+        let lock = store::lock().unwrap();
+        assert!(heartbeat());
+        assert!(tui_running());
+        age(3600);
+        assert!(tui_running(), "a heartbeat that looks old, after a step of the clock");
+        stopped();
+        assert!(!tui_running(), "quitting: it has removed `alive`, and requests queue");
+        drop(lock);
+        assert!(heartbeat());
+        age(3600);
+        let until = Instant::now() + Duration::from_secs(5);
+        while tui_running() {
+            assert!(Instant::now() < until, "a crashed taskman's old heartbeat counts as running");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // A release from before the lock keeps `alive` fresh and takes no lock.
+        assert!(heartbeat());
+        assert!(tui_running());
     }
 
     #[test]

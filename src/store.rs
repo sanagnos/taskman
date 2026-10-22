@@ -629,8 +629,16 @@ fn lock_in(dir: &Path) -> Result<Lock, String> {
         std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&path)
     };
     let mut file = open().map_err(|e| format!("couldn't open {}: {e}", tilde(&path)))?;
+    // A command asking whether taskman runs (`locked`) holds the lock for a moment, so it's tried
+    // a few times before another taskman counts as running.
+    let mut tries = 0;
     // SAFETY: flock on a descriptor this function owns; it reads or writes no memory.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+    while unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        tries += 1;
+        if tries < LOCK_TRIES {
+            std::thread::sleep(LOCK_RETRY);
+            continue;
+        }
         let mut pid = String::new();
         let _ = file.read_to_string(&mut pid);
         let pid = pid.trim();
@@ -643,6 +651,31 @@ fn lock_in(dir: &Path) -> Result<Lock, String> {
         .and_then(|()| file.rewind())
         .and_then(|()| write!(file, "{}", std::process::id()));
     Ok(Lock { _file: file })
+}
+
+/// How many times, and how often, `lock` tries a lock that's held before giving up on it.
+const LOCK_TRIES: u32 = 10;
+const LOCK_RETRY: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// Whether a taskman holds the state folder's lock (`lock`): whether one is running on it. The
+/// lock is the TUI's for as long as its process lives, however busy its loop is, unlike the
+/// inbox's heartbeat. Tested by taking it shared, and so only for a moment, which `lock` waits
+/// out; never created here.
+pub fn locked() -> bool {
+    locked_in(&state_dir())
+}
+
+fn locked_in(dir: &Path) -> bool {
+    use std::os::fd::AsRawFd;
+    let Ok(file) = std::fs::File::open(dir.join("lock")) else { return false };
+    // SAFETY: flock on a descriptor this function owns; it reads or writes no memory.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } == 0 {
+        // Closing the file lets it go too; this is sooner.
+        // SAFETY: as above.
+        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+        return false;
+    }
+    std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock
 }
 
 /// Why a second taskman won't start on the state folder `dir`; `pid` is ` (pid N)` when known.
@@ -1415,6 +1448,33 @@ mod tests {
             assert!(std::time::Instant::now() < until, "the lock stayed held after it was dropped");
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+    }
+
+    /// A command asks whether taskman runs by the lock, which a taskman starting at that moment
+    /// waits out rather than refuse to start.
+    #[test]
+    fn the_lock_says_whether_taskman_runs() {
+        let dir = scratch("locked");
+        assert!(!locked_in(&dir), "no lock file");
+        let held = lock_in(&dir).unwrap();
+        assert!(locked_in(&dir));
+        drop(held);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while locked_in(&dir) {
+            assert!(std::time::Instant::now() < until, "the lock stayed held after it was dropped");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // A command's probe, held as long as one could be, doesn't keep taskman from starting.
+        use std::os::fd::AsRawFd;
+        let probe = std::fs::File::open(dir.join("lock")).unwrap();
+        // SAFETY: flock on a descriptor this test owns; it reads or writes no memory.
+        assert_eq!(unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) }, 0);
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            drop(probe);
+        });
+        assert!(lock_in(&dir).is_ok());
+        release.join().unwrap();
     }
 
     #[test]

@@ -1,0 +1,1 @@
+- `taskman add` and `taskman close` no longer say "taskman isn't running" now and then while it is. They checked how old taskman's heartbeat file was by the wall clock, and a clock that steps forward, as WSL's does every half minute or so, made a running taskman look closed. They now check the lock taskman holds while it runs.
