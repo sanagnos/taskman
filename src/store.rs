@@ -461,10 +461,18 @@ pub fn state_dir() -> PathBuf {
     #[cfg(test)]
     let base = scratch::dir();
     #[cfg(not(test))]
-    let base = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(".local/state"));
+    let base = xdg("XDG_STATE_HOME").unwrap_or_else(|| home().join(".local/state"));
     base.join("taskman")
+}
+
+/// An XDG base folder from variable `var`. Empty or relative is unset, as the XDG spec says:
+/// either would put taskman's folder in whatever folder it's run from.
+fn xdg(var: &str) -> Option<PathBuf> {
+    xdg_path(std::env::var_os(var))
+}
+
+fn xdg_path(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    value.map(PathBuf::from).filter(|p| p.is_absolute())
 }
 
 /// Where a worker thread's panic is written (see `set_panic_hook` in main.rs), for the messages
@@ -681,22 +689,43 @@ pub fn write_unsynced(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 
 fn write_renamed(path: &Path, bytes: &[u8], sync: bool) -> anyhow::Result<()> {
     use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    // A link (stow, home-manager) stays one: the file it leads to is what's written.
+    let path = &link_target(path);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension("tmp");
-    let mut f = std::fs::File::create(&tmp)?;
-    f.write_all(bytes)?;
-    // A system that can't sync a file (some network and virtual filesystems) still keeps it.
-    if sync
-        && let Err(e) = f.sync_all()
-        && e.kind() != std::io::ErrorKind::Unsupported
-        && e.raw_os_error() != Some(libc::EINVAL)
-    {
-        return Err(e.into());
+    // This process's and this write's own, so two taskmans or two threads saving the same file
+    // never rename each other's half-written one.
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("{}.{n}.tmp", std::process::id()));
+    // The file's own mode carries over: a config.json kept at 0600 outside taskman's folder stays
+    // so. A new file is the user's alone, whatever the umask.
+    let mode = std::fs::metadata(path).map_or(0o600, |m| m.permissions().mode() & 0o777);
+    let write = || -> anyhow::Result<()> {
+        let mut f =
+            std::fs::OpenOptions::new().write(true).create_new(true).mode(mode).open(&tmp)?;
+        // `mode` above is masked by the umask; this isn't.
+        f.set_permissions(std::fs::Permissions::from_mode(mode))?;
+        f.write_all(bytes)?;
+        // A system that can't sync a file (some network and virtual filesystems) still keeps it.
+        if sync
+            && let Err(e) = f.sync_all()
+            && e.kind() != std::io::ErrorKind::Unsupported
+            && e.raw_os_error() != Some(libc::EINVAL)
+        {
+            return Err(e.into());
+        }
+        drop(f);
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    };
+    if let Err(e) = write() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
     }
-    drop(f);
-    std::fs::rename(&tmp, path)?;
     if sync
         && let Some(dir) = path.parent()
         && let Ok(d) = std::fs::File::open(dir)
@@ -704,6 +733,20 @@ fn write_renamed(path: &Path, bytes: &[u8], sync: bool) -> anyhow::Result<()> {
         let _ = d.sync_all();
     }
     Ok(())
+}
+
+/// The file `path` leads to through links, one at a time, so a link to a file not there yet
+/// leads to where it would be; `path` itself when it isn't a link. Gives up on a loop.
+fn link_target(path: &Path) -> PathBuf {
+    let mut p = path.to_path_buf();
+    for _ in 0..40 {
+        let Ok(to) = std::fs::read_link(&p) else { return p };
+        p = match p.parent() {
+            Some(dir) => dir.join(to),
+            None => to,
+        };
+    }
+    path.to_path_buf()
 }
 
 /// Shortens a path under $HOME to `~/...` for display.
@@ -999,13 +1042,17 @@ pub fn config_path() -> PathBuf {
     if cfg!(test) {
         return state_dir().join("config.json");
     }
-    if let Some(p) = std::env::var_os("TASKMAN_CONFIG") {
-        return PathBuf::from(p);
+    if let Some(p) = taskman_config() {
+        return p;
     }
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(".config"));
+    let base = xdg("XDG_CONFIG_HOME").unwrap_or_else(|| home().join(".config"));
     base.join("taskman").join("config.json")
+}
+
+/// The file `TASKMAN_CONFIG` names; empty is unset. A relative path is kept, as the user's own
+/// choice, but `taskman uninstall` refuses it.
+fn taskman_config() -> Option<PathBuf> {
+    std::env::var_os("TASKMAN_CONFIG").filter(|p| !p.is_empty()).map(PathBuf::from)
 }
 
 pub fn load_config() -> Result<Config, String> {
@@ -1022,10 +1069,7 @@ pub fn save_config(c: &Config) -> anyhow::Result<()> {
 /// taskman's own config folder; None when `TASKMAN_CONFIG` puts the file in a folder that may hold
 /// other things, whose permissions are the user's business.
 pub fn own_config_dir() -> Option<PathBuf> {
-    std::env::var_os("TASKMAN_CONFIG")
-        .is_none()
-        .then(|| config_path().parent().map(Path::to_path_buf))
-        .flatten()
+    taskman_config().is_none().then(|| config_path().parent().map(Path::to_path_buf)).flatten()
 }
 
 /// Compares Jira sites by host, so `https://example.atlassian.net/` and
@@ -1950,5 +1994,63 @@ mod tests {
             ]
         );
         assert!(labels.iter().all(|l| !l.contains("secret")));
+    }
+
+    #[test]
+    fn xdg_folders_are_full_paths_only() {
+        let os = |s: &str| Some(std::ffi::OsString::from(s));
+        assert_eq!(xdg_path(None), None);
+        // Each would put taskman's folder in the folder it's run from.
+        assert_eq!(xdg_path(os("")), None);
+        assert_eq!(xdg_path(os("state")), None);
+        assert_eq!(xdg_path(os("./state")), None);
+        assert_eq!(xdg_path(os("/home/tester/.state")), Some(PathBuf::from("/home/tester/.state")));
+    }
+
+    #[test]
+    fn a_save_writes_through_a_link_and_keeps_the_files_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = scratch("link");
+        let real = dir.join("dotfiles/config.json");
+        std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+        std::fs::write(&real, "{}").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link = dir.join("config.json");
+        std::os::unix::fs::symlink("dotfiles/config.json", &link).unwrap();
+        write_atomic(&link, br#"{"format":1}"#).unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink(), "the link was replaced");
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), r#"{"format":1}"#);
+        assert_eq!(mode(&real), 0o600, "the file's mode changed");
+        // A mode of the user's choosing carries over too, and no temporary file is left.
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o640)).unwrap();
+        write_atomic(&real, b"{}").unwrap();
+        assert_eq!(mode(&real), 0o640);
+        let names = |d: &Path| {
+            let mut v: Vec<_> = std::fs::read_dir(d)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().into_string().unwrap())
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(names(&dir.join("dotfiles")), ["config.json"]);
+        assert_eq!(names(&dir), ["config.json", "dotfiles"]);
+        // A new file is the user's alone, whatever the umask; a link to a file that isn't there
+        // yet makes it there.
+        write_atomic(&dir.join("new.json"), b"{}").unwrap();
+        assert_eq!(mode(&dir.join("new.json")), 0o600);
+        let dangling = dir.join("dangling.json");
+        std::os::unix::fs::symlink(dir.join("dotfiles/later.json"), &dangling).unwrap();
+        write_atomic(&dangling, b"{}").unwrap();
+        assert!(std::fs::symlink_metadata(&dangling).unwrap().is_symlink());
+        assert_eq!(std::fs::read_to_string(dir.join("dotfiles/later.json")).unwrap(), "{}");
+        // A loop of links is written over as it was before, rather than followed forever.
+        let (a, b) = (dir.join("a.json"), dir.join("b.json"));
+        std::os::unix::fs::symlink(&b, &a).unwrap();
+        std::os::unix::fs::symlink(&a, &b).unwrap();
+        write_atomic(&a, b"{}").unwrap();
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "{}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

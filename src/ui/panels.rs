@@ -1,6 +1,6 @@
 //! The right column: the tracker and GitHub panels beside a ticket, the board beside an agent.
 
-use super::{dim, pr_spans, pr_state, spinner, state_badge, yellow};
+use super::{dim, new_label, pr_spans, pr_state, spinner, state_badge, yellow};
 use crate::app::{AgentState, App, Remote};
 use crate::github::{CheckState, Mergeable, Pr};
 use crate::keys::prefix;
@@ -322,13 +322,22 @@ pub(super) fn draw_board(f: &mut Frame, app: &mut App, area: Rect) {
                 dim(),
             ));
         }
-        let new = tv.new_count();
-        if new > 0 {
-            head.push(Span::styled(format!("  {new} new"), Style::new().fg(yellow()).bold()));
-        }
+        let used: usize = head.iter().map(|s| width(&s.content)).sum();
+        let new = |n: String| Span::styled(n, Style::new().fg(yellow()).bold());
+        // On a line of its own where it would wrap.
+        let below = match new_label(tv) {
+            Some(n) if used + 2 + width(&n) <= w => {
+                head.push(new(format!("  {n}")));
+                None
+            }
+            n => n,
+        };
         lines.push(head);
         // The key opens the issue.
         lines.link(0, &app.issue_url(&tv.t).unwrap_or_default());
+        if let Some(n) = below {
+            lines.push(Line::from(vec![indent(), new(n)]));
+        }
         if let Some(title) = tv.title() {
             lines
                 .push(Line::from(vec![indent(), Span::raw(truncate(&untrusted::line(&title), w))]));

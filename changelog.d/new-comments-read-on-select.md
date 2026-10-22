@@ -1,0 +1,1 @@
+- Selecting a ticket marks its new comments and reviews read, whatever panels show; they keep their `●` until you leave it, and `ctrl+a m` takes it off. The sidebar card says where they are (`2 new on issue`, `1 new on PR`), and a comment once read no longer comes back as new after a refresh.

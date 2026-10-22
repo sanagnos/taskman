@@ -119,6 +119,9 @@ pub(super) enum Msg {
     Close(String, add::Request),
     /// A `taskman close` request finished; the toast.
     Closed(String),
+    /// The tickets a session's `taskman add --new` asked for, which the user approved, were
+    /// created or not: the request's inbox id, the request, and each one's outcome in order.
+    Created(String, add::Request, Vec<Result<crate::tracker::Created, String>>),
     /// Whether a project's folder can show PRs, checked again.
     Gh(PathBuf, github::Gh),
     /// An account's token, read from its source (`env:`, `cmd:` or `keychain:`).
@@ -264,6 +267,7 @@ impl App {
     /// waits for a worktree without the event loop (`main::shutdown`).
     pub fn drain_messages(&mut self) {
         let mut changed = false;
+        let mut fetched = false;
         let mut toasts = Vec::new();
         while let Ok(msg) = self.rx.try_recv() {
             self.dirty.store(true, Ordering::Relaxed);
@@ -280,6 +284,7 @@ impl App {
                     }
                     tv.jira.finish(res);
                     changed |= tv.baseline_seen();
+                    fetched = true;
                 }
                 Msg::Pr(n, (repo, key), res, worktree) => {
                     let Some(tv) = self.tickets.iter_mut().find(|tv| tv.t.is(&repo, &key)) else {
@@ -296,6 +301,7 @@ impl App {
                         changed |= self.github.insert(tv.t.repo.clone(), gh) != Some(gh);
                     }
                     changed |= tv.take_pr(*res, worktree);
+                    fetched = true;
                 }
                 Msg::Worktree(n, (repo, key), res, base) => {
                     let closed = self.closed_creating.remove(&n);
@@ -362,6 +368,7 @@ impl App {
                 }
                 Msg::Close(id, req) => self.closing.push_back((id, req)),
                 Msg::Closed(text) => toasts.push((Level::Info, text)),
+                Msg::Created(id, req, made) => self.created(&id, &req, made),
                 Msg::Notify(text) => {
                     let tmux = std::env::var_os("TMUX").is_some_and(|v| !v.is_empty());
                     self.notify_out.push(crate::notify::escape(&text, tmux));
@@ -433,6 +440,9 @@ impl App {
                     }
                 }
             }
+        }
+        if fetched {
+            changed |= self.mark_selected();
         }
         if changed {
             self.save();

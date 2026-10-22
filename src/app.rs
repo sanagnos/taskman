@@ -32,7 +32,7 @@ use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use sync::{Msg, STALE};
 use tickets::ClosedCreating;
-pub use toasts::{Level, LogView, Toast};
+pub use toasts::{Level, Toast};
 
 mod accounts;
 mod add_form;
@@ -96,7 +96,8 @@ pub enum Mode {
     ConfirmQuit,
     /// `prefix R` on a session that's working or needs the user, which restarting interrupts.
     ConfirmRestart(Id),
-    /// A `taskman add` that adds a project agent or sets an agent's role, waiting for the user.
+    /// A `taskman add` that adds a project agent, sets an agent's role or, from a session, creates
+    /// a ticket, waiting for the user.
     ConfirmAgent(Box<AgentAsk>),
     /// A session just handed off, inside tmux: open `taskman resume` in a new window?
     OfferTmux(Id),
@@ -109,7 +110,7 @@ pub enum Mode {
     /// Moving the selected card, or its project, in the sidebar (`prefix {` and `}`).
     Move(Box<reorder::Moving>),
     /// Every toast shown (`prefix ~`), newest first.
-    Log(LogView),
+    Log(Scroll),
 }
 
 pub struct LinkList {
@@ -121,16 +122,55 @@ pub struct LinkList {
     pub top: usize,
 }
 
-/// An agent `taskman add` asked for. A session can run `taskman add` without a prompt, and text it
-/// read (an issue, a PR comment) can tell it to, so an agent, which starts at once with its role
-/// in its system prompt, waits for the user. See `take_inbox`.
+/// An agent `taskman add` asked for, or a ticket a session's `taskman add --new` asked to create.
+/// A session can run `taskman add` without a prompt, and text it read (an issue, a PR comment) can
+/// tell it to, so an agent, which starts at once with its role in its system prompt, waits for the
+/// user; so does a new ticket, whose title and description go to the tracker under the user's
+/// account and can carry anything the session can read. See `take_inbox`.
 pub struct AgentAsk {
+    /// The request's inbox id: a ticket to create is answered once the user has.
+    pub id: String,
     pub req: add::Request,
     /// Whether the agent is open already, so the request only changes its role.
     pub open: bool,
     /// When the dialog opened: keys are ignored for `ASK_ARMS`, so typing meant for a session, an
     /// Enter above all, can't answer a dialog that just appeared.
     pub shown: Instant,
+    /// Whether the request was queued while taskman was closed: decided as it was taken, since by
+    /// the time the user answers, the command has usually stopped waiting either way.
+    pub closed: bool,
+    /// How far the body (a role, or a new ticket's title and description) is scrolled, when the
+    /// dialog doesn't fit it.
+    pub view: Scroll,
+}
+
+/// A view scrolled by `top` rows: the notices, an approval dialog's body, and a form taller than
+/// its pane.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Scroll {
+    pub top: usize,
+    /// The most `top` can be, and how many rows a page is, as last drawn.
+    pub max: usize,
+    pub page: usize,
+}
+
+impl Scroll {
+    /// Scrolls for `code`; false when it isn't a key that scrolls, or nothing is hidden.
+    pub fn key(&mut self, code: crossterm::event::KeyCode) -> bool {
+        use crossterm::event::KeyCode;
+        let top = match code {
+            _ if self.max == 0 => return false,
+            KeyCode::Up | KeyCode::Char('k') => self.top.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => self.top + 1,
+            KeyCode::PageUp => self.top.saturating_sub(self.page),
+            KeyCode::PageDown | KeyCode::Char(' ') => self.top + self.page,
+            KeyCode::Home => 0,
+            KeyCode::End => self.max,
+            _ => return false,
+        };
+        self.top = top.min(self.max);
+        true
+    }
 }
 
 /// How long a dialog that opened by itself ignores keys.
@@ -233,8 +273,9 @@ pub struct App {
     /// While the close dialog is open: why the ticket's worktree couldn't be checked (git failed),
     /// so the dialog offers nothing and says so; the worktree stays.
     pub close_unchecked: Option<String>,
-    /// Agents `taskman add` asked for, oldest first, each waiting for its dialog.
-    asking: std::collections::VecDeque<add::Request>,
+    /// Agents and new tickets `taskman add` asked for, by inbox id, oldest first, each waiting for
+    /// its dialog, with whether it was queued while taskman was closed (`AgentAsk::closed`).
+    asking: std::collections::VecDeque<(String, add::Request, bool)>,
     /// `taskman close` requests whose PRs were looked up, by inbox id, waiting until nothing
     /// refers to a ticket by its place in the list (`close_next`).
     closing: std::collections::VecDeque<(String, add::Request)>,
@@ -490,7 +531,7 @@ impl App {
             return;
         }
         if let Some(tv) = self.tickets.get_mut(self.sel) {
-            tv.mark_seen(&self.prefs);
+            tv.mark_seen();
         }
         self.save();
         self.quit = true;
@@ -668,7 +709,7 @@ impl App {
         if i != self.sel {
             self.selection = None;
             if let Some(prev) = self.tickets.get_mut(self.sel) {
-                prev.mark_seen(&self.prefs);
+                prev.leave();
             }
             self.sel = i;
             if let Some(p) = self.project_of(&self.tickets[i].t) {
@@ -677,10 +718,20 @@ impl App {
             let tv = &mut self.tickets[i];
             tv.status.seen = true;
             tv.new = false;
+            // Read once it's in front of the user, whatever its panels show; a refresh that
+            // lands while it stays selected is read too (`mark_selected`).
+            tv.mark_seen();
             tv.jira.request_if_older_than(STALE, true);
             tv.pr.request_if_older_than(STALE, true);
             self.save();
         }
+    }
+
+    /// Marks the selected ticket's comments and reviews read, as `select` does: for a refresh that
+    /// landed while it's selected, or a selection that moved without `select` (the ticket closed
+    /// or its project removed). Returns whether anything changed, to save.
+    pub(super) fn mark_selected(&mut self) -> bool {
+        self.tickets.get_mut(self.sel).is_some_and(TicketView::mark_seen)
     }
 
     /// Moves through visible tickets in sidebar order.

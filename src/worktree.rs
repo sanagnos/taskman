@@ -174,7 +174,7 @@ pub fn create(
     }
     exclude_if_inside(repo, folder);
     let has_origin = ok(&git(repo, &["remote", "get-url", "origin"]));
-    let fetched = has_origin && fetch(repo);
+    let fetched = has_origin.then(|| fetch(repo));
     let f = folder.to_string_lossy();
     let local =
         ok(&git(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]));
@@ -198,11 +198,15 @@ pub fn create(
             start
         });
         stacked = start.is_some();
-        let start = match start.or_else(|| fetched.then(|| default_branch(repo)).flatten()) {
+        let fetched_ok = matches!(fetched, Some(Ok(())));
+        let start = match start.or_else(|| fetched_ok.then(|| default_branch(repo)).flatten()) {
             Some(b) => b,
             None => {
-                if has_origin {
-                    note = Some("couldn't fetch origin, so it starts from your local HEAD".into());
+                if let Some(fetched) = &fetched {
+                    let why = fetched.as_ref().err().map(|w| format!(": {w}")).unwrap_or_default();
+                    note = Some(format!(
+                        "couldn't fetch origin, so it starts from your local HEAD{why}"
+                    ));
                 }
                 "HEAD".into()
             }
@@ -723,8 +727,40 @@ const FETCH_LIMIT: Duration = Duration::from_secs(30);
 /// Long enough for a big checkout and the hooks it runs; it only stops a git that hangs.
 const GIT_LIMIT: Duration = Duration::from_secs(300);
 
-fn fetch(repo: &Path) -> bool {
-    ok(&git::run(repo, &["fetch", "--quiet", "origin"], FETCH_LIMIT))
+/// Fetches origin, or says why it couldn't and what to do about it.
+fn fetch(repo: &Path) -> Result<(), String> {
+    // In English, which `fetch_error` reads.
+    let mut fetch = git::command(repo);
+    fetch.args(["fetch", "--quiet", "origin"]).env("LC_ALL", "C");
+    match proc::run(&mut fetch, FETCH_LIMIT) {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => Err(fetch_error(&String::from_utf8_lossy(&o.stderr))),
+        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+            Err(format!("origin didn't answer within {}s", FETCH_LIMIT.as_secs()))
+        }
+        Err(e) => Err(format!("could not run git: {e}")),
+    }
+}
+
+/// Why a fetch failed, from git's stderr. git runs without a terminal (`proc::run`), so ssh can't
+/// ask for a key's passphrase or about a new host, nor git for a login: those are what to fix.
+fn fetch_error(stderr: &str) -> String {
+    if stderr.contains("Enter passphrase") {
+        "your ssh key has a passphrase; add it to ssh-agent with ssh-add".into()
+    } else if stderr.contains("Permission denied (publickey") {
+        "ssh refused your key; one with a passphrase must be in ssh-agent (ssh-add)".into()
+    } else if stderr.contains("Host key verification failed") {
+        "ssh doesn't know origin's host yet; run git fetch in a terminal once to accept it".into()
+    } else if stderr.contains("terminal prompts disabled") {
+        "git needs a login for origin; set up a credential helper (for GitHub, gh auth setup-git)"
+            .into()
+    } else {
+        // The first `fatal:`, as git follows a failure to reach the remote with advice.
+        let mut lines = stderr.lines().map(str::trim).filter(|l| !l.is_empty());
+        let line = lines.clone().find(|l| l.starts_with("fatal: ")).or_else(|| lines.next_back());
+        let line = line.unwrap_or("git fetch failed");
+        line.strip_prefix("fatal: ").unwrap_or(line).to_string()
+    }
 }
 
 fn git(repo: &Path, args: &[&str]) -> std::io::Result<Output> {
@@ -1504,8 +1540,32 @@ mod tests {
         git(&repo, &["remote", "set-url", "origin", "/nonexistent/origin.git"]).unwrap();
         let c =
             create(&repo, &folder_path(BESIDE, &repo, "ENG-52"), "ENG-52", None, false).unwrap();
-        assert!(c.note.unwrap().contains("local HEAD"));
+        let note = c.note.unwrap();
+        assert!(note.contains("local HEAD"), "{note}");
+        assert!(note.ends_with("'/nonexistent/origin.git' does not appear to be a git repository"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_failed_fetch_says_what_to_do() {
+        let ssh = |first: &str| {
+            format!(
+                "{first}git@github.com: Permission denied (publickey).\n\
+                 fatal: Could not read from remote repository.\n\n\
+                 Please make sure you have the correct access rights\nand the repository exists.\n"
+            )
+        };
+        let passphrase = ssh("Enter passphrase for key '/home/tester/.ssh/id_ed25519': ");
+        assert!(fetch_error(&passphrase).contains("ssh-agent with ssh-add"));
+        assert!(fetch_error(&ssh("")).contains("ssh refused your key"));
+        let host = "Host key verification failed.\nfatal: Could not read from remote repository.\n";
+        assert!(fetch_error(host).contains("run git fetch in a terminal"));
+        let login = "fatal: could not read Username for 'https://github.com': terminal prompts \
+                     disabled\n";
+        assert!(fetch_error(login).contains("gh auth setup-git"));
+        let other = "remote: Not here\nfatal: repository 'https://example.com/x/' not found\n";
+        assert_eq!(fetch_error(other), "repository 'https://example.com/x/' not found");
+        assert_eq!(fetch_error(""), "git fetch failed");
     }
 
     #[test]
@@ -1539,6 +1599,12 @@ mod tests {
             let ok = Command::new("git").args(["check-ref-format", "--branch", &name]).output().unwrap().status.success();
             prop_assert!(ok, "{name:?} from {title:?}");
             prop_assert!(name.contains(&key.to_uppercase()) || name.contains(&key.to_lowercase()), "{name:?}");
+        }
+
+        #[test]
+        fn a_fetch_error_is_one_line(stderr in "(\\PC|\n){0,200}") {
+            let why = fetch_error(&stderr);
+            prop_assert!(!why.is_empty() && !why.contains('\n'), "{why:?}");
         }
 
         #[test]

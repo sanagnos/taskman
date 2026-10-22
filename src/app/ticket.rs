@@ -7,7 +7,7 @@ use super::{AgentState, Gone, Remote, Status};
 use crate::github::{self, Pr, PrState};
 use crate::session::{End, Parser, Reaper, Session};
 use crate::status_file::Record;
-use crate::store::{self, Ticket, UiPrefs};
+use crate::store::{self, Ticket};
 use crate::tracker::Issue;
 use crate::worktree;
 use crate::{resume, util};
@@ -95,6 +95,11 @@ pub struct TicketView {
     pub asleep: bool,
     /// What `sleep` looks at: when it was last selected and what runs under its CLI.
     pub(super) watch: Watch,
+    /// Comment ids (and `c:`/`r:` PR ids, as in `seen_gh`) that were new when the ticket was
+    /// selected or arrived while it was, read by then: the panels keep marking them `●` until
+    /// the ticket is left (`leave`). Not saved.
+    fresh_jira: Vec<String>,
+    fresh_gh: Vec<String>,
 }
 
 /// A session that ended because its conversation runs as a Claude background session.
@@ -148,6 +153,8 @@ impl TicketView {
             switched: None,
             asleep: false,
             watch: Watch::new(Instant::now()),
+            fresh_jira: Vec::new(),
+            fresh_gh: Vec::new(),
         }
     }
 
@@ -263,21 +270,27 @@ impl TicketView {
         })
     }
 
+    /// Whether the panels mark a Jira comment `●`: not read yet, or read on this visit.
     pub fn is_new_jira(&self, id: &str) -> bool {
-        self.t.seen_jira.as_ref().is_some_and(|seen| !seen.iter().any(|s| s == id))
+        self.fresh_jira.iter().any(|s| s == id) || unseen(self.t.seen_jira.as_ref(), id)
     }
 
     /// `prefixed_id` is `c:<comment id>` or `r:<review id>`.
     pub fn is_new_gh(&self, prefixed_id: &str) -> bool {
-        self.t.seen_gh.as_ref().is_some_and(|seen| !seen.iter().any(|s| s == prefixed_id))
+        self.fresh_gh.iter().any(|s| s == prefixed_id)
+            || unseen(self.t.seen_gh.as_ref(), prefixed_id)
     }
 
-    /// Jira comments plus PR comments and reviews that arrived since the ticket was last viewed.
-    pub fn new_count(&self) -> usize {
-        let j =
-            self.jira_ids().unwrap_or_default().iter().filter(|id| self.is_new_jira(id)).count();
-        let g = self.gh_ids().unwrap_or_default().iter().filter(|id| self.is_new_gh(id)).count();
-        j + g
+    /// Tracker comments, and PR comments and reviews, that arrived since the ticket was last
+    /// selected.
+    pub fn new_counts(&self) -> (usize, usize) {
+        let count = |ids: Option<Vec<String>>, seen: Option<&Vec<String>>| {
+            ids.unwrap_or_default().iter().filter(|id| unseen(seen, id)).count()
+        };
+        (
+            count(self.jira_ids(), self.t.seen_jira.as_ref()),
+            count(self.gh_ids(), self.t.seen_gh.as_ref()),
+        )
     }
 
     /// The first fetch for a ticket counts everything already there as seen.
@@ -298,20 +311,30 @@ impl TicketView {
         changed
     }
 
-    /// Marks as seen what the panels showed: Jira comments only if the Jira panel and its
-    /// comments were visible, PR comments and reviews only if the GitHub panel was.
-    pub(super) fn mark_seen(&mut self, prefs: &UiPrefs) {
-        if prefs.show_jira
-            && prefs.show_comments
-            && let Some(ids) = self.jira_ids()
-        {
-            self.t.seen_jira = Some(ids);
-        }
-        if prefs.show_gh
-            && let Some(ids) = self.gh_ids()
-        {
-            self.t.seen_gh = Some(ids);
-        }
+    /// Marks every comment and review loaded as read, whatever the panels show: the ticket is
+    /// selected. The ones that were new stay marked `●` until it's left. Returns whether
+    /// anything changed, to save.
+    pub(super) fn mark_seen(&mut self) -> bool {
+        let (jira, gh) = (self.jira_ids(), self.gh_ids());
+        mark(&mut self.t.seen_jira, &mut self.fresh_jira, jira)
+            | mark(&mut self.t.seen_gh, &mut self.fresh_gh, gh)
+    }
+
+    /// Leaves the ticket: what arrived while it was selected is read too, and its `●` markers
+    /// go. Returns whether anything changed, to save.
+    pub(super) fn leave(&mut self) -> bool {
+        let changed = self.mark_seen();
+        self.clear_fresh();
+        changed
+    }
+
+    /// Takes the `●` markers off what was read on this visit (`ctrl+a m`); false when none had
+    /// one.
+    pub(super) fn clear_fresh(&mut self) -> bool {
+        let any = !self.fresh_jira.is_empty() || !self.fresh_gh.is_empty();
+        self.fresh_jira.clear();
+        self.fresh_gh.clear();
+        any
     }
 
     /// Whether a status record is this session's. A CLI runs its SessionEnd hook on the hangup
@@ -469,6 +492,30 @@ impl TicketView {
             self.t.cwd.file_name().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
         strip_folder(&raw, &dir).to_string()
     }
+}
+
+/// Whether `id` arrived after `seen` was first filled; nothing is new before the first fetch.
+fn unseen(seen: Option<&Vec<String>>, id: &str) -> bool {
+    seen.is_some_and(|seen| !seen.iter().any(|s| s == id))
+}
+
+/// Adds the `ids` loaded to `seen`, and those it didn't have to `fresh`; a first fetch (`seen`
+/// None) is all seen, none of it fresh. Added to, never replaced: a fetch that loads fewer (the
+/// lookup settling on another PR that mentions the key for a while) would otherwise make
+/// the ones it left out new again when they come back.
+fn mark(seen: &mut Option<Vec<String>>, fresh: &mut Vec<String>, ids: Option<Vec<String>>) -> bool {
+    let Some(ids) = ids else { return false };
+    let Some(seen) = seen else {
+        *seen = Some(ids);
+        return true;
+    };
+    let new: Vec<String> = ids.into_iter().filter(|id| !seen.contains(id)).collect();
+    if new.is_empty() {
+        return false;
+    }
+    fresh.extend(new.iter().cloned());
+    seen.extend(new);
+    true
 }
 
 fn strip_folder<'a>(title: &'a str, dir: &str) -> &'a str {
@@ -666,7 +713,7 @@ mod tests {
     #[test]
     fn counts_what_arrived_since_the_panels_last_showed() {
         let mut tv = TicketView::new(ticket());
-        assert_eq!(tv.new_count(), 0, "nothing fetched, nothing new");
+        assert_eq!(tv.new_counts(), (0, 0), "nothing fetched, nothing new");
         // The first fetch counts what's there as seen.
         tv.jira.finish(Ok(Issue {
             comments: vec![comment("c1"), comment("c2")],
@@ -675,23 +722,65 @@ mod tests {
         tv.pr.finish(Ok(Some(with_activity(&["p1"], &[("r1", "alice")]))));
         assert!(tv.baseline_seen());
         assert!(!tv.baseline_seen(), "only once");
-        assert_eq!(tv.new_count(), 0);
+        assert_eq!(tv.new_counts(), (0, 0));
         // A comment on each side, and a review from someone new.
         tv.jira.finish(Ok(Issue {
             comments: vec![comment("c3"), comment("c1"), comment("c2")],
             ..Default::default()
         }));
         tv.pr.finish(Ok(Some(with_activity(&["p2", "p1"], &[("r1", "alice"), ("r2", "bob")]))));
-        assert_eq!(tv.new_count(), 3);
+        assert_eq!(tv.new_counts(), (1, 2));
         assert!(tv.is_new_jira("c3") && !tv.is_new_jira("c1"));
         assert!(tv.is_new_gh("c:p2") && tv.is_new_gh("r:r2") && !tv.is_new_gh("r:r1"));
-        // Only what showed is marked: the tracker panel without its comments marks none of them.
-        let mut prefs = UiPrefs { show_comments: false, ..Default::default() };
-        tv.mark_seen(&prefs);
-        assert_eq!(tv.new_count(), 1);
-        prefs.show_comments = true;
-        tv.mark_seen(&prefs);
-        assert_eq!(tv.new_count(), 0);
+        // Selected: all read at once, and what was new keeps its marker until the ticket is left.
+        assert!(tv.mark_seen());
+        assert!(!tv.mark_seen(), "nothing more to mark");
+        assert_eq!(tv.new_counts(), (0, 0));
+        assert!(tv.is_new_jira("c3") && tv.is_new_gh("c:p2") && tv.is_new_gh("r:r2"));
+        assert!(!tv.is_new_jira("c1") && !tv.is_new_gh("r:r1"));
+        // A comment arriving while it's selected is read too, and marked as well.
+        tv.jira.finish(Ok(Issue {
+            comments: vec![comment("c4"), comment("c3"), comment("c1"), comment("c2")],
+            ..Default::default()
+        }));
+        assert!(tv.mark_seen());
+        assert_eq!(tv.new_counts(), (0, 0));
+        assert!(tv.is_new_jira("c4") && tv.is_new_jira("c3"));
+        // Leaving takes the markers off; ctrl+a m does it while staying.
+        assert!(!tv.leave());
+        assert!(!tv.is_new_jira("c4") && !tv.is_new_gh("c:p2"));
+        assert!(!tv.clear_fresh(), "no markers left");
+    }
+
+    /// A read item never comes back as new, whatever a refresh loads in between: the lookup
+    /// settling on another PR for a while, or a fetch that loads fewer.
+    #[test]
+    fn what_was_read_stays_read_across_refreshes() {
+        let mut tv = TicketView::new(ticket());
+        tv.jira.finish(Ok(Issue { comments: vec![comment("c1")], ..Default::default() }));
+        tv.pr.finish(Ok(Some(with_activity(&["p1"], &[("r1", "alice")]))));
+        tv.baseline_seen();
+        tv.jira.finish(Ok(Issue {
+            comments: vec![comment("c2"), comment("c1")],
+            ..Default::default()
+        }));
+        tv.pr.finish(Ok(Some(with_activity(&["p2", "p1"], &[("r1", "alice")]))));
+        assert_eq!(tv.new_counts(), (1, 1));
+        tv.leave();
+        // Another PR, then none, then the first again; a page of comments without the old ones.
+        tv.pr.finish(Ok(Some(with_activity(&["q1"], &[("s1", "carol")]))));
+        assert_eq!(tv.new_counts(), (0, 2), "the other PR's are new to the user");
+        tv.leave();
+        tv.pr.finish(Ok(None));
+        tv.jira.finish(Ok(Issue { comments: vec![comment("c2")], ..Default::default() }));
+        tv.leave();
+        tv.jira.finish(Ok(Issue {
+            comments: vec![comment("c2"), comment("c1")],
+            ..Default::default()
+        }));
+        tv.pr.finish(Ok(Some(with_activity(&["p2", "p1"], &[("r1", "alice")]))));
+        assert_eq!(tv.new_counts(), (0, 0));
+        assert!(!tv.is_new_jira("c1") && !tv.is_new_gh("c:p1") && !tv.is_new_gh("r:r1"));
     }
 
     #[test]

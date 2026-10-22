@@ -141,19 +141,8 @@ impl App {
             }
             Mode::Log(v) => {
                 // Keys scroll the log when it doesn't fit; any other key closes it.
-                let top = match key.code {
-                    _ if v.max == 0 => None,
-                    KeyCode::Up | KeyCode::Char('k') => Some(v.top.saturating_sub(1)),
-                    KeyCode::Down | KeyCode::Char('j') => Some(v.top + 1),
-                    KeyCode::PageUp => Some(v.top.saturating_sub(v.page)),
-                    KeyCode::PageDown | KeyCode::Char(' ') => Some(v.top + v.page),
-                    KeyCode::Home => Some(0),
-                    KeyCode::End => Some(v.max),
-                    _ => None,
-                };
-                match top {
-                    Some(top) => v.top = top.min(v.max),
-                    None => self.mode = Mode::Normal,
+                if !v.key(key.code) {
+                    self.mode = Mode::Normal;
                 }
                 return;
             }
@@ -227,18 +216,19 @@ impl App {
             {
                 return;
             }
-            Mode::ConfirmAgent(ask)
-                if !matches!(key.code, KeyCode::Enter | KeyCode::Esc)
-                    || ask.shown.elapsed() < ASK_ARMS =>
-            {
-                return;
-            }
-            Mode::ConfirmAgent(_) => {
+            Mode::ConfirmAgent(ask) => {
+                // A role that doesn't fit scrolls at once, as scrolling answers nothing.
+                if ask.view.key(key.code)
+                    || !matches!(key.code, KeyCode::Enter | KeyCode::Esc)
+                    || ask.shown.elapsed() < ASK_ARMS
+                {
+                    return;
+                }
                 let Mode::ConfirmAgent(ask) = std::mem::replace(&mut self.mode, Mode::Normal)
                 else {
                     unreachable!()
                 };
-                self.answer_agent(&ask.req, key.code == KeyCode::Enter);
+                self.answer_ask(*ask, key.code == KeyCode::Enter);
                 return;
             }
             Mode::Links(_) => {
@@ -562,17 +552,14 @@ impl App {
         if self.agent_has_no("comments to mark as read") {
             return;
         }
-        let prefs = self.prefs.clone();
         let Some(tv) = self.tickets.get_mut(self.sel) else { return };
-        let before = tv.new_count();
-        tv.mark_seen(&prefs);
-        let left = tv.new_count();
-        self.save();
-        match (before, left) {
-            (0, _) => self.toast("Nothing new on this ticket"),
-            (_, 0) => self.toast("Marked as read"),
-            (_, n) => self.toast(format!("{n} still new in hidden panels")),
+        // Selecting it read everything already: what's left is the markers.
+        let saved = tv.mark_seen();
+        let marked = tv.clear_fresh();
+        if saved {
+            self.save();
         }
+        self.toast(if marked { "Marked as read" } else { "Nothing new on this ticket" });
     }
 
     fn toggle(&mut self, f: impl Fn(&mut UiPrefs) -> &mut bool) {

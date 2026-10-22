@@ -1,0 +1,1 @@
+- git, gh and token commands taskman runs can no longer reach its terminal. Before, ssh asking for a key's passphrase during a worktree's fetch printed its prompt over the screen again and again, took the keys you typed and used a full core until the time limit; now it fails at once, and the message says to add the key to ssh-agent with `ssh-add`.

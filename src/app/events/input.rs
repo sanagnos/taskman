@@ -127,7 +127,7 @@ fn a_quit_requested_without_the_dialog_saves_and_stops_the_sessions() {
     app.request_quit();
     assert!(app.quit && app.may_quit());
     // What was on screen counts as seen, as after the dialog, and that is what's saved.
-    assert_eq!(app.tickets[app.sel].new_count(), 0);
+    assert_eq!(app.tickets[app.sel].new_counts(), (0, 0));
     assert_eq!(saved().tickets[app.sel].seen_gh, app.tickets[app.sel].t.seen_gh);
     assert!(app.tickets[app.sel].session.is_some());
     app.stop_sessions();
@@ -314,22 +314,22 @@ fn prefix_r_refreshes_the_ticket_and_checks_github_again() {
 }
 
 #[test]
-fn prefix_m_marks_what_shows_as_read() {
+fn prefix_m_takes_the_new_markers_off() {
     let mut app = acme_app();
-    assert!(app.tickets[app.sel].new_count() > 0);
+    // ENG-53 was read when selected, whatever its panels show; its new comments keep `●`.
+    app.prefs.show_gh = false;
+    app.select(index(&app, "ENG-53"));
+    let tv = &app.tickets[app.sel];
+    let pr = tv.pr.data.clone().flatten().unwrap();
+    assert_eq!(tv.new_counts(), (0, 0));
+    assert!(pr.comments.iter().all(|c| tv.is_new_gh(&format!("c:{}", c.id))));
+    assert_eq!(saved().tickets[app.sel].seen_gh, tv.t.seen_gh);
     prefix(&mut app, KeyCode::Char('m'));
     assert_eq!(toast(&app), Some("Marked as read"));
-    assert_eq!(app.tickets[app.sel].new_count(), 0);
-    assert_eq!(saved().tickets[app.sel].seen_gh, app.tickets[app.sel].t.seen_gh);
+    let tv = &app.tickets[app.sel];
+    assert!(!pr.comments.iter().any(|c| tv.is_new_gh(&format!("c:{}", c.id))));
     prefix(&mut app, KeyCode::Char('m'));
     assert_eq!(toast(&app), Some("Nothing new on this ticket"));
-    // What's new in a hidden panel stays new.
-    app.select(index(&app, "ENG-53"));
-    app.prefs.show_gh = false;
-    prefix(&mut app, KeyCode::Char('m'));
-    let left = app.tickets[app.sel].new_count();
-    assert!(left > 0);
-    assert_eq!(toast(&app), Some(format!("{left} still new in hidden panels").as_str()));
 }
 
 #[test]

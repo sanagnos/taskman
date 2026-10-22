@@ -1,15 +1,16 @@
 //! The TUI's side of `taskman add` and `taskman close`: requests taken from the inbox folder on
-//! each status poll, agents waiting for the user's approval, closes waiting until nothing refers to
-//! a ticket by its place in the list, and the replies (see `add.rs` and `close.rs` for the
-//! commands).
+//! each status poll, agents and sessions' new tickets waiting for the user's approval, closes
+//! waiting until nothing refers to a ticket by its place in the list, and the replies (see `add.rs`
+//! and `close.rs` for the commands).
 
 use super::sync::Msg;
 use super::ticket::{Added, merged_head, own_worktree};
 use super::tickets::Closed;
-use super::{AgentAsk, App, FormKind, Mode};
+use super::{AgentAsk, App, FormKind, Mode, Scroll};
 use crate::session::Reaper;
 use crate::store::{self, Base, Ticket};
 use crate::ticket_key;
+use crate::tracker::{Access, Created};
 use crate::{add, close, github, resume, untrusted, util, worktree};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -39,6 +40,22 @@ fn added_agent_line(t: &Ticket, project: &str, session: &str) -> String {
     }
 }
 
+/// Why project `project`'s tracker can't create a ticket, which needs a client.
+fn cant_create(access: Access, project: &str) -> String {
+    let prefix = crate::keys::prefix();
+    match access {
+        Access::Client(_) | Access::NoTracker => format!("{project} has no tracker"),
+        Access::NoAccount(provider, _) => format!(
+            "no {} account picked for project {project}; pick or add one in its settings ({prefix} ,)",
+            provider.label()
+        ),
+        Access::Reading => "the account's token couldn't be read".into(),
+        Access::Failed(e) => format!(
+            "{e}; check the account's token, or pick another in the project's settings ({prefix} ,)"
+        ),
+    }
+}
+
 impl App {
     /// Adds what `taskman add` asked for and answers it. Runs on every status poll, and at the
     /// first tick for requests queued while taskman was closed.
@@ -50,16 +67,28 @@ impl App {
         }
         let mut toasts = Vec::new();
         for (id, req) in add::take() {
+            // Past the time the command waits for a reply as it's taken: it was queued while
+            // taskman was closed. Decided here, as an agent's request is past it by the time the
+            // user has read the dialog.
+            let closed = add::queued(&req, util::now());
             if req.close.is_some() {
                 self.close_requested(id, req);
                 continue;
             }
-            if req.agent().is_some() {
-                add::reply(&id, &req, &add::asked(&req, self.agent_open(&req)));
-                self.asking.push_back(req);
+            // Answered once the user has, so the session hears what became of its ticket.
+            if !req.new_tickets().is_empty() {
+                match self.creates_in(&req) {
+                    Ok(_) => self.asking.push_back((id, req, closed)),
+                    Err(e) => add::reply(&id, &req, &[add::Line::err(e)]),
+                }
                 continue;
             }
-            let (lines, toast) = self.add_requested(&req);
+            if req.agent().is_some() {
+                add::reply(&id, &req, &add::asked(&req, self.agent_open(&req)));
+                self.asking.push_back((id, req, closed));
+                continue;
+            }
+            let (lines, toast) = self.add_requested(&req, closed);
             add::reply(&id, &req, &lines);
             toasts.extend(toast);
             self.dirty.store(true, Ordering::Relaxed);
@@ -168,6 +197,7 @@ impl App {
                         let key = self.tickets.iter().find(|tv| tv.t.is_agent(&req.repo, name));
                         (format!("✦ {}", store::slug(name)), key.map(|tv| tv.t.key.clone()))
                     }
+                    add::Item::New { title, .. } => (untrusted::line(title), None),
                 })
                 .collect()
         };
@@ -279,16 +309,39 @@ impl App {
         }
     }
 
-    /// Opens the dialog for the next agent `taskman add` asked for, once nothing else has the keys.
+    /// Opens the dialog for the next agent or new ticket `taskman add` asked for, once nothing
+    /// else has the keys.
     pub(super) fn ask_next(&mut self) {
         if !matches!(self.mode, Mode::Normal) || self.prefix {
             return;
         }
-        let Some(req) = self.asking.pop_front() else { return };
+        let Some((id, req, closed)) = self.asking.pop_front() else { return };
         let open = self.agent_open(&req);
         self.selection = None;
-        self.mode = Mode::ConfirmAgent(Box::new(AgentAsk { req, open, shown: Instant::now() }));
+        let shown = Instant::now();
+        self.mode = Mode::ConfirmAgent(Box::new(AgentAsk {
+            id,
+            req,
+            open,
+            shown,
+            closed,
+            view: Scroll::default(),
+        }));
         self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// The project a request to create tickets creates them in, which must have a tracker.
+    fn creates_in(&self, req: &add::Request) -> Result<usize, String> {
+        let Some(p) = self.projects.iter().position(|p| p.repo == req.repo) else {
+            return Err(format!(
+                "the project in {} is no longer in taskman",
+                store::tilde(&req.repo)
+            ));
+        };
+        match self.projects[p].tracker {
+            Some(_) => Ok(p),
+            None => Err(self.projects[p].agents_only()),
+        }
     }
 
     /// Whether the agent request `req` asks for is open already.
@@ -297,16 +350,137 @@ impl App {
             .is_some_and(|(name, _)| self.tickets.iter().any(|tv| tv.t.is_agent(&req.repo, name)))
     }
 
+    /// The user's answer to what `taskman add` asked for.
+    pub(super) fn answer_ask(&mut self, ask: AgentAsk, yes: bool) {
+        if ask.req.new_tickets().is_empty() {
+            self.answer_agent(&ask, yes);
+        } else {
+            self.answer_new(ask.id, ask.req, yes);
+        }
+    }
+
+    /// The user's answer to tickets a session's `taskman add --new` asked for. Approved, they're
+    /// created on a thread, after the account's token if it's still being read, and added when it
+    /// reports back (`created`); declined, nothing reaches the tracker and the command hears so.
+    fn answer_new(&mut self, id: String, req: add::Request, yes: bool) {
+        let titles: Vec<String> =
+            req.new_tickets().iter().map(|(t, _)| format!("\"{}\"", untrusted::line(t))).collect();
+        let titles = titles.join(", ");
+        if !yes {
+            add::reply(&id, &req, &add::declined(&req));
+            let from = req
+                .from
+                .as_deref()
+                .map_or(String::new(), |f| format!(" from {}", untrusted::line(f)));
+            self.toast(format!("Declined creating {titles}{from}"));
+            return;
+        }
+        let p = match self.creates_in(&req) {
+            Ok(p) => p,
+            Err(e) => {
+                let lines: Vec<add::Line> =
+                    req.new_tickets().iter().map(|_| add::Line::err(e.clone())).collect();
+                add::reply(&id, &req, &lines);
+                self.error(format!("Couldn't create {titles}: {e}"));
+                return;
+            }
+        };
+        let proj = &self.projects[p];
+        let Some(tracker) = &proj.tracker else { return };
+        let (prefix, provider, name) = (tracker.key.clone(), tracker.provider, proj.name.clone());
+        let access = self.trackers.access(&self.config, Some(proj));
+        let later = match access {
+            Access::Reading => self.trackers.access_later(&self.config, &self.projects[p]),
+            _ => None,
+        };
+        let (failed_id, failed_req) = (id.clone(), req.clone());
+        self.reporter().spawn(
+            format!("creating {titles}"),
+            move || {
+                let wanted = req.new_tickets();
+                let made = match later.map_or(access, |f| f()) {
+                    Access::Client(c) => wanted
+                        .iter()
+                        .map(|(title, text)| c.create(&prefix, title, text).map_err(|e| e.message))
+                        .collect(),
+                    access => {
+                        let e = cant_create(access, &name);
+                        wanted.iter().map(|_| Err(e.clone())).collect()
+                    }
+                };
+                Msg::Created(id, req, made)
+            },
+            move |e| {
+                let made = failed_req.new_tickets().iter().map(|_| Err(e.clone())).collect();
+                Msg::Created(failed_id, failed_req, made)
+            },
+        );
+        self.toast(format!("Creating {titles} in {}", provider.label()));
+    }
+
+    /// Adds the tickets a session asked for and the user approved, those that were created, and
+    /// answers the command.
+    pub(super) fn created(
+        &mut self,
+        id: &str,
+        req: &add::Request,
+        made: Vec<Result<Created, String>>,
+    ) {
+        let (mut lines, mut items, mut failed) = (Vec::new(), Vec::new(), None);
+        for ((title, _), res) in req.new_tickets().into_iter().zip(made) {
+            match res {
+                Ok(c) => {
+                    lines.push(add::Line::ok(format!("Created {}: {}", c.key, c.at)));
+                    items.push(add::Item::Ticket { key: c.key, title: title.trim().to_string() });
+                }
+                Err(e) => {
+                    let title = untrusted::line(title);
+                    failed.get_or_insert_with(|| format!("Couldn't create \"{title}\": {e}"));
+                    lines.push(add::Line::err(e));
+                }
+            }
+        }
+        let keys: Vec<String> = items
+            .iter()
+            .filter_map(|i| match i {
+                add::Item::Ticket { key, .. } => Some(key.clone()),
+                _ => None,
+            })
+            .collect();
+        if !items.is_empty() {
+            // Its toast isn't used, so whether the request waited for taskman doesn't matter.
+            let (added, _) = self.add_requested(&add::Request { items, ..req.clone() }, false);
+            if let Some(e) = added.iter().find(|l| !l.ok) {
+                let e = untrusted::line(&e.text);
+                failed.get_or_insert_with(|| format!("Created {}, but {e}", keys.join(", ")));
+            }
+            lines.extend(added);
+        }
+        add::reply(id, req, &lines);
+        match failed {
+            Some(e) => self.error(e),
+            None => {
+                let from = req
+                    .from
+                    .as_deref()
+                    .map_or(String::new(), |f| format!(" for {}", untrusted::line(f)));
+                self.toast(format!("Created {}{from}", keys.join(", ")));
+            }
+        }
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
     /// The user's answer to an agent `taskman add` asked for. The command was answered when the
     /// request came in, so this only toasts.
-    pub(super) fn answer_agent(&mut self, req: &add::Request, yes: bool) {
+    pub(super) fn answer_agent(&mut self, ask: &AgentAsk, yes: bool) {
+        let req = &ask.req;
         let name = req.agent().map(|(n, _)| store::slug(n)).unwrap_or_default();
         if !yes {
             let from = req.from.as_ref().map_or(String::new(), |f| format!(" from {f}"));
             self.toast(format!("Declined ✦ {name}{from}"));
             return;
         }
-        let (lines, toast) = self.add_requested(req);
+        let (lines, toast) = self.add_requested(req, ask.closed);
         match lines.iter().find(|l| !l.ok) {
             Some(err) => self.error(format!("✦ {name}: {}", untrusted::line(&err.text))),
             None => {
@@ -317,8 +491,13 @@ impl App {
         }
     }
 
-    /// Adds a request's tickets or agent; returns the reply and what the toast says.
-    fn add_requested(&mut self, req: &add::Request) -> (Vec<add::Line>, Option<String>) {
+    /// Adds a request's tickets or agent; returns the reply and what the toast says, which says
+    /// so when the request was queued while taskman was `closed`.
+    pub(super) fn add_requested(
+        &mut self,
+        req: &add::Request,
+        closed: bool,
+    ) -> (Vec<add::Line>, Option<String>) {
         let Some(p) = self.projects.iter().position(|p| p.repo == req.repo) else {
             let e = format!("the project in {} is no longer in taskman", store::tilde(&req.repo));
             return (
@@ -389,12 +568,17 @@ impl App {
                         Err(e) => add::Line::err(e),
                     }
                 }
+                // Created first, after the user approves (`created`); the command never sends one
+                // here, but anything can write to the inbox.
+                add::Item::New { title, .. } => add::Line::err(format!(
+                    "\"{}\" wasn't created: a new ticket waits for the user's approval",
+                    untrusted::line(title)
+                )),
             });
         }
         let toast = (!added.is_empty()).then(|| {
             let who = req.from.as_ref().map_or("Added".to_string(), |f| format!("{f} added"));
-            let queued =
-                if add::queued(req, util::now()) { " while taskman was closed" } else { "" };
+            let queued = if closed { " while taskman was closed" } else { "" };
             format!("{who} {}{queued}", added.join(", "))
         });
         (lines, toast)
