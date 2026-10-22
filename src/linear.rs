@@ -22,7 +22,7 @@ impl LinearConfig {
     }
 
     /// A client for the API at `endpoint`: Linear's, or a test's recorded responses.
-    fn at(endpoint: &str, key: &str) -> Self {
+    pub(crate) fn at(endpoint: &str, key: &str) -> Self {
         let agent = net::config(net::TRACKER_TIMEOUT).http_status_as_error(false).build().into();
         Self { endpoint: endpoint.to_string(), key: key.to_string(), agent }
     }

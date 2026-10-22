@@ -181,7 +181,10 @@ fn a_hand_off_keeps_the_session_claimed_until_the_old_cli_is_gone() {
         "projects": [{"name": "acme", "repo": repo, "tracker": {"provider": "local", "site": "workplan", "key": "ENG"}}],
         "tickets": [{"key": "ENG-1", "repo": repo, "cwd": repo, "session_id": SID}],
     });
-    std::fs::write(state.join("tickets.json"), tickets.to_string()).unwrap();
+    let locked = dir.join("locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    std::fs::write(locked.join("tickets.json"), tickets.to_string()).unwrap();
+    std::os::unix::fs::symlink(locked.join("tickets.json"), state.join("tickets.json")).unwrap();
     let transcripts = dir.join("claude-config/projects/acme");
     std::fs::create_dir_all(&transcripts).unwrap();
     std::fs::write(transcripts.join(format!("{SID}.jsonl")), "{}\n").unwrap();
@@ -257,7 +260,10 @@ fn a_rename_claims_the_new_name_before_the_old_cli_is_gone() {
         "projects": [{"name": "acme", "repo": repo}],
         "tickets": [{"key": "acme-lead", "repo": repo, "cwd": repo, "agent": "lead", "session_id": SID}],
     });
-    std::fs::write(state.join("tickets.json"), tickets.to_string()).unwrap();
+    let locked = dir.join("locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    std::fs::write(locked.join("tickets.json"), tickets.to_string()).unwrap();
+    std::os::unix::fs::symlink(locked.join("tickets.json"), state.join("tickets.json")).unwrap();
     let transcripts = dir.join("claude-config/projects/acme");
     std::fs::create_dir_all(&transcripts).unwrap();
     std::fs::write(transcripts.join(format!("{SID}.jsonl")), "{}\n").unwrap();
@@ -314,9 +320,11 @@ fn a_rename_claims_the_new_name_before_the_old_cli_is_gone() {
 
 /// A rename that can't be saved changes nothing: tickets.json still names the agent by its old
 /// name, so `taskman resume` would find it there, and the old name stays claimed while the pane's
-/// CLI runs on. Saving fails here as on a full disk: `write_atomic` can't create its temporary file.
+/// CLI runs on. Saving fails here as on a full disk: `write_atomic` can't create its temporary file,
+/// beside the file tickets.json links to, in a folder made read-only once taskman has started.
 #[test]
 fn a_rename_that_can_not_be_saved_keeps_the_old_name_claimed() {
+    use std::os::unix::fs::PermissionsExt;
     let dir = scratch_dir("stopping-rename-unsaved");
     let repo = dir.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
@@ -326,7 +334,10 @@ fn a_rename_that_can_not_be_saved_keeps_the_old_name_claimed() {
         "projects": [{"name": "acme", "repo": repo}],
         "tickets": [{"key": "acme-lead", "repo": repo, "cwd": repo, "agent": "lead", "session_id": SID}],
     });
-    std::fs::write(state.join("tickets.json"), tickets.to_string()).unwrap();
+    let locked = dir.join("locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    std::fs::write(locked.join("tickets.json"), tickets.to_string()).unwrap();
+    std::os::unix::fs::symlink(locked.join("tickets.json"), state.join("tickets.json")).unwrap();
     let transcripts = dir.join("claude-config/projects/acme");
     std::fs::create_dir_all(&transcripts).unwrap();
     std::fs::write(transcripts.join(format!("{SID}.jsonl")), "{}\n").unwrap();
@@ -338,8 +349,8 @@ fn a_rename_that_can_not_be_saved_keeps_the_old_name_claimed() {
     );
     tui.wait_text("stub ready for acme-lead");
     let first = pid(&dir, "acme-lead").unwrap();
-    let in_the_way = state.join("tickets.tmp");
-    std::fs::create_dir_all(in_the_way.join("in-the-way")).unwrap();
+    let mode = |m| std::fs::Permissions::from_mode(m);
+    std::fs::set_permissions(&locked, mode(0o500)).unwrap();
 
     tui.send(b"\x01e");
     tui.wait_text("Rename agent");
@@ -378,7 +389,7 @@ fn a_rename_that_can_not_be_saved_keeps_the_old_name_claimed() {
     assert!(alive(first), "the pane's CLI was stopped");
     assert_eq!(pid(&dir, "acme-planner"), None, "a CLI started under the new name");
 
-    std::fs::remove_dir_all(&in_the_way).unwrap();
+    std::fs::set_permissions(&locked, mode(0o700)).unwrap();
     tui.send(b"\x1b");
     tui.wait_for("the form closed", |s| (!s.contents().contains("Rename agent")).then_some(()));
     quit(&mut tui);

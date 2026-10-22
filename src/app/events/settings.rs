@@ -117,3 +117,32 @@ fn settings_save_how_to_notify() {
     let saved = std::fs::read_to_string(store::config_path()).unwrap();
     assert!(saved.contains(r#""notify": "off""#), "{saved}");
 }
+
+#[test]
+fn the_focused_settings_field_and_its_keys_show_at_80x24() {
+    let mut app = acme_app();
+    app.open_settings(SettingsItem::General, false);
+    app.on_key(key(KeyCode::Enter));
+    for _ in 0..6 {
+        app.on_key(key(KeyCode::Down));
+    }
+    let screen = draw(&mut app, 80, 24);
+    assert!(screen.contains("Notify when you're away"), "focused field off screen:\n{screen}");
+    assert!(screen.contains("Esc back to list"), "key hints off screen:\n{screen}");
+}
+
+/// However small the screen, the forms draw: the keys first, then what room is left.
+#[test]
+fn forms_draw_on_a_tiny_screen() {
+    for (w, h) in [(40, 10), (30, 6), (20, 4), (10, 3)] {
+        let mut app = acme_app();
+        app.open_settings(SettingsItem::General, true);
+        draw(&mut app, w, h);
+        app.on_key(key(KeyCode::Up));
+        draw(&mut app, w, h);
+        let mut app = acme_app();
+        app.on_key(ctrl('a'));
+        app.on_key(key(KeyCode::Char('n')));
+        draw(&mut app, w, h);
+    }
+}

@@ -1,0 +1,2 @@
+- An empty or relative `XDG_STATE_HOME` or `XDG_CONFIG_HOME` is ignored, as the XDG spec says, instead of putting taskman's folder in the current directory, where `taskman uninstall --purge` could then remove a folder of yours named `taskman`. `taskman uninstall --purge` also refuses a relative `TASKMAN_CONFIG`, and removes only full paths.
+- Saving tickets.json or config.json through a link (stow, home-manager) writes the file the link leads to and keeps the link, and a save keeps the file's permissions: a config.json kept readable by you only stays that way.

@@ -605,6 +605,14 @@ impl Clients {
         })
     }
 
+    /// Has `project`'s tracker answer through `client`: a test's, which `replay` serves.
+    #[cfg(test)]
+    pub(crate) fn serve(&mut self, config: &Config, project: &Project, client: Client) {
+        let t = project.tracker.as_ref().expect("a project with a tracker");
+        let i = config.account_for(t).expect("an account for the tracker");
+        self.clients.insert((i, store::site_host(&t.site)), client);
+    }
+
     /// The board's files, from the cache: listed again only when one of its folders changed, so
     /// the Add form can ask on every keystroke and the status poll on every poll.
     pub fn board_files(&self, board: &Path) -> Vec<local::File> {
