@@ -297,6 +297,7 @@ When you add a ticket that has no worktree yet, taskman creates one: it fetches 
 - **Don't want one:** set Worktree to "Don't create" on the Add form; the session runs in the main checkout, as do agents.
 - **No remote, or the fetch fails** (or takes over 30 seconds): the branch starts from your local `HEAD`, and a message says so. Without a remote, the Add form's Base says so before you add the ticket (`from HEAD (master): no remote`).
 - **The folder already exists** and isn't the ticket's worktree, or git fails: nothing is touched and the session doesn't start; its pane says why. Fix it and press Enter to try again, or press `ctrl+a M` to run the session in the main checkout instead. If taskman quits before the worktree is made, it carries on at the next start.
+- **The worktree is gone** (removed by hand, outside taskman): the session doesn't start, rather than run in another folder. Its card shows it ended, and its pane and a toast say which folder is gone. Press Enter to make the worktree again in the same place, on the ticket's branch, or `ctrl+a x` to close the ticket. A worktree git keeps locked has to be unlocked first; the pane gives the command. A project folder that was moved or deleted stops its sessions the same way: put it back and press Enter, or delete the project in Settings and add it again where it is now. `taskman resume` refuses too, and says the same.
 
 ### Stacked tickets
 

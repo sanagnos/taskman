@@ -3,7 +3,7 @@
 
 use super::sleep::Watch;
 use super::sync::STALE;
-use super::{AgentState, Remote, Status};
+use super::{AgentState, Gone, Remote, Status};
 use crate::github::{self, Pr, PrState};
 use crate::session::{End, Parser, Reaper, Session};
 use crate::status_file::Record;
@@ -73,6 +73,10 @@ pub struct TicketView {
     /// Why its session didn't start the last time it was tried: the owner lock couldn't be taken
     /// (`start_session`), as "<file>: <error>". Enter tries again.
     pub lock_error: Option<String>,
+    /// Its session didn't start the last time it was tried because its folder is gone
+    /// (`start_session`). Enter makes a ticket's worktree again (`remake_worktree`), or tries
+    /// again.
+    pub gone: Option<Gone>,
     pub away: Option<Away>,
     /// Its resume was refused because Claude runs the conversation in the background; Enter
     /// stops that copy and resumes here.
@@ -135,6 +139,7 @@ impl TicketView {
             hold: None,
             launch: None,
             lock_error: None,
+            gone: None,
             away: None,
             background: None,
             screen_read: false,

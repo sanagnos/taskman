@@ -415,6 +415,22 @@ fn resume(args: &[String]) -> Result<i32, String> {
             "{name}'s worktree isn't made yet: its session hasn't started, so there's nothing to resume"
         ));
     }
+    // Spawned there, the CLI would fail as though it weren't installed.
+    if let Some(gone) = app::Gone::of(&t) {
+        let project = saved.projects.iter().find(|p| p.repo == t.repo);
+        let project = project.map_or_else(|| store::project_name(&t.repo), |p| p.name.clone());
+        let what = gone.what(&t, &project);
+        return Err(match gone {
+            app::Gone::Worktree => {
+                format!(
+                    "{what}: select {name} in taskman and press Enter to make its worktree again"
+                )
+            }
+            app::Gone::Project => format!(
+                "{what}: put it back, or delete the project in taskman's Settings and add it again where it is now"
+            ),
+        });
+    }
     let path = owner_file(&t.repo, &t.key);
     // Just handed off, the TUI holds it until the pane's CLI is gone: a moment, waited for here,
     // as the hand-off's tmux window runs this right away.

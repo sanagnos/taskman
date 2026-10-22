@@ -229,6 +229,12 @@ pub struct PendingWorktree {
     /// the next try, after a quit that cut this one short, is still taskman's to remove.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub making: Option<PathBuf>,
+    /// Where to make it and on which branch, in place of the project's settings: a worktree
+    /// removed outside taskman is made again where it was, on its own branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
     #[serde(flatten)]
     pub extra: Extra,
 }

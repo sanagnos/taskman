@@ -2,7 +2,7 @@
 //! and the prefix menu over it.
 
 use super::{dim, selection_bg, spinner, yellow};
-use crate::app::{AgentState, App, Away, Level, Mode, TicketView, Toast};
+use crate::app::{AgentState, App, Away, Gone, Level, Mode, TicketView, Toast};
 use crate::keys::prefix;
 use crate::session::{End, Exit};
 use crate::store::{Cli, tilde};
@@ -159,6 +159,57 @@ pub(super) fn draw_claude(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(
             Paragraph::new(text).alignment(Alignment::Center).wrap(Wrap { trim: true }),
             area,
+        );
+        return;
+    }
+    if tv.session.is_none()
+        && let Some(gone) = tv.gone
+    {
+        let red = |path| Line::from(Span::styled(tilde(path), Style::new().fg(Color::Red)));
+        let mut text = match gone {
+            Gone::Worktree => {
+                let on = tv.t.branch.as_deref().map(|b| format!(", on {}", untrusted::line(b)));
+                vec![
+                    Line::from(""),
+                    Line::from(format!("{}'s worktree is gone", tv.t.display()).bold()),
+                    red(&tv.t.cwd),
+                    Line::from(""),
+                    Line::from(format!(
+                        "Press Enter to make it again there{}.",
+                        on.unwrap_or_default()
+                    )),
+                    Line::from(Span::styled(format!("Or {}.", close_hint(tv)), dim())),
+                ]
+            }
+            Gone::Project => vec![
+                Line::from(""),
+                Line::from(format!("{}'s folder is gone", app.project_name(&tv.t)).bold()),
+                red(&tv.t.repo),
+                Line::from(""),
+                Line::from(format!(
+                    "Put it back, then press Enter to start {}'s session.",
+                    tv.t.display()
+                )),
+                Line::from(Span::styled(
+                    format!(
+                        "Or delete the project in Settings ({} ,), which closes its tickets, and \
+                         add it again where it is now.",
+                        prefix()
+                    ),
+                    dim(),
+                )),
+            ],
+        };
+        text.push(Line::from(Span::styled(
+            format!(
+                "The {} session didn't start: it would have run in your home folder instead.",
+                tv.t.cli.label()
+            ),
+            dim(),
+        )));
+        f.render_widget(
+            Paragraph::new(text).alignment(Alignment::Center).wrap(Wrap { trim: true }),
+            margins(area),
         );
         return;
     }

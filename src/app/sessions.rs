@@ -3,11 +3,11 @@
 
 use super::poll::remove_status_at;
 use super::sync::Msg;
-use super::{AgentState, App, Away, Id, Level, Mode};
+use super::{AgentState, App, Away, Gone, Id, Level, Mode};
 use crate::background;
-use crate::resume;
 use crate::session::{self, End, Session};
 use crate::store::{self, Ticket};
+use crate::{keys, resume, untrusted};
 use std::ffi::OsString;
 use std::time::{Duration, Instant};
 
@@ -93,9 +93,9 @@ impl App {
             Some(hold) => Ok(Ok(hold)),
             None => resume::take(&path),
         };
-        self.tickets[i].lock_error = None;
+        (self.tickets[i].lock_error, self.tickets[i].gone) = (None, None);
         let hold = match taken {
-            Ok(Ok(hold)) => hold.taskman(),
+            Ok(Ok(hold)) => hold,
             Ok(Err(resume::Owner::Closing)) => {
                 // Enter tries again (`restart_session`) once the removal is done.
                 let msg = resume::closing(self.tickets[i].t.display());
@@ -124,6 +124,21 @@ impl App {
                 return;
             }
         };
+        // Never in a folder that's gone, a worktree removed by hand or a project moved: the CLI
+        // would start in the home folder and take it for the ticket's checkout. Checked under the
+        // claim, so a session running in another terminal shows as that; let go of unchanged. The
+        // pane says why, and Enter makes the worktree again (`remake_worktree`) or tries again.
+        self.tickets[i].gone = Gone::of(&self.tickets[i].t);
+        if let Some(gone) = self.tickets[i].gone {
+            drop(hold);
+            let tv = &mut self.tickets[i];
+            tv.status.state = AgentState::Exited;
+            tv.status.seen = i == self.sel;
+            let msg = self.gone_toast(i, gone);
+            self.error(msg);
+            return;
+        }
+        let hold = hold.taskman();
         let area = self.areas.claude;
         let name = self.qualified(&self.tickets[i].t);
         let launch = super::launch::launch_id();
@@ -200,6 +215,60 @@ impl App {
         let cli = tv.t.cli.label();
         self.restart_session(i);
         self.toast(format!("Restarting {cli} session…"));
+    }
+
+    /// What `start_session` says when ticket `i`'s folder is `gone`: what's missing, and what to
+    /// do about it.
+    fn gone_toast(&self, i: usize, gone: Gone) -> String {
+        let t = &self.tickets[i].t;
+        let what = gone.what(t, &self.project_name(t));
+        match gone {
+            Gone::Worktree => {
+                let on = t.branch.as_deref().map(|b| format!(" on {}", untrusted::line(b)));
+                format!(
+                    "{what}: Enter makes its worktree again{}, {} x closes the ticket",
+                    on.unwrap_or_default(),
+                    keys::prefix()
+                )
+            }
+            Gone::Project => format!(
+                "{what}, so {}'s session didn't start: put the folder back and press Enter, or \
+                 delete the project in Settings and add it where it is now",
+                t.display()
+            ),
+        }
+    }
+
+    /// The name of `t`'s project, for messages.
+    pub(crate) fn project_name(&self, t: &Ticket) -> String {
+        self.project_of(t)
+            .map_or_else(|| store::project_name(&t.repo), |p| self.projects[p].name.clone())
+    }
+
+    /// Enter on ticket `i`, whose session didn't start because its folder is gone: a worktree
+    /// removed outside taskman is made again where it was, on its branch, and the session starts
+    /// in it once git is done. Anything else (the folder is back, or it was the project's) tries
+    /// again.
+    pub(super) fn remake_worktree(&mut self, i: usize) {
+        let Some(tv) = self.tickets.get_mut(i) else { return };
+        tv.stop_session();
+        tv.gone = None;
+        tv.status.state = AgentState::NotStarted;
+        let t = &self.tickets[i].t;
+        let Some(p) = self.project_of(t).filter(|_| Gone::of(t) == Some(Gone::Worktree)) else {
+            return;
+        };
+        let t = &mut self.tickets[i].t;
+        // A cwd that's empty or relative was never a worktree taskman made: the project's
+        // settings say where one goes.
+        let folder = Some(t.cwd.clone()).filter(|f| f.is_absolute());
+        t.pending_worktree = Some(store::PendingWorktree {
+            base: t.base.clone(),
+            folder,
+            branch: t.branch.clone(),
+            ..Default::default()
+        });
+        self.create_worktree(p, i);
     }
 
     /// Enter on a session that ended because Claude runs its conversation in the background:

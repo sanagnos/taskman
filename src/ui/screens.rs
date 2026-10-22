@@ -234,6 +234,28 @@ fn session_without_its_lock() {
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 
+/// Its worktree was removed outside taskman, so the session didn't start.
+#[test]
+fn session_whose_worktree_is_gone() {
+    let mut app = acme_app();
+    select(&mut app, "ENG-70");
+    let tv = app.tickets.iter_mut().find(|tv| tv.t.key == "ENG-70").unwrap();
+    tv.gone = Some(crate::app::Gone::Worktree);
+    tv.status.state = crate::app::AgentState::Exited;
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
+/// Its project's folder was moved, so the agent's session didn't start.
+#[test]
+fn session_whose_project_folder_is_gone() {
+    let mut app = acme_app();
+    select(&mut app, "acme-lead");
+    let tv = app.tickets.iter_mut().find(|tv| tv.t.agent.as_deref() == Some("lead")).unwrap();
+    tv.gone = Some(crate::app::Gone::Project);
+    tv.status.state = crate::app::AgentState::Exited;
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
 /// A sidebar longer than the screen, from the top: the last row counts the cards below, with ●
 /// as one of them needs you.
 #[test]

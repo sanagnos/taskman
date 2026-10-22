@@ -50,6 +50,38 @@ pub fn launch_id() -> String {
     format!("{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
+/// The folder a session runs in is gone, so it mustn't start: portable_pty would run the CLI in
+/// the home folder instead, and the CLI would take that for the ticket's checkout.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Gone {
+    /// The ticket's worktree, removed outside taskman; the project's folder is still there.
+    Worktree,
+    /// The project's folder, moved or deleted: an agent's, a ticket's on the main checkout, or
+    /// the one a ticket's worktree came from.
+    Project,
+}
+
+impl Gone {
+    /// What's gone of the folder `t`'s session runs in, if it is.
+    pub fn of(t: &Ticket) -> Option<Gone> {
+        if t.cwd.is_absolute() && t.cwd.is_dir() {
+            None
+        } else if t.cwd != t.repo && t.repo.is_dir() {
+            Some(Gone::Worktree)
+        } else {
+            Some(Gone::Project)
+        }
+    }
+
+    /// "ENG-52's folder ~/src/acme-ENG-52 is gone", or the project's, named `project`.
+    pub fn what(self, t: &Ticket, project: &str) -> String {
+        match self {
+            Gone::Worktree => format!("{}'s folder {} is gone", t.display(), store::tilde(&t.cwd)),
+            Gone::Project => format!("{project}'s folder {} is gone", store::tilde(&t.repo)),
+        }
+    }
+}
+
 /// The board's columns, for a brief. They are folder names from the repository, so each is kept
 /// to one line: a brief is the session's system prompt.
 fn column_names(board: &Path) -> String {

@@ -384,6 +384,7 @@ impl App {
             _ if key.code == KeyCode::Enter && tv.background.is_some() => {
                 self.stop_background_copy();
             }
+            _ if key.code == KeyCode::Enter && tv.gone.is_some() => self.remake_worktree(self.sel),
             _ if key.code == KeyCode::Enter => self.restart_session(self.sel),
             _ => {}
         }

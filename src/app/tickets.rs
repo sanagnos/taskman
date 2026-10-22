@@ -230,6 +230,9 @@ impl App {
             return;
         }
         tv.t.pending_worktree = None;
+        // One being made again in place of a worktree that's gone was in its own folder.
+        tv.t.cwd = tv.t.repo.clone();
+        tv.t.created_worktree = false;
         let msg = format!("{} runs in the main checkout {}", tv.t.key, store::tilde(&tv.t.repo));
         self.save();
         self.toast(msg);

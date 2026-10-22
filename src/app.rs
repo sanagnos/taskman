@@ -61,7 +61,7 @@ mod tickets;
 pub mod toasts;
 
 pub use forms::{Field, Form, FormKind, List};
-pub use launch::{NESTED_ENV, launch_id};
+pub use launch::{Gone, NESTED_ENV, launch_id};
 pub use poll::{AgentState, Status};
 pub use reorder::Piece;
 pub use settings::{Settings, SettingsItem};

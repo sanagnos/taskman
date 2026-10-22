@@ -1,0 +1,1 @@
+- A session whose worktree was removed by hand, or whose project folder was moved, no longer starts in your home folder. Its pane and a toast say which folder is gone; Enter makes the worktree again on the ticket's branch, and `taskman resume` refuses too. A moved project folder no longer turns its PR panels off as "gh isn't installed".

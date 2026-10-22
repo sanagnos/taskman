@@ -134,9 +134,28 @@ pub fn create(
     let done = |note, stacked, made| {
         Ok(Created { path: folder.to_path_buf(), branch: branch.to_string(), note, stacked, made })
     };
-    if folder.exists() {
-        let list = github::worktrees(repo).unwrap_or_default();
-        match list.iter().find(|w| same_path(&w.path, folder)) {
+    let list = github::worktrees(repo).unwrap_or_default();
+    let listed = list.iter().find(|w| same_path(&w.path, folder));
+    if !folder.exists()
+        && let Some(w) = listed
+    {
+        // Removed by hand: git still lists it, and adds none in its place until it's let go.
+        // There's nothing in it to lose.
+        let f = folder.to_string_lossy();
+        let out = git(repo, &["worktree", "remove", &f]);
+        if !ok(&out) {
+            return Err(match (&w.locked, out) {
+                (Some(_), _) => format!(
+                    "git keeps {} as a locked worktree; unlock it with git -C {} worktree unlock {f}",
+                    store::tilde(folder),
+                    store::tilde(repo)
+                ),
+                (None, Ok(o)) => git_error(&o),
+                (None, Err(e)) => format!("could not run git: {e}"),
+            });
+        }
+    } else if folder.exists() {
+        match listed {
             // Left by a `git worktree add` that was killed or stopped at the time limit.
             Some(w) if w.unfinished() => remove_unfinished(repo, folder)?,
             Some(w) if w.branch.as_deref() == Some(branch) => return done(None, false, ours),
@@ -588,6 +607,11 @@ fn delete_branch(repo: &Path, b: &str, head: &str) -> Result<(), String> {
 pub fn same_path(a: &Path, b: &Path) -> bool {
     a == b
         || matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
+        // One that's gone can't be resolved, but its folder can: git lists a worktree removed by
+        // hand by its real path.
+        || a.file_name().is_some()
+            && a.file_name() == b.file_name()
+            && matches!((a.parent(), b.parent()), (Some(x), Some(y)) if same_path(x, y))
 }
 
 /// The commit `rev` names, as a full id.
@@ -1001,6 +1025,33 @@ mod tests {
         assert_eq!(exclude.matches("/.claude/worktrees/").count(), 1);
         create(&repo, &folder_path(INSIDE, &repo, "ENG-54"), "ENG-54", None, false).unwrap();
         assert_eq!(std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap(), exclude);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn makes_a_worktree_removed_by_hand_again() {
+        let (root, repo) = scratch_repo("again");
+        let head = |dir: &Path| String::from_utf8(git(dir, &["rev-parse", "HEAD"]).unwrap().stdout);
+        let folder = folder_path(BESIDE, &repo, "ENG-52");
+        create(&repo, &folder, "ENG-52-fix-login", None, false).unwrap();
+        let id = ["-c", "user.name=t", "-c", "user.email=t@example.com"];
+        assert!(ok(&git(
+            &folder,
+            &[&id[..], &["commit", "-q", "--allow-empty", "-m", "work"]].concat()
+        )));
+        let work = head(&folder).unwrap();
+        // git still lists it, and would add none in its place.
+        std::fs::remove_dir_all(&folder).unwrap();
+        let c = create(&repo, &folder, "ENG-52-fix-login", None, false).unwrap();
+        assert!(c.made);
+        assert_eq!(head(&folder).unwrap(), work, "made again on its branch, with its commits");
+
+        // A locked one is the user's to let go of.
+        assert!(ok(&git(&repo, &["worktree", "lock", &folder.to_string_lossy()])));
+        std::fs::remove_dir_all(&folder).unwrap();
+        let e = create(&repo, &folder, "ENG-52-fix-login", None, false).unwrap_err();
+        assert!(e.contains("locked worktree; unlock it with git -C"), "{e}");
+        assert!(!folder.exists());
         let _ = std::fs::remove_dir_all(root);
     }
 

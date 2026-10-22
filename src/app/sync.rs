@@ -561,11 +561,13 @@ impl App {
         let prefs = &self.projects[p].worktrees;
         let provider = self.projects[p].tracker.as_ref().map(|t| t.provider);
         let (key, repo, tx) = (tv.t.key.clone(), tv.t.repo.clone(), self.tx.clone());
-        let folder = worktree::folder_path(prefs.folder_format(), &repo, &key);
         let format = prefs.branch_format().to_string();
         // Saved below, before git can run: git runs in its own process group, so a quit doesn't
         // stop it, and the next try finds the worktree it finished.
         let pending = tv.t.pending_worktree.get_or_insert_default();
+        let folder = (pending.folder.clone())
+            .unwrap_or_else(|| worktree::folder_path(prefs.folder_format(), &repo, &key));
+        let fixed_branch = pending.branch.clone();
         let base = pending.base.clone();
         let ours = pending.making.as_ref().is_some_and(|f| worktree::same_path(f, &folder));
         pending.making = Some(folder.clone());
@@ -606,8 +608,9 @@ impl App {
                     let _ = tx.send(Msg::Jira(fetch, (repo.clone(), key.clone()), res));
                     fetched = true;
                 }
-                let branch =
-                    worktree::branch_name(&format, provider, &key, &title, &tracker_branch);
+                let branch = fixed_branch.unwrap_or_else(|| {
+                    worktree::branch_name(&format, provider, &key, &title, &tracker_branch)
+                });
                 let base = base.as_ref().map(|b| b.branch.as_str());
                 worktree::create(&repo, &folder, &branch, base, ours)
             });

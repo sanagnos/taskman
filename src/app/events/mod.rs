@@ -9,7 +9,7 @@ use super::test_support::{
     ctrl, draw, key, lay_out, long_sidebar, offline, panicking, reaped, sent, settle, settle_until,
     toast,
 };
-use super::{AgentState, App, Away, Hit, Mode, sync::Msg};
+use super::{AgentState, App, Away, Gone, Hit, Mode, sync::Msg};
 use crate::store::{self, Saved};
 use crate::{add, resume};
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};

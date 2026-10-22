@@ -302,6 +302,112 @@ fn a_session_does_not_start_without_its_lock() {
     drop(outside);
 }
 
+/// A ticket whose worktree was removed outside taskman doesn't start in another folder: the pane
+/// and a toast say what's gone, and Enter makes it again where it was, on its branch.
+#[test]
+fn a_session_whose_worktree_is_gone_does_not_start_and_enter_makes_it_again() {
+    let mut app = acme_app();
+    lay_out(&mut app, 80, 24);
+    let (i, repo, folder) = gone_worktree(&mut app, false);
+    app.ensure_selected_session();
+    let tv = &app.tickets[i];
+    assert!(tv.session.is_none() && tv.hold.is_none(), "started somewhere else");
+    assert_eq!((tv.gone, tv.status.state), (Some(Gone::Worktree), AgentState::Exited));
+    assert_eq!(resume::peek(&resume::owner_file(&repo, "ENG-5")), resume::Owner::Free);
+    let said = format!(
+        "ENG-5's folder {} is gone: Enter makes its worktree again on ENG-5, {} x closes the ticket",
+        store::tilde(&folder),
+        crate::keys::prefix()
+    );
+    assert_eq!(toast(&app), Some(said.as_str()));
+    let screen = draw(&mut app, 80, 24);
+    assert!(
+        screen.contains("ENG-5's worktree is gone")
+            && screen.contains("Press Enter to make it again there, on ENG-5."),
+        "{screen}"
+    );
+    // The next tick leaves it alone.
+    app.ensure_selected_session();
+    assert_eq!(app.tickets[i].status.state, AgentState::Exited);
+
+    app.on_key(key(KeyCode::Enter));
+    assert!(app.tickets[i].creating && app.tickets[i].gone.is_none());
+    settle_until(&mut app, |app| !app.tickets[i].creating);
+    let t = &saved().tickets[i];
+    assert_eq!((t.cwd.as_path(), t.branch.as_deref()), (folder.as_path(), Some("ENG-5")));
+    assert!(folder.is_dir() && t.pending_worktree.is_none() && t.created_worktree);
+    // The next tick starts it.
+    assert_eq!(app.tickets[i].status.state, AgentState::NotStarted);
+}
+
+/// Adds ticket ENG-5 to project web (`web_project`), waits for its worktree, and removes it by
+/// hand, locked first when `locked`. Returns the ticket, the main checkout and the worktree.
+fn gone_worktree(app: &mut App, locked: bool) -> (usize, std::path::PathBuf, std::path::PathBuf) {
+    let (p, repo) = web_project(app);
+    let added = app.add_ticket(p, "ENG-5".into(), store::Cli::Claude, true, None, true);
+    assert!(matches!(added, Ok(crate::app::ticket::Added::New(_))));
+    settle(app);
+    let folder = app.tickets[app.sel].t.cwd.clone();
+    assert_ne!(folder, repo);
+    if locked {
+        sh(&repo, &format!("git worktree lock '{}'", folder.display()));
+    }
+    // git still lists it, by its real path rather than the symlinked one.
+    std::fs::remove_dir_all(&folder).unwrap();
+    (app.sel, repo, folder)
+}
+
+/// A gone worktree git keeps locked isn't made again: the pane says how to unlock it, and
+/// `ctrl+a M` runs the session in the main checkout instead.
+#[test]
+fn a_gone_worktree_that_cant_be_made_again_can_run_in_the_main_checkout() {
+    let mut app = acme_app();
+    lay_out(&mut app, 80, 24);
+    let (i, repo, folder) = gone_worktree(&mut app, true);
+    app.ensure_selected_session();
+    assert_eq!(app.tickets[i].gone, Some(Gone::Worktree));
+    app.on_key(key(KeyCode::Enter));
+    settle_until(&mut app, |app| !app.tickets[i].creating);
+    let error = app.tickets[i].t.pending_worktree.as_ref().and_then(|w| w.error.clone());
+    assert!(
+        error.as_deref().is_some_and(|e| e.contains("locked worktree; unlock it")),
+        "{error:?}"
+    );
+    assert!(!folder.exists());
+    prefix(&mut app, KeyCode::Char('M'));
+    let t = &saved().tickets[i];
+    assert_eq!(t.cwd, repo);
+    assert!(t.pending_worktree.is_none() && !t.created_worktree);
+    assert_eq!(Gone::of(t), None);
+}
+
+/// An agent whose project folder is gone (moved, say) doesn't start either; Enter tries again.
+#[test]
+fn a_session_whose_project_folder_is_gone_does_not_start() {
+    let mut app = acme_app();
+    lay_out(&mut app, 80, 24);
+    let i = app.tickets.iter().position(|tv| tv.t.agent.as_deref() == Some("lead")).unwrap();
+    app.select(i);
+    app.tickets[i].status.state = AgentState::NotStarted;
+    // /src/acme isn't there in a test.
+    app.ensure_selected_session();
+    let tv = &app.tickets[i];
+    assert!(tv.session.is_none() && tv.hold.is_none(), "started somewhere else");
+    assert_eq!((tv.gone, tv.status.state), (Some(Gone::Project), AgentState::Exited));
+    assert!(
+        toast(&app).is_some_and(|t| t.starts_with(
+            "acme's folder /src/acme is gone, so lead's session didn't start: put the folder back"
+        )),
+        "{:?}",
+        toast(&app)
+    );
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!((app.tickets[i].gone, app.tickets[i].status.state), (None, AgentState::NotStarted));
+    assert!(!app.tickets[i].creating);
+    app.ensure_selected_session();
+    assert_eq!(app.tickets[i].gone, Some(Gone::Project));
+}
+
 /// A status file record as `taskman hook` writes it, from start `launch` of the session.
 fn record(state: &str, sid: &str, launch: Option<&str>) -> String {
     let state = crate::status_file::HookState::from_word(state);

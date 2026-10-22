@@ -551,6 +551,11 @@ pub(crate) fn gh(dir: &Path, args: &[&str]) -> Result<String, String> {
     let out =
         proc::run(Command::new("gh").args(args).current_dir(dir).env("NO_COLOR", "1"), GH_LIMIT)
             .map_err(|e| match e.kind() {
+                // Its folder, moved or deleted, isn't found either: not a reason to say gh is
+                // missing, which sticks until taskman restarts.
+                std::io::ErrorKind::NotFound if !dir.is_dir() => {
+                    format!("{} is gone", crate::store::tilde(dir))
+                }
                 std::io::ErrorKind::NotFound => Gh::Missing.why().to_string(),
                 std::io::ErrorKind::TimedOut => {
                     format!("gh {}: {e}; the next refresh tries again", args[..2].join(" "))
@@ -1286,6 +1291,15 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use serde_json::json;
+
+    #[test]
+    fn a_folder_thats_gone_isnt_gh_missing() {
+        // gh never runs: the folder fails before it would start, installed or not.
+        let gone = crate::store::state_dir().join("acme-moved");
+        let e = gh(&gone, &["pr", "list"]).unwrap_err();
+        assert!(e.ends_with("acme-moved is gone"), "{e}");
+        assert_eq!(Gh::from_error(&e), None);
+    }
 
     /// `readiness` with gh answering from `tokens`, by host; returns what it found and the hosts
     /// gh was asked about.

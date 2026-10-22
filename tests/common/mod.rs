@@ -643,8 +643,9 @@ pub fn project(dir: &Path, keys: &[&str]) -> PathBuf {
 
 /// The scripted CLI the sessions run (`TASKMAN_CLAUDE`). The session's pty stays in cooked mode, so
 /// the kernel turns a ctrl+c or ctrl+z that reaches it into SIGINT or SIGTSTP, which it notes. In
-/// `dir`, for each ticket: `<KEY>.pid`, `<KEY>.signals` (one per line; SIGHUP and SIGTERM end
-/// it), `<KEY>.input` (each line typed) and `<KEY>.ticks` (how far `stream` got). Lines typed:
+/// `dir`, for each ticket: `<KEY>.cwd` (the real path of the folder it runs in), `<KEY>.pid`,
+/// `<KEY>.signals` (one per line; SIGHUP and SIGTERM end it), `<KEY>.input` (each line typed) and
+/// `<KEY>.ticks` (how far `stream` got). Lines typed:
 ///
 /// - `lines N` prints `line 001` to `line N`, then `printed N`
 /// - `emoji N` prints N rows, `row 001 ⚠️ ✅ ❌ end` with the warning sign's emoji selector (U+FE0F)
@@ -663,6 +664,7 @@ pub fn project(dir: &Path, keys: &[&str]) -> PathBuf {
 pub fn stub_session(dir: &Path) -> PathBuf {
     let text = r#"#!/bin/sh
 f="DIR/$TASKMAN_TICKET"
+pwd -P > "$f.cwd"
 echo $$ > "$f.pid"
 trap 'echo INT >> "$f.signals"' INT
 trap 'echo TSTP >> "$f.signals"' TSTP
