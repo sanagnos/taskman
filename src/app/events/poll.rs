@@ -144,3 +144,119 @@ fn an_approval_codex_asks_you_rings_and_notifies() {
     assert_eq!(app.tickets[j].status.state, AgentState::Needs);
     assert!(app.bell);
 }
+
+#[test]
+fn an_outside_codex_approval_needs_you_once_no_reviewer_shows() {
+    let mut app = acme_app();
+    lay_out(&mut app, 80, 24);
+    let i = index(&app, "ENG-61");
+    // `taskman resume` runs it in another terminal: no screen here to read.
+    let outside = held_outside("ENG-61");
+    app.poll_status();
+    assert_eq!(app.tickets[i].away, Some(Away::Outside));
+    asks_approval(&mut app, "ENG-61");
+    assert_eq!(app.tickets[i].status.state, AgentState::Working);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    app.poll_status();
+    assert_eq!(app.tickets[i].status.state, AgentState::Needs);
+    assert!(app.bell && app.queue().contains(&i));
+    drop(outside);
+}
+
+// ---- a CLI's question about trusting its folder (`Status::trust`) ------------------------------
+
+const CLAUDE_TRUST: &str = " Accessing workspace:\n\n /src/acme\n\n Quick safety check: Is this a project you created or one you trust?\n\n ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm · Esc to cancel\n";
+const CODEX_TRUST: &str = "  Folder access\n  /src/acme\n\n  Trust this folder? Codex can read, edit, and run files here.\n\n› 1. Trust and continue\n  2. Quit\n\n  enter continue · esc quit\n";
+
+/// Starts `key`'s session afresh, showing `screen`: no hook has fired yet.
+fn starts_showing(app: &mut App, key: &str, screen: &str) -> usize {
+    attach(app, key, screen);
+    let i = index(app, key);
+    app.tickets[i].status.started();
+    i
+}
+
+#[test]
+fn a_session_asking_to_trust_its_folder_needs_you() {
+    let mut app = acme_app();
+    let shown = notifications(&mut app);
+    app.focused = Some(false);
+    lay_out(&mut app, 160, 40);
+    for (key, screen) in [("ENG-53", CLAUDE_TRUST), ("ENG-61", CODEX_TRUST)] {
+        let i = starts_showing(&mut app, key, screen);
+        app.bell = false;
+        app.poll_status();
+        let status = &app.tickets[i].status;
+        assert_eq!(
+            (status.state, status.message.as_str()),
+            (AgentState::Needs, "asks to trust its folder")
+        );
+        assert!(app.bell && !status.seen && status.waiting_since.is_some());
+        assert!(app.queue().contains(&i), "{key}");
+        // Polled again, it's the same wait: no second bell.
+        app.bell = false;
+        app.poll_status();
+        assert_eq!(app.tickets[i].status.state, AgentState::Needs);
+        assert!(!app.bell);
+        settle(&mut app);
+    }
+    assert_eq!(
+        *shown.lock().unwrap(),
+        ["ENG-53 needs you: a question", "ENG-61 needs you: a question"]
+    );
+}
+
+#[test]
+fn an_answered_trust_question_leaves_the_session_idle() {
+    let mut app = acme_app();
+    lay_out(&mut app, 160, 40);
+    let i = starts_showing(&mut app, "ENG-53", CLAUDE_TRUST);
+    app.poll_status();
+    assert_eq!(app.tickets[i].status.state, AgentState::Needs);
+    // Trusted: Claude goes on to its input, and no hook has fired yet.
+    shows(&app, "ENG-53", SCREEN);
+    app.poll_status();
+    let status = &app.tickets[i].status;
+    assert_eq!((status.state, status.message.as_str()), (AgentState::Idle, ""));
+    assert!(!app.queue().contains(&i));
+    // Declined: the CLI exits.
+    let i = starts_showing(&mut app, "ENG-52", CLAUDE_TRUST);
+    app.poll_status();
+    assert_eq!(app.tickets[i].status.state, AgentState::Needs);
+    app.tickets[i].session.as_mut().unwrap().exit(0);
+    app.poll_status();
+    assert_eq!(app.tickets[i].status.state, AgentState::Exited);
+}
+
+#[test]
+fn once_a_hook_fires_the_screen_is_not_read_for_the_trust_question() {
+    let mut app = acme_app();
+    lay_out(&mut app, 160, 40);
+    let i = starts_showing(&mut app, "ENG-53", SCREEN);
+    app.poll_status();
+    assert_eq!(app.tickets[i].status.state, AgentState::Idle);
+    // SessionStart: the hooks report the session from here on, whatever its screen shows.
+    let rec = crate::hook::status_record(
+        crate::status_file::HookState::Idle,
+        Some("sid-53"),
+        None,
+        "",
+        1,
+    );
+    let path = store::status_file("/src/acme".as_ref(), "ENG-53");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, rec.to_string()).unwrap();
+    app.poll_status();
+    shows(&app, "ENG-53", CLAUDE_TRUST);
+    app.poll_status();
+    assert_eq!(app.tickets[i].status.state, AgentState::Idle);
+    // A hook also settles a question it shows as waiting.
+    let i = starts_showing(&mut app, "ENG-52", CLAUDE_TRUST);
+    app.poll_status();
+    assert_eq!(app.tickets[i].status.state, AgentState::Needs);
+    let path = store::status_file("/src/acme".as_ref(), "ENG-52");
+    std::fs::write(&path, rec.to_string()).unwrap();
+    app.poll_status();
+    let status = &app.tickets[i].status;
+    assert_eq!((status.state, status.message.as_str()), (AgentState::Idle, ""));
+}

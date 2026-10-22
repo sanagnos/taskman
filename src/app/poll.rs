@@ -34,6 +34,9 @@ const QUIET_AFTER_KEY: Duration = Duration::from_secs(2);
 /// "Inferred states" in docs/design.md).
 const REVIEW_WAIT: Duration = Duration::from_secs(1);
 
+/// What a session waiting on its CLI's folder-trust question (`Status::trust`) says it needs.
+const TRUST_QUESTION: &str = "asks to trust its folder";
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AgentState {
     NotStarted,
@@ -101,6 +104,9 @@ pub struct Status {
     /// A Codex approval request its hook reported, shown as working until the screen says
     /// whether its reviewer or the user answers it (`hold`).
     review: Option<Review>,
+    /// Whether the session waits on its CLI's question about trusting its folder, which comes
+    /// before any hook (`trust`).
+    trusting: bool,
 }
 
 #[derive(Debug)]
@@ -128,6 +134,7 @@ impl Status {
             answered_at: None,
             interrupted_lines: 0,
             review: None,
+            trusting: false,
         }
     }
 
@@ -171,6 +178,7 @@ impl Status {
         self.amending = false;
         self.answered_at = None;
         self.review = None;
+        self.trusting = false;
     }
 
     /// A hook wrote the status file: whatever a key or the screen suggested is settled by it.
@@ -180,6 +188,7 @@ impl Status {
         self.answered_at = None;
         self.amending = false;
         self.review = None;
+        self.trusting = false;
     }
 
     /// A CLI whose reviewer may answer approvals (`Cli::reviews_approvals`) reported one: the
@@ -215,6 +224,29 @@ impl Status {
                 true
             }
         }
+    }
+
+    /// For a session no hook has reported since it started: whether its CLI asks to trust the
+    /// session's folder, read by `asks` (`Cli::asks_trust`), applied and returned when it changed.
+    /// The question needs the user; answered, the session is idle until its first hook.
+    /// `selected` says whether the user is looking at it.
+    fn trust(&mut self, asks: impl FnOnce() -> bool, selected: bool) -> Option<AgentState> {
+        let state = if self.trusting { AgentState::Needs } else { AgentState::Idle };
+        if self.last_event.is_some() || self.state != state || asks() == self.trusting {
+            return None;
+        }
+        self.trusting = !self.trusting;
+        if self.trusting {
+            self.state = AgentState::Needs;
+            self.message = TRUST_QUESTION.into();
+            self.waiting_since = Some(crate::util::now());
+            self.seen &= selected;
+        } else {
+            self.state = AgentState::Idle;
+            self.message.clear();
+            self.waiting_since = None;
+        }
+        Some(self.state)
     }
 
     /// For a working session no hook has stopped: the state the screen shows instead
@@ -469,13 +501,26 @@ impl App {
                 tv.pr.request(true);
             }
             // Whether Codex's reviewer or the user answers an approval request, from the screen.
-            // Read only while one is held.
+            // Read only while one is held. A session running outside has no screen here, so no
+            // reviewer shows: the request is the user's once `REVIEW_WAIT` is up.
             let cli = tv.t.cli;
             if tv.status.review.is_some()
-                && let Some(s) = &tv.session
-                && tv.status.review(|| cli.approver(&s.screen_text()), i == self.sel)
+                && tv.status.review(
+                    || tv.session.as_ref().and_then(|s| cli.approver(&s.screen_text())),
+                    i == self.sel,
+                )
             {
                 waiting.push(i);
+                self.dirty.store(true, Ordering::Relaxed);
+            }
+            // A question about trusting the folder comes before any hook: read only until one fires.
+            if let Some(s) = tv.session.as_ref().filter(|s| !s.exited())
+                && let Some(state) =
+                    tv.status.trust(|| cli.asks_trust(&s.screen_text()), i == self.sel)
+            {
+                if state == AgentState::Needs {
+                    waiting.push(i);
+                }
                 self.dirty.store(true, Ordering::Relaxed);
             }
             // Interrupts and answered prompts fire no hook: infer them from the screen.

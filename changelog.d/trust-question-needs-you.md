@@ -1,0 +1,1 @@
+- A session waiting on Claude Code's or Codex's question about trusting its folder now shows as needing you, in the sidebar, the waiting list and notifications, instead of idle. A Codex approval request in a session continued with `taskman resume` shows as needing you again, instead of working until the next hook.

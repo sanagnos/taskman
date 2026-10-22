@@ -157,6 +157,20 @@ impl Cli {
         }
     }
 
+    /// Whether `screen` shows the CLI asking whether to trust the session's folder, which it asks
+    /// in a folder it hasn't been told to trust, before any hook runs (`Status::trust`). Its
+    /// options tell it: Claude's "Yes, I trust this folder" (earlier versions asked "Do you
+    /// trust the files in this folder?"), Codex's "Trust and continue".
+    pub fn asks_trust(self, screen: &str) -> bool {
+        let asks = |needles: &[&str]| screen.lines().any(|l| needles.iter().any(|n| l.contains(n)));
+        match self {
+            Cli::Claude => {
+                asks(&["Yes, I trust this folder", "Do you trust the files in this folder?"])
+            }
+            Cli::Codex => asks(&["1. Trust and continue"]),
+        }
+    }
+
     /// The key that shows the whole conversation, rows the pane's history has dropped included:
     /// Claude's transcript mode, Codex's transcript view. The default of each; both can rebind it.
     pub fn transcript_key(self) -> &'static str {
@@ -372,6 +386,27 @@ mod tests {
         // Claude has no reviewer, and its prompts are told by its hooks.
         assert!(Cli::Codex.reviews_approvals() && !Cli::Claude.reviews_approvals());
         assert_eq!(Cli::Claude.approver(prompt), None);
+    }
+
+    #[test]
+    fn each_shows_when_it_asks_to_trust_its_folder() {
+        // As Claude Code 2.1.308 and Codex 0.162 draw the question in a folder never trusted.
+        let claude = " Accessing workspace:\n\n /src/acme\n\n Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source\n project, or work from your team). If not, take a moment to review what's in this folder first.\n\n Claude Code'll be able to read, edit, and execute files here.\n\n Security guide\n\n ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm · Esc to cancel\n";
+        let codex = "  Folder access\n  /src/acme\n\n  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings. Folder settings\n  can run code automatically, even without a model request. Continue only if you trust these files. Your trust\n  decision will be saved.\n\n› 1. Trust and continue\n  2. Quit\n\n  enter continue · esc quit\n";
+        let older = " Do you trust the files in this folder?\n\n /src/acme\n\n ❯ 1. Yes, proceed\n   2. No, exit\n";
+        assert!(Cli::Claude.asks_trust(claude) && Cli::Claude.asks_trust(older));
+        assert!(Cli::Codex.asks_trust(codex));
+        // Each its own question only, and not once it's answered: the input, or a conversation
+        // that mentions trust.
+        assert!(!Cli::Claude.asks_trust(codex) && !Cli::Codex.asks_trust(claude));
+        for screen in [
+            "✻ Welcome to Claude Code\n\n> ",
+            "> do you trust this folder?\n\n● Yes, it's your own repository.\n",
+            "› Explain this codebase\n",
+            "",
+        ] {
+            assert!(!Cli::Claude.asks_trust(screen) && !Cli::Codex.asks_trust(screen), "{screen}");
+        }
     }
 
     #[test]
