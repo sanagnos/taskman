@@ -37,11 +37,14 @@ pub fn run_past_quit(cmd: &mut Command, timeout: Duration) -> io::Result<Output>
 /// The process groups [`run`] started that haven't been reaped, by id, for [`stop_all`].
 struct Live {
     groups: Vec<libc::pid_t>,
+    /// Helpers being started, not yet in `groups` (`Starting`), and those that finished starting
+    /// once `stop_all` had run, until they're reaped: `stop_all` waits for them.
+    starting: usize,
     /// `stop_all` has run: nothing starts from now on.
     stopped: bool,
 }
 
-static LIVE: Mutex<Live> = Mutex::new(Live { groups: Vec::new(), stopped: false });
+static LIVE: Mutex<Live> = Mutex::new(Live { groups: Vec::new(), starting: 0, stopped: false });
 
 /// The live groups. A child is reaped, and its id leaves them, under this lock, so `stop_all`
 /// never signals an id that has passed to another group meanwhile.
@@ -52,11 +55,27 @@ fn live() -> MutexGuard<'static, Live> {
 /// How long [`stop_all`] gives the groups it asked to end before it kills them.
 const STOP_GRACE: Duration = Duration::from_millis(250);
 
+/// How long [`stop_all`] waits for helpers still starting: forked, but not yet running the
+/// program, so there's nothing to signal. Starting takes milliseconds; this only bounds an exec
+/// that hangs, so the watchdog still ends taskman.
+const START_WAIT: Duration = Duration::from_secs(2);
+
+/// A helper [`run`] is starting (`Live::starting`), until dropped.
+struct Starting;
+
+impl Drop for Starting {
+    fn drop(&mut self) {
+        live().starting -= 1;
+    }
+}
+
 /// Stops every group [`run`] started that is still running, and starts none from now on: for
 /// taskman quitting, so a gh waiting on a locked keyring, say, doesn't outlive it. Each group is
 /// asked to end (SIGTERM) and given [`STOP_GRACE`] before it's killed: git removes its lock files
 /// on SIGTERM, but killed, a `git status` refreshing the index or a `git fetch` updating refs
-/// leaves its `.lock` behind, and the next commit there fails.
+/// leaves its `.lock` behind, and the next commit there fails. A helper still starting is waited
+/// for (up to [`START_WAIT`]): between fork and exec it can't be signalled, and with taskman gone
+/// it would run on with nothing to stop it.
 pub fn stop_all() {
     let mut live = live();
     live.stopped = true;
@@ -64,9 +83,14 @@ pub fn stop_all() {
         signal_group(group, libc::SIGTERM);
     }
     // A group ends when `run` reaps it: its pipes close once all of it has ended. Still in the
-    // list, it hasn't been reaped, so its id is still its own to kill.
-    let until = Instant::now() + STOP_GRACE;
-    while !live.groups.is_empty() && Instant::now() < until {
+    // list, it hasn't been reaped, so its id is still its own to kill. One that finishes starting
+    // meanwhile asks itself to end, and is killed at its own grace (`run_inner`).
+    let begun = Instant::now();
+    let waiting = |live: &Live| {
+        let now = begun.elapsed();
+        !live.groups.is_empty() && now < STOP_GRACE || live.starting > 0 && now < START_WAIT
+    };
+    while waiting(&live) {
         drop(live);
         std::thread::sleep(Duration::from_millis(5));
         live = self::live();
@@ -88,9 +112,16 @@ fn run_inner(
     if ["SSH_ASKPASS", "SSH_ASKPASS_REQUIRE"].iter().all(|v| std::env::var_os(v).is_none()) {
         cmd.env("SSH_ASKPASS_REQUIRE", "never");
     }
-    if stopped_at_quit && live().stopped {
-        return Err(io::Error::other("taskman is quitting"));
-    }
+    let starting = if stopped_at_quit {
+        let mut live = live();
+        if live.stopped {
+            return Err(io::Error::other("taskman is quitting"));
+        }
+        live.starting += 1;
+        Some(Starting)
+    } else {
+        None
+    };
     let mut child = own_session(cmd)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GH_PROMPT_DISABLED", "1")
@@ -98,19 +129,27 @@ fn run_inner(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    if stopped_at_quit {
-        let mut live = live();
-        if let Some(group) = group_of(&child) {
-            // `stop_all` ran while it started: asked to end as the rest were, killed with them
-            // if `stop_all` is still waiting, or at its own limit, cut to the same grace, if not.
-            // Its pipes close, so the wait below ends too.
+    // Held until it's reaped when `stop_all` ran while it started: asked to end as the rest
+    // were, and killed at its own limit, cut to the same grace, while `stop_all` waits.
+    let _late = match starting {
+        Some(starting) => {
+            let mut live = live();
+            let group = group_of(&child);
             if live.stopped {
-                signal_group(group, libc::SIGTERM);
+                if let Some(g) = group {
+                    signal_group(g, libc::SIGTERM);
+                }
                 deadline = deadline.min(Instant::now() + STOP_GRACE);
+                Some(starting)
+            } else {
+                live.groups.extend(group);
+                drop(live);
+                drop(starting);
+                None
             }
-            live.groups.push(group);
         }
-    }
+        None => None,
+    };
     // Written from its own thread, so the wait below keeps the time: stopping the group ends a
     // write that's stuck, and closing stdin when it's done is the program's end of input.
     if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
@@ -484,6 +523,74 @@ mod tests {
             "polite={}:{} stubborn={}:{} waited={waited}",
             polite.1, polite.2, stubborn.1, !stubborn.2
         );
+    }
+
+    /// A helper still starting when taskman quits, past the fork and not yet exec'd: `stop_all`
+    /// waits for it, so it doesn't go on to run with taskman gone and nothing to stop it.
+    #[test]
+    fn stop_all_waits_for_a_helper_still_starting() {
+        let Some(dir) = std::env::var_os(ALONE).map(std::path::PathBuf::from) else {
+            let out = alone("proc::tests::stop_all_waits_for_a_helper_still_starting");
+            let pid: libc::pid_t = out
+                .split_whitespace()
+                .find_map(|w| w.strip_prefix("starting="))
+                .and_then(|p| p.parse().ok())
+                .unwrap_or_else(|| panic!("no pid in {out}"));
+            // Left running, it leads a session of its own once `own_session` has run in it.
+            let until = Instant::now() + Duration::from_secs(5);
+            let survived = loop {
+                // SAFETY: signal 0 sends nothing, only checks the process is there.
+                if unsafe { libc::kill(pid, 0) } != 0 {
+                    break false;
+                }
+                // SAFETY: getpgid only reads the process's group id.
+                if unsafe { libc::getpgid(pid) } == pid {
+                    break true;
+                }
+                assert!(Instant::now() < until, "{pid} neither ended nor started");
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            // SAFETY: sends a signal; no memory is involved.
+            unsafe { libc::kill(-pid, libc::SIGKILL) };
+            assert!(!survived, "the helper outlived taskman");
+            return;
+        };
+        let started = dir.join("started");
+        let file = std::fs::File::create(&started).unwrap();
+        std::thread::spawn(move || {
+            use std::os::fd::AsRawFd;
+            let mut cmd = Command::new("sleep");
+            cmd.arg("30");
+            // Before `own_session`'s: a child descheduled between fork and exec, which `run`
+            // hasn't heard back from.
+            // SAFETY: the closure runs in the child between fork and exec; it allocates nothing
+            // and calls only getpid, write and nanosleep, which are async-signal-safe.
+            unsafe {
+                cmd.pre_exec(move || {
+                    let pid = libc::getpid();
+                    let size = std::mem::size_of_val(&pid);
+                    libc::write(file.as_raw_fd(), (&raw const pid).cast(), size);
+                    let second = libc::timespec { tv_sec: 1, tv_nsec: 0 };
+                    libc::nanosleep(&raw const second, std::ptr::null_mut());
+                    Ok(())
+                });
+            }
+            let _ = run(&mut cmd, Duration::from_secs(60));
+        });
+        let until = Instant::now() + Duration::from_secs(5);
+        let pid = loop {
+            if let Ok(b) = std::fs::read(&started)
+                && let Ok(b) = <[u8; 4]>::try_from(b.as_slice())
+            {
+                break libc::pid_t::from_ne_bytes(b);
+            }
+            assert!(Instant::now() < until, "the helper never forked");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        println!("starting={pid}");
+        stop_all();
+        // As taskman ends after `stop_all`: `run`'s thread doesn't outlive it.
+        std::process::exit(0);
     }
 
     #[test]
