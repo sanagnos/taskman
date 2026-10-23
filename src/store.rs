@@ -584,12 +584,20 @@ pub fn load() -> Result<Saved, String> {
 /// be every project and account, or state a newer taskman wrote. A file of a newer `FORMAT` is
 /// refused before anything else in it is read.
 pub fn read_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> Result<T, String> {
+    let left = "It was left as it is. If a newer taskman wrote it, run that one (taskman update installs the latest)";
+    let aside = "otherwise fix the file, or move it aside to start without it.";
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(T::default()),
+        // Not text at all, which no taskman writes: as broken as invalid JSON.
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+            return Err(format!(
+                "couldn't read {}: it isn't UTF-8 text\n{left}; {aside}",
+                tilde(path)
+            ));
+        }
         Err(e) => return Err(format!("couldn't read {}: {e}", tilde(path))),
     };
-    let left = "It was left as it is. If a newer taskman wrote it, run that one (taskman update installs the latest)";
     let format = serde_json::from_str::<serde_json::Value>(&text)
         .ok()
         .and_then(|v| v.get("format")?.as_u64());
@@ -601,12 +609,8 @@ pub fn read_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> Resul
             tilde(path)
         ));
     }
-    serde_json::from_str(&text).map_err(|e| {
-        format!(
-            "couldn't read {}: {e}\n{left}; otherwise fix the file, or move it aside to start without it.",
-            tilde(path)
-        )
-    })
+    serde_json::from_str(&text)
+        .map_err(|e| format!("couldn't read {}: {e}\n{left}; {aside}", tilde(path)))
 }
 
 /// Held while the TUI runs, so a second one on the same state folder is refused: each rewrites
@@ -1187,6 +1191,44 @@ mod tests {
         assert!(res.unwrap_err().contains("format 3") && kept);
         let (res, kept) = read::<Saved>("format-text", r#"{"format": "2"}"#);
         assert!(res.unwrap_err().contains("invalid type") && kept);
+    }
+
+    /// Whatever can't be read says what to do about it: fix the file or move it aside.
+    #[test]
+    fn a_broken_file_says_to_move_it_aside() {
+        let dir = scratch("broken");
+        let path = dir.join("tickets.json");
+        for (bytes, why) in [
+            (&b"{\"projects\": ["[..], "EOF while parsing"),
+            (b"{\"projects\": [\xff\xfe]}", "isn't UTF-8 text"),
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            let e = read_json::<Saved>(&path).unwrap_err();
+            assert!(e.contains(why) && e.contains("left as it is"), "{e}");
+            assert!(e.ends_with("or move it aside to start without it."), "{e}");
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+    }
+
+    mod broken_files {
+        use super::{Saved, read_json, scratch};
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(64))]
+
+            /// Any bytes are read or refused, never half read, and a refusal says what to do.
+            #[test]
+            fn any_bytes_are_read_or_refused_with_what_to_do(bytes in prop::collection::vec(any::<u8>(), 0..200)) {
+                let path = scratch("any-bytes").join("tickets.json");
+                std::fs::write(&path, &bytes).unwrap();
+                if let Err(e) = read_json::<Saved>(&path) {
+                    prop_assert!(e.contains("left as it is"), "{}", e);
+                    prop_assert!(e.ends_with("to start without it.") || e.contains("in format"), "{}", e);
+                }
+                prop_assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            }
+        }
     }
 
     #[test]

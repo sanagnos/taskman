@@ -174,7 +174,7 @@ fn update(force: bool) -> Result<(), String> {
 }
 
 /// `v1.2.3` → (1, 2, 3).
-fn parse(tag: &str) -> Option<(u64, u64, u64)> {
+pub fn parse(tag: &str) -> Option<(u64, u64, u64)> {
     let mut parts = tag.trim().trim_start_matches('v').split('.').map(|p| p.parse::<u64>().ok());
     Some((parts.next()??, parts.next()??, parts.next()??))
 }

@@ -3,8 +3,8 @@
 //! worktree still being removed, which a second signal cuts short; ctrl+z never reaches a session;
 //! a panic in one session's reader ends that session alone, and its pane says so; a second taskman
 //! on the same state,
-//! or a tickets.json this release can't read, is refused and nothing is overwritten. Losing the
-//! terminal is tests/hangup.rs.
+//! or a tickets.json this release can't read, is refused and nothing is overwritten, while one
+//! started straight after a kill -9 starts. Losing the terminal is tests/hangup.rs.
 
 mod common;
 
@@ -231,12 +231,37 @@ fn a_second_taskman_is_refused() {
     assert!(tui.text().contains("stub ready for ENG-1"));
 }
 
+/// Killed (kill -9, an OOM kill), taskman leaves its heartbeat behind, fresh for a few seconds.
+/// One started straight after holds the lock, so nothing else is running: it starts, and says the
+/// last one didn't quit cleanly.
+#[test]
+fn a_taskman_started_straight_after_a_kill_starts() {
+    let dir = scratch_dir("killed");
+    project(&dir, &["ENG-1"]);
+    let alive = dir.join("state/taskman/inbox/alive");
+    let mut killed = Tui::start("killed", &dir, stubbed(&dir), LIMIT);
+    killed.wait_text("stub ready for ENG-1");
+    // SAFETY: sends a signal; no memory is involved.
+    unsafe { libc::kill(killed.child.id().cast_signed(), libc::SIGKILL) };
+    killed.wait_exit();
+    let age = std::fs::metadata(&alive).unwrap().modified().unwrap().elapsed().unwrap();
+    assert!(age < Duration::from_secs(2), "the heartbeat is {age:?} old: not fresh enough to test");
+
+    let mut tui = Tui::start("killed-again", &dir, stubbed(&dir), LIMIT);
+    tui.wait_text("taskman didn't quit cleanly last time");
+    tui.wait_text("stub ready for ENG-1");
+    tui.quit();
+    assert!(!alive.exists());
+}
+
 #[test]
 fn a_tickets_json_it_cant_read_is_refused_and_kept() {
-    let invalid = "{\"projects\": [";
+    let invalid: &[u8] = b"{\"projects\": [";
     // Valid JSON from a newer release, with a tracker this one doesn't know.
-    let newer = r#"{"projects": [{"name": "acme", "repo": "/tmp/acme", "tracker": {"provider": "fogbugz"}}]}"#;
-    for text in [invalid, newer] {
+    let newer: &[u8] = br#"{"projects": [{"name": "acme", "repo": "/tmp/acme", "tracker": {"provider": "fogbugz"}}]}"#;
+    // Not text at all.
+    let binary: &[u8] = b"\x00\xff\xfe taskman\x80\x81";
+    for text in [invalid, newer, binary] {
         let dir = scratch_dir("bad-tickets");
         let state = dir.join("state/taskman");
         std::fs::create_dir_all(&state).unwrap();
@@ -246,7 +271,8 @@ fn a_tickets_json_it_cant_read_is_refused_and_kept() {
         let err = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(1), "{err}");
         assert!(err.contains("tickets.json") && err.contains("It was left as it is"), "{err}");
-        assert_eq!(std::fs::read_to_string(state.join("tickets.json")).unwrap(), text);
+        assert!(err.contains("or move it aside to start without it"), "{err}");
+        assert_eq!(std::fs::read(state.join("tickets.json")).unwrap(), text);
         // Refused before it took the terminal.
         assert!(!String::from_utf8_lossy(&out.stdout).contains("\x1b[?1049h"));
         let _ = std::fs::remove_dir_all(&dir);

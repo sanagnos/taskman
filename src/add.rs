@@ -222,13 +222,30 @@ fn reply_file(id: &str) -> PathBuf {
 struct Alive {
     version: String,
     inbox: u32,
+    /// Whether that TUI holds the state folder's lock while it runs; written from this release
+    /// on, as release numbers alone may not tell later (see `holds_lock`).
+    #[serde(default)]
+    lock: bool,
+}
+
+impl Alive {
+    fn new() -> Self {
+        Alive { version: env!("CARGO_PKG_VERSION").into(), inbox: INBOX_FORMAT, lock: true }
+    }
+
+    /// Whether the TUI that wrote this holds the state folder's lock while it runs. Every release
+    /// does but 0.4.8 to 0.4.15, from before the public repository, which wrote this file without
+    /// taking the lock; earlier ones wrote it empty, which doesn't parse.
+    fn holds_lock(&self) -> bool {
+        self.lock || !matches!(crate::update::parse(&self.version), Some((0, 4, 8..=15)))
+    }
 }
 
 /// Says the TUI is running; called once a second from the inbox pass. Writing it also sets its
 /// time. Written whole and renamed into place, so a command never reads it empty or half written.
 /// False when it couldn't be written.
 pub fn heartbeat() -> bool {
-    let alive = Alive { version: env!("CARGO_PKG_VERSION").into(), inbox: INBOX_FORMAT };
+    let alive = Alive::new();
     store::write_unsynced(&alive_file(), &serde_json::to_vec(&alive).unwrap_or_default()).is_ok()
 }
 
@@ -283,10 +300,31 @@ fn too_old(req: &Request, alive: &Alive) -> Option<String> {
     })
 }
 
-/// Whether a TUI is running on this state folder, by its `alive` file. Asked before this one
-/// starts, so it can't be this process's own.
-pub fn running_elsewhere() -> bool {
-    running(std::fs::metadata(alive_file()).and_then(|m| m.modified()).ok(), SystemTime::now())
+/// What a TUI that has just taken the state folder's lock finds of the one before it.
+#[derive(Debug, PartialEq)]
+pub enum Before {
+    /// It quit, removing `alive`, or there was none.
+    Quit,
+    /// A release from before the lock is running: it keeps `alive` fresh and takes no lock.
+    Running,
+    /// It was killed or crashed, leaving `alive` behind, which is now removed.
+    Crashed,
+}
+
+/// What came before this TUI on the state folder, by the `alive` file; asked once this one holds
+/// the lock, so nothing that takes the lock is running. A TUI that takes it removes `alive` as it
+/// quits, so a file still there, however fresh, was left by one that didn't quit: a kill -9 or an
+/// OOM kill, which leave a heartbeat under `ALIVE` old to a taskman started straight after.
+pub fn before() -> Before {
+    let Ok(modified) = std::fs::metadata(alive_file()).and_then(|m| m.modified()) else {
+        return Before::Quit;
+    };
+    // One that can't be read (an older build's, cut short) counts as running, as before.
+    if running(Some(modified), SystemTime::now()) && !read_alive().is_some_and(|a| a.holds_lock()) {
+        return Before::Running;
+    }
+    stopped();
+    Before::Crashed
 }
 
 /// Whether the TUI runs on this state folder, for a command leaving it a request: it holds the
@@ -295,7 +333,7 @@ pub fn running_elsewhere() -> bool {
 /// does. Not by the heartbeat's age alone: that's the file's time on the wall clock, which can
 /// step forward by seconds (WSL resyncs its clock every half minute or so, by about 2.5 s), and a
 /// command would then say taskman isn't running while it is.
-fn tui_running() -> bool {
+pub fn tui_running() -> bool {
     let alive = std::fs::metadata(alive_file()).and_then(|m| m.modified()).ok();
     (alive.is_some() && store::locked()) || running(alive, SystemTime::now())
 }
@@ -861,7 +899,7 @@ mod tests {
             close: None,
         };
         let stacked = Request { base: Some("ENG-51".into()), ..req.clone() };
-        let old = Alive { version: "1.0.0".into(), inbox: 1 };
+        let old = Alive { version: "1.0.0".into(), inbox: 1, lock: true };
         assert_eq!(too_old(&req, &old), None);
         assert!(
             too_old(&stacked, &old)
@@ -869,14 +907,14 @@ mod tests {
                 .starts_with("taskman 1.0.0 is running, which doesn't know --on yet")
         );
         assert_eq!(
-            too_old(&stacked, &Alive { version: "1.1.0".into(), inbox: INBOX_FORMAT }),
+            too_old(&stacked, &Alive { version: "1.1.0".into(), inbox: INBOX_FORMAT, lock: true }),
             None
         );
         let agent = |role: Option<&str>| Request {
             items: vec![Item::Agent { name: "tester".into(), role: role.map(String::from) }],
             ..req.clone()
         };
-        let stacking = Alive { version: "1.1.0".into(), inbox: 2 };
+        let stacking = Alive { version: "1.1.0".into(), inbox: 2, lock: true };
         assert_eq!(too_old(&agent(None), &stacking), None);
         assert!(
             too_old(&agent(Some("Test PRs")), &stacking)
@@ -886,7 +924,7 @@ mod tests {
         assert_eq!(
             too_old(
                 &agent(Some("Test PRs")),
-                &Alive { version: "1.2.0".into(), inbox: INBOX_FORMAT }
+                &Alive { version: "1.2.0".into(), inbox: INBOX_FORMAT, lock: true }
             ),
             None
         );
@@ -894,11 +932,16 @@ mod tests {
         let close =
             Request { close: Some(Close { merged: true, keep_worktree: false }), ..req.clone() };
         assert!(
-            too_old(&close, &Alive { version: "1.2.0".into(), inbox: 3 }).unwrap().starts_with(
-                "taskman 1.2.0 is running, which doesn't know taskman close yet; restart it"
-            )
+            too_old(&close, &Alive { version: "1.2.0".into(), inbox: 3, lock: true })
+                .unwrap()
+                .starts_with(
+                    "taskman 1.2.0 is running, which doesn't know taskman close yet; restart it"
+                )
         );
-        assert_eq!(too_old(&close, &Alive { version: "1.3.0".into(), inbox: INBOX_FORMAT }), None);
+        assert_eq!(
+            too_old(&close, &Alive { version: "1.3.0".into(), inbox: INBOX_FORMAT, lock: true }),
+            None
+        );
         let json = serde_json::to_value(&close).unwrap();
         assert_eq!(json["close"], serde_json::json!({ "merged": true }));
         assert_eq!(serde_json::from_value::<Request>(json).unwrap(), close);
@@ -940,11 +983,16 @@ mod tests {
         assert_eq!(bare, Item::New { title: "Fix".into(), description: String::new() });
 
         assert!(
-            too_old(&req, &Alive { version: "1.3.0".into(), inbox: 4 }).unwrap().starts_with(
-                "taskman 1.3.0 is running, which doesn't know --new from a session yet"
-            )
+            too_old(&req, &Alive { version: "1.3.0".into(), inbox: 4, lock: true })
+                .unwrap()
+                .starts_with(
+                    "taskman 1.3.0 is running, which doesn't know --new from a session yet"
+                )
         );
-        assert_eq!(too_old(&req, &Alive { version: "1.4.0".into(), inbox: INBOX_FORMAT }), None);
+        assert_eq!(
+            too_old(&req, &Alive { version: "1.4.0".into(), inbox: INBOX_FORMAT, lock: true }),
+            None
+        );
 
         assert_eq!(
             declined(&req),
@@ -1107,7 +1155,7 @@ mod tests {
 
     #[test]
     fn reads_the_alive_file_as_the_tui_writes_it() {
-        let alive = Alive { version: "1.2.0".into(), inbox: INBOX_FORMAT };
+        let alive = Alive { version: "1.2.0".into(), inbox: INBOX_FORMAT, lock: true };
         let json = serde_json::to_string(&alive).unwrap();
         assert_eq!(parse_alive(&json), Some(alive));
         // Caught empty or part-way through an older build's rewrite: not a format, so asked again.
@@ -1143,6 +1191,37 @@ mod tests {
         // A release from before the lock keeps `alive` fresh and takes no lock.
         assert!(heartbeat());
         assert!(tui_running());
+    }
+
+    /// A taskman that has just taken the lock trusts it over a heartbeat left by one that was
+    /// killed (kill -9, an OOM kill) a moment ago, but not over one from before the lock.
+    #[test]
+    fn a_heartbeat_left_by_a_killed_taskman_is_cleared() {
+        let write = |alive: &Alive| {
+            store::write_unsynced(&alive_file(), &serde_json::to_vec(alive).unwrap()).unwrap();
+        };
+        let _lock = store::lock().unwrap();
+        assert_eq!(before(), Before::Quit, "nothing there");
+        assert!(heartbeat());
+        assert_eq!(before(), Before::Crashed, "fresh, from a release that takes the lock");
+        assert!(!alive_file().exists());
+        // Releases out before `lock` was written, by their number.
+        for version in ["0.1.28", "0.4.16", "0.4.34"] {
+            write(&Alive { version: version.into(), inbox: 5, lock: false });
+            assert_eq!(before(), Before::Crashed, "{version}");
+        }
+        for version in ["0.4.8", "0.4.15"] {
+            write(&Alive { version: version.into(), inbox: 2, lock: false });
+            assert_eq!(before(), Before::Running, "{version} takes no lock: it may be running");
+            assert!(alive_file().exists());
+        }
+        // Even one of those, once its heartbeat has stopped.
+        let f = std::fs::File::options().write(true).open(alive_file()).unwrap();
+        f.set_modified(SystemTime::now() - Duration::from_secs(60)).unwrap();
+        assert_eq!(before(), Before::Crashed);
+        // Older still: an empty file, which says nothing, so may be running.
+        std::fs::write(alive_file(), "").unwrap();
+        assert_eq!(before(), Before::Running);
     }
 
     #[test]
