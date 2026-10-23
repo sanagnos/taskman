@@ -433,7 +433,8 @@ fn readiness(
         match (github, token("github.com")) {
             (true, Token::Yes) => Gh::Ready,
             (true, Token::TimedOut) => Gh::Unanswered,
-            (true, _) if timed_out => Gh::Unanswered,
+            // Any host's: a GitHub Enterprise host looks like any other.
+            _ if timed_out => Gh::Unanswered,
             (true, _) => Gh::LoggedOut,
             (false, _) => Gh::NoRemote,
         }
@@ -1375,11 +1376,20 @@ mod tests {
         assert_eq!(ready_with(&[Some(alias)], &timed_out).0, [Gh::Unanswered]);
         let hung_alias = [("github.com-work", Token::TimedOut)];
         assert_eq!(ready_with(&[Some(alias)], &hung_alias).0, [Gh::Unanswered]);
-        // Another host's answer still counts, and a folder with no GitHub remote needs none.
+        // Another host's answer still counts.
         let either = [("github.com", Token::TimedOut), ("git.example.com", Token::Yes)];
         assert_eq!(ready_with(&[Some(&["github.com", "git.example.com"])], &either).0, [Gh::Ready]);
-        let gitlab = [("gitlab.example.com", Token::TimedOut)];
-        assert_eq!(ready_with(&[Some(&["gitlab.example.com"])], &gitlab).0, [Gh::NoRemote]);
+        // A GitHub Enterprise host can't be told from any other by its name, so a host gh didn't
+        // answer for may be one, and isn't saved as having no GitHub remote. One gh answered No
+        // for still has none.
+        let enterprise = [("git.example.com", Token::TimedOut)];
+        let ready =
+            ready_with(&[Some(&["git.example.com"]), Some(&["gitlab.example.com"])], &enterprise);
+        assert_eq!(ready.0, [Gh::Unanswered, Gh::NoRemote]);
+        assert!(!ready.0[0].saved());
+        let mixed = [("git.example.com", Token::TimedOut), ("gitlab.example.com", Token::No)];
+        let both: &[&str] = &["gitlab.example.com", "git.example.com"];
+        assert_eq!(ready_with(&[Some(both)], &mixed).0, [Gh::Unanswered]);
         assert!(Gh::Unanswered.why().contains(&format!("within {}s", GH_LIMIT.as_secs())));
         assert!(!Gh::Unanswered.saved() && Gh::LoggedOut.saved() && Gh::Ready.saved());
     }
