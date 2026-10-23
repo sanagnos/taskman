@@ -88,6 +88,17 @@ fn select_top_row(app: &mut App, cells: u16) {
     mouse(app, MouseEventKind::Up(MouseButton::Left), c.x + cells - 1, c.y);
 }
 
+/// A time to put down as an edge scroll's last step, or the last status poll, for one taken just
+/// now however long the test thread was held up since: `due_in` counts a time yet to come as now.
+fn just_now() -> std::time::Instant {
+    std::time::Instant::now() + std::time::Duration::from_secs(3600)
+}
+
+/// Takes `dirty`, as drawing a frame does, and says whether it was set.
+fn took_dirty(app: &App) -> bool {
+    app.dirty.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+
 // ---- the sidebar ---------------------------------------------------------------------------
 
 /// The sidebar's list sits under its title and leaves the last row blank.

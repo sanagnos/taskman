@@ -1,5 +1,7 @@
 use super::*;
-use std::time::{Duration, Instant};
+use crate::app::STATUS_EVERY;
+use crate::app::mouse::AUTO_SCROLL_EVERY;
+use std::time::Duration;
 
 // ---- selecting text ------------------------------------------------------------------------
 
@@ -172,22 +174,85 @@ fn a_session_clearing_its_history_ends_the_selection_with_a_toast() {
 #[test]
 fn a_selection_held_past_its_pane_wakes_the_loop_at_the_scrolling_pace() {
     let (mut app, _sent) = at_eng_52();
+    let parser = app.selected().unwrap().session.as_ref().unwrap().parser.clone();
+    // A history to scroll up through.
+    for i in 0..40 {
+        crate::session::lock(&parser).process(format!("line {i}\r\n").as_bytes());
+    }
     let c = app.areas.claude;
-    let ms = Duration::from_millis;
+    assert!(c.y > 0, "room above the pane to hold the pointer");
     mouse(&mut app, MouseEventKind::Down(MouseButton::Left), c.x, c.y);
     mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), c.x + 3, c.y);
     assert_eq!(app.selection_scrolls_in(), None, "inside the pane, nothing scrolls");
     mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), c.x + 3, c.bottom());
+    assert_eq!(app.selection_scrolls_in(), None, "the pane shows the newest rows already");
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), c.x + 3, c.y - 1);
     assert_eq!(app.selection_scrolls_in(), Some(Duration::ZERO));
+    took_dirty(&app);
+    let top = |app: &App| app.view_top(app.selection.as_ref().unwrap());
+    let before = top(&app);
     app.follow_selection();
-    // The event loop waits for the next step, not for the status poll.
-    app.last_status_poll = Instant::now();
-    let next = app.selection_scrolls_in().unwrap();
-    assert!(!next.is_zero() && next <= ms(50), "{next:?}");
-    assert!(app.tick_in() <= next);
+    assert_eq!(top(&app), before - 1);
+    assert!(took_dirty(&app));
+    // Until the next step is due, the event loop waits for it, not for the status poll.
+    app.selection.as_mut().unwrap().scrolled_at = Some(just_now());
+    assert_eq!(app.selection_scrolls_in(), Some(AUTO_SCROLL_EVERY));
+    app.last_status_poll = just_now();
+    assert_eq!(app.tick_in(), AUTO_SCROLL_EVERY);
+    app.follow_selection();
+    assert_eq!(top(&app), before - 1, "not due yet");
+    // At the top of the history, nothing is left to scroll: no step, no wake, no frame.
+    for steps in 0.. {
+        if app.selection_scrolls_in().is_none() {
+            break;
+        }
+        assert!(steps < 100, "still scrolling up at {}", top(&app));
+        app.selection.as_mut().unwrap().scrolled_at = None;
+        app.follow_selection();
+    }
+    took_dirty(&app);
+    assert_eq!(app.selection_scrolls_in(), None);
+    assert_eq!(app.tick_in(), STATUS_EVERY);
+    let oldest = top(&app);
+    app.follow_selection();
+    assert_eq!(top(&app), oldest);
+    assert!(!took_dirty(&app));
+    // Moved back to the bottom edge, there's history to come back down through.
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), c.x + 3, c.bottom());
+    assert!(app.selection_scrolls_in().is_some());
     mouse(&mut app, MouseEventKind::Up(MouseButton::Left), c.x + 3, c.bottom());
     assert_eq!(app.selection_scrolls_in(), None);
-    assert!(app.tick_in() > ms(50) && app.tick_in() <= ms(300), "{:?}", app.tick_in());
+    assert_eq!(app.tick_in(), STATUS_EVERY);
+}
+
+#[test]
+fn a_selection_held_past_a_panel_scrolls_only_as_far_as_its_lines_go() {
+    let (mut app, _sent) = at_eng_52();
+    draw(&mut app, 200, 50);
+    let r = app.areas.jira.unwrap();
+    // The panel's inner rows are between its borders.
+    let (x, above, below) = (r.x + 3, r.y, r.bottom() - 1);
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x, r.y + 1);
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x, above);
+    assert_eq!(app.selection_scrolls_in(), None, "the panel is at its top");
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x, below);
+    draw(&mut app, 200, 50);
+    let rows = app.panel.as_ref().map(crate::selection::Panel::rows).unwrap();
+    assert!(rows > 2, "{rows} rows");
+    assert_eq!(app.selection_scrolls_in(), Some(Duration::ZERO));
+    // A step short of the end, one more step, then none.
+    app.tickets[app.sel].jira_scroll = u16::try_from(rows - 2).unwrap();
+    took_dirty(&app);
+    app.follow_selection();
+    assert_eq!(usize::from(app.tickets[app.sel].jira_scroll), rows - 1);
+    assert!(took_dirty(&app));
+    draw(&mut app, 200, 50);
+    took_dirty(&app);
+    assert_eq!(app.selection_scrolls_in(), None, "its last row is at the top");
+    app.selection.as_mut().unwrap().scrolled_at = None;
+    app.follow_selection();
+    assert_eq!(usize::from(app.tickets[app.sel].jira_scroll), rows - 1);
+    assert!(!took_dirty(&app));
 }
 
 // ---- the mouse -----------------------------------------------------------------------------

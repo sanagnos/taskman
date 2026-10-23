@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 const MULTI_CLICK: Duration = Duration::from_millis(400);
 
 /// How often a pane scrolls while the button is held past its edge.
-const AUTO_SCROLL_EVERY: Duration = Duration::from_millis(50);
+pub(super) const AUTO_SCROLL_EVERY: Duration = Duration::from_millis(100);
 
 impl App {
     /// The content rectangle of each pane: Claude fills its area, the panels sit inside a border
@@ -258,23 +258,40 @@ impl App {
 
     /// Scrolls the pane holding the selection `delta` rows, positive toward the end; while the
     /// button is held, the selection's head follows the pointer onto the rows brought into view.
-    fn scroll_selection(&mut self, delta: i32) {
-        let Some(sel) = self.selection.as_mut() else { return };
-        match (&mut sel.snapshot, self.tickets.get_mut(self.sel)) {
-            (Some(s), _) => _ = s.scroll(delta),
+    /// False when the pane didn't move.
+    fn scroll_selection(&mut self, delta: i32) -> bool {
+        let Some(sel) = self.selection.as_mut() else { return false };
+        let moved = match (&mut sel.snapshot, self.tickets.get_mut(self.sel)) {
+            (Some(s), _) => s.scroll(delta),
             (None, Some(tv)) => {
                 let scroll =
                     if sel.pane == Pane::Gh { &mut tv.gh_scroll } else { &mut tv.jira_scroll };
                 // The panel clamps it to its lines as it's drawn.
-                *scroll = scroll.saturating_add_signed(i16::try_from(delta).unwrap_or(0));
+                let to = scroll.saturating_add_signed(i16::try_from(delta).unwrap_or(0));
+                std::mem::replace(scroll, to) != to
             }
-            (None, None) => {}
-        }
-        let Some(sel) = self.selection.as_ref().filter(|s| !s.released) else { return };
+            (None, None) => false,
+        };
+        let Some(sel) = self.selection.as_ref().filter(|s| !s.released) else { return moved };
         let head = selection::point_at(sel.rect, self.view_top(sel), sel.pointer);
         if let Some(sel) = self.selection.as_mut() {
             sel.head = head;
         }
+        moved
+    }
+
+    /// Whether scrolling the pane holding `sel` `delta` rows would move it: not past either end
+    /// of the session's history, nor of a panel's lines, as far as the panel was last drawn.
+    fn can_scroll(&self, sel: &Selection, delta: i32) -> bool {
+        if let Some(s) = &sel.snapshot {
+            return s.can_scroll(delta);
+        }
+        let at = self.panel_scroll(sel.pane);
+        if delta < 0 {
+            return at > 0;
+        }
+        // The panel clamps its scroll to show its last row at the top (`ui::panels`).
+        self.panel.as_ref().filter(|p| p.rect == sel.rect).is_none_or(|p| at + 1 < p.rows())
     }
 
     /// Keeps the selection on its text as the session's history drops rows, and scrolls its pane
@@ -295,16 +312,20 @@ impl App {
         let Some(sel) = self.selection.as_mut() else { return };
         sel.scrolled_at = Some(Instant::now());
         let step = selection::edge_step(sel.rect, sel.pointer);
-        self.scroll_selection(step);
-        self.dirty.store(true, Ordering::Relaxed);
+        if self.scroll_selection(step) {
+            self.dirty.store(true, Ordering::Relaxed);
+        }
     }
 
     /// How long until a selection held past its pane's edge scrolls the pane again, if it's held
-    /// there: the event loop waits no longer (`App::tick_in`).
+    /// there and the pane has further to go: the event loop waits no longer (`App::tick_in`).
+    /// With nothing left to scroll it doesn't wake the loop, which comes back here once something
+    /// else wakes it, such as the pointer moving or a panel's lines growing.
     pub(super) fn selection_scrolls_in(&self) -> Option<Duration> {
         let sel = self.selection.as_ref().filter(|s| !s.released)?;
         let step = selection::edge_step(sel.rect, sel.pointer);
-        (step != 0).then(|| super::due_in(sel.scrolled_at, AUTO_SCROLL_EVERY))
+        (step != 0 && self.can_scroll(sel, step))
+            .then(|| super::due_in(sel.scrolled_at, AUTO_SCROLL_EVERY))
     }
 
     /// The selected text, read from the session's history and screen or the panel's lines.

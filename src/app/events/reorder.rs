@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::reorder::SCROLL_EVERY;
 use std::time::Duration;
 
 // ---- reordering the sidebar ----------------------------------------------------------------
@@ -279,13 +280,15 @@ fn a_long_sidebar_scrolls_while_a_drag_rests_at_its_edge() {
     drag_card_to(&mut app, "ENG-52", rows.end - 1);
     assert_eq!(app.sidebar_scroll.top, 0);
     assert_eq!(app.drag_scrolls_in(), Some(Duration::ZERO));
+    took_dirty(&app);
     app.follow_drag();
     assert_eq!(app.sidebar_scroll.top, 1);
-    // Throttled: another call straight away waits, and the event loop waits as long.
+    assert!(took_dirty(&app));
+    // Until the next step is due, it waits, and the event loop waits as long.
+    app.drag.as_mut().unwrap().scrolled_at = Some(just_now());
+    assert_eq!(app.drag_scrolls_in(), Some(SCROLL_EVERY));
     app.follow_drag();
     assert_eq!(app.sidebar_scroll.top, 1);
-    let next = app.drag_scrolls_in().unwrap();
-    assert!(!next.is_zero() && next <= Duration::from_millis(80), "{next:?}");
     // In the middle of the list, nothing scrolls.
     mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 3, rows.start + 8);
     app.drag.as_mut().unwrap().scrolled_at = None;
@@ -297,6 +300,43 @@ fn a_long_sidebar_scrolls_while_a_drag_rests_at_its_edge() {
     app.follow_drag();
     assert_eq!(app.sidebar_scroll.top, 0);
     // And no further: nothing to wake for.
+    assert_eq!(app.drag_scrolls_in(), None);
+}
+
+#[test]
+fn a_drag_at_the_end_of_the_sidebar_wakes_nothing() {
+    let mut app = long_sidebar(20);
+    draw(&mut app, 160, 40);
+    let rows = list_rows(&app);
+    drag_card_to(&mut app, "ENG-52", rows.end - 1);
+    let end = app.sidebar_scroll.max;
+    assert!(end > 0, "the list is longer than the sidebar");
+    app.sidebar_scroll.top = end - 1;
+    draw(&mut app, 160, 40);
+    took_dirty(&app);
+    app.follow_drag();
+    assert_eq!(app.sidebar_scroll.top, end);
+    assert!(took_dirty(&app));
+    draw(&mut app, 160, 40);
+    took_dirty(&app);
+    // The last card is in view: no step, no wake and no frame, however long it's held there.
+    assert_eq!(app.drag_scrolls_in(), None);
+    app.drag.as_mut().unwrap().scrolled_at = None;
+    app.follow_drag();
+    assert_eq!(app.sidebar_scroll.top, end);
+    assert!(!took_dirty(&app));
+    // Once the list grows, as when a project unfolds, it scrolls on.
+    assert!(app.projects[1].collapsed);
+    app.projects[1].collapsed = false;
+    draw(&mut app, 160, 40);
+    assert!(app.sidebar_scroll.max > end);
+    assert_eq!(app.drag_scrolls_in(), Some(Duration::ZERO));
+    // A short list never scrolls.
+    let mut app = acme_app();
+    draw(&mut app, 160, 40);
+    let rows = list_rows(&app);
+    drag_card_to(&mut app, "ENG-52", rows.end - 1);
+    assert_eq!(app.sidebar_scroll.max, 0);
     assert_eq!(app.drag_scrolls_in(), None);
 }
 
