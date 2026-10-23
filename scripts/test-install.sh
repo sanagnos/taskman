@@ -8,8 +8,8 @@
 # the archive: verified, failed, signed by another workflow, unreachable, missing (both where a
 # release may have none and where it must have one), a gh too old for them, a logged-out gh, none at
 # all, and skipped on request. Then which build install.sh picks on each OS, architecture and glibc
-# (faked), the PATH advice it gives for each shell, and a breaking release, which `taskman update`
-# installs when asked.
+# (faked), the PATH advice it gives for each shell, a breaking release, which `taskman update`
+# installs when asked, and a development build, which it leaves alone.
 #
 # Usage: scripts/test-install.sh   (needs python3; run from anywhere)
 set -euo pipefail
@@ -390,10 +390,18 @@ if [ -x "$exe" ]; then
   sums "$tag"
   latest "$tag"
 
-  # A copy outside target/, so it isn't a development build; its state kept apart.
+  # A copy outside target/ is still a development build, which taskman update leaves alone; its
+  # state kept apart.
   bin="$work/updbin"; mkdir -p "$bin" "$work/state"
   cp "$exe" "$bin/taskman"
+  inode() { ls -i "$bin/${bin_name:-taskman}" | awk '{print $1}'; }
+  before="$(inode)"
   upd() { env XDG_STATE_HOME="$work/state" "$bin/taskman" update --force; }
+  check "taskman update leaves a development build alone wherever it is" 1 "$version" upd
+  said "this is a development build ("
+  [ "$(inode)" = "$before" ] || { echo "FAIL taskman update replaced a development build"; failures=$((failures + 1)); }
+  # From here on the copies act as releases, which only the release workflow builds.
+  export TASKMAN_TEST_RELEASE_BUILD=1
   check "taskman update installs the latest" 0 "$version" upd
   said "Checked against its checksum alone: gh isn't logged in"
   [ ! -e "$bin"/LICENSE-* ] || { echo "FAIL taskman update put the archive's license files beside the binary"; failures=$((failures + 1)); }
@@ -405,7 +413,6 @@ if [ -x "$exe" ]; then
 
   # Attestations: what gh says, or that there's no gh. A refused archive leaves the file as it was.
   upd_attest() { env FAKE_ATTEST="$1" PATH="$2" XDG_STATE_HOME="$work/state" "$bin/taskman" update --force; }
-  inode() { ls -i "$bin/${bin_name:-taskman}" | awk '{print $1}'; }
   check "taskman update verifies the attestation with gh" 0 "$version" upd_attest verified "$work/attestbin:$PATH"
   said "Verified its attestation with gh: $repo's release workflow built it."
   before="$(inode)"

@@ -18,7 +18,44 @@ const LIMIT: Duration = Duration::from_secs(60);
 const KEYCHAIN: &str = if cfg!(target_os = "macos") { "security" } else { "secret-tool" };
 
 fn run(mut cmd: Command, args: &[&str]) -> Output {
+    assert_ne!(
+        Path::new(cmd.get_program()),
+        Path::new(env!("CARGO_BIN_EXE_taskman")),
+        "uninstall runs on a copy, never the binary the other tests run"
+    );
     cmd.arg("uninstall").args(args).stdin(Stdio::null()).output().unwrap()
+}
+
+/// Copies the binary under test to `program`.
+fn copy_to(program: &Path) {
+    std::fs::create_dir_all(program.parent().unwrap()).unwrap();
+    // cp, not std::fs::copy: a process another test starts meanwhile inherits a file this one has
+    // open to write, and running the copy then fails ("Text file busy").
+    let copied =
+        Command::new("cp").arg(env!("CARGO_BIN_EXE_taskman")).arg(program).status().unwrap();
+    assert!(copied.success());
+}
+
+/// `program` run as `taskman(dir)` runs the binary under test.
+fn run_as(program: &Path, dir: &Path) -> Command {
+    let mut cmd = Command::new(program);
+    for (k, v) in taskman(dir).get_envs() {
+        match v {
+            Some(v) => cmd.env(k, v),
+            None => cmd.env_remove(k),
+        };
+    }
+    cmd
+}
+
+/// A development build, as `taskman(dir)` runs it, but a copy of the binary under test in a
+/// folder not named `target`: uninstall must leave it, and if it didn't, only the copy would go.
+fn dev_build(dir: &Path) -> Command {
+    let program = dir.join("build/debug/taskman");
+    if !program.exists() {
+        copy_to(&program);
+    }
+    run_as(&program, dir)
 }
 
 fn text(b: &[u8]) -> String {
@@ -133,27 +170,16 @@ fn installed_in(dir: PathBuf) -> Installed {
     std::os::unix::fs::symlink(&outside, state.join("linked-folder")).unwrap();
     std::os::unix::fs::symlink(outside.join("notes"), state.join("linked-file")).unwrap();
     let program = home.join(".local/bin/taskman");
-    std::fs::create_dir_all(program.parent().unwrap()).unwrap();
-    // cp, not std::fs::copy: a process another test starts meanwhile inherits a file this one has
-    // open to write, and running the copy then fails ("Text file busy").
-    let copied =
-        Command::new("cp").arg(env!("CARGO_BIN_EXE_taskman")).arg(&program).status().unwrap();
-    assert!(copied.success());
+    copy_to(&program);
     Installed { dir, program, config_dir, state, own_token, theirs, outside, bin }
 }
 
 impl Installed {
     /// The install script's copy, run as `taskman` runs the build, with its config in its default
-    /// place, ~/.config/taskman.
+    /// place, ~/.config/taskman. It acts as a release, which only the release workflow builds.
     fn cmd(&self) -> Command {
-        let mut cmd = Command::new(&self.program);
-        for (k, v) in taskman(&self.dir).get_envs() {
-            match v {
-                Some(v) => cmd.env(k, v),
-                None => cmd.env_remove(k),
-            };
-        }
-        cmd.env_remove("TASKMAN_CONFIG");
+        let mut cmd = run_as(&self.program, &self.dir);
+        cmd.env_remove("TASKMAN_CONFIG").env("TASKMAN_TEST_RELEASE_BUILD", "1");
         cmd
     }
 
@@ -238,15 +264,15 @@ fn purge_removes_taskmans_own_data_and_nothing_else() {
     assert!(calls.contains("jira-1") && !calls.contains("ATATT"), "{calls}");
 
     // Run again, there's nothing left to remove.
-    let out = run(taskman(&t.dir), &["--purge"]);
+    let out = run(dev_build(&t.dir), &["--purge"]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert!(text(&out.stdout).ends_with("Nothing of taskman's is left to remove.\n"));
 }
 
 /// With `TASKMAN_CONFIG`, the file is in a folder of the user's: only it goes, and in the token
 /// folder beside it only the files its accounts read. A keychain that fails is reported with the
-/// command that does it by hand, and the rest still goes. The development build the tests run
-/// stays.
+/// command that does it by hand, and the rest still goes. A development build stays, whatever
+/// its folder is called.
 #[test]
 fn purge_removes_only_its_files_beside_a_config_file() {
     let dir = scratch_dir("uninstall-config-file");
@@ -259,14 +285,14 @@ fn purge_removes_only_its_files_beside_a_config_file() {
     let state = seed_state(&dir);
 
     // Without --purge, there's nothing to remove: the program stays.
-    let out = run(taskman(&dir), &["--yes"]);
+    let out = run(dev_build(&dir), &["--yes"]);
     let stdout = text(&out.stdout);
     assert!(out.status.success(), "{stdout}{}", text(&out.stderr));
     assert!(stdout.contains("  - the program, ") && stdout.contains("a development build"));
     assert!(stdout.ends_with("Nothing was removed.\n"), "{stdout}");
     assert!(dir.join("config.json").exists() && token.exists() && state.exists());
 
-    let out = run(taskman(&dir), &["--yes", "--purge"]);
+    let out = run(dev_build(&dir), &["--yes", "--purge"]);
     let (stdout, stderr) = (text(&out.stdout), text(&out.stderr));
     assert_eq!(out.status.code(), Some(1), "{stdout}{stderr}");
     assert!(stdout.contains("  - a token saved in a file: "), "{stdout}");
@@ -284,7 +310,7 @@ fn purge_removes_only_its_files_beside_a_config_file() {
     assert_eq!(std::fs::read_to_string(dir.join("tokens/notes")).unwrap(), "kept");
     assert_eq!(std::fs::read_to_string(dir.join("other.json")).unwrap(), "kept");
     assert!(bin.join("items/taskman-jira-1").exists());
-    assert!(Path::new(env!("CARGO_BIN_EXE_taskman")).exists());
+    assert!(dir.join("build/debug/taskman").exists());
 }
 
 #[test]
@@ -296,7 +322,7 @@ fn refuses_while_taskman_runs() {
     std::fs::create_dir_all(state.join("inbox")).unwrap();
     std::fs::write(state.join("inbox/alive"), r#"{"version":"0.1.22","inbox":4}"#).unwrap();
     for args in [&["--yes"][..], &["--yes", "--purge"]] {
-        let out = run(taskman(&dir), args);
+        let out = run(dev_build(&dir), args);
         assert_eq!(out.status.code(), Some(1));
         assert_eq!(
             text(&out.stderr),
@@ -325,13 +351,13 @@ fn refuses_to_purge_through_a_link_for_one_of_its_own_paths() {
         elsewhere.display()
     );
 
-    let out = run(taskman(&dir), &["--yes", "--purge"]);
+    let out = run(dev_build(&dir), &["--yes", "--purge"]);
     assert_eq!(out.status.code(), Some(1));
     let stderr = text(&out.stderr);
     assert!(stderr.starts_with(&format!("taskman uninstall: {why}")), "{stderr}");
     assert!(out.stdout.is_empty());
 
-    let out = run(taskman(&dir), &["--yes"]);
+    let out = run(dev_build(&dir), &["--yes"]);
     let stdout = text(&out.stdout);
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert!(stdout.contains(&format!("Your data and tokens stay: {why}")), "{stdout}");
@@ -346,7 +372,7 @@ fn needs_a_terminal_to_ask_in() {
     let state = seed_state(&dir);
     config(&dir.join("config.json"), &[]);
     for args in [&[][..], &["--purge"]] {
-        let out = run(taskman(&dir), args);
+        let out = run(dev_build(&dir), args);
         assert_eq!(out.status.code(), Some(1));
         assert_eq!(
             text(&out.stderr),
@@ -407,7 +433,7 @@ fn works_with_home_behind_a_link() {
     assert!(t.data_kept(), "{stdout}");
 
     // Then the data, with the build, as `taskman uninstall --purge` before the program went would.
-    let mut cmd = taskman(&t.dir);
+    let mut cmd = dev_build(&t.dir);
     cmd.env_remove("TASKMAN_CONFIG");
     let out = run(cmd, &["--yes", "--purge"]);
     let stdout = text(&out.stdout);
@@ -436,7 +462,7 @@ fn purge_finds_its_token_files_however_their_folder_was_spelled() {
         &dir.join("config.json"),
         &[&cat(&real.join("tokens/jira-1")), &cat(&real.join("elsewhere/jira-2"))],
     );
-    let out = run(taskman(&dir), &["--yes", "--purge"]);
+    let out = run(dev_build(&dir), &["--yes", "--purge"]);
     let stdout = text(&out.stdout);
     assert!(out.status.success(), "{stdout}{}", text(&out.stderr));
     assert!(gone(&token) && gone(&dir.join("config.json")), "{stdout}");
@@ -457,7 +483,7 @@ fn an_empty_xdg_state_home_never_names_a_folder_in_the_current_directory() {
     let state = dir.join("home/.local/state/taskman");
     std::fs::create_dir_all(&state).unwrap();
     std::fs::write(state.join("tickets.json"), "{}").unwrap();
-    let mut cmd = taskman(&dir);
+    let mut cmd = dev_build(&dir);
     cmd.env("XDG_STATE_HOME", "")
         .env("XDG_CONFIG_HOME", "")
         .env_remove("TASKMAN_CONFIG")
@@ -486,7 +512,7 @@ fn purge_refuses_a_relative_config_file() {
     std::fs::write(cwd.join("config.json"), r#"{"theirs": true}"#).unwrap();
     let state = seed_state(&dir);
     let cmd = || {
-        let mut cmd = taskman(&dir);
+        let mut cmd = dev_build(&dir);
         cmd.env("TASKMAN_CONFIG", "config.json").current_dir(&cwd);
         cmd
     };

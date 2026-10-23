@@ -112,24 +112,28 @@ fn update(force: bool) -> Result<(), String> {
     let exe = std::env::current_exe()
         .map_err(|e| format!("can't tell where taskman is installed: {e}"))?;
     let exe = exe.canonicalize().unwrap_or(exe);
-    // A development build lives in a source checkout's target/ folder; overwriting it would
-    // confuse cargo, and the source checkout updates with git instead.
-    if is_dev_build(&exe) {
-        return Err(format!(
-            "this is a development build ({}). Update the source with `git pull` and rebuild, or install a release with the README's quick install.",
-            exe.display()
-        ));
-    }
-    if is_homebrew(&exe) {
-        return Err(
-            "taskman was installed with Homebrew: update it with `brew upgrade taskman`.".into()
-        );
-    }
-    // Replacing cargo's copy behind its back leaves cargo with the wrong version on record.
-    if !force && installs(&exe, &cargo_bin(), true) == Installs::Cargo {
-        return Err(format!(
-            "taskman was installed with cargo: update it with `cargo install --locked --git {REPO_URL}`. To replace cargo's copy with the release anyway, run taskman update --force."
-        ));
+    match installs(&exe, &cargo_bin(), released(), true) {
+        Installs::Homebrew => {
+            return Err(
+                "taskman was installed with Homebrew: update it with `brew upgrade taskman`."
+                    .into(),
+            );
+        }
+        // Replacing cargo's copy behind its back leaves cargo with the wrong version on record.
+        Installs::Cargo if !force => {
+            return Err(format!(
+                "taskman was installed with cargo: update it with `cargo install --locked --git {REPO_URL}`. To replace cargo's copy with the release anyway, run taskman update --force."
+            ));
+        }
+        // A development build updates from its source with git, and overwriting one in a
+        // checkout would confuse cargo.
+        Installs::DevBuild => {
+            return Err(format!(
+                "this is a development build ({}). Update the source with `git pull` and rebuild, or install a release with the README's quick install.",
+                exe.display()
+            ));
+        }
+        _ => {}
     }
     let bin_dir = exe.parent().ok_or("can't tell which folder taskman is installed in")?;
 
@@ -741,7 +745,7 @@ fn due(s: &State, now: i64) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Installs {
     Yes,
-    /// In a source checkout's target/ folder: it updates with git.
+    /// Built from source rather than by the release workflow: it updates with git.
     DevBuild,
     /// In cargo's bin folder, which cargo manages.
     Cargo,
@@ -751,21 +755,30 @@ pub enum Installs {
     ReadOnly,
 }
 
-fn is_dev_build(exe: &Path) -> bool {
-    exe.components().any(|c| c.as_os_str() == "target")
+/// Whether the release workflow built this binary: it sets TASKMAN_RELEASE_BUILD for the build.
+/// Any other build is a development build, wherever it's put, as a `CARGO_TARGET_DIR` can be any
+/// folder.
+const RELEASE_BUILD: bool = option_env!("TASKMAN_RELEASE_BUILD").is_some();
+
+/// A release build, or a copy of a development build that tests run as one
+/// (TASKMAN_TEST_RELEASE_BUILD): they set it only on a copy, never the binary under test.
+pub(crate) fn released() -> bool {
+    RELEASE_BUILD || std::env::var_os("TASKMAN_TEST_RELEASE_BUILD").is_some_and(|v| !v.is_empty())
 }
 
 fn is_homebrew(exe: &Path) -> bool {
     exe.components().any(|c| c.as_os_str() == "Cellar")
 }
 
-pub(crate) fn installs(exe: &Path, cargo_bin: &Path, writable: bool) -> Installs {
-    if is_dev_build(exe) {
-        Installs::DevBuild
-    } else if is_homebrew(exe) {
+/// How the binary at `exe` was installed. Homebrew and cargo build from source, so their folders
+/// come before how it was built.
+pub(crate) fn installs(exe: &Path, cargo_bin: &Path, released: bool, writable: bool) -> Installs {
+    if is_homebrew(exe) {
         Installs::Homebrew
     } else if exe.parent() == Some(cargo_bin) {
         Installs::Cargo
+    } else if !released {
+        Installs::DevBuild
     } else if !writable {
         Installs::ReadOnly
     } else {
@@ -905,7 +918,7 @@ impl Updater {
     pub fn new(exe: &Path) -> Self {
         let off = std::env::var("TASKMAN_NO_AUTOUPDATE").is_ok_and(|v| !v.is_empty() && v != "0");
         let exe = exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf());
-        let installs = match installs(&exe, &cargo_bin(), true) {
+        let installs = match installs(&exe, &cargo_bin(), released(), true) {
             Installs::Yes if off || !exe.parent().is_some_and(writable) => Installs::ReadOnly,
             i => i,
         };
@@ -1150,20 +1163,46 @@ mod tests {
     #[test]
     fn only_release_installs_replace_themselves() {
         let cargo = Path::new("/home/me/.cargo/bin");
+        let release = |exe: &str, writable| installs(Path::new(exe), cargo, true, writable);
+        assert_eq!(release("/home/me/.cargo/bin/taskman", true), Installs::Cargo);
+        assert_eq!(release("/usr/local/bin/taskman", false), Installs::ReadOnly);
+        assert_eq!(release("/home/me/.local/bin/taskman", true), Installs::Yes);
         assert_eq!(
-            installs(Path::new("/home/me/src/taskman/target/release/taskman"), cargo, true),
-            Installs::DevBuild
-        );
-        assert_eq!(
-            installs(Path::new("/home/me/.cargo/bin/taskman"), cargo, true),
-            Installs::Cargo
-        );
-        assert_eq!(installs(Path::new("/usr/local/bin/taskman"), cargo, false), Installs::ReadOnly);
-        assert_eq!(installs(Path::new("/home/me/.local/bin/taskman"), cargo, true), Installs::Yes);
-        assert_eq!(
-            installs(Path::new("/opt/homebrew/Cellar/taskman/0.4.3/bin/taskman"), cargo, true),
+            release("/opt/homebrew/Cellar/taskman/0.4.3/bin/taskman", true),
             Installs::Homebrew
         );
+        // A release in a folder that happens to be called target is still a release.
+        assert_eq!(release("/home/me/target/bin/taskman", true), Installs::Yes);
+    }
+
+    #[test]
+    fn a_development_build_is_one_wherever_it_is() {
+        let cargo = Path::new("/home/me/.cargo/bin");
+        let dev = |exe: &str| installs(Path::new(exe), cargo, false, true);
+        for exe in [
+            "/home/me/src/taskman/target/release/taskman",
+            // A CARGO_TARGET_DIR by another name, and a build copied out of its checkout.
+            "/home/me/builds/shared/debug/taskman",
+            "/home/me/.local/bin/taskman",
+            "/usr/local/bin/taskman",
+        ] {
+            assert_eq!(dev(exe), Installs::DevBuild, "{exe}");
+        }
+        // Homebrew and cargo build from source themselves.
+        assert_eq!(dev("/home/me/.cargo/bin/taskman"), Installs::Cargo);
+        assert_eq!(dev("/opt/homebrew/Cellar/taskman/0.4.3/bin/taskman"), Installs::Homebrew);
+    }
+
+    /// The tests run a development build, as CI does, so the tests in tests/ can't remove or
+    /// replace the binary they run; only the release workflow's builds are releases.
+    #[test]
+    fn the_tests_run_a_development_build() {
+        assert_eq!(option_env!("TASKMAN_RELEASE_BUILD"), None, "built as a release");
+        let released = include_str!("../.github/workflows/release.yml");
+        let build = released.find("- run: cargo build --profile dist").unwrap();
+        assert!(released[build..].starts_with(
+            "- run: cargo build --profile dist --locked --target \"$TARGET\"\n        env:\n          TASKMAN_RELEASE_BUILD: \"1\"\n"
+        ));
     }
 
     #[test]

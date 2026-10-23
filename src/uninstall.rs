@@ -297,7 +297,12 @@ fn tilde(p: &Path) -> String {
 /// when it can't be found, as when an update replaced it.
 fn program() -> Option<Result<PathBuf, String>> {
     let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
-    let installs = update::installs(&exe, &update::cargo_bin(), update::writable(exe.parent()?));
+    let installs = update::installs(
+        &exe,
+        &update::cargo_bin(),
+        update::released(),
+        update::writable(exe.parent()?),
+    );
     Some(stays(installs, &exe).map_or(Ok(exe), Err))
 }
 
@@ -308,7 +313,7 @@ fn stays(installs: Installs, exe: &Path) -> Option<String> {
         Installs::Yes => return None,
         Installs::DevBuild => {
             format!(
-                "the program, {shown}: a development build, which `cargo clean` in its checkout removes"
+                "the program, {shown}: a development build, which `cargo clean` in its checkout removes (or delete it, if it's a copy)"
             )
         }
         Installs::Cargo => {

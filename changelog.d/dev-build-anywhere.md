@@ -1,0 +1,1 @@
+- A taskman you built from source is now a development build wherever its build folder is, so `taskman update` no longer replaces it, nor `taskman uninstall` removes it, when `CARGO_TARGET_DIR` names a folder other than `target`.
