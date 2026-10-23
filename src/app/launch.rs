@@ -386,7 +386,8 @@ impl App {
         });
         let running: Vec<&str> = names.iter().map(String::as_str).collect();
         let name = store::session_name(t, &saved.projects, &saved.tickets, &running);
-        let mut app = Self::from_saved(exe, saved, config, update::Updater::disabled());
+        let mut app =
+            Self::from_saved(exe, saved, config, update::Updater::disabled(), Default::default());
         // A running TUI's link is to its own binary, which the sessions it started use too.
         let bin = store::state_dir().join("bin");
         app.bin_dir = if bin.join("taskman").exists() { Some(bin) } else { link_bin(exe) };

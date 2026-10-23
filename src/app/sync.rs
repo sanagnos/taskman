@@ -1,8 +1,10 @@
 //! Work in the background: tracker and PR fetches on their schedule (`Remote`), worktree creation,
-//! and the messages threads send back (`Msg`), which `drain_messages` applies on each tick.
+//! and the messages threads send back (`Msg`, through a `Sender`, which wakes the event loop for
+//! them), which `drain_messages` applies on each tick.
 
 use super::forms::Check;
 use super::{App, Id, Level, Mode};
+use crate::session::Wake;
 use crate::store::{self, Base, Ticket};
 use crate::tracker::{Access, FetchError, Issue, Text};
 use crate::{add, github, selection, worktree};
@@ -153,13 +155,37 @@ pub(super) enum Msg {
     Machine(super::help::Machine),
 }
 
+/// Where the threads send their `Msg`s: the App's channel, and the event loop's wake-up pipe
+/// (`session::Wake`), so that a reply is applied as it comes, not at the loop's next tick.
+#[derive(Clone)]
+pub(super) struct Sender {
+    tx: mpsc::Sender<Msg>,
+    wake: Wake,
+}
+
+impl Sender {
+    /// The channel the App reads its messages from, and its sending end, which wakes `wake`.
+    pub(super) fn channel(wake: Wake) -> (Self, mpsc::Receiver<Msg>) {
+        let (tx, rx) = mpsc::channel();
+        (Self { tx, wake }, rx)
+    }
+
+    /// Err once the App is gone, as `mpsc::Sender::send`, without the message back. The wake-up
+    /// comes after the message, so the pass it wakes finds it.
+    pub(super) fn send(&self, msg: Msg) -> Result<(), mpsc::SendError<()>> {
+        self.tx.send(msg).map_err(|_| mpsc::SendError(()))?;
+        self.wake.wake();
+        Ok(())
+    }
+}
+
 /// Runs the work of a thread whose message something waits for: a panel loading, a form checking,
 /// a session waiting for its worktree. A panic in the work (a bug: in a parser, say) would end the
 /// thread without a word and leave that waiting for good, with `r` doing nothing, so the thread
 /// reports it instead (`util::caught`). The panic hook has written it to panics.log.
 #[derive(Clone)]
 pub(super) struct Reporter {
-    tx: mpsc::Sender<Msg>,
+    tx: Sender,
     #[cfg(test)]
     panics: bool,
 }

@@ -1,0 +1,1 @@
+- Idle, taskman wakes about 5 times a second instead of 20, and uses less processor time, which helps a laptop's battery: replies from its background work wake it as they come, rather than it checking for them ten times a second.

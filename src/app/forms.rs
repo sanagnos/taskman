@@ -12,7 +12,6 @@ use super::{App, Mode};
 use crate::keys;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::cell::Cell;
-use std::sync::mpsc;
 
 /// A form field: free text, with a cursor, or a choice cycled with ←/→ when `choices` is
 /// non-empty.
@@ -536,7 +535,7 @@ impl App {
     pub(super) fn start_check(
         &mut self,
         form: &mut Form,
-        check: impl FnOnce(&mpsc::Sender<Msg>) -> Check + Send + 'static,
+        check: impl FnOnce(&super::sync::Sender) -> Check + Send + 'static,
     ) {
         self.checks += 1;
         let (id, tx) = (self.checks, self.tx.clone());

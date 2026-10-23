@@ -66,8 +66,8 @@ impl vt100::Callbacks for Callbacks {
 
 pub type Parser = vt100::Parser<Callbacks>;
 
-/// Wakes the event loop, which waits on the other end (`Tty::wait`), for a session's output.
-/// Unit tests' sessions have none.
+/// Wakes the event loop, which waits on the other end (`Tty::wait`), for a session's output and
+/// the threads' replies (`app::sync::Sender`). Unit tests' Apps have none.
 #[derive(Clone, Default)]
 pub struct Wake(Option<Arc<UnixStream>>);
 
@@ -77,7 +77,7 @@ impl Wake {
         Self(Some(Arc::new(stream)))
     }
 
-    fn wake(&self) {
+    pub fn wake(&self) {
         if let Some(s) = &self.0 {
             let _ = (&**s).write(&[0]);
         }
