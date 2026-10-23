@@ -39,6 +39,7 @@ pub(crate) fn offline(saved: Saved) -> App {
         saved,
         store::Config::default(),
         crate::update::Updater::disabled(),
+        Default::default(),
     );
     app.clipboard = Arc::new(|_| crate::selection::Copied::Osc52);
     app.stop_background = Arc::new(|_| Err("no claude in tests".into()));
@@ -507,6 +508,17 @@ pub(crate) fn settle_until(app: &mut App, done: impl Fn(&App) -> bool) {
     while !done(app) {
         settle(app);
     }
+}
+
+/// Has `app`'s sessions and threads wake an event loop through `wake`, as `App::new` does.
+pub(crate) fn wake_with(app: &mut App, wake: crate::session::Wake) {
+    (app.tx, app.rx) = super::sync::Sender::channel(wake.clone());
+    app.wake = wake;
+}
+
+/// Puts `text` on the clipboard, as a copy does: on a thread, which replies with `Msg::Copied`.
+pub(crate) fn copy(app: &mut App, text: &str) {
+    app.copy_text(text.into());
 }
 
 /// Waits for the next message a thread of the App sends, such as `Msg::Copied`, and applies it.

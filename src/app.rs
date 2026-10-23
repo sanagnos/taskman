@@ -74,8 +74,14 @@ type Stopper = dyn Fn(&str) -> Result<(), String> + Send + Sync;
 /// Shows a notification with the setting's ways, returning whether it's left to the terminal.
 type Notifier = dyn Fn(crate::notify::Setting, &str) -> bool + Send + Sync;
 
-/// How often the status files are read and the inbox is checked.
+/// How often the status files are read and the inbox is checked. Idle, the event loop wakes for
+/// nothing else (`App::tick_in`).
 const STATUS_EVERY: Duration = Duration::from_millis(300);
+
+/// How long until something done `every` so long, last at `last`, is due again: at once if never.
+fn due_in(last: Option<Instant>, every: Duration) -> Duration {
+    last.map_or(Duration::ZERO, |t| every.saturating_sub(t.elapsed()))
+}
 
 /// How far Help is scrolled; `max` and `page` come from the last frame drawn, 0 when it fits.
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
@@ -201,8 +207,8 @@ pub struct App {
     /// Something on screen changed: draw a frame. Not for a session's output, which each session
     /// keeps (`Session::fresh`), so that only the selected one's draws.
     pub dirty: Arc<AtomicBool>,
-    /// Given to each session started, to wake the event loop with its output.
-    pub wake: crate::session::Wake,
+    /// Given to each session started, to wake the event loop with its output; `tx` has it too.
+    wake: crate::session::Wake,
     pub areas: Areas,
     /// The cards and project headers drawn, at the rows they're drawn on, for clicks.
     pub sidebar_hits: Vec<(Rect, Hit)>,
@@ -249,7 +255,7 @@ pub struct App {
     exe: PathBuf,
     /// Holds a `taskman` link to the running binary, put first on the sessions' PATH.
     bin_dir: Option<PathBuf>,
-    tx: mpsc::Sender<Msg>,
+    tx: sync::Sender,
     rx: mpsc::Receiver<Msg>,
     /// Unit tests: the threads that report back (`sync::Reporter`) panic before their work, as a
     /// bug in it would.
@@ -316,7 +322,8 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(exe: &Path, mut saved: Saved, config: Config) -> Self {
+    /// `wake` wakes the event loop for the sessions' output and the threads' replies.
+    pub fn new(exe: &Path, mut saved: Saved, config: Config, wake: crate::session::Wake) -> Self {
         let resumed = take_leftover_status(
             &mut saved.tickets,
             |t| store::status_file(&t.repo, &t.key),
@@ -329,7 +336,7 @@ impl App {
                 )
             },
         );
-        let mut app = Self::from_saved(exe, saved, config, update::Updater::new(exe));
+        let mut app = Self::from_saved(exe, saved, config, update::Updater::new(exe), wake);
         app.bin_dir = link_bin(exe);
         app.rebuild_clients();
         app.probe_keychain();
@@ -342,9 +349,15 @@ impl App {
     }
 
     /// The state alone, with nothing read or started: no tokens, no PR panels, no session.
-    fn from_saved(exe: &Path, mut saved: Saved, config: Config, updater: update::Updater) -> Self {
+    fn from_saved(
+        exe: &Path,
+        mut saved: Saved,
+        config: Config,
+        updater: update::Updater,
+        wake: crate::session::Wake,
+    ) -> Self {
         let github = std::mem::take(&mut saved.ui.github);
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = sync::Sender::channel(wake.clone());
         let tickets: Vec<TicketView> = saved.tickets.into_iter().map(TicketView::new).collect();
         let sel = saved.selected.min(tickets.len().saturating_sub(1));
         let theme = theme::Theme::new(config.theme, &theme::Probe::default());
@@ -359,7 +372,7 @@ impl App {
             config,
             trackers: Default::default(),
             dirty: Arc::new(AtomicBool::new(true)),
-            wake: Default::default(),
+            wake,
             areas: Areas::default(),
             sidebar_hits: Vec::new(),
             sidebar_scroll: ui::SidebarScroll::default(),
@@ -628,6 +641,16 @@ impl App {
         if let Some(s) = self.selected().and_then(|tv| tv.session.as_ref()) {
             s.drawn();
         }
+    }
+
+    /// How long until `tick` has work of its own to do: the next status poll, or the next step of
+    /// a drag held at an edge. The event loop waits no longer, since nothing wakes it for these;
+    /// the threads' replies (`sync::Sender`) and the sessions' output do wake it.
+    pub fn tick_in(&self) -> Duration {
+        [self.selection_scrolls_in(), self.drag_scrolls_in()]
+            .into_iter()
+            .flatten()
+            .fold(due_in(Some(self.last_status_poll), STATUS_EVERY), Duration::min)
     }
 
     pub fn tick(&mut self, screen: Rect) {

@@ -291,22 +291,34 @@ impl App {
 
     /// Scrolls the sidebar while the pointer rests at its top or bottom edge. Runs on every tick.
     pub(super) fn follow_drag(&mut self) {
+        if self.drag_scrolls_in() != Some(Duration::ZERO) {
+            return;
+        }
+        let up = self.drag_step() < 0;
+        let Some(d) = self.drag.as_mut() else { return };
+        d.scrolled_at = Some(Instant::now());
+        let top = &mut self.sidebar_scroll.top;
+        *top = if up { top.saturating_sub(1) } else { *top + 1 };
+        self.dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// How long until a drag resting at the sidebar's top or bottom edge scrolls it again, if it
+    /// rests there: the event loop waits no longer (`App::tick_in`).
+    pub(super) fn drag_scrolls_in(&self) -> Option<Duration> {
+        let d = self.drag.as_ref().filter(|d| d.active)?;
+        (self.drag_step() != 0).then(|| super::due_in(d.scrolled_at, SCROLL_EVERY))
+    }
+
+    /// Which way a drag under way scrolls the sidebar: up (-1) at its top edge, unless it's at the
+    /// top already, down (1) at its bottom edge, else not (0).
+    fn drag_step(&self) -> i8 {
         let sb = self.areas.sidebar;
         let (first, last) = (sb.y + 2, sb.bottom().saturating_sub(2));
-        let Some(d) = self.drag.as_mut().filter(|d| d.active) else { return };
-        if d.scrolled_at.is_some_and(|t| t.elapsed() < SCROLL_EVERY) {
-            return;
+        match self.drag.as_ref().filter(|d| d.active) {
+            Some(d) if d.pointer.y <= first && self.sidebar_scroll.top > 0 => -1,
+            Some(d) if d.pointer.y >= last => 1,
+            _ => 0,
         }
-        let top = &mut self.sidebar_scroll.top;
-        if d.pointer.y <= first && *top > 0 {
-            *top -= 1;
-        } else if d.pointer.y >= last {
-            *top += 1;
-        } else {
-            return;
-        }
-        d.scrolled_at = Some(Instant::now());
-        self.dirty.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     // ---- what the screen shows ------------------------------------------------------------

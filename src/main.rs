@@ -84,6 +84,10 @@ const QUIT_WAIT: Duration = Duration::from_secs(30);
 /// shutdown ends within a moment of it, so this is only reached when the loop is stuck.
 const SECOND_SIGNAL: Duration = Duration::from_secs(1);
 
+/// How often the watchdog looks. It acts after `SECOND_SIGNAL` at the soonest, and this late at
+/// most past it.
+const WATCH_EVERY: Duration = Duration::from_millis(500);
+
 /// Signals that end the TUI the way `ctrl+a q` does (see `shutdown`).
 struct Signals {
     /// How many SIGTERMs and SIGHUPs (the terminal closed) have come. The first quits as `prefix q`
@@ -137,8 +141,9 @@ impl Signals {
 /// triggered) it won't read that input until more comes. So `wait` wakes on a SIGWINCH too, for
 /// `run` to read each resize before input can arrive with it.
 ///
-/// `wait` also wakes for the sessions' output (`session::Wake`), so the loop can wait long between
-/// frames without the selected session's echo waiting with it.
+/// `wait` also wakes for the sessions' output and the threads' replies (`session::Wake`), and for
+/// the signals that quit, so the loop can wait long between frames without the selected session's
+/// echo, a reply or a quit waiting with it.
 struct Tty {
     fd: RawFd,
     /// The file `fd` belongs to when it isn't stdin: `/dev/tty`, or the watchdog's copy.
@@ -146,7 +151,8 @@ struct Tty {
     /// Readable after a SIGWINCH. The watchdog's copy has none: it only looks for the terminal
     /// going.
     resized: Option<UnixStream>,
-    /// Readable after a session's output. None in the watchdog's copy too.
+    /// Readable after a session's output, a thread's reply or a signal that quits. None in the
+    /// watchdog's copy too.
     woken: Option<UnixStream>,
 }
 
@@ -154,14 +160,15 @@ struct Tty {
 enum Input {
     Ready,
     Idle,
-    /// A session wrote output; the terminal may still hold input (see `wait_held`).
+    /// A session wrote output, a thread replied or a signal came; the terminal may still hold
+    /// input (see `wait_held`).
     Woken,
     Gone,
 }
 
 impl Tty {
     /// The file crossterm picks: stdin if it's a terminal, else `/dev/tty`. With what wakes its
-    /// `wait`, for the sessions.
+    /// `wait`, for the sessions and the App's threads.
     fn open() -> std::io::Result<(Self, session::Wake)> {
         // SAFETY: isatty only looks at a descriptor number; it reads or writes no memory.
         let (fd, file) = if unsafe { libc::isatty(libc::STDIN_FILENO) } == 1 {
@@ -176,6 +183,11 @@ impl Tty {
         let (woken, wake) = UnixStream::pair()?;
         woken.set_nonblocking(true)?;
         wake.set_nonblocking(true)?;
+        // After `Signals::register`'s handlers, which count the signal before this one wakes the
+        // loop to look: a signal needn't come to the loop's thread, whose wait it would end.
+        for sig in [SIGTERM, SIGHUP, SIGINT] {
+            signal_hook::low_level::pipe::register(sig, wake.try_clone()?)?;
+        }
         let tty = Self { fd, _file: file, resized: Some(resized), woken: Some(woken) };
         Ok((tty, session::Wake::new(wake)))
     }
@@ -275,7 +287,7 @@ fn watchdog(tty: Tty, hangup: Arc<AtomicBool>, stops: Arc<AtomicUsize>) -> std::
     std::thread::Builder::new().name("watchdog".into()).spawn(move || {
         let (mut gone, mut again) = (Gone::default(), Gone::default());
         loop {
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(WATCH_EVERY);
             let now = Instant::now();
             // A SIGHUP that isn't the terminal closing ends the loop too.
             let left = hangup.load(Ordering::Relaxed) || tty.wait(Duration::ZERO) == Input::Gone;
@@ -440,11 +452,6 @@ fn main() -> anyhow::Result<()> {
             std::process::exit(1);
         }
     };
-    let mut app = app::App::new(&exe, saved, config);
-    if before == add::Before::Crashed {
-        app.warn("taskman didn't quit cleanly last time: it was killed or crashed");
-    }
-    app.check_prefix_tip();
     let signals = Signals::register()?;
     let (tty, wake) = match Tty::open() {
         Ok(tty) => tty,
@@ -454,7 +461,11 @@ fn main() -> anyhow::Result<()> {
             std::process::exit(1);
         }
     };
-    app.wake = wake;
+    let mut app = app::App::new(&exe, saved, config, wake);
+    if before == add::Before::Crashed {
+        app.warn("taskman didn't quit cleanly last time: it was killed or crashed");
+    }
+    app.check_prefix_tip();
     watchdog(tty.try_clone()?, signals.hangup.clone(), signals.stops.clone())?;
     set_panic_hook();
 
@@ -606,10 +617,9 @@ fn set_panic_hook() {
 const FRAME: Duration = Duration::from_millis(16);
 /// Frames while a spinner shows: its pace.
 const SPIN: Duration = Duration::from_millis(100);
-/// Frames otherwise, for the ages and anything that changed without saying so.
+/// Frames otherwise, for the ages and anything that changed without saying so: with the first tick
+/// after it (see `wait_for`).
 const TICK: Duration = Duration::from_secs(1);
-/// The longest the loop waits before it ticks again: the threads' replies (`Msg`) don't wake it.
-const MAX_WAIT: Duration = Duration::from_millis(100);
 
 /// What calls for the next frame.
 #[derive(Clone, Copy, Default)]
@@ -638,6 +648,15 @@ fn frame_due(due: Due) -> Duration {
     } else {
         TICK
     }
+}
+
+/// How long the loop waits after a pass, unless input, a resize, a session's output or a thread's
+/// reply ends the wait sooner: until the next frame is due (`due`, `since` the last), or `tick` is
+/// (`App::tick_in`), whichever is first. The once-a-second frame (`TICK`) doesn't wake the loop by
+/// itself but comes with the tick after it, up to a status poll (300 ms) late, so idle the loop
+/// wakes for the status poll alone.
+fn wait_for(due: Duration, since: Duration, tick_in: Duration) -> Duration {
+    if due >= TICK { tick_in } else { due.saturating_sub(since).min(tick_in) }
 }
 
 /// The terminal, clearing what an emoji covers before drawing it (see `backend`), its output
@@ -709,7 +728,7 @@ fn run(
             let _ = out.flush();
         }
 
-        let timeout = due(app, false, animated).saturating_sub(last_draw.elapsed()).min(MAX_WAIT);
+        let timeout = wait_for(due(app, false, animated), last_draw.elapsed(), app.tick_in());
         // Input crossterm read nothing from twice is held (see `Tty`): waiting on it would spin.
         // Only new input frees it, and that doesn't end the wait, so try again soon.
         let wait = if misses >= 2 { Tty::wait_held } else { Tty::wait };
@@ -885,6 +904,43 @@ mod tests {
         assert_eq!(frame_due(Due { animated: true, ..none }), SPIN);
         // Nothing: the clock, for the ages.
         assert_eq!(frame_due(none), TICK);
+    }
+
+    #[test]
+    fn the_loop_waits_for_the_next_frame_or_tick_and_the_clock_for_a_tick() {
+        let ms = Duration::from_millis;
+        // A change, 6 ms after a frame: the rest of the 16 ms, as the tick comes later.
+        assert_eq!(wait_for(FRAME, ms(6), ms(200)), ms(10));
+        assert_eq!(wait_for(FRAME, ms(40), ms(200)), Duration::ZERO);
+        // The tick first: the status poll, or a drag's next step at an edge.
+        assert_eq!(wait_for(SPIN, ms(20), ms(30)), ms(30));
+        assert_eq!(wait_for(FRAME, ms(0), Duration::ZERO), Duration::ZERO);
+        // The clock's frame doesn't wake the loop: it comes with the next tick.
+        assert_eq!(wait_for(TICK, ms(900), ms(300)), ms(300));
+        assert_eq!(wait_for(TICK, ms(100), ms(300)), ms(300));
+    }
+
+    #[test]
+    fn a_reply_from_a_thread_ends_the_loops_wait() {
+        let (_master, slave) = pty();
+        let (woken, wake) = UnixStream::pair().unwrap();
+        woken.set_nonblocking(true).unwrap();
+        wake.set_nonblocking(true).unwrap();
+        let tty = Tty { fd: slave.as_raw_fd(), _file: None, resized: None, woken: Some(woken) };
+        let mut app = app::test_support::acme_app();
+        app::test_support::wake_with(&mut app, session::Wake::new(wake));
+        assert_eq!(tty.wait(Duration::ZERO), Input::Idle);
+
+        // Copying answers from a thread (`Msg::Copied`), here at once: the tests' clipboard is
+        // OSC 52.
+        app::test_support::copy(&mut app, "ENG-52");
+        let start = Instant::now();
+        assert_eq!(tty.wait(Duration::from_secs(10)), Input::Woken);
+        assert!(start.elapsed() < Duration::from_secs(5), "{:?}", start.elapsed());
+        app.drain_messages();
+        assert_eq!(app.clipboard_out.len(), 1, "the reply was applied");
+        // The pipe was emptied: the next wait waits.
+        assert_eq!(tty.wait(Duration::from_millis(50)), Input::Idle);
     }
 
     #[test]

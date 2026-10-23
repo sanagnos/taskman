@@ -289,16 +289,22 @@ impl App {
             self.dirty.store(true, Ordering::Relaxed);
             return;
         }
-        let step = selection::edge_step(sel.rect, sel.pointer);
-        if sel.released
-            || step == 0
-            || sel.scrolled_at.is_some_and(|t| t.elapsed() < AUTO_SCROLL_EVERY)
-        {
+        if self.selection_scrolls_in() != Some(Duration::ZERO) {
             return;
         }
+        let Some(sel) = self.selection.as_mut() else { return };
         sel.scrolled_at = Some(Instant::now());
+        let step = selection::edge_step(sel.rect, sel.pointer);
         self.scroll_selection(step);
         self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// How long until a selection held past its pane's edge scrolls the pane again, if it's held
+    /// there: the event loop waits no longer (`App::tick_in`).
+    pub(super) fn selection_scrolls_in(&self) -> Option<Duration> {
+        let sel = self.selection.as_ref().filter(|s| !s.released)?;
+        let step = selection::edge_step(sel.rect, sel.pointer);
+        (step != 0).then(|| super::due_in(sel.scrolled_at, AUTO_SCROLL_EVERY))
     }
 
     /// The selected text, read from the session's history and screen or the panel's lines.

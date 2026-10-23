@@ -1,4 +1,5 @@
 use super::*;
+use std::time::Duration;
 
 // ---- reordering the sidebar ----------------------------------------------------------------
 
@@ -277,16 +278,26 @@ fn a_long_sidebar_scrolls_while_a_drag_rests_at_its_edge() {
     let rows = list_rows(&app);
     drag_card_to(&mut app, "ENG-52", rows.end - 1);
     assert_eq!(app.sidebar_scroll.top, 0);
+    assert_eq!(app.drag_scrolls_in(), Some(Duration::ZERO));
     app.follow_drag();
     assert_eq!(app.sidebar_scroll.top, 1);
-    // Throttled: another call straight away waits.
+    // Throttled: another call straight away waits, and the event loop waits as long.
     app.follow_drag();
     assert_eq!(app.sidebar_scroll.top, 1);
+    let next = app.drag_scrolls_in().unwrap();
+    assert!(!next.is_zero() && next <= Duration::from_millis(80), "{next:?}");
     // In the middle of the list, nothing scrolls.
     mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 3, rows.start + 8);
     app.drag.as_mut().unwrap().scrolled_at = None;
+    assert_eq!(app.drag_scrolls_in(), None);
     app.follow_drag();
     assert_eq!(app.sidebar_scroll.top, 1);
+    // At the top edge, up again.
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 3, rows.start);
+    app.follow_drag();
+    assert_eq!(app.sidebar_scroll.top, 0);
+    // And no further: nothing to wake for.
+    assert_eq!(app.drag_scrolls_in(), None);
 }
 
 #[test]

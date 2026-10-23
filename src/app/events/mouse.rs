@@ -1,4 +1,5 @@
 use super::*;
+use std::time::{Duration, Instant};
 
 // ---- selecting text ------------------------------------------------------------------------
 
@@ -166,6 +167,27 @@ fn a_session_clearing_its_history_ends_the_selection_with_a_toast() {
     app.follow_selection();
     assert!(app.selection.is_none());
     assert!(toast(&app).is_some_and(|t| t.contains("cleared its history")), "{:?}", toast(&app));
+}
+
+#[test]
+fn a_selection_held_past_its_pane_wakes_the_loop_at_the_scrolling_pace() {
+    let (mut app, _sent) = at_eng_52();
+    let c = app.areas.claude;
+    let ms = Duration::from_millis;
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), c.x, c.y);
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), c.x + 3, c.y);
+    assert_eq!(app.selection_scrolls_in(), None, "inside the pane, nothing scrolls");
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), c.x + 3, c.bottom());
+    assert_eq!(app.selection_scrolls_in(), Some(Duration::ZERO));
+    app.follow_selection();
+    // The event loop waits for the next step, not for the status poll.
+    app.last_status_poll = Instant::now();
+    let next = app.selection_scrolls_in().unwrap();
+    assert!(!next.is_zero() && next <= ms(50), "{next:?}");
+    assert!(app.tick_in() <= next);
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), c.x + 3, c.bottom());
+    assert_eq!(app.selection_scrolls_in(), None);
+    assert!(app.tick_in() > ms(50) && app.tick_in() <= ms(300), "{:?}", app.tick_in());
 }
 
 // ---- the mouse -----------------------------------------------------------------------------
