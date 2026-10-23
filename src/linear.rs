@@ -30,8 +30,8 @@ impl LinearConfig {
     /// A query, asked again if the connection drops: it changes nothing, unlike `create`'s
     /// mutation.
     fn query(&self, query: &str, variables: &Value) -> Result<Value, FetchError> {
-        let (status, v) =
-            net::retry_dropped(|| self.send(query, variables)).map_err(|e| failed(&e))?;
+        let (status, v) = net::retry_dropped(|| self.send(query, variables))
+            .map_err(|e| failed(&e, &self.endpoint))?;
         answer(status, &v)
     }
 
@@ -102,7 +102,7 @@ impl LinearConfig {
         let place = format!("team {team} in Linear");
         let maybe = |e: &str| tracker::maybe_created(e, &place);
         let (status, v) = self.send(CREATE, &json!({ "input": input })).map_err(|e| {
-            let e2 = failed(&e);
+            let e2 = failed(&e, &self.endpoint);
             if tracker::unsent(&e) { e2 } else { e2.map(|e| maybe(&e)) }
         })?;
         // A server failing is the one answer that doesn't say the issue wasn't made.
@@ -114,9 +114,9 @@ impl LinearConfig {
     }
 }
 
-/// A request that got no status back.
-fn failed(e: &ureq::Error) -> FetchError {
-    FetchError::request(e, format!("Linear request failed: {e}"))
+/// A request to `endpoint` that got no status back.
+fn failed(e: &ureq::Error, endpoint: &str) -> FetchError {
+    tracker::request_failed(e, "Linear", endpoint)
 }
 
 /// What Linear's answer to a query holds, or why it failed. Linear answers a missing entity with
@@ -130,6 +130,9 @@ fn answer(status: u16, v: &Value) -> Result<Value, FetchError> {
             return Err(FetchError::NotFound(msg.to_string()));
         }
         return Err(FetchError::Other(msg.to_string()));
+    }
+    if status >= 500 {
+        return Err(tracker::server_failed("Linear", status).into());
     }
     if status >= 400 {
         return Err(FetchError::Other(format!("Linear request failed: HTTP {status}")));
@@ -480,7 +483,7 @@ mod tests {
         assert_eq!(fetch(401, ""), rejected);
         assert_eq!(
             fetch(500, "<html>down</html>"),
-            Other("Linear request failed: HTTP 500".into())
+            Other("Linear failed on its side (HTTP 500); try again later".into())
         );
         assert_eq!(
             fetch(400, r#"{"errors":[{"message":"Variable \"$id\" got invalid value"}]}"#),
@@ -498,12 +501,17 @@ mod tests {
         ]);
         assert_eq!(
             client(&server).fetch("ENG-52", Text::Plain).unwrap_err(),
-            Other("Linear request failed: HTTP 502".into())
+            Other("Linear failed on its side (HTTP 502); try again later".into())
         );
         // Nothing listens.
-        let down = LinearConfig::at(&replay::closed(), "lin_api_mock");
+        let closed = replay::closed();
+        let down = LinearConfig::at(&format!("{closed}/graphql"), "lin_api_mock");
         let e = super::fetch(&down, "ENG-52", markdown_to_text).unwrap_err();
-        assert!(matches!(&e, Unreachable(m) if m.starts_with("Linear request failed: ")), "{e:?}");
+        let host = closed.trim_start_matches("http://");
+        assert!(
+            matches!(&e, Unreachable(m) if m.starts_with(&format!("can't reach {host}: no connection"))),
+            "{e:?}"
+        );
     }
 
     #[test]

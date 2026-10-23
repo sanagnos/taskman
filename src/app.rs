@@ -430,7 +430,9 @@ impl App {
             selected: self.sel,
             ui: store::UiPrefs {
                 github: (self.github.iter())
-                    .filter(|(repo, _)| self.projects.iter().any(|p| &p.repo == *repo))
+                    .filter(|(repo, gh)| {
+                        gh.saved() && self.projects.iter().any(|p| &p.repo == *repo)
+                    })
                     .map(|(repo, gh)| (repo.clone(), *gh))
                     .collect(),
                 ..self.prefs.clone()

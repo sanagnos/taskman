@@ -285,6 +285,7 @@ fn watchdog(tty: Tty, hangup: Arc<AtomicBool>, stops: Arc<AtomicUsize>) -> std::
             if gone.for_at_least(left, now, grace) || again.for_at_least(second, now, SECOND_SIGNAL)
             {
                 add::stopped();
+                proc::stop_all();
                 // SAFETY: _exit ends the process without running destructors or touching memory.
                 unsafe { libc::_exit(1) };
             }
@@ -486,9 +487,10 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// Ends taskman as `prefix q` does, however the loop ended (the quit dialog, a signal, the
-/// terminal gone): commands queue from now on, the state is saved, the sessions stop, and a
-/// worktree still being created or removed gets up to `QUIT_WAIT` to finish, less when a second
-/// signal comes. After `prefix q` the loop has already waited (`App::may_quit`), on screen.
+/// terminal gone): commands queue from now on, the state is saved, the sessions stop, a worktree
+/// still being created or removed gets up to `QUIT_WAIT` to finish, less when a second signal
+/// comes, and the helpers still running (gh, git, token commands) are stopped. After `prefix q`
+/// the loop has already waited (`App::may_quit`), on screen.
 fn shutdown(mut app: app::App, signals: &Signals) {
     SHUTTING_DOWN.store(true, Ordering::Relaxed);
     add::stopped();
@@ -506,6 +508,7 @@ fn shutdown(mut app: app::App, signals: &Signals) {
         std::thread::sleep(Duration::from_millis(50));
         app.drain_messages();
     }
+    proc::stop_all();
 }
 
 /// Points stdout and stderr at /dev/null once the terminal is gone. Writing to it fails, and

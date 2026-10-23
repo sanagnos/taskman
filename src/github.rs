@@ -305,7 +305,8 @@ impl Threads {
 pub const NO_REMOTE: &str = "This repo has no GitHub remote";
 
 /// Whether a project's folder can show PRs: a git repository with a GitHub remote, and `gh`
-/// installed and logged in to it. Saved as the last known answer (`store::UiPrefs::github`).
+/// installed and logged in to it. Saved as the last known answer (`store::UiPrefs::github`),
+/// except `Unanswered`, which says nothing about the setup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Gh {
@@ -314,6 +315,8 @@ pub enum Gh {
     NoRemote,
     Missing,
     LoggedOut,
+    /// `gh auth token` didn't answer within `GH_LIMIT`: a locked keyring, a stalled proxy.
+    Unanswered,
 }
 
 impl Gh {
@@ -325,7 +328,13 @@ impl Gh {
             Gh::NoRemote => "the repository has no GitHub remote",
             Gh::Missing => "gh isn't installed; get it from https://cli.github.com",
             Gh::LoggedOut => "gh isn't logged in; run gh auth login",
+            Gh::Unanswered => "gh didn't answer within 30s; check gh auth status",
         }
+    }
+
+    /// Whether this is worth saving as the last known answer: what gh said, not that it didn't.
+    pub fn saved(self) -> bool {
+        self != Gh::Unanswered
     }
 
     /// What a failed PR fetch says about the setup, when it's about the setup.
@@ -369,12 +378,15 @@ enum Token {
     No,
     /// gh isn't installed.
     NoGh,
+    /// gh didn't answer in time.
+    TimedOut,
 }
 
 fn token(host: &str) -> Token {
     match proc::run(Command::new("gh").args(["auth", "token", "--hostname", host]), GH_LIMIT) {
         Ok(o) if o.status.success() => Token::Yes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Token::NoGh,
+        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Token::TimedOut,
         _ => Token::No,
     }
 }
@@ -408,18 +420,22 @@ fn readiness(
     };
     let one = |hosts: &[String]| {
         let github = github(hosts);
+        let mut timed_out = false;
         for h in hosts {
             match token(h) {
                 Token::Yes => return Gh::Ready,
                 Token::NoGh => return if github { Gh::Missing } else { Gh::NoRemote },
+                Token::TimedOut => timed_out = true,
                 Token::No => {}
             }
         }
         // An SSH alias like github.com-work is resolved by gh to github.com, which may be logged in.
-        match github {
-            true if token("github.com") == Token::Yes => Gh::Ready,
-            true => Gh::LoggedOut,
-            false => Gh::NoRemote,
+        match (github, token("github.com")) {
+            (true, Token::Yes) => Gh::Ready,
+            (true, Token::TimedOut) => Gh::Unanswered,
+            (true, _) if timed_out => Gh::Unanswered,
+            (true, _) => Gh::LoggedOut,
+            (false, _) => Gh::NoRemote,
         }
     };
     folders.iter().map(|f| f.as_deref().map_or(Gh::NotGit, one)).collect()
@@ -1346,6 +1362,26 @@ mod tests {
             ready_with(&[Some(&["git.example.com"]), Some(&[])], &enterprise).0,
             [Gh::Ready, Gh::NoRemote]
         );
+    }
+
+    /// A gh that hangs (a locked keyring, a stalled proxy) is stopped at the limit, and said to
+    /// have not answered rather than to be logged out, which would send the user to the wrong fix.
+    #[test]
+    fn a_gh_that_doesnt_answer_is_not_called_logged_out() {
+        let timed_out = [("github.com", Token::TimedOut)];
+        assert_eq!(ready_with(&[Some(&["github.com"])], &timed_out).0, [Gh::Unanswered]);
+        // Through an SSH alias, either host may be the one that hung.
+        let alias: &[&str] = &["github.com-work"];
+        assert_eq!(ready_with(&[Some(alias)], &timed_out).0, [Gh::Unanswered]);
+        let hung_alias = [("github.com-work", Token::TimedOut)];
+        assert_eq!(ready_with(&[Some(alias)], &hung_alias).0, [Gh::Unanswered]);
+        // Another host's answer still counts, and a folder with no GitHub remote needs none.
+        let either = [("github.com", Token::TimedOut), ("git.example.com", Token::Yes)];
+        assert_eq!(ready_with(&[Some(&["github.com", "git.example.com"])], &either).0, [Gh::Ready]);
+        let gitlab = [("gitlab.example.com", Token::TimedOut)];
+        assert_eq!(ready_with(&[Some(&["gitlab.example.com"])], &gitlab).0, [Gh::NoRemote]);
+        assert!(Gh::Unanswered.why().contains(&format!("within {}s", GH_LIMIT.as_secs())));
+        assert!(!Gh::Unanswered.saved() && Gh::LoggedOut.saved() && Gh::Ready.saved());
     }
 
     #[test]

@@ -50,3 +50,56 @@ fn a_helper_cannot_reach_the_terminal() {
     );
     tui.quit();
 }
+
+/// A gh that never answers `gh auth token`, as one waiting on a locked keyring doesn't, with a
+/// child of its own; it notes both pids in `dir/pids`.
+fn hanging_gh(dir: &Path) {
+    let text = r#"#!/bin/sh
+if [ "$1 $2" = "auth token" ]; then
+  sleep 600 &
+  echo $$ $! > 'DIR/pids.part'
+  mv 'DIR/pids.part' 'DIR/pids'
+  exec sleep 600
+fi
+echo 'gh stub: no answer' >&2
+exit 1
+"#;
+    script(&stub_tools(dir), "gh", &text.replace("DIR", &dir.display().to_string()));
+}
+
+/// Whether `pid` has ended: gone, or a zombie its new parent hasn't reaped yet.
+fn ended(pid: &str) -> bool {
+    let out = std::process::Command::new("ps").args(["-o", "stat=", "-p", pid]).output().unwrap();
+    let stat = String::from_utf8_lossy(&out.stdout);
+    stat.trim().is_empty() || stat.trim().starts_with('Z')
+}
+
+#[test]
+fn a_helper_still_running_is_stopped_at_quit() {
+    let dir = scratch_dir("helpers-quit");
+    let repo = project(&dir, &["ENG-52"]);
+    sh(&repo, "git init -q && git remote add origin https://github.com/acme/web.git");
+    hanging_gh(&dir);
+    let mut cmd = stubbed(&dir);
+    cmd.env("GIT_ALLOW_PROTOCOL", "file");
+    let mut tui = Tui::start("a_helper_still_running_is_stopped_at_quit", &dir, cmd, LIMIT);
+    tui.wait_text("stub ready for ENG-52");
+
+    tui.step("gh hangs");
+    let pids = dir.join("pids");
+    tui.wait_until("gh started", || pids.exists());
+    let pids = std::fs::read_to_string(&pids).unwrap();
+    let pids: Vec<&str> = pids.split_whitespace().collect();
+    assert_eq!(pids.len(), 2, "{pids:?}");
+    assert!(pids.iter().all(|p| !ended(p)), "gh ended before the quit");
+
+    tui.step("quit");
+    tui.quit();
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    for pid in pids {
+        while !ended(pid) {
+            assert!(std::time::Instant::now() < until, "{pid} outlived taskman");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}

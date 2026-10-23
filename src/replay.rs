@@ -40,8 +40,12 @@ impl Server {
 /// one does.
 pub const DROP: u16 = 0;
 
-/// Answers one connection per response, in order, each with that status and JSON body (`DROP` for
-/// none). A request is recorded before it's answered, so once the client has its answer,
+/// The status that never answers: the connection stays open and silent for a minute, as a
+/// tracker's does when it's overloaded or a proxy stalls.
+pub const HANG: u16 = 1;
+
+/// Answers one connection per response, in order, each with that status and JSON body (`DROP` or
+/// `HANG` for none). A request is recorded before it's answered, so once the client has its answer,
 /// `requests` has it.
 pub fn serve(responses: Vec<(u16, &'static str)>) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -57,6 +61,13 @@ pub fn serve(responses: Vec<(u16, &'static str)>) -> Server {
                 continue;
             }
             let mut stream = reader.into_inner();
+            if status == HANG {
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(60));
+                    drop(stream);
+                });
+                continue;
+            }
             let _ = write!(
                 stream,
                 "HTTP/1.1 {status} Recorded\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\

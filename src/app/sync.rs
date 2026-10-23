@@ -4,7 +4,7 @@
 use super::forms::Check;
 use super::{App, Id, Level, Mode};
 use crate::store::{self, Base, Ticket};
-use crate::tracker::{Access, Issue, Text};
+use crate::tracker::{Access, FetchError, Issue, Text};
 use crate::{add, github, selection, worktree};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -472,7 +472,7 @@ impl App {
                 report.clone().spawn(
                     what,
                     move || {
-                        let res = client.fetch(&id.1, Text::Plain).map_err(String::from);
+                        let res = client.fetch(&id.1, Text::Plain).map_err(FetchError::repeated);
                         Msg::Jira(n, id, res)
                     },
                     move |e| Msg::Jira(n, failed, Err(e)),
@@ -606,7 +606,7 @@ impl App {
                             .reported(&format!("fetching {key}"), || {
                                 client.fetch(&key, Text::Plain)
                             })
-                            .and_then(|r| r.map_err(String::from)),
+                            .and_then(|r| r.map_err(FetchError::repeated)),
                     ),
                     _ => None,
                 };

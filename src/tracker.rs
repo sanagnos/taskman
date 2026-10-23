@@ -110,6 +110,69 @@ impl FetchError {
     pub(crate) fn request(e: &ureq::Error, message: String) -> FetchError {
         if cut_off(e) { FetchError::Unreachable(message) } else { FetchError::Other(message) }
     }
+
+    /// The message, for a fetch the TUI repeats by itself: one that got no answer says so.
+    pub fn repeated(self) -> String {
+        match self {
+            FetchError::Unreachable(m) => format!("{m}; taskman tries again on the next refresh"),
+            e => e.into(),
+        }
+    }
+}
+
+/// Why a request to `tracker` (`Jira`) at `url` failed with `e`, in words that say where the
+/// problem is: no network, a name that doesn't resolve, a tracker that didn't answer or failed on
+/// its side. Anything else keeps ureq's words.
+pub(crate) fn request_failed(e: &ureq::Error, tracker: &str, url: &str) -> FetchError {
+    use std::io::ErrorKind::*;
+    use ureq::Timeout;
+    let host = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let host = host.split('/').next().unwrap_or(host);
+    let unreachable = |why: &str| FetchError::Unreachable(format!("can't reach {host}: {why}"));
+    let no_name = "its name doesn't resolve (no network, or a DNS or VPN problem)";
+    let no_route = "no connection (no network, or a VPN, proxy or firewall in the way)";
+    let io = |kinds: &[std::io::ErrorKind]| match e {
+        ureq::Error::Io(io) => kinds.contains(&io.kind()),
+        _ => false,
+    };
+    match e {
+        ureq::Error::HostNotFound | ureq::Error::Timeout(Timeout::Resolve) => unreachable(no_name),
+        // getaddrinfo's failures come as an error of no particular kind, std's words first.
+        ureq::Error::Io(io) if io.to_string().starts_with("failed to lookup address") => {
+            unreachable(no_name)
+        }
+        ureq::Error::ConnectionFailed | ureq::Error::Timeout(Timeout::Connect) => {
+            unreachable(no_route)
+        }
+        _ if io(&[
+            ConnectionRefused,
+            PermissionDenied,
+            NetworkUnreachable,
+            HostUnreachable,
+            AddrNotAvailable,
+            NetworkDown,
+        ]) =>
+        {
+            unreachable(no_route)
+        }
+        ureq::Error::Timeout(_) => FetchError::Unreachable(format!(
+            "{host} didn't answer within {}s (a slow network, or {tracker} is having trouble)",
+            crate::net::TRACKER_TIMEOUT.as_secs()
+        )),
+        _ if io(&[TimedOut]) => FetchError::Unreachable(format!(
+            "{host} didn't answer (a slow network, or {tracker} is having trouble)"
+        )),
+        _ if io(&[ConnectionReset, ConnectionAborted, UnexpectedEof, BrokenPipe]) => {
+            FetchError::Unreachable(format!("the connection to {host} broke"))
+        }
+        ureq::Error::StatusCode(status @ 500..=599) => server_failed(tracker, *status).into(),
+        other => FetchError::request(other, format!("{tracker} request failed: {other}")),
+    }
+}
+
+/// A tracker that answered `status`, 500 or more: its own trouble, not the setup's.
+pub(crate) fn server_failed(tracker: &str, status: u16) -> String {
+    format!("{tracker} failed on its side (HTTP {status}); try again later")
 }
 
 impl std::fmt::Display for FetchError {
@@ -420,7 +483,7 @@ pub(crate) fn unsent(e: &ureq::Error) -> bool {
 }
 
 /// Whether a request that failed with `e` got no answer at all, as when Codex's sandbox cuts the
-/// network off: the name didn't resolve, or the connection failed or broke.
+/// network off: the name didn't resolve, the connection failed or broke, or the time ran out.
 pub(crate) fn cut_off(e: &ureq::Error) -> bool {
     use ureq::Timeout;
     matches!(
@@ -428,7 +491,7 @@ pub(crate) fn cut_off(e: &ureq::Error) -> bool {
         ureq::Error::Io(_)
             | ureq::Error::HostNotFound
             | ureq::Error::ConnectionFailed
-            | ureq::Error::Timeout(Timeout::Resolve | Timeout::Connect)
+            | ureq::Error::Timeout(Timeout::Resolve | Timeout::Connect | Timeout::Global)
     )
 }
 
@@ -968,6 +1031,44 @@ mod tests {
         assert_eq!(e("ENG", "  "), "give the new ticket a title");
         assert!(e("", "Fix it").starts_with("the project has no ticket prefix"));
         assert!(e("e-1", "Fix it").starts_with("the project has no ticket prefix"));
+    }
+
+    /// Each way a request gets no answer says where the problem is, rather than ureq's words, and
+    /// counts as cut off (for Codex's sandbox, and `taskman add`).
+    #[test]
+    fn says_plainly_why_a_tracker_cant_be_reached() {
+        use std::io::{Error, ErrorKind};
+        let said = |e: ureq::Error| {
+            let cut = cut_off(&e);
+            (request_failed(&e, "Jira", "https://example.atlassian.net/"), cut)
+        };
+        let unreachable = |m: &str| (FetchError::Unreachable(m.into()), true);
+        let no_name = "can't reach example.atlassian.net: its name doesn't resolve (no network, or a DNS or VPN problem)";
+        let lookup = "failed to lookup address information: Temporary failure in name resolution";
+        assert_eq!(said(ureq::Error::Io(Error::other(lookup))), unreachable(no_name));
+        assert_eq!(said(ureq::Error::HostNotFound), unreachable(no_name));
+        let no_route = "can't reach example.atlassian.net: no connection (no network, or a VPN, proxy or firewall in the way)";
+        assert_eq!(said(ureq::Error::ConnectionFailed), unreachable(no_route));
+        let down = ureq::Error::Io(Error::from(ErrorKind::NetworkUnreachable));
+        assert_eq!(said(down), unreachable(no_route));
+        let slow = "example.atlassian.net didn't answer within 20s (a slow network, or Jira is having trouble)";
+        assert_eq!(said(ureq::Error::Timeout(ureq::Timeout::Global)), unreachable(slow));
+        let reset = ureq::Error::Io(Error::from(ErrorKind::ConnectionReset));
+        assert_eq!(said(reset), unreachable("the connection to example.atlassian.net broke"));
+        // An answer, though a failure on the tracker's side, and what isn't the network.
+        let failed = "Jira failed on its side (HTTP 502); try again later";
+        assert_eq!(said(ureq::Error::StatusCode(502)), (FetchError::Other(failed.into()), false));
+        let (e, cut) = said(ureq::Error::TooManyRedirects);
+        assert!(
+            !cut && matches!(e, FetchError::Other(m) if m.starts_with("Jira request failed: "))
+        );
+        // Only the TUI, which tries again by itself, says so.
+        let e = FetchError::Unreachable("can't reach example.atlassian.net".into());
+        assert_eq!(
+            e.repeated(),
+            "can't reach example.atlassian.net; taskman tries again on the next refresh"
+        );
+        assert_eq!(FetchError::Auth("no".into()).repeated(), "no");
     }
 
     #[test]

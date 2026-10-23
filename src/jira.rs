@@ -46,7 +46,7 @@ impl JiraConfig {
         match self.get(&format!("/rest/api/3/project/{key}")) {
             Ok(_) => Ok(true),
             Err(ureq::Error::StatusCode(404)) => Ok(false),
-            Err(e) => Err(describe(e, "")),
+            Err(e) => Err(self.describe(e, "")),
         }
     }
 
@@ -60,7 +60,7 @@ impl JiraConfig {
                     "/rest/api/3/project/search",
                     &[("startAt", &at), ("maxResults", "100"), ("orderBy", "key")],
                 )
-                .map_err(|e| describe(e, ""))?;
+                .map_err(|e| self.describe(e, ""))?;
             let (got, last) = parse_projects(&page);
             let none = got.is_empty();
             projects.extend(got);
@@ -77,7 +77,7 @@ impl JiraConfig {
         let project: String =
             prefix.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
         let project = project.to_uppercase();
-        let me = self.get("/rest/api/3/myself").map_err(|e| describe(e, ""))?;
+        let me = self.get("/rest/api/3/myself").map_err(|e| self.describe(e, ""))?;
         let jql =
             format!("project = \"{project}\" AND statusCategory != Done ORDER BY updated DESC");
         let v = self
@@ -89,7 +89,7 @@ impl JiraConfig {
                 ureq::Error::StatusCode(400) => {
                     format!("Jira has no project {project}, or this account can't see it")
                 }
-                e => describe(e, ""),
+                e => self.describe(e, ""),
             })?;
         Ok(parse_open(&v, me["accountId"].as_str().unwrap_or("")))
     }
@@ -124,7 +124,7 @@ impl JiraConfig {
             ureq::Error::StatusCode(404) => FetchError::Other(format!(
                 "Jira has no project {project}, or this account can't see it"
             )),
-            e => failure(e, ""),
+            e => self.failure(e, ""),
         })?;
         let Some((type_id, type_name)) = issue_type(&v) else {
             return Err(format!("Jira project {project} has no issue type a ticket can be").into());
@@ -141,12 +141,12 @@ impl JiraConfig {
         let (status, v) =
             self.post("/rest/api/3/issue", &json!({ "fields": fields })).map_err(|e| {
                 let sent = !tracker::unsent(&e);
-                let e = failure(e, "");
+                let e = self.failure(e, "");
                 if sent { e.map(|e| tracker::maybe_created(&e, &place)) } else { e }
             })?;
         match status {
             200..=299 => Ok(parse_created(&v, &self.base, &place)?),
-            401 | 403 => Err(failure(ureq::Error::StatusCode(status), "")),
+            401 | 403 => Err(self.failure(ureq::Error::StatusCode(status), "")),
             400..=499 => Err(refusal(&v, &project, &type_name, status).into()),
             _ => {
                 Err(tracker::maybe_created(&format!("Jira answered HTTP {status}"), &place).into())
@@ -156,25 +156,27 @@ impl JiraConfig {
 
     /// Checks the credentials; returns the account's display name.
     pub fn whoami(&self) -> Result<String, String> {
-        let v = self.get("/rest/api/3/myself").map_err(|e| describe(e, ""))?;
+        let v = self.get("/rest/api/3/myself").map_err(|e| self.describe(e, ""))?;
         Ok(v["displayName"].as_str().unwrap_or("?").to_string())
     }
 }
 
-fn describe(e: ureq::Error, key: &str) -> String {
-    failure(e, key).into()
-}
+impl JiraConfig {
+    fn describe(&self, e: ureq::Error, key: &str) -> String {
+        self.failure(e, key).into()
+    }
 
-/// What a request about `key` (empty for none) that failed with `e` means.
-fn failure(e: ureq::Error, key: &str) -> FetchError {
-    match e {
-        ureq::Error::StatusCode(401 | 403) => FetchError::Auth(
-            "Jira rejected the credentials (check the email and API token)".to_string(),
-        ),
-        ureq::Error::StatusCode(404) if !key.is_empty() => {
-            FetchError::NotFound(format!("{key} not found, or not visible to this account"))
+    /// What a request about `key` (empty for none) that failed with `e` means.
+    fn failure(&self, e: ureq::Error, key: &str) -> FetchError {
+        match e {
+            ureq::Error::StatusCode(401 | 403) => FetchError::Auth(
+                "Jira rejected the credentials (check the email and API token)".to_string(),
+            ),
+            ureq::Error::StatusCode(404) if !key.is_empty() => {
+                FetchError::NotFound(format!("{key} not found, or not visible to this account"))
+            }
+            other => tracker::request_failed(&other, "Jira", &self.base),
         }
-        other => FetchError::request(&other, format!("Jira request failed: {other}")),
     }
 }
 
@@ -182,13 +184,13 @@ pub fn fetch(cfg: &JiraConfig, key: &str) -> Result<Issue, FetchError> {
     let path = format!(
         "/rest/api/3/issue/{key}?fields=summary,status,issuetype,priority,assignee,description,comment"
     );
-    let v = cfg.get(&path).map_err(|e| failure(e, key))?;
+    let v = cfg.get(&path).map_err(|e| cfg.failure(e, key))?;
     let mut issue = parse_issue(&v);
     // The issue carries its oldest comments only, up to a limit; past it, ask for the newest.
     if issue.comments_left_out > 0 {
         let path =
             format!("/rest/api/3/issue/{key}/comment?orderBy=-created&maxResults={COMMENTS}");
-        let page = cfg.get(&path).map_err(|e| failure(e, key))?;
+        let page = cfg.get(&path).map_err(|e| cfg.failure(e, key))?;
         (issue.comments, issue.comments_left_out) = parse_comments(&page);
     }
     Ok(issue)
@@ -580,16 +582,16 @@ mod tests {
         let rejected = Auth("Jira rejected the credentials (check the email and API token)".into());
         assert_eq!(fetch(401), rejected);
         assert_eq!(fetch(403), rejected);
-        assert!(matches!(fetch(500), Other(e) if e.starts_with("Jira request failed: ")));
+        assert_eq!(fetch(500), Other("Jira failed on its side (HTTP 500); try again later".into()));
         // The comments request fails after the issue's.
         let server = replay::serve(vec![
             (200, include_str!("../tests/fixtures/jira/issue-many-comments.json")),
             (503, ""),
         ]);
-        assert!(matches!(
+        assert_eq!(
             client(&server).fetch("ENG-53", Text::Plain).unwrap_err(),
-            Other(e) if e.starts_with("Jira request failed: ")
-        ));
+            Other("Jira failed on its side (HTTP 503); try again later".into())
+        );
         // Not JSON, from a proxy say.
         let server = replay::serve(vec![(200, "<html>sign in</html>")]);
         assert!(matches!(
@@ -597,9 +599,35 @@ mod tests {
             Other(e) if e.starts_with("Jira request failed: ")
         ));
         // Nothing listens.
-        let down = Client::Jira(JiraConfig::new(&replay::closed(), "ana@example.com", "token"));
-        let e = down.fetch("ENG-52", Text::Plain).unwrap_err();
-        assert!(matches!(&e, Unreachable(m) if m.starts_with("Jira request failed: ")), "{e:?}");
+        let closed = replay::closed();
+        let down = Client::Jira(JiraConfig::new(&closed, "ana@example.com", "token"));
+        let host = closed.trim_start_matches("http://");
+        let refused = format!(
+            "can't reach {host}: no connection (no network, or a VPN, proxy or firewall in the way)"
+        );
+        assert_eq!(down.fetch("ENG-52", Text::Plain).unwrap_err(), Unreachable(refused));
+        // The connection drops, and drops again when asked once more.
+        let server = replay::serve(vec![(replay::DROP, ""), (replay::DROP, "")]);
+        let host = server.url.trim_start_matches("http://");
+        assert_eq!(
+            client(&server).fetch("ENG-52", Text::Plain).unwrap_err(),
+            Unreachable(format!("the connection to {host} broke"))
+        );
+    }
+
+    #[test]
+    fn says_when_jira_doesnt_answer_in_time() {
+        let server = replay::serve(vec![(replay::HANG, "")]);
+        let quick = net::config(std::time::Duration::from_millis(300)).build().into();
+        let cfg =
+            JiraConfig { agent: quick, ..JiraConfig::new(&server.url, "ana@example.com", "t") };
+        let host = server.url.trim_start_matches("http://");
+        let e = super::fetch(&cfg, "ENG-52").unwrap_err();
+        let said =
+            format!("{host} didn't answer within 20s (a slow network, or Jira is having trouble)");
+        assert_eq!(e, Unreachable(said));
+        // The TUI tries again by itself, and says so.
+        assert!(e.repeated().ends_with("; taskman tries again on the next refresh"));
     }
 
     #[test]

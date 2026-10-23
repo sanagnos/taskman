@@ -502,7 +502,16 @@ fn the_pr_panel_draws_from_the_saved_gh_check_until_the_new_one_answers() {
     app.tx.send(Msg::Gh(acme.clone(), Gh::LoggedOut)).unwrap();
     app.drain_messages();
     assert!(!app.panels().1);
-    assert_eq!(saved().ui.github, [(acme, Gh::LoggedOut)].into());
+    assert_eq!(saved().ui.github, [(acme.clone(), Gh::LoggedOut)].into());
+
+    // gh not answering hides the panel and says why, but isn't saved: it says nothing about the
+    // setup, so the next start checks again before drawing the panel.
+    app.tx.send(Msg::Gh(acme.clone(), Gh::Unanswered)).unwrap();
+    app.drain_messages();
+    assert!(!app.panels().1);
+    assert_eq!(app.gh(&acme), Gh::Unanswered);
+    app.save();
+    assert!(saved().ui.github.is_empty(), "{:?}", saved().ui.github);
 }
 
 // ---- threads that panic --------------------------------------------------------------------

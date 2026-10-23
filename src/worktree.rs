@@ -142,7 +142,7 @@ pub fn create(
         // Removed by hand: git still lists it, and adds none in its place until it's let go.
         // There's nothing in it to lose.
         let f = folder.to_string_lossy();
-        let out = git(repo, &["worktree", "remove", &f]);
+        let out = changing(git::command(repo).args(["worktree", "remove", &f]));
         if !ok(&out) {
             return Err(match (&w.locked, out) {
                 (Some(_), _) => format!(
@@ -231,14 +231,14 @@ pub fn create(
 /// the user's language until its files are checked out, and that's how `Worktree::unfinished`
 /// knows one that was stopped.
 fn add(repo: &Path, args: &[&str]) -> std::io::Result<Output> {
-    proc::run(git::command(repo).args(["worktree", "add"]).args(args).env("LC_ALL", "C"), GIT_LIMIT)
+    changing(git::command(repo).args(["worktree", "add"]).args(args).env("LC_ALL", "C"))
 }
 
 /// Removes a worktree whose `git worktree add` never finished, so it can be made again. Its
 /// checkout never finished, so it holds no work; git keeps it locked, so it takes two `--force`s.
 fn remove_unfinished(repo: &Path, folder: &Path) -> Result<(), String> {
     let f = folder.to_string_lossy();
-    if ok(&git(repo, &["worktree", "remove", "--force", "--force", &f])) {
+    if ok(&changing(git::command(repo).args(["worktree", "remove", "--force", "--force", &f]))) {
         return Ok(());
     }
     Err(format!(
@@ -577,7 +577,7 @@ pub fn remove(
     let mut cmd = git::command(repo);
     cmd.args(["-c", "status.showUntrackedFiles=normal", "worktree", "remove", &f]);
     hold.share(&mut cmd);
-    match proc::run(&mut cmd, GIT_LIMIT) {
+    match changing(&mut cmd) {
         Ok(o) if o.status.success() => {}
         Ok(o) => return Err(git_error(&o)),
         Err(e) => return Err(format!("could not run git: {e}")),
@@ -765,6 +765,12 @@ fn fetch_error(stderr: &str) -> String {
 
 fn git(repo: &Path, args: &[&str]) -> std::io::Result<Output> {
     git::run(repo, args, GIT_LIMIT)
+}
+
+/// A git that adds or removes a worktree, left to finish if taskman quits meanwhile
+/// (`proc::run_past_quit`).
+fn changing(cmd: &mut Command) -> std::io::Result<Output> {
+    proc::run_past_quit(cmd, GIT_LIMIT)
 }
 
 fn ok(out: &std::io::Result<Output>) -> bool {
