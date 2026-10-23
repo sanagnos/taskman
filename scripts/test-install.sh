@@ -8,7 +8,8 @@
 # the archive: verified, failed, signed by another workflow, unreachable, missing (both where a
 # release may have none and where it must have one), a gh too old for them, a logged-out gh, none at
 # all, and skipped on request. Then which build install.sh picks on each OS, architecture and glibc
-# (faked), and a breaking release, which `taskman update` installs when asked.
+# (faked), the PATH advice it gives for each shell, and a breaking release, which `taskman update`
+# installs when asked.
 #
 # Usage: scripts/test-install.sh   (needs python3; run from anywhere)
 set -euo pipefail
@@ -334,9 +335,10 @@ echo "sysctl: unknown oid '$*'" >&2; exit 1
 SH
 chmod 755 "$work/platform/uname" "$work/platform/getconf" "$work/platform/sysctl"
 bin="$work/platformbin"
-on() { # OS ARCH GLIBC ARM64
+on() { # OS ARCH GLIBC ARM64 [VAR=VALUE...]
+  local os="$1" arch="$2" glibc="$3" arm64="$4"; shift 4
   rm -f "$bin/taskman"
-  inst PATH="$work/platform:$PATH" FAKE_OS="$1" FAKE_ARCH="$2" FAKE_GLIBC="$3" FAKE_ARM64="$4"
+  inst PATH="$work/platform:$PATH" FAKE_OS="$os" FAKE_ARCH="$arch" FAKE_GLIBC="$glibc" FAKE_ARM64="$arm64" "$@"
 }
 picks() { # TARGET OS ARCH GLIBC [ARM64]
   check "picks $1 on $2/$3${4:+ with glibc $4}${5:+ under Rosetta}" 0 "taskman 1.2.0" on "$2" "$3" "$4" "${5:-}"
@@ -357,6 +359,26 @@ check "refuses a platform with no build" 1 none on Linux armv7l 2.36 ""
 said "there's no prebuilt taskman for Linux/armv7l yet. Build it from source instead"
 check "refuses an OS with no build" 1 none on FreeBSD amd64 "" ""
 said "there's no prebuilt taskman for FreeBSD/amd64 yet."
+
+# The PATH advice for the shell in $SHELL: bash on macOS reads ~/.bash_profile in a new terminal,
+# not ~/.bashrc, and fish reads neither.
+advises() { # SHELL OS LINE
+  local glibc=2.39; [ "$2" = Linux ] || glibc=""
+  check "advises for ${1:-no SHELL} on $2" 0 "taskman 1.2.0" on "$2" x86_64 "$glibc" "" SHELL="$1"
+  said "isn't on your PATH yet. Add it, then open a new terminal:"
+  said "$3"
+}
+export_line="echo 'export PATH=\"$bin:\$PATH\"' >>"
+advises /usr/bin/fish Linux "  fish_add_path \"$bin\""
+not_said "export PATH"
+advises /opt/homebrew/bin/fish Darwin "  fish_add_path \"$bin\""
+advises /bin/bash Darwin "  $export_line ~/.bash_profile"
+not_said "~/.bashrc"
+advises /bin/bash Linux "  $export_line ~/.bashrc"
+advises /bin/zsh Darwin "  $export_line ~/.zshrc"
+advises /usr/bin/zsh Linux "  $export_line ~/.zshrc"
+advises /bin/ksh Linux "  $export_line ~/.profile"
+advises "" Linux "  $export_line ~/.profile"
 
 # ---- taskman update ----------------------------------------------------------------------
 exe="${CARGO_TARGET_DIR:-$root/target}/debug/taskman"
