@@ -261,12 +261,20 @@ main() {
       fi
       ;;
     *)
-      case "${SHELL:-}" in
-        */zsh) rc="~/.zshrc" ;;
-        *) rc="~/.bashrc" ;;
-      esac
       say "Note: $bin_dir isn't on your PATH yet. Add it, then open a new terminal:"
-      say "  echo 'export PATH=\"$bin_dir:\$PATH\"' >> $rc"
+      # The startup file the shell reads in a new terminal: macOS's open login shells, which for
+      # bash read ~/.bash_profile and not ~/.bashrc. fish reads neither, and keeps the path itself.
+      rc="~/.profile"
+      case "${SHELL:-}" in
+        */fish) rc="" ;;
+        */zsh) rc="~/.zshrc" ;;
+        */bash) if [ "$os" = Darwin ]; then rc="~/.bash_profile"; else rc="~/.bashrc"; fi ;;
+      esac
+      if [ -n "$rc" ]; then
+        say "  echo 'export PATH=\"$bin_dir:\$PATH\"' >> $rc"
+      else
+        say "  fish_add_path \"$bin_dir\""
+      fi
       ;;
   esac
   if ! command -v claude >/dev/null 2>&1; then
