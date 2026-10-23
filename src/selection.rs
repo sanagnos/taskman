@@ -327,11 +327,19 @@ impl Snapshot {
 
     /// Moves the view `delta` rows, positive toward the newest; false when it can't go further.
     pub fn scroll(&mut self, delta: i32) -> bool {
-        let top = self
-            .top
-            .saturating_add_signed(isize::try_from(delta).unwrap_or(0))
-            .clamp(self.oldest(), self.history);
+        let top = self.scrolled(delta);
         std::mem::replace(&mut self.top, top) != top
+    }
+
+    /// Whether `scroll(delta)` would move the view.
+    pub fn can_scroll(&self, delta: i32) -> bool {
+        self.scrolled(delta) != self.top
+    }
+
+    fn scrolled(&self, delta: i32) -> usize {
+        self.top
+            .saturating_add_signed(isize::try_from(delta).unwrap_or(0))
+            .clamp(self.oldest(), self.history)
     }
 
     /// The rows the pane shows.
@@ -581,6 +589,11 @@ impl Panel {
         let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
         p.render(buf.area, &mut buf);
         Self { rect, buf, breaks: wrap_breaks(lines, width) }
+    }
+
+    /// How many rows the panel's lines wrap to.
+    pub fn rows(&self) -> usize {
+        usize::from(self.buf.area.height)
     }
 
     /// The symbols of the cells of row `row`, "" for those a wide character covers.

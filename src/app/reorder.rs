@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// How often the sidebar scrolls while a drag is held at its top or bottom edge.
-const SCROLL_EVERY: Duration = Duration::from_millis(80);
+pub(super) const SCROLL_EVERY: Duration = Duration::from_millis(100);
 
 /// What a move moves.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -298,25 +298,30 @@ impl App {
         let Some(d) = self.drag.as_mut() else { return };
         d.scrolled_at = Some(Instant::now());
         let top = &mut self.sidebar_scroll.top;
-        *top = if up { top.saturating_sub(1) } else { *top + 1 };
-        self.dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+        let to = if up { top.saturating_sub(1) } else { *top + 1 };
+        if std::mem::replace(top, to) != to {
+            self.dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     /// How long until a drag resting at the sidebar's top or bottom edge scrolls it again, if it
-    /// rests there: the event loop waits no longer (`App::tick_in`).
+    /// rests there and the list has further to go: the event loop waits no longer
+    /// (`App::tick_in`). At either end it doesn't wake the loop, which comes back here once
+    /// something else wakes it, such as the pointer moving or a card being added.
     pub(super) fn drag_scrolls_in(&self) -> Option<Duration> {
         let d = self.drag.as_ref().filter(|d| d.active)?;
         (self.drag_step() != 0).then(|| super::due_in(d.scrolled_at, SCROLL_EVERY))
     }
 
     /// Which way a drag under way scrolls the sidebar: up (-1) at its top edge, unless it's at the
-    /// top already, down (1) at its bottom edge, else not (0).
+    /// top already, down (1) at its bottom edge, unless it's at the end already, else not (0).
     fn drag_step(&self) -> i8 {
         let sb = self.areas.sidebar;
         let (first, last) = (sb.y + 2, sb.bottom().saturating_sub(2));
+        let scroll = self.sidebar_scroll;
         match self.drag.as_ref().filter(|d| d.active) {
-            Some(d) if d.pointer.y <= first && self.sidebar_scroll.top > 0 => -1,
-            Some(d) if d.pointer.y >= last => 1,
+            Some(d) if d.pointer.y <= first && scroll.top > 0 => -1,
+            Some(d) if d.pointer.y >= last && scroll.top < scroll.max => 1,
             _ => 0,
         }
     }

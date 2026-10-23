@@ -23,6 +23,8 @@ pub struct SidebarScroll {
     /// The list row at the top of the view. Clamped to the list as it's drawn, so a resize or a
     /// project folding never leaves room at the bottom while rows are hidden above.
     pub top: usize,
+    /// The furthest `top` goes, as the list was last drawn.
+    pub max: usize,
     /// The selection last scrolled into view, and whether the sidebar was folded then: when
     /// either changes, the list scrolls again, just enough to show the selected card.
     shown: Option<(usize, bool)>,
@@ -101,7 +103,8 @@ pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
             scroll.top = scroll_to_show(scroll.top, rows.len(), view_h, start..end, header);
         }
     }
-    scroll.top = scroll.top.min(rows.len().saturating_sub(view_h));
+    scroll.max = rows.len().saturating_sub(view_h);
+    scroll.top = scroll.top.min(scroll.max);
     let top = scroll.top;
     let (first, end) = shown_rows(top, rows.len(), view_h);
 
