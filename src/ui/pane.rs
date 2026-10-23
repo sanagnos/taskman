@@ -715,6 +715,7 @@ pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
                 ("t", "to a terminal"),
                 ("e", "rename agent"),
                 ("PgUp", "scroll"),
+                ("d", "turns"),
                 ("v", "history in $EDITOR"),
                 ("l", "links"),
                 ("~", "notices"),

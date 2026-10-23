@@ -30,6 +30,7 @@ expression: screen
 " │    ctrl+a M          run in the main checkout when the worktree failed     │ "
 " │    ctrl+a e          rename the current agent                              │ "
 " │    ctrl+a PgUp/PgDn  scroll back, then PgUp/PgDn ↑/↓ Home/End go on        │ "
+" │    ctrl+a d          the session's turns: files, commits, what it said     │ "
 " │    ctrl+a v          open the session's history in $EDITOR                 │ "
 " │    ctrl+a l          list links (ticket, PR, session) to open or copy      │ "
 " │    ctrl+a ~          notices: what the footer showed, newest first         │ "
@@ -60,5 +61,4 @@ expression: screen
 " │  Press any key to close.                                                   │ "
 " │                                                                            │ "
 " ╰────────────────────────────────────────────────────────────────────────────╯ "
-"                                                                                "
 " ^a menu · ^a ^a next waiting · ^a ? help           ▲ 2 need you · ● 2 finished "

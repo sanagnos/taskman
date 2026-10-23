@@ -178,6 +178,7 @@ The Add form opens on Type, set to Agent; ←/→ switches it to Ticket. What yo
 | `ctrl+a o` / `p` | open the ticket / PR in your browser (a Local files ticket opens in `$EDITOR`) |
 | `ctrl+a r` / `m` | refresh now (and check GitHub again) / take the `●` off comments that were new |
 | `ctrl+a PgUp` / `PgDn` | scroll the session's history a page, then keep going without the prefix: PgUp/PgDn a page, ↑/↓ a line, Home/End to the top or bottom, Esc back to live (see [Scrolling back](#scrolling-back)). A full-screen CLI gets the key itself |
+| `ctrl+a d` | what the session did, a row per turn, newest first: files, commits, what it said; Enter shows a turn's whole message (see below) |
 | `ctrl+a v` | open the session's history in `$EDITOR` |
 | `ctrl+a l` | the ticket's links (issue, PR, checks), then the session's, newest first: Enter opens one, `c` copies it |
 | `ctrl+a ~` | notices: the last 200 messages the footer showed, newest first, with how long ago; ↑/↓ and PgUp/PgDn scroll, any other key closes |
@@ -190,6 +191,12 @@ The Add form opens on Type, set to Agent; ←/→ switches it to Ticket. What yo
 ### The waiting queue
 
 `ctrl+a w` lists every session that asks you something, the one that has waited longest first. A row shows the key (or the agent's name) and project, how long it has waited, why (`permission` for a permission prompt, `question` for questions and plans) and what it asks for: for a permission prompt the tool and its command, path or input (`Bash: cargo test`), cut to fit, otherwise the session's message. ↑/↓ choose a row, Enter selects that session and closes the list, Esc closes it. The list follows the sessions while it's open, and with nothing that needs you `ctrl+a w` says so instead of opening, with how many finished a turn, or ended, since you looked. It doesn't answer prompts: Claude's prompts have more choices than yes and no, and one key approving across sessions would widen what a key approves. A session that has waited a minute shows its time in the sidebar in place of "needs you" (`▲ 4m`). `ctrl+a ctrl+a` still goes to the next one in the sidebar's order.
+
+### What a session did
+
+`ctrl+a d` lists the selected session's finished turns, newest first, a row each: how long ago it ended, how many files it changed, its newest commit (with `+1` for each more) and the first sentence of the CLI's last message of the turn, so you can catch up on a ticket at a glance without scrolling its history. A heading at the top of the message is the row's line when it sums the turn up; a label such as `**Summary**` or `## What changed` is skipped, and when a list comes next, the row shows its first item. ↑/↓ (or j/k) choose a turn, PgUp/PgDn page through them and Home/End go to the newest and the oldest. Enter opens the chosen turn under its row with the whole message, and Enter or Esc closes it again; ↑/↓ scroll through a message longer than the screen before going on to the next turn. ←/→ show the session above or below in the sidebar without leaving the list, `g` goes to the session shown, and Esc closes, leaving the selection where it was. Markdown is shown as plain text: emphasis, backticks, headings and code fences are taken out, list markers and line breaks kept. A turn that ends while it's open shows at once.
+
+The hooks taskman passes write it, from the turn's end (Claude Code and Codex alike), so it starts with this version's sessions. Files count when the session edits them with its edit tools (Claude's Edit and Write, Codex's apply_patch) or commits them during the turn, so a file a shell command or a formatter wrote counts once it's committed. A turn's commits are its own: a rebase or merge onto the default branch doesn't count the commits it brings in. A session keeps its last 50 turns, through restarts of the session and of taskman, and closing the ticket or agent deletes them. The messages stay on your machine, in taskman's state folder; they're never put in a session's brief or in `taskman status`.
 
 ### Notifications
 

@@ -1,0 +1,1 @@
+- `ctrl+a d` lists what the selected session did, a row per turn, newest first: how long ago, the files it changed or committed, its commits and the first sentence of the CLI's last message, for Claude Code and Codex sessions. Enter shows a turn's whole message, its Markdown as plain text; ←/→ show the next session's without closing, and `g` goes to it.
