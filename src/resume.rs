@@ -477,6 +477,7 @@ fn resume(args: &[String]) -> Result<i32, String> {
     hold.share(&mut cmd);
     // The CLI gets the terminal's ctrl+c and the hangup when the window closes, and this process
     // waits for it to end before letting go of the session: ignored here, reset by exec there.
+    crate::proc::hand_off_terminal();
     for sig in [libc::SIGINT, libc::SIGQUIT, libc::SIGHUP] {
         let _ = signal_hook::flag::register(sig, std::sync::Arc::default());
     }

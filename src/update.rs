@@ -440,6 +440,7 @@ fn install(exe: &Path, tag: &str, by: By) -> Result<(), String> {
         _ => return Err(format!("can't tell where to install over {}", exe.display())),
     };
     let staged = dir.join(format!(".{name}.new.{}", std::process::id()));
+    let _leftover = proc::Leftover::new(&staged);
     let result = stage(&staged, &binary, tag).and_then(|version| {
         std::fs::rename(&staged, exe)
             .map_err(|e| format!("couldn't replace {}: {e}", exe.display()))?;
@@ -508,6 +509,7 @@ fn verify(data: &[u8], archive: &str, tag: &str) -> Result<Attestation, Refusal>
 struct Private {
     dir: PathBuf,
     file: PathBuf,
+    _leftover: proc::Leftover,
 }
 
 impl Private {
@@ -529,7 +531,7 @@ impl Private {
                 Ok(()) => break dir,
             }
         };
-        let copy = Self { file: dir.join(name), dir };
+        let copy = Self { file: dir.join(name), _leftover: proc::Leftover::new(&dir), dir };
         let mut f = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)

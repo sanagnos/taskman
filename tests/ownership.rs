@@ -205,6 +205,66 @@ fn killing_resume_leaves_the_session_to_its_cli() {
     assert!(freed && resumed, "the session stayed claimed after its CLI ended");
 }
 
+/// `taskman resume` hands the terminal to the CLI: a ctrl+c there is the CLI's, and resume waits on
+/// for it rather than ending, while a SIGTERM still ends it, leaving the CLI the session.
+#[test]
+fn ctrl_c_in_a_resumed_session_is_its_clis() {
+    use std::os::unix::process::ExitStatusExt;
+    let dir = scratch_dir("resume-interrupt");
+    let repo = fixture(&dir);
+    let mut resume = command(&dir)
+        .args(["resume", "ENG-1"])
+        .current_dir(&repo)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = i32::try_from(resume.id()).unwrap();
+    let d = dir.clone();
+    let watchdog = Watchdog::start("resume-interrupt", Duration::from_secs(60), move || {
+        kill(Some(pid));
+        kill(session(&d));
+    });
+
+    watchdog.step("resuming it");
+    assert!(
+        wait_for(Duration::from_secs(10), None, || session(&dir).is_some()),
+        "the session didn't start"
+    );
+    let cli = session(&dir).unwrap();
+    // Named once the CLI has started, after the hand-off.
+    let owner = owner_file(&dir).expect("no owner file");
+    let named = wait_for(Duration::from_secs(10), None, || {
+        std::fs::read_to_string(&owner).is_ok_and(|r| r == format!("outside {cli}"))
+    });
+
+    watchdog.step("ctrl+c");
+    // As the terminal sends it, to the process group in front; here to resume alone.
+    // SAFETY: sends a signal; no memory is involved.
+    unsafe { libc::kill(pid, libc::SIGINT) };
+    // An interrupt that ended it would within a moment: stopping no helpers takes none.
+    let interrupted =
+        wait_for(Duration::from_secs(1), None, || resume.try_wait().unwrap().is_some());
+
+    watchdog.step("SIGTERM");
+    // SAFETY: sends a signal; no memory is involved.
+    unsafe { libc::kill(pid, libc::SIGTERM) };
+    let ended = wait_for(Duration::from_secs(10), None, || resume.try_wait().unwrap().is_some());
+    let status = if ended { resume.wait().ok() } else { None };
+    let cli_runs = alive(cli);
+    kill(Some(pid));
+    let _ = resume.wait();
+    kill(Some(cli));
+    drop(watchdog);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(named, "taskman resume didn't name its CLI in the owner file");
+    assert!(!interrupted, "ctrl+c ended taskman resume while its CLI ran");
+    assert_eq!(status.and_then(|s| s.signal()), Some(libc::SIGTERM), "{status:?}");
+    assert!(cli_runs, "the CLI ended with taskman resume");
+}
+
 /// The owner lock fails closed: while its file can't be made (here a plain file sits where the
 /// status folder goes), the session doesn't start and the pane says why; once it can, Enter starts
 /// the session under the lock, and `taskman resume` is refused as usual.
