@@ -603,7 +603,13 @@ impl App {
         };
         if agent {
             f.label = "Name";
-            f.hint = "short names fit the sidebar, e.g. oss-planner; no worktree".into();
+            // The form opens on Agent, and a title stays a name: say how to get a ticket.
+            f.hint = if tracker {
+                "an agent's name, e.g. oss-planner; ←/→ on Type for a ticket"
+            } else {
+                "short names fit the sidebar, e.g. oss-planner; no worktree"
+            }
+            .into();
             return;
         }
         f.label = "Ticket";
