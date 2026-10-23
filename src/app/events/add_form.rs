@@ -570,6 +570,41 @@ fn a_name_typed_on_type_fills_the_agents_name() {
     assert_eq!(selected(&app), "notes-lead");
 }
 
+/// On a project with a tracker, a title typed on Type is an agent's name, and the hint says how
+/// to get a ticket instead; on a board, ← to Ticket makes the title a new ticket.
+#[test]
+fn a_title_on_a_board_is_a_name_until_type_is_ticket() {
+    let dir = store::state_dir().join("plan");
+    let board = crate::local::board(&dir, crate::local::FOLDER);
+    crate::local::ensure_columns(&board).unwrap();
+    let mut saved = crate::app::test_support::acme();
+    saved.projects.retain(|p| p.tracker.is_none());
+    saved.tickets.clear();
+    let mut app = offline(saved);
+    let plan = serde_json::json!({
+        "name": "plan", "repo": dir,
+        "tracker": { "provider": "local", "site": "", "key": "WP" },
+    });
+    app.projects.insert(0, serde_json::from_value(plan).unwrap());
+    app.github.insert(dir.clone(), crate::github::Gh::NotGit);
+    prefix(&mut app, KeyCode::Char('n'));
+    assert_eq!(field(&app, "Project"), "plan");
+    settle(&mut app);
+    type_text(&mut app, "Fix login");
+    assert_eq!((focused(&app), field(&app, "Type").as_str()), ("Name", "Agent"));
+    assert_eq!(hint(&app, "Name"), "an agent's name, e.g. oss-planner; ←/→ on Type for a ticket");
+    focus(&mut app, "Type");
+    app.on_key(key(KeyCode::Left));
+    assert_eq!(field(&app, "Ticket"), "Fix login");
+    assert_eq!(hint(&app, "Ticket"), "new: WP-1 in todo, titled as typed");
+    app.on_key(key(KeyCode::Enter));
+    assert!(matches!(app.mode, Mode::Normal), "{:?}", toast(&app));
+    assert!(app.tickets.iter().any(|tv| tv.t.is(&dir, "WP-1")));
+    assert!(app.tickets.iter().all(|tv| tv.t.agent.is_none()), "made an agent");
+    let todo: Vec<_> = std::fs::read_dir(board.join("todo")).unwrap().flatten().collect();
+    assert_eq!(todo.len(), 1);
+}
+
 /// A key made by typing in the middle of a name switches to a ticket too, with the cursor where
 /// it was; and what's typed on a choice goes in at that cursor.
 #[test]
