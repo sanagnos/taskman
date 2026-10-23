@@ -344,7 +344,7 @@ fn main() -> anyhow::Result<()> {
             let _ = std::io::stdout().write_all(include_str!("../LICENSE-THIRD-PARTY").as_bytes());
             return Ok(());
         }
-        Some("-h" | "--help") => {
+        Some("-h" | "--help" | "help") => {
             cli::out!(
                 "taskman {}: several tickets at once, each with its session (Claude or Codex),",
                 env!("CARGO_PKG_VERSION")
@@ -422,12 +422,17 @@ fn main() -> anyhow::Result<()> {
             cli::out!("Config: {}", store::config_path().display());
             return Ok(());
         }
-        _ => {}
+        // A typo would otherwise start the TUI, or say another one is running, and exit 0.
+        Some(other) => {
+            eprintln!("{}", unknown_command(other));
+            std::process::exit(2);
+        }
+        None => {}
     }
 
     let exe = std::env::current_exe()?;
     // Before the alternate screen, so these stay on the terminal.
-    let (_lock, saved, config) = match open_state() {
+    let (running, saved, config, before) = match open_state() {
         Ok(state) => state,
         Err(e) => {
             eprintln!("taskman: {e}");
@@ -435,9 +440,19 @@ fn main() -> anyhow::Result<()> {
         }
     };
     let mut app = app::App::new(&exe, saved, config);
+    if before == add::Before::Crashed {
+        app.warn("taskman didn't quit cleanly last time: it was killed or crashed");
+    }
     app.check_prefix_tip();
     let signals = Signals::register()?;
-    let (tty, wake) = Tty::open()?;
+    let (tty, wake) = match Tty::open() {
+        Ok(tty) => tty,
+        Err(e) => {
+            drop(running);
+            eprintln!("{}", no_terminal(&e));
+            std::process::exit(1);
+        }
+    };
     app.wake = wake;
     watchdog(tty.try_clone()?, signals.hangup.clone(), signals.stops.clone())?;
     set_panic_hook();
@@ -506,21 +521,53 @@ fn detach_output() {
     }
 }
 
-/// Takes the state folder's lock and reads the saved state and config. Fails rather than start
-/// with less than was saved, since the first save would write that over the files.
-fn open_state() -> Result<(store::Lock, store::Saved, store::Config), String> {
+/// The state folder's lock, held while the TUI runs, and the inbox's heartbeat that says so,
+/// removed before the lock goes however `main` ends (an error, a panic too), so that commands
+/// queue and the next taskman doesn't take it for one that crashed.
+struct Running {
+    _lock: store::Lock,
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        add::stopped();
+    }
+}
+
+/// Takes the state folder's lock and reads the saved state and config, with what the taskman
+/// before this one left. Fails rather than start with less than was saved, since the first save
+/// would write that over the files.
+fn open_state() -> Result<(Running, store::Saved, store::Config, add::Before), String> {
     let lock = store::lock()?;
     if let Some(dir) = store::own_config_dir().filter(|d| d.exists()) {
         let _ = store::private_dir(&dir);
     }
     // A release from before the lock doesn't take it, but it keeps the inbox's `alive` file fresh.
-    if add::running_elsewhere() {
+    let before = add::before();
+    if before == add::Before::Running {
         return Err(store::already_running(&store::state_dir(), ""));
     }
-    let state = (lock, store::load()?, store::load_config()?);
+    let (saved, config) = (store::load()?, store::load_config()?);
     // Commands count taskman as running from here, before its first frame (`add::tui_running`).
     add::heartbeat();
-    Ok(state)
+    Ok((Running { _lock: lock }, saved, config, before))
+}
+
+/// Why `Tty::open` failed, and what to do, on stderr. With no terminal at all (`ssh host taskman` without
+/// -t, a cron job), opening /dev/tty fails with ENXIO, or ENOTTY on some systems.
+fn no_terminal(e: &std::io::Error) -> String {
+    match e.raw_os_error() {
+        Some(libc::ENXIO | libc::ENOTTY) => {
+            "taskman needs a terminal: run it in one (ssh -t for a remote machine)".into()
+        }
+        _ => format!("taskman: couldn't open the terminal: {e}"),
+    }
+}
+
+/// What a first argument that isn't a command gets, on stderr.
+fn unknown_command(arg: &str) -> String {
+    // Quoted and escaped, so what was typed shows as typed, a control character too.
+    format!("taskman: unknown command {arg:?}; taskman --help lists them")
 }
 
 /// Restores the terminal on a panic of the main thread, which ends the TUI. Other threads (a
@@ -791,6 +838,33 @@ fn edit(terminal: &mut Term, path: &std::path::Path, enhanced: bool) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_terminal_says_to_run_it_in_one() {
+        for errno in [libc::ENXIO, libc::ENOTTY] {
+            let e = std::io::Error::from_raw_os_error(errno);
+            assert_eq!(
+                no_terminal(&e),
+                "taskman needs a terminal: run it in one (ssh -t for a remote machine)"
+            );
+        }
+        let e = std::io::Error::from_raw_os_error(libc::EACCES);
+        let said = no_terminal(&e);
+        assert!(said.starts_with("taskman: couldn't open the terminal: "), "{said}");
+    }
+
+    #[test]
+    fn an_unknown_command_is_quoted_as_typed() {
+        assert_eq!(
+            unknown_command("stauts"),
+            r#"taskman: unknown command "stauts"; taskman --help lists them"#
+        );
+        // A control character can't reach the terminal as one.
+        assert_eq!(
+            unknown_command("a\x1b[2Jb"),
+            r#"taskman: unknown command "a\u{1b}[2Jb"; taskman --help lists them"#
+        );
+    }
 
     #[test]
     fn a_frame_is_due_at_once_for_a_resize_and_soon_only_for_a_change_or_the_selected_output() {

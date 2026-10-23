@@ -1,0 +1,3 @@
+- taskman refuses a command it doesn't know (`taskman stauts`) with exit code 2 and says `taskman --help` lists them, instead of starting; `taskman help` is `taskman --help`.
+- Started straight after it was killed (`kill -9`, out of memory) or crashed, taskman starts and says the last one didn't quit cleanly, instead of saying another taskman is already running.
+- With no terminal (`ssh host taskman` without `-t`), taskman says it needs one instead of "No such device or address", and a tickets.json that isn't text gets the same "move it aside" advice as other unreadable ones.

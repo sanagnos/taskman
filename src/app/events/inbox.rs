@@ -23,13 +23,13 @@ fn the_heartbeat_is_rewritten_once_a_second_not_on_every_pass() {
     let mut app = acme_app();
     let alive = store::state_dir().join("inbox/alive");
     app.take_inbox();
-    assert!(add::running_elsewhere(), "the first pass writes it");
+    assert!(add::tui_running(), "the first pass writes it");
     std::fs::remove_file(&alive).unwrap();
     app.take_inbox();
     assert!(!alive.exists(), "a pass within the second leaves it");
     app.heartbeat_at = ago(1.0);
     app.take_inbox();
-    assert!(add::running_elsewhere(), "a pass a second later writes it again");
+    assert!(add::tui_running(), "a pass a second later writes it again");
 }
 
 #[test]

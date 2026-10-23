@@ -59,7 +59,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
 
 fn uninstall(args: Args) -> Result<i32, String> {
     // Its sessions would carry on, and its next save would write the state folder back.
-    if add::running_elsewhere() {
+    if add::tui_running() {
         return Err(format!(
             "taskman is running: quit it ({} q, then Enter) so its sessions stop, then run taskman uninstall again",
             keys::prefix()
