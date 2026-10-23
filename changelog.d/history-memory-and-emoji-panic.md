@@ -1,0 +1,2 @@
+- Reading a session's history (`ctrl+a l`, `ctrl+a v`, scrolling back) no longer keeps it at the pane's full width afterwards: one read took a session with 10,000 rows from 21 to 51 MB for good, and now leaves it at 21 MB.
+- An emoji widened by U+FE0F (⚠️ ❤️ ✔️) printed in a session's bottom-right cell no longer stops the session with "taskman stopped reading this session after an error" when the row above is printed to next.

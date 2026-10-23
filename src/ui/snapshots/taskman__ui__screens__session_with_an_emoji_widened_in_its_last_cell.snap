@@ -1,0 +1,28 @@
+---
+source: src/ui/screens.rs
+expression: "draw(&mut app, 80, 24)"
+---
+" taskman    │  ENG-70                            /src/acme-ENG-70 eng-70-work   "
+"            │                                                                   "
+"▾ acme      │                                                                   "
+" ✦lead ●    │                                                                   "
+" ✦release… ○│                                                                   "
+" ENG-52 ✓   │                                                                   "
+" ENG-53 ▲   │                                                                   "
+" ENG-61 ⠋   │                                                                   "
+"┃ENG-70 ■   │                                                                   "
+"            │                                                                   "
+"▸ no… (1) ● │                                                                   "
+"            │                                                                   "
+"            │                                                                   "
+"            │                                                                   "
+"            │                                                                   "
+"            │                                                                   "
+"            │                                                                   "
+"            │                                                                   "
+"            │                                                                   "
+"            │                                                                   "
+"            │                                                                   "
+"            │                                                                 -e"
+"            │ ⚠️ after                                                          " Hidden by multi-width symbols: [(15, " ")]
+" ^a menu · ^a ^a next waiting · ^a ? help                    ▲ 3 waiting on you "

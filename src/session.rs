@@ -886,6 +886,19 @@ mod tests {
         }
     }
 
+    /// An emoji that VS16 widens, alone in the bottom-right cell, wraps onto a new row and
+    /// scrolls the screen; vt100 used to leave half of it in the row above, and the next print to
+    /// that row's last column panicked and killed the session's CLI.
+    #[test]
+    fn an_emoji_widened_in_the_last_cell_can_be_printed_beside() {
+        for then in ["\x1b[23;80He", "\x1b[23;79H\u{26a0}\u{fe0f}", "\x1b[23;79H  "] {
+            let mut p = parser(24, 80);
+            p.process(format!("\x1b[24;79H \u{26a0}\u{fe0f}{then}").as_bytes());
+            let rows: Vec<String> = p.screen().rows(0, 80).collect();
+            assert!(rows[23].starts_with("\u{26a0}\u{fe0f}"), "{then:?}: {rows:?}");
+        }
+    }
+
     mod props {
         use super::*;
         use proptest::prelude::*;
@@ -904,6 +917,11 @@ mod tests {
                 Just(b"\x1b[2@".to_vec()),
                 Just(b"\r\n".to_vec()),
                 Just("漢✅🚀".as_bytes().to_vec()),
+                // Emoji VS16 widens, one in the bottom-right cell, and the end of the row above,
+                // where one wrapping from that cell used to leave half of itself.
+                Just("\u{26a0}\u{fe0f}1\u{fe0f}".as_bytes().to_vec()),
+                Just("\x1b[999;999H\u{26a0}\u{fe0f}".as_bytes().to_vec()),
+                Just(b"\x1b[A\x1b[999C".to_vec()),
                 (0u16..200).prop_map(|n| format!("\x1b[{n}C").into_bytes()),
                 (0u16..60, 0u16..200).prop_map(|(r, c)| format!("\x1b[{r};{c}H").into_bytes()),
                 "[a-z漢❌ ]{0,80}".prop_map(String::into_bytes),

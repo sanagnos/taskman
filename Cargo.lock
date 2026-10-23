@@ -2236,7 +2236,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vt100"
 version = "0.18.1"
-source = "git+https://github.com/sanagnos/vt100-rust?rev=59353902703fbeca7514a21db53748c8f32e0688#59353902703fbeca7514a21db53748c8f32e0688"
+source = "git+https://github.com/sanagnos/vt100-rust?rev=69de952f310d8da313ae420eb3375aa35a64a3b5#69de952f310d8da313ae420eb3375aa35a64a3b5"
 dependencies = [
  "itoa",
  "unicode-width",

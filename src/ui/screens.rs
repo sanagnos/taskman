@@ -233,6 +233,17 @@ fn session_at_the_top_of_a_trimmed_history() {
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 
+/// An emoji VS16 widens, printed in the pane's bottom-right cell, wraps to the start of a new row,
+/// whole, and a letter can then be printed at the end of the row above.
+#[test]
+fn session_with_an_emoji_widened_in_its_last_cell() {
+    let mut app = acme_app();
+    select(&mut app, "ENG-70");
+    draw(&mut app, 80, 24);
+    attach(&mut app, "ENG-70", "\x1b[999;999H\x1b[D-\u{26a0}\u{fe0f} after\x1b[A\x1b[999Ce");
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
 /// Its owner lock couldn't be taken, so the session didn't start.
 #[test]
 fn session_without_its_lock() {
