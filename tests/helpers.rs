@@ -185,3 +185,93 @@ fn an_interrupted_command_stops_its_helpers() {
     assert!(alive.is_empty(), "{alive:?} outlived taskman status");
     assert_eq!(status.signal(), Some(libc::SIGINT), "{status:?}");
 }
+
+/// A gh that answers once `dir/go` exists, noting its pid in `dir/gh-<pid>` while it waits.
+fn slow_gh(dir: &Path) {
+    let text = r#"#!/bin/sh
+touch "DIR/gh-$$"
+while [ ! -e 'DIR/go' ]; do sleep 0.05; done
+echo 'gh stub: no answer' >&2
+exit 1
+"#;
+    script(&stub_tools(dir), "gh", &text.replace("DIR", &dir.display().to_string()));
+}
+
+/// A command started with the hangup ignored, as `nohup` starts it, keeps ignoring it: it carries
+/// on and ends as it would have, its helpers not stopped.
+#[test]
+fn an_ignored_hangup_leaves_a_command_running() {
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
+    use std::time::Instant;
+    let dir = scratch_dir("helpers-nohup");
+    let repo = project(&dir, &["ENG-52"]);
+    sh(&repo, "git init -q && git remote add origin https://github.com/acme/web.git");
+    slow_gh(&dir);
+    let run = |hangup: bool| {
+        let _ = std::fs::remove_file(dir.join("go"));
+        let mut cmd = common::taskman(&dir);
+        cmd.args(["status", "ENG-52"])
+            .current_dir(&repo)
+            .env("GIT_ALLOW_PROTOCOL", "file")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+        // SAFETY: only `signal`, which is async-signal-safe, runs between fork and exec.
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::signal(libc::SIGHUP, libc::SIG_IGN);
+                Ok(())
+            });
+        }
+        let mut taskman = cmd.spawn().unwrap();
+        let until = Instant::now() + LIMIT;
+        let asked = || {
+            std::fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().starts_with("gh-"))
+        };
+        while !asked() {
+            if Instant::now() > until || taskman.try_wait().unwrap().is_some() {
+                let _ = taskman.kill();
+                panic!("gh never started");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let mut ended_early = false;
+        if hangup {
+            let pid = i32::try_from(taskman.id()).unwrap();
+            // SAFETY: sends a signal; no memory is involved.
+            unsafe { libc::kill(pid, libc::SIGHUP) };
+            // A hangup that ended it would within a moment: stopping gh takes none.
+            let until = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < until && !ended_early {
+                ended_early = taskman.try_wait().unwrap().is_some();
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+        std::fs::write(dir.join("go"), "").unwrap();
+        let until = Instant::now() + LIMIT;
+        while taskman.try_wait().unwrap().is_none() {
+            if Instant::now() > until {
+                let _ = taskman.kill();
+                panic!("taskman status didn't end once gh answered");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let out = taskman.wait_with_output().unwrap();
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            if e.file_name().to_string_lossy().starts_with("gh-") {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+        (ended_early, out)
+    };
+    let (_, quiet) = run(false);
+    let (ended_early, hung_up) = run(true);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!ended_early, "the ignored hangup ended taskman status: {:?}", hung_up.status);
+    assert_eq!(hung_up.status.signal(), None, "{:?}", hung_up.status);
+    assert_eq!(hung_up.status.code(), quiet.status.code());
+    assert_eq!(String::from_utf8_lossy(&hung_up.stdout), String::from_utf8_lossy(&quiet.stdout));
+}

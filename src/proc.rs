@@ -114,12 +114,14 @@ static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 /// have, so the shell sees the signal (status 130 for ctrl+c) and a script looping over commands
 /// stops. Left to the signal, the command would end alone: its helpers run in sessions of their own
 /// ([`own_session`]), which the terminal's ctrl+c and hangup don't reach, and would run on to
-/// their time limit. Not for the TUI, whose quit stops them.
+/// their time limit. Not for the TUI, whose quit stops them. A signal the command was started
+/// ignoring stays ignored: `nohup taskman update`, or `taskman status &` from a script, whose shell
+/// ignores ctrl+c for it, carries on as before.
 pub fn stop_on_signals() {
+    let caught: Vec<i32> =
+        [libc::SIGINT, libc::SIGTERM, libc::SIGHUP].into_iter().filter(|&s| !ignored(s)).collect();
     // Without the handlers, the signals end the command as they did.
-    let Ok(mut signals) =
-        signal_hook::iterator::Signals::new([libc::SIGINT, libc::SIGTERM, libc::SIGHUP])
-    else {
+    let Ok(mut signals) = signal_hook::iterator::Signals::new(caught) else {
         return;
     };
     std::thread::spawn(move || {
@@ -133,6 +135,17 @@ pub fn stop_on_signals() {
             let _ = signal_hook::low_level::emulate_default_handler(signal);
         }
     });
+}
+
+/// Whether `signal` is ignored (SIG_IGN), as the program that started the command left it: a
+/// handler would replace that, and its default action would then end the command.
+fn ignored(signal: i32) -> bool {
+    // SAFETY: a null new action only reads the current one into `old`, which is zeroed and ours.
+    unsafe {
+        let mut old: libc::sigaction = std::mem::zeroed();
+        libc::sigaction(signal, std::ptr::null(), &mut old) == 0
+            && old.sa_sigaction == libc::SIG_IGN
+    }
 }
 
 /// `result`, unless a signal is ending the command ([`stop_on_signals`]): then this never returns,

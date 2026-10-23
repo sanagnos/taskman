@@ -1,0 +1,1 @@
+- With a state folder shared between machines (a network folder), a second taskman on one machine no longer starts beside one running on the other, and says which machine that is; `taskman add` and `taskman close` there wait for the running one's reply rather than saying taskman isn't running.

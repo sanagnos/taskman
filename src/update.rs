@@ -125,11 +125,11 @@ fn update(force: bool) -> Result<(), String> {
                 "taskman was installed with cargo: update it with `cargo install --locked --git {REPO_URL}`. To replace cargo's copy with the release anyway, run taskman update --force."
             ));
         }
-        // A development build updates from its source with git, and overwriting one in a
-        // checkout would confuse cargo.
+        // A development build updates the way it was built: from its source with git, where
+        // overwriting it would confuse cargo, or by the package manager that built it.
         Installs::DevBuild => {
             return Err(format!(
-                "this is a development build ({}). Update the source with `git pull` and rebuild, or install a release with the README's quick install.",
+                "this taskman ({}) was built from source, not downloaded from a release, so it doesn't update itself: update it the way it was installed (with your package manager, or `git pull` and rebuild), or install a release with the README's quick install.",
                 exe.display()
             ));
         }
@@ -1074,7 +1074,7 @@ impl Updater {
         let why = match self.installs {
             Installs::Yes => None,
             Installs::DevBuild => {
-                Some("A development build only notifies: rebuild it from source.")
+                Some("Built from source, so it only notifies: update it the way it was installed.")
             }
             Installs::Cargo => {
                 Some("Installed with cargo, so it only notifies: cargo manages that folder.")

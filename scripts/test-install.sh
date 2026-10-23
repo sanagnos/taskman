@@ -398,7 +398,7 @@ if [ -x "$exe" ]; then
   before="$(inode)"
   upd() { env XDG_STATE_HOME="$work/state" "$bin/taskman" update --force; }
   check "taskman update leaves a development build alone wherever it is" 1 "$version" upd
-  said "this is a development build ("
+  said "was built from source, not downloaded from a release"
   [ "$(inode)" = "$before" ] || { echo "FAIL taskman update replaced a development build"; failures=$((failures + 1)); }
   # From here on the copies act as releases, which only the release workflow builds.
   export TASKMAN_TEST_RELEASE_BUILD=1

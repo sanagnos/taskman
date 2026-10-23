@@ -1,0 +1,1 @@
+- A command started with a signal ignored keeps ignoring it, as before 0.1.30: `nohup taskman update`, or `taskman status &` from a script, carries on when the terminal closes or `ctrl+c` is pressed, instead of ending.

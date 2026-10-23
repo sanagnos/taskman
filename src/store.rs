@@ -683,9 +683,9 @@ fn locked_in(dir: &Path) -> bool {
 }
 
 /// Why a second taskman won't start on the state folder `dir`; `pid` is ` (pid N)` when known.
-pub fn already_running(dir: &Path, pid: &str) -> String {
+pub fn already_running(dir: &Path, who: &str) -> String {
     format!(
-        "another taskman is already running{pid} with {}. Two would overwrite each other's saves: use that one, or quit it ({} q) and start again.",
+        "another taskman is already running{who} with {}. Two would overwrite each other's saves: use that one, or quit it ({} q) and start again.",
         tilde(dir),
         crate::keys::prefix()
     )

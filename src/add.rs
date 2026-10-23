@@ -231,6 +231,10 @@ struct Alive {
     /// network folders).
     #[serde(default)]
     pid: Option<u32>,
+    /// The machine that TUI runs on, written from this release on: on a state folder shared
+    /// between machines, `pid` names a process on that one, which `kill(pid, 0)` here can't check.
+    #[serde(default)]
+    host: Option<String>,
 }
 
 impl Alive {
@@ -240,7 +244,15 @@ impl Alive {
             inbox: INBOX_FORMAT,
             lock: true,
             pid: Some(std::process::id()),
+            host: hostname(),
         }
+    }
+
+    /// Whether the TUI that wrote this runs on another machine, whose processes `pid_alive` can't
+    /// see. One that didn't say (an older release), or this machine's name unknown, counts as
+    /// this one's, as before.
+    fn elsewhere(&self) -> bool {
+        self.host.as_ref().is_some_and(|h| hostname().is_some_and(|ours| *h != ours))
     }
 
     /// Whether the TUI that wrote this holds the state folder's lock while it runs. Every release
@@ -315,9 +327,10 @@ fn too_old(req: &Request, alive: &Alive) -> Option<String> {
 pub enum Before {
     /// It quit, removing `alive`, or there was none.
     Quit,
-    /// Another TUI is running, with its pid when `alive` says it: a release from before the lock,
-    /// which keeps `alive` fresh and takes no lock, or one whose lock this one didn't meet.
-    Running(Option<u32>),
+    /// Another TUI is running, with its pid when `alive` says it, and its machine when that's
+    /// another: a release from before the lock, which keeps `alive` fresh and takes no lock, or one
+    /// whose lock this one didn't meet.
+    Running(Option<u32>, Option<String>),
     /// It was killed or crashed, leaving `alive` behind, which is now removed.
     Crashed,
 }
@@ -327,7 +340,8 @@ pub enum Before {
 /// `alive` as it quits, so a file still there was left by one that didn't quit (a kill -9, an OOM
 /// kill or a panic, which leave a heartbeat under `ALIVE` old to a taskman started straight
 /// after), unless its process still runs: then the lock file was removed and made again under it,
-/// or flock doesn't work in the state folder (some network folders).
+/// or flock doesn't work in the state folder (some network folders), or it runs on another machine
+/// that shares the folder, where its pid can't be checked from here.
 pub fn before() -> Before {
     let Ok(modified) = std::fs::metadata(alive_file()).and_then(|m| m.modified()) else {
         return Before::Quit;
@@ -335,11 +349,12 @@ pub fn before() -> Before {
     if running(Some(modified), SystemTime::now()) {
         match read_alive() {
             // One that can't be read (an older build's, cut short) counts as running, as before.
-            None => return Before::Running(None),
-            Some(a) if !a.holds_lock() => return Before::Running(None),
+            None => return Before::Running(None, None),
+            Some(a) if !a.holds_lock() => return Before::Running(None, None),
+            Some(a) if a.elsewhere() => return Before::Running(a.pid, a.host),
             // Not our own: a killed taskman's pid may be this one's by now.
             Some(Alive { pid: Some(pid), .. }) if pid != std::process::id() && pid_alive(pid) => {
-                return Before::Running(Some(pid));
+                return Before::Running(Some(pid), None);
             }
             Some(_) => {}
         }
@@ -352,14 +367,30 @@ pub fn before() -> Before {
 /// state folder's lock (`store::locked`) and hasn't removed `alive`, which it writes once it has
 /// the lock and removes as it quits, or it keeps `alive` fresh, as a release from before the lock
 /// does, or one whose lock file was removed, and its process hasn't ended (a crash leaves `alive`
-/// fresh for a moment). Not by the heartbeat's age alone: that's the file's time on the wall
-/// clock, which can step forward by seconds (WSL resyncs its clock every half minute or so, by
-/// about 2.5 s), and a command would then say taskman isn't running while it is.
+/// fresh for a moment; one on another machine sharing the folder can't be checked, so counts). Not
+/// by the heartbeat's age alone: that's the file's time on the wall clock, which can step forward
+/// by seconds (WSL resyncs its clock every half minute or so, by about 2.5 s), and a command would
+/// then say taskman isn't running while it is.
 pub fn tui_running() -> bool {
     let alive = std::fs::metadata(alive_file()).and_then(|m| m.modified()).ok();
     (alive.is_some() && store::locked())
         || (running(alive, SystemTime::now())
-            && !read_alive().and_then(|a| a.pid).is_some_and(|pid| !pid_alive(pid)))
+            && !read_alive()
+                .is_some_and(|a| !a.elsewhere() && a.pid.is_some_and(|p| !pid_alive(p))))
+}
+
+/// This machine's name, which `alive` notes; None when it can't be read.
+fn hostname() -> Option<String> {
+    static NAME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| {
+        let mut buf = [0u8; 256];
+        // SAFETY: writes at most `buf.len()` bytes into `buf`, which is ours.
+        let ok = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } == 0;
+        // Cut short, the name may not end with a NUL, and then isn't trusted.
+        let name = std::ffi::CStr::from_bytes_until_nul(&buf).ok().filter(|_| ok)?;
+        Some(name.to_string_lossy().into_owned()).filter(|n| !n.is_empty())
+    })
+    .clone()
 }
 
 /// Whether process `pid` exists: `kill(pid, 0)` finds it, ours or another user's (EPERM).
@@ -941,55 +972,33 @@ mod tests {
             close: None,
         };
         let stacked = Request { base: Some("ENG-51".into()), ..req.clone() };
-        let old = Alive { version: "1.0.0".into(), inbox: 1, lock: true, pid: None };
+        let old = alive("1.0.0", 1);
         assert_eq!(too_old(&req, &old), None);
         assert!(
             too_old(&stacked, &old)
                 .unwrap()
                 .starts_with("taskman 1.0.0 is running, which doesn't know --on yet")
         );
-        assert_eq!(
-            too_old(
-                &stacked,
-                &Alive { version: "1.1.0".into(), inbox: INBOX_FORMAT, lock: true, pid: None }
-            ),
-            None
-        );
+        assert_eq!(too_old(&stacked, &alive("1.1.0", INBOX_FORMAT)), None);
         let agent = |role: Option<&str>| Request {
             items: vec![Item::Agent { name: "tester".into(), role: role.map(String::from) }],
             ..req.clone()
         };
-        let stacking = Alive { version: "1.1.0".into(), inbox: 2, lock: true, pid: None };
+        let stacking = alive("1.1.0", 2);
         assert_eq!(too_old(&agent(None), &stacking), None);
         assert!(
             too_old(&agent(Some("Test PRs")), &stacking)
                 .unwrap()
                 .starts_with("taskman 1.1.0 is running, which doesn't know --role yet")
         );
-        assert_eq!(
-            too_old(
-                &agent(Some("Test PRs")),
-                &Alive { version: "1.2.0".into(), inbox: INBOX_FORMAT, lock: true, pid: None }
-            ),
-            None
-        );
+        assert_eq!(too_old(&agent(Some("Test PRs")), &alive("1.2.0", INBOX_FORMAT)), None);
         // taskman close needs format 4; a TUI before it can't read the field either.
         let close =
             Request { close: Some(Close { merged: true, keep_worktree: false }), ..req.clone() };
-        assert!(
-            too_old(&close, &Alive { version: "1.2.0".into(), inbox: 3, lock: true, pid: None })
-                .unwrap()
-                .starts_with(
-                    "taskman 1.2.0 is running, which doesn't know taskman close yet; restart it"
-                )
-        );
-        assert_eq!(
-            too_old(
-                &close,
-                &Alive { version: "1.3.0".into(), inbox: INBOX_FORMAT, lock: true, pid: None }
-            ),
-            None
-        );
+        assert!(too_old(&close, &alive("1.2.0", 3)).unwrap().starts_with(
+            "taskman 1.2.0 is running, which doesn't know taskman close yet; restart it"
+        ));
+        assert_eq!(too_old(&close, &alive("1.3.0", INBOX_FORMAT)), None);
         let json = serde_json::to_value(&close).unwrap();
         assert_eq!(json["close"], serde_json::json!({ "merged": true }));
         assert_eq!(serde_json::from_value::<Request>(json).unwrap(), close);
@@ -1031,19 +1040,11 @@ mod tests {
         assert_eq!(bare, Item::New { title: "Fix".into(), description: String::new() });
 
         assert!(
-            too_old(&req, &Alive { version: "1.3.0".into(), inbox: 4, lock: true, pid: None })
-                .unwrap()
-                .starts_with(
-                    "taskman 1.3.0 is running, which doesn't know --new from a session yet"
-                )
+            too_old(&req, &alive("1.3.0", 4)).unwrap().starts_with(
+                "taskman 1.3.0 is running, which doesn't know --new from a session yet"
+            )
         );
-        assert_eq!(
-            too_old(
-                &req,
-                &Alive { version: "1.4.0".into(), inbox: INBOX_FORMAT, lock: true, pid: None }
-            ),
-            None
-        );
+        assert_eq!(too_old(&req, &alive("1.4.0", INBOX_FORMAT)), None);
 
         assert_eq!(
             declined(&req),
@@ -1206,15 +1207,22 @@ mod tests {
 
     #[test]
     fn reads_the_alive_file_as_the_tui_writes_it() {
-        let alive = Alive { version: "1.2.0".into(), inbox: INBOX_FORMAT, lock: true, pid: None };
+        let alive = Alive::new();
         let json = serde_json::to_string(&alive).unwrap();
         assert_eq!(parse_alive(&json), Some(alive));
         // Caught empty or part-way through an older build's rewrite: not a format, so asked again.
         assert_eq!(parse_alive(""), None);
         assert_eq!(parse_alive(&json[..json.len() / 2]), None);
-        // From before `lock` and the pid were written.
+        // From before `lock`, the pid and the host were written.
         let old = parse_alive(r#"{"version":"0.1.28","inbox":5}"#).unwrap();
-        assert_eq!((old.lock, old.pid), (false, None));
+        assert_eq!((old.lock, old.pid, old.host.as_deref()), (false, None, None));
+        let old = parse_alive(r#"{"version":"0.1.30","inbox":5,"lock":true,"pid":7}"#).unwrap();
+        assert_eq!((old.pid, old.host.as_deref(), old.elsewhere()), (Some(7), None, false));
+    }
+
+    /// What a TUI of `version` that takes the lock writes, with no pid or host.
+    fn alive(version: &str, inbox: u32) -> Alive {
+        Alive { version: version.into(), inbox, lock: true, pid: None, host: None }
     }
 
     /// A pid that's gone, as a killed taskman's is once its parent has seen it end.
@@ -1273,12 +1281,12 @@ mod tests {
         assert!(!alive_file().exists());
         // Releases out before `lock` was written, by their number.
         for version in ["0.1.28", "0.4.16", "0.4.34"] {
-            write(&Alive { version: version.into(), inbox: 5, lock: false, pid: None });
+            write(&Alive { lock: false, ..alive(version, 5) });
             assert_eq!(before(), Before::Crashed, "{version}");
         }
         for version in ["0.4.8", "0.4.15"] {
-            write(&Alive { version: version.into(), inbox: 2, lock: false, pid: None });
-            let running = Before::Running(None);
+            write(&Alive { lock: false, ..alive(version, 2) });
+            let running = Before::Running(None, None);
             assert_eq!(before(), running, "{version} takes no lock: it may be running");
             assert!(alive_file().exists());
         }
@@ -1288,7 +1296,7 @@ mod tests {
         assert_eq!(before(), Before::Crashed);
         // Older still: an empty file, which says nothing, so may be running.
         std::fs::write(alive_file(), "").unwrap();
-        assert_eq!(before(), Before::Running(None));
+        assert_eq!(before(), Before::Running(None, None));
     }
 
     /// A taskman whose lock file was removed while it ran (or that flock doesn't reach) is still
@@ -1302,7 +1310,7 @@ mod tests {
         let _lock = store::lock().unwrap();
         // Init always runs: ours to signal or not (EPERM), it counts.
         write(1);
-        assert_eq!(before(), Before::Running(Some(1)));
+        assert_eq!(before(), Before::Running(Some(1), None));
         assert!(alive_file().exists());
         write(ended_pid());
         assert_eq!(before(), Before::Crashed);
@@ -1317,6 +1325,37 @@ mod tests {
         assert!(!pid_alive(0) && !pid_alive(u32::MAX), "process groups, not a process");
     }
 
+    /// On a state folder shared between machines, a fresh heartbeat from another one names a
+    /// process there, which can't be checked from here: it counts as running, whatever its pid
+    /// is here, while one from this machine is checked as before.
+    #[test]
+    fn a_fresh_heartbeat_from_another_machine_counts_as_running() {
+        let write = |pid, host: &str| {
+            let alive = Alive { pid: Some(pid), host: Some(host.into()), ..Alive::new() };
+            store::write_unsynced(&alive_file(), &serde_json::to_vec(&alive).unwrap()).unwrap();
+        };
+        let here = hostname().expect("this machine's name");
+        let there = format!("{here}-other");
+        assert!(!Alive::new().elsewhere());
+        // Gone here, or this process's own: neither says anything about the other machine.
+        let gone = ended_pid();
+        write(gone, &there);
+        assert!(tui_running(), "no lock here: by the heartbeat alone");
+        let _lock = store::lock().unwrap();
+        assert_eq!(before(), Before::Running(Some(gone), Some(there.clone())));
+        assert!(alive_file().exists());
+        write(std::process::id(), &there);
+        assert_eq!(before(), Before::Running(Some(std::process::id()), Some(there.clone())));
+        // This machine's, its process gone: a crash, as before.
+        write(ended_pid(), &here);
+        assert_eq!(before(), Before::Crashed);
+        // Once its heartbeat has stopped, the other machine's taskman has too.
+        write(1, &there);
+        let f = std::fs::File::options().write(true).open(alive_file()).unwrap();
+        f.set_modified(SystemTime::now() - Duration::from_secs(60)).unwrap();
+        assert_eq!(before(), Before::Crashed);
+    }
+
     /// `main` ending removes `alive`, but not on a panic, so the next start says it crashed.
     #[test]
     fn a_panic_leaves_the_heartbeat() {
@@ -1328,11 +1367,12 @@ mod tests {
         }
         crate::util::quiet_test_panics();
         assert!(heartbeat());
-        let panicked = std::thread::spawn(|| {
+        // On this thread: another would have a scratch state folder of its own.
+        let panicked = std::panic::catch_unwind(|| {
             let _running = Running;
             std::panic::panic_any(crate::util::TestPanic);
         });
-        assert!(panicked.join().is_err());
+        assert!(panicked.is_err());
         assert!(alive_file().exists());
         drop(Running);
         assert!(!alive_file().exists());

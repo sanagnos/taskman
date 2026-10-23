@@ -288,7 +288,7 @@ fn purge_removes_only_its_files_beside_a_config_file() {
     let out = run(dev_build(&dir), &["--yes"]);
     let stdout = text(&out.stdout);
     assert!(out.status.success(), "{stdout}{}", text(&out.stderr));
-    assert!(stdout.contains("  - the program, ") && stdout.contains("a development build"));
+    assert!(stdout.contains("  - the program, ") && stdout.contains("built from source"));
     assert!(stdout.ends_with("Nothing was removed.\n"), "{stdout}");
     assert!(dir.join("config.json").exists() && token.exists() && state.exists());
 

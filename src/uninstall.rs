@@ -313,7 +313,7 @@ fn stays(installs: Installs, exe: &Path) -> Option<String> {
         Installs::Yes => return None,
         Installs::DevBuild => {
             format!(
-                "the program, {shown}: a development build, which `cargo clean` in its checkout removes (or delete it, if it's a copy)"
+                "the program, {shown}: built from source, not downloaded from a release, so remove it the way it was installed (with your package manager, or `cargo clean` in its checkout), or delete it if it's a copy"
             )
         }
         Installs::Cargo => {

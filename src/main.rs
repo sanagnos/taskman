@@ -567,9 +567,16 @@ fn open_state() -> Result<(Running, store::Saved, store::Config, add::Before), S
     // A release from before the lock doesn't take it, and a lock file removed while taskman ran
     // was made again by this one, but either keeps the inbox's `alive` file fresh.
     let before = add::before();
-    if let add::Before::Running(pid) = before {
-        let pid = pid.map(|p| format!(" (pid {p})")).unwrap_or_default();
-        return Err(store::already_running(&store::state_dir(), &pid));
+    if let add::Before::Running(pid, host) = before {
+        // Read from a folder another machine writes too.
+        let host = host.map(|h| untrusted::line(&h));
+        let who = match (pid, host) {
+            (Some(p), Some(h)) => format!(" (pid {p} on {h})"),
+            (None, Some(h)) => format!(" (on {h})"),
+            (Some(p), None) => format!(" (pid {p})"),
+            (None, None) => String::new(),
+        };
+        return Err(store::already_running(&store::state_dir(), &who));
     }
     let (saved, config) = (store::load()?, store::load_config()?);
     // Commands count taskman as running from here, before its first frame (`add::tui_running`).
