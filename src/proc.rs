@@ -1,11 +1,14 @@
 //! Running other programs (git, gh, token commands, the updater's tar) from the TUI's threads and
 //! commands: with no terminal to prompt on, and a time limit, so a program waiting for input that
 //! never comes, or a network that never answers, can't hold a ticket's refreshes, a form or an
-//! update forever. What's still running when taskman quits is stopped with it ([`stop_all`]).
+//! update forever. What's still running when taskman quits is stopped with it ([`stop_all`]), and
+//! when a command run from a shell is interrupted ([`stop_on_signals`]).
 
 use std::io::{self, Read, Write};
 use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, mpsc};
 use std::time::{Duration, Instant};
 
@@ -18,20 +21,20 @@ use std::time::{Duration, Instant};
 ///
 /// Failing to start keeps `Command::spawn`'s error, so `NotFound` still says it isn't installed.
 pub fn run(cmd: &mut Command, timeout: Duration) -> io::Result<Output> {
-    run_inner(cmd, None, timeout, true)
+    unless_interrupted(run_inner(cmd, None, timeout, true))
 }
 
 /// [`run`], with `input` on stdin instead of /dev/null. The time limit covers writing it too: a
 /// program that never reads it is stopped at the limit like any other.
 pub fn run_with_input(cmd: &mut Command, input: Vec<u8>, timeout: Duration) -> io::Result<Output> {
-    run_inner(cmd, Some(input), timeout, true)
+    unless_interrupted(run_inner(cmd, Some(input), timeout, true))
 }
 
 /// [`run`] for a git that changes worktrees (`worktree add`, `worktree remove`), which the quit
 /// waits for and [`stop_all`] leaves to finish if it hasn't: stopped part-way, git leaves a
 /// worktree half-made or half-removed.
 pub fn run_past_quit(cmd: &mut Command, timeout: Duration) -> io::Result<Output> {
-    run_inner(cmd, None, timeout, false)
+    unless_interrupted(run_inner(cmd, None, timeout, false))
 }
 
 /// The process groups [`run`] started that haven't been reaped, by id, for [`stop_all`].
@@ -98,6 +101,92 @@ pub fn stop_all() {
     for group in live.groups.drain(..) {
         signal_group(group, libc::SIGKILL);
     }
+}
+
+/// The command has handed the terminal to a program of its own ([`hand_off_terminal`]).
+static HANDED_OFF: AtomicBool = AtomicBool::new(false);
+
+/// A signal is ending the command ([`stop_on_signals`]).
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+/// For a command run from a shell (`taskman status`, `add`, `update`...): ctrl+c, a SIGTERM or the
+/// terminal closing stops the helpers it started ([`stop_all`]), then ends it as the signal would
+/// have, so the shell sees the signal (status 130 for ctrl+c) and a script looping over commands
+/// stops. Left to the signal, the command would end alone: its helpers run in sessions of their own
+/// ([`own_session`]), which the terminal's ctrl+c and hangup don't reach, and would run on to
+/// their time limit. Not for the TUI, whose quit stops them.
+pub fn stop_on_signals() {
+    // Without the handlers, the signals end the command as they did.
+    let Ok(mut signals) =
+        signal_hook::iterator::Signals::new([libc::SIGINT, libc::SIGTERM, libc::SIGHUP])
+    else {
+        return;
+    };
+    std::thread::spawn(move || {
+        for signal in signals.forever() {
+            if signal != libc::SIGTERM && HANDED_OFF.load(Ordering::Relaxed) {
+                continue;
+            }
+            INTERRUPTED.store(true, Ordering::SeqCst);
+            stop_all();
+            remove_leftovers();
+            let _ = signal_hook::low_level::emulate_default_handler(signal);
+        }
+    });
+}
+
+/// `result`, unless a signal is ending the command ([`stop_on_signals`]): then this never returns,
+/// and the signal ends the process. Otherwise the command would go on to report the helpers it
+/// stopped as failed, and could exit first, with a status that hides the interrupt.
+pub fn unless_interrupted<T>(result: T) -> T {
+    if INTERRUPTED.load(Ordering::SeqCst) {
+        loop {
+            std::thread::park();
+        }
+    }
+    result
+}
+
+/// The paths a signal ending the command removes ([`Leftover`]).
+static LEFTOVERS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+fn leftovers() -> MutexGuard<'static, Vec<PathBuf>> {
+    LEFTOVERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// A file or folder the command removes once it's done with it, which a signal ending the command
+/// first removes too ([`stop_on_signals`]), after stopping the helpers: the updater's new binary,
+/// staged beside the installed one, isn't left there. Until it's dropped.
+pub struct Leftover(PathBuf);
+
+impl Leftover {
+    pub fn new(path: &Path) -> Self {
+        leftovers().push(path.to_path_buf());
+        Self(path.to_path_buf())
+    }
+}
+
+impl Drop for Leftover {
+    fn drop(&mut self) {
+        let mut paths = leftovers();
+        if let Some(i) = paths.iter().position(|p| *p == self.0) {
+            paths.swap_remove(i);
+        }
+    }
+}
+
+fn remove_leftovers() {
+    for path in leftovers().drain(..) {
+        if std::fs::remove_file(&path).is_err() {
+            let _ = std::fs::remove_dir_all(&path);
+        }
+    }
+}
+
+/// The command has handed the terminal to a program and waits for it (`taskman resume`): from now
+/// on ctrl+c and the hangup are the program's, and no longer end the command. A SIGTERM still does.
+pub fn hand_off_terminal() {
+    HANDED_OFF.store(true, Ordering::Relaxed);
 }
 
 fn run_inner(
@@ -591,6 +680,24 @@ mod tests {
         stop_all();
         // As taskman ends after `stop_all`: `run`'s thread doesn't outlive it.
         std::process::exit(0);
+    }
+
+    /// What a signal ending a command removes: the leftovers still held, not those dropped.
+    #[test]
+    fn a_signal_removes_the_leftovers_still_held() {
+        let Some(dir) = std::env::var_os(ALONE).map(std::path::PathBuf::from) else {
+            let out = alone("proc::tests::a_signal_removes_the_leftovers_still_held");
+            assert!(out.contains("file=false folder=false done=true"), "{out}");
+            return;
+        };
+        let (file, folder, done) = (dir.join("staged"), dir.join("private"), dir.join("done"));
+        std::fs::write(&file, "new").unwrap();
+        std::fs::create_dir_all(folder.join("inside")).unwrap();
+        std::fs::write(&done, "kept").unwrap();
+        let _held = (Leftover::new(&file), Leftover::new(&folder));
+        drop(Leftover::new(&done));
+        remove_leftovers();
+        println!("file={} folder={} done={}", file.exists(), folder.exists(), done.exists());
     }
 
     #[test]

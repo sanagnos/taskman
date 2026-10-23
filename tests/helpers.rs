@@ -103,3 +103,85 @@ fn a_helper_still_running_is_stopped_at_quit() {
         }
     }
 }
+
+/// A gh that never answers, with a child of its own; it adds both pids to `dir/pids` and touches
+/// `dir/gh-<pid>` once they're there.
+fn stuck_gh(dir: &Path) {
+    let text = r#"#!/bin/sh
+sleep 600 &
+echo $$ $! >> 'DIR/pids'
+touch "DIR/gh-$$"
+exec sleep 600
+"#;
+    script(&stub_tools(dir), "gh", &text.replace("DIR", &dir.display().to_string()));
+}
+
+/// ctrl+c reaches a command run from a shell, not the helpers it started, which run in sessions of
+/// their own: the command stops them before it ends, and ends as the signal would have, so the
+/// shell sees the interrupt.
+#[test]
+fn an_interrupted_command_stops_its_helpers() {
+    use std::os::unix::process::ExitStatusExt;
+    use std::time::Instant;
+    let dir = scratch_dir("helpers-interrupt");
+    let repo = project(&dir, &["ENG-52"]);
+    sh(&repo, "git init -q && git remote add origin https://github.com/acme/web.git");
+    stuck_gh(&dir);
+    let mut cmd = common::taskman(&dir);
+    cmd.args(["status", "ENG-52"])
+        .current_dir(&repo)
+        .env("GIT_ALLOW_PROTOCOL", "file")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let mut taskman = cmd.spawn().unwrap();
+    let until = Instant::now() + LIMIT;
+    let pids = dir.join("pids");
+    // Each gh notes its pids before it touches its file, so those it has touched are all there.
+    let started = || {
+        let pids = std::fs::read_to_string(&pids).unwrap_or_default();
+        let gh: Vec<String> =
+            pids.lines().filter_map(|l| l.split(' ').next()).map(String::from).collect();
+        (!gh.is_empty() && gh.iter().all(|p| dir.join(format!("gh-{p}")).exists())).then_some(pids)
+    };
+    let pids = loop {
+        if let Some(pids) = started() {
+            break pids;
+        }
+        if Instant::now() > until || taskman.try_wait().unwrap().is_some() {
+            let _ = taskman.kill();
+            panic!("gh never started");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let pids: Vec<&str> = pids.split_whitespace().collect();
+    assert!(pids.iter().all(|p| !ended(p)), "gh ended before the interrupt: {pids:?}");
+
+    // As the terminal's ctrl+c: to taskman, whose helpers aren't in its process group.
+    let pid = i32::try_from(taskman.id()).unwrap();
+    // SAFETY: sends a signal; no memory is involved.
+    unsafe { libc::kill(pid, libc::SIGINT) };
+    let until = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = taskman.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > until {
+            let _ = taskman.kill();
+            panic!("taskman status didn't end on SIGINT");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    // Killed, the background sleep lingers only until its new parent reaps it.
+    let until = Instant::now() + Duration::from_secs(5);
+    while pids.iter().any(|p| !ended(p)) && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let alive: Vec<&str> = pids.iter().copied().filter(|p| !ended(p)).collect();
+    for p in &alive {
+        // So a failure leaves nothing running.
+        let _ = std::process::Command::new("kill").args(["-9", p]).status();
+    }
+    assert!(alive.is_empty(), "{alive:?} outlived taskman status");
+    assert_eq!(status.signal(), Some(libc::SIGINT), "{status:?}");
+}

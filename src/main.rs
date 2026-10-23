@@ -334,18 +334,26 @@ fn main() -> anyhow::Result<()> {
     {
         keys::set_prefix(config.prefix);
     }
+    let command: Option<fn(&[String]) -> i32> = match args.get(1).map(String::as_str) {
+        Some("status") => Some(status::run),
+        Some("add") => Some(add::run),
+        Some("close") => Some(close::run),
+        Some("move") => Some(local::run),
+        Some("resume") => Some(resume::run),
+        Some("update") => Some(update::run),
+        Some("uninstall") => Some(uninstall::run),
+        _ => None,
+    };
+    if let Some(run) = command {
+        // Before any helper starts: a ctrl+c stops them with the command.
+        proc::stop_on_signals();
+        std::process::exit(proc::unless_interrupted(run(&args[2..])));
+    }
     match args.get(1).map(String::as_str) {
         Some("hook") => {
             hook::run(args.get(2).map(String::as_str).unwrap_or("idle"));
             return Ok(());
         }
-        Some("status") => std::process::exit(status::run(&args[2..])),
-        Some("add") => std::process::exit(add::run(&args[2..])),
-        Some("close") => std::process::exit(close::run(&args[2..])),
-        Some("move") => std::process::exit(local::run(&args[2..])),
-        Some("resume") => std::process::exit(resume::run(&args[2..])),
-        Some("update") => std::process::exit(update::run(&args[2..])),
-        Some("uninstall") => std::process::exit(uninstall::run(&args[2..])),
         Some("-V" | "--version") => {
             cli::out!("taskman {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
