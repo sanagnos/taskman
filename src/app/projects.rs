@@ -433,6 +433,10 @@ impl App {
             },
             gh => format!("No PR panel: {}", gh.why()),
         };
+        let pr = match self.gh_unanswered(&proj.repo) {
+            Some(why) => format!("{pr}\n{why}"),
+            None => pr,
+        };
         form.note = Some(format!(
             "{} · {n} session{}\n{pr}",
             store::tilde(&proj.repo),

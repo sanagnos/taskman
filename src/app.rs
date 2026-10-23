@@ -274,6 +274,9 @@ pub struct App {
     /// Whether each project's folder can show PRs (`github::probe`), by folder: as saved last
     /// time until the check at start answers, and missing for a folder not checked yet.
     github: std::collections::BTreeMap<PathBuf, github::Gh>,
+    /// Folders whose last check gh didn't answer (`Gh::Unanswered`) while they kept an earlier
+    /// answer in `github`, for Settings to say so; only where the answer is about GitHub.
+    gh_unanswered: std::collections::BTreeSet<PathBuf>,
     /// While the close dialog is open: whether the ticket's worktree can be removed with it.
     pub close_check: Option<worktree::RemoveCheck>,
     /// While the close dialog is open: why the ticket's worktree couldn't be checked (git failed),
@@ -405,6 +408,7 @@ impl App {
             open_issues: Default::default(),
             default_branches: Default::default(),
             github,
+            gh_unanswered: Default::default(),
             close_check: None,
             close_unchecked: None,
             asking: Default::default(),

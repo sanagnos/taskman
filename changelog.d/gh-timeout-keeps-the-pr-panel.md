@@ -1,0 +1,1 @@
+- When `gh` doesn't answer within 30 seconds (a keyring locked at login, say), a project keeps the GitHub panel it had, now and at the next start, and Settings says the answer is from before until `ctrl+a r` gets a new one. A project with no GitHub remote keeps saying so, rather than that gh didn't answer.
