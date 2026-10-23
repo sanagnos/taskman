@@ -289,12 +289,15 @@ impl App {
                     }
                 })
                 .collect();
-            let lines: Vec<add::Line> =
-                done.iter().map(|(n, o)| close::line(n, &project, o)).collect();
-            add::reply(&id, &req, &lines);
+            // Queued before the command hears back, so what its answer sets off toasts after it:
+            // git finishing the worktree of a ticket that closed while it was being created, say,
+            // whose toast says more and would otherwise be replaced by this one.
             if let Some(t) = close::toast(from.as_deref(), &done) {
                 let _ = tx.send(Msg::Closed(t));
             }
+            let lines: Vec<add::Line> =
+                done.iter().map(|(n, o)| close::line(n, &project, o)).collect();
+            add::reply(&id, &req, &lines);
         };
         // git runs only for worktrees to remove; the rest answers at once.
         let removed: Vec<String> = steps

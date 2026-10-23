@@ -1,0 +1,1 @@
+- When `taskman close` closes a ticket whose worktree is still being created, the footer keeps saying whether the worktree was removed or kept once git finishes, instead of that note being replaced at times by "Closed ENG-12".
