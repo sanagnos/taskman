@@ -37,7 +37,7 @@ pub fn run_past_quit(cmd: &mut Command, timeout: Duration) -> io::Result<Output>
 /// The process groups [`run`] started that haven't been reaped, by id, for [`stop_all`].
 struct Live {
     groups: Vec<libc::pid_t>,
-    /// `stop_all` has run: a group starting now is stopped at once.
+    /// `stop_all` has run: nothing starts from now on.
     stopped: bool,
 }
 
@@ -49,13 +49,30 @@ fn live() -> MutexGuard<'static, Live> {
     LIVE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Stops every group [`run`] started that is still running, and any started from now on: for
-/// taskman quitting, so a gh waiting on a locked keyring, say, doesn't outlive it.
+/// How long [`stop_all`] gives the groups it asked to end before it kills them.
+const STOP_GRACE: Duration = Duration::from_millis(250);
+
+/// Stops every group [`run`] started that is still running, and starts none from now on: for
+/// taskman quitting, so a gh waiting on a locked keyring, say, doesn't outlive it. Each group is
+/// asked to end (SIGTERM) and given [`STOP_GRACE`] before it's killed: git removes its lock files
+/// on SIGTERM, but killed, a `git status` refreshing the index or a `git fetch` updating refs
+/// leaves its `.lock` behind, and the next commit there fails.
 pub fn stop_all() {
     let mut live = live();
     live.stopped = true;
+    for &group in &live.groups {
+        signal_group(group, libc::SIGTERM);
+    }
+    // A group ends when `run` reaps it: its pipes close once all of it has ended. Still in the
+    // list, it hasn't been reaped, so its id is still its own to kill.
+    let until = Instant::now() + STOP_GRACE;
+    while !live.groups.is_empty() && Instant::now() < until {
+        drop(live);
+        std::thread::sleep(Duration::from_millis(5));
+        live = self::live();
+    }
     for group in live.groups.drain(..) {
-        kill_group(group);
+        signal_group(group, libc::SIGKILL);
     }
 }
 
@@ -65,11 +82,14 @@ fn run_inner(
     timeout: Duration,
     stopped_at_quit: bool,
 ) -> io::Result<Output> {
-    let deadline = Instant::now() + timeout;
+    let mut deadline = Instant::now() + timeout;
     // Without a terminal, ssh asks with an askpass program instead. Kept for a user who chose one
     // (some desktops set SSH_ASKPASS); otherwise ssh tries a built-in default, a bare X window.
     if ["SSH_ASKPASS", "SSH_ASKPASS_REQUIRE"].iter().all(|v| std::env::var_os(v).is_none()) {
         cmd.env("SSH_ASKPASS_REQUIRE", "never");
+    }
+    if stopped_at_quit && live().stopped {
+        return Err(io::Error::other("taskman is quitting"));
     }
     let mut child = own_session(cmd)
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -79,14 +99,16 @@ fn run_inner(
         .stderr(Stdio::piped())
         .spawn()?;
     if stopped_at_quit {
-        // A group that started as taskman quit ends with the rest; its pipes close, so the wait
-        // below ends too.
         let mut live = live();
-        let group = group_of(&child);
-        match group {
-            Some(g) if live.stopped => kill_group(g),
-            Some(g) => live.groups.push(g),
-            None => {}
+        if let Some(group) = group_of(&child) {
+            // `stop_all` ran while it started: asked to end as the rest were, killed with them
+            // if `stop_all` is still waiting, or at its own limit, cut to the same grace, if not.
+            // Its pipes close, so the wait below ends too.
+            if live.stopped {
+                signal_group(group, libc::SIGTERM);
+                deadline = deadline.min(Instant::now() + STOP_GRACE);
+            }
+            live.groups.push(group);
         }
     }
     // Written from its own thread, so the wait below keeps the time: stopping the group ends a
@@ -170,11 +192,11 @@ fn group_of(child: &Child) -> Option<libc::pid_t> {
     libc::pid_t::try_from(child.id()).ok().filter(|&g| g > 1 && g != ours)
 }
 
-/// Sends SIGKILL to a whole group. A system call, not the `kill` program, which minimal images
+/// Sends `signal` to a whole group. A system call, not the `kill` program, which minimal images
 /// (debian:*-slim) don't have.
-fn kill_group(group: libc::pid_t) {
+fn signal_group(group: libc::pid_t, signal: libc::c_int) {
     // SAFETY: kill only sends a signal; it reads or writes no memory.
-    unsafe { libc::kill(-group, libc::SIGKILL) };
+    unsafe { libc::kill(-group, signal) };
 }
 
 /// Stops `child`'s whole process group (a hung `git fetch` waits on ssh, say) and says why.
@@ -183,7 +205,7 @@ fn stop(child: &mut Child, timeout: Duration) -> io::Error {
     // meanwhile; it leaves the live ones first, so `stop_all` doesn't signal it after.
     if let Some(group) = group_of(child) {
         live().groups.retain(|g| *g != group);
-        kill_group(group);
+        signal_group(group, libc::SIGKILL);
     }
     let _ = child.kill();
     let _ = child.wait();
@@ -361,55 +383,107 @@ mod tests {
         true
     }
 
-    /// Re-run in a process of its own, as `stop_all` stops every other test's programs too.
+    /// Where a test that calls `stop_all` runs it: in a process of its own (`alone`).
+    const ALONE: &str = "TASKMAN_PROC_STOP_ALL";
+
+    /// Runs `test` again in a process of its own, as `stop_all` stops every other test's programs
+    /// too, with a scratch folder in `ALONE`, and returns what it printed.
+    fn alone(test: &str) -> String {
+        // One each: the tests that call it run at once.
+        let name = test.rsplit("::").next().unwrap_or(test);
+        let dir = std::env::temp_dir().join(format!("taskman-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture", "--test-threads=1"])
+            .env(ALONE, &dir)
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// The pids `sh` wrote to `file`, once there are `n`.
+    fn pids(file: &std::path::Path, n: usize) -> Vec<libc::pid_t> {
+        let started = Instant::now() + Duration::from_secs(5);
+        loop {
+            let pids: Vec<libc::pid_t> = std::fs::read_to_string(file)
+                .unwrap_or_default()
+                .split_whitespace()
+                .map(|p| p.parse().unwrap())
+                .collect();
+            if pids.len() >= n {
+                return pids;
+            }
+            assert!(Instant::now() < started, "{} never had {n} pids", file.display());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     #[test]
     fn stop_all_ends_what_is_running_except_worktree_changes() {
-        let Some(dir) = std::env::var_os("TASKMAN_PROC_STOP_ALL") else {
-            let dir = std::env::temp_dir().join(format!("taskman-stop-all-{}", std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
-            let out = Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "proc::tests::stop_all_ends_what_is_running_except_worktree_changes",
-                ])
-                .args(["--nocapture", "--test-threads=1"])
-                .env("TASKMAN_PROC_STOP_ALL", &dir)
-                .output()
-                .unwrap();
-            let _ = std::fs::remove_dir_all(&dir);
-            let out = String::from_utf8_lossy(&out.stdout);
+        let Some(dir) = std::env::var_os(ALONE).map(std::path::PathBuf::from) else {
+            let out = alone("proc::tests::stop_all_ends_what_is_running_except_worktree_changes");
             assert!(out.contains("stopped=true kept=true later=true"), "{out}");
             return;
         };
-        let dir = std::path::PathBuf::from(dir);
-        let (pids, kept) = (dir.join("pids"), dir.join("kept"));
+        let (pids_at, kept) = (dir.join("pids"), dir.join("kept"));
         // A helper with a child of its own, as gh's credential helper is, and a worktree change.
-        let script = format!("sleep 60 & echo $$ $! > '{}'; sleep 60", pids.display());
+        let script = format!("sleep 60 & echo $$ $! > '{}'; sleep 60", pids_at.display());
         let helper = std::thread::spawn(move || sh(&script, Duration::from_secs(60)));
         let script = format!("sleep 0.5; echo done > '{}'", kept.display());
         let change = std::thread::spawn(move || {
             run_past_quit(Command::new("sh").args(["-c", &script]), Duration::from_secs(60))
         });
-        let started = Instant::now() + Duration::from_secs(5);
-        while std::fs::read_to_string(&pids).map_or(true, |p| p.split_whitespace().count() < 2) {
-            assert!(Instant::now() < started, "the helper never started");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        let pids = pids(&pids_at, 2);
         stop_all();
-        let pids: Vec<libc::pid_t> = std::fs::read_to_string(&pids)
-            .unwrap()
-            .split_whitespace()
-            .map(|p| p.parse().unwrap())
-            .collect();
         let stopped =
             pids.into_iter().all(ends) && helper.join().unwrap().is_ok_and(|o| !o.status.success());
         let kept = change.join().unwrap().is_ok_and(|o| o.status.success())
             && std::fs::read_to_string(&kept).is_ok_and(|k| k == "done\n");
-        // One that starts once taskman is quitting is stopped as it starts.
-        let begun = Instant::now();
-        let later = sh("sleep 60", Duration::from_secs(60)).is_ok_and(|o| !o.status.success())
-            && begun.elapsed() < Duration::from_secs(5);
+        // One that would start once taskman is quitting doesn't.
+        let later = sh("echo started", Duration::from_secs(60)).is_err();
         println!("stopped={stopped} kept={kept} later={later}");
+    }
+
+    /// git cleans up its lock files on SIGTERM, so a helper is asked to end before it's killed:
+    /// one that ends then isn't killed, and one that doesn't is, after `STOP_GRACE`.
+    #[test]
+    fn stop_all_asks_before_it_kills() {
+        let Some(dir) = std::env::var_os(ALONE).map(std::path::PathBuf::from) else {
+            let out = alone("proc::tests::stop_all_asks_before_it_kills");
+            assert!(out.contains("polite=term:true stubborn=term:true waited=true"), "{out}");
+            return;
+        };
+        let start = |name: &str, on_term: &str| {
+            let (pid, file) = (dir.join(format!("{name}.pid")), dir.join(name));
+            let script = format!(
+                "trap 'echo term > \"{}\"; {on_term}' TERM; echo $$ > '{}'; \
+                 while :; do sleep 0.05; done",
+                file.display(),
+                pid.display()
+            );
+            let helper = std::thread::spawn(move || sh(&script, Duration::from_secs(60)));
+            (pids(&pid, 1)[0], file, helper)
+        };
+        let (polite, polite_file, polite_helper) = start("polite", "exit 0");
+        let (stubborn, stubborn_file, stubborn_helper) = start("stubborn", ":");
+        let begun = Instant::now();
+        stop_all();
+        let waited = begun.elapsed();
+        let ended = |pid, file: std::path::PathBuf, helper: std::thread::JoinHandle<_>| {
+            let out: io::Result<Output> = helper.join().unwrap();
+            let term = std::fs::read_to_string(file).unwrap_or_default();
+            (ends(pid), term.trim().to_string(), out.is_ok_and(|o| o.status.success()))
+        };
+        let polite = ended(polite, polite_file, polite_helper);
+        let stubborn = ended(stubborn, stubborn_file, stubborn_helper);
+        assert!(polite.0 && stubborn.0, "polite {polite:?}, stubborn {stubborn:?}");
+        let waited = waited >= STOP_GRACE && waited < Duration::from_secs(3);
+        // The polite one exited 0 from its trap; the stubborn one was killed.
+        println!(
+            "polite={}:{} stubborn={}:{} waited={waited}",
+            polite.1, polite.2, stubborn.1, !stubborn.2
+        );
     }
 
     #[test]

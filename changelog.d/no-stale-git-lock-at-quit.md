@@ -1,0 +1,1 @@
+- Quitting while taskman's own git is running (checking a worktree before removing it, say) no longer leaves an `index.lock` behind that makes your next commit there fail: git is asked to stop and cleans up, and its read-only checks take no lock at all.

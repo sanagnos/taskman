@@ -3,7 +3,8 @@
 //! made while taskman was closed applies when it starts. A ticket whose session runs in another
 //! terminal closes neither from the command nor from the close dialog. A closed ticket can't come
 //! back while its worktree is still being removed, and a worktree git finishes after its ticket
-//! closed doesn't stay behind. One git finished after taskman quit is still taskman's to remove.
+//! closed doesn't stay behind. One git finished after taskman quit is still taskman's to remove,
+//! and a quit that stops git checking a worktree leaves no lock behind.
 
 mod common;
 
@@ -686,4 +687,99 @@ fn a_worktree_made_as_taskman_quit_is_still_taskmans() {
     assert!(reply.starts_with(&format!("Closed ENG-14. Removed {}", wt14.display())), "{reply}");
     assert!(!wt14.exists());
     tui.quit();
+}
+
+/// Every file git left locked under `dir`.
+fn locks(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = e.path();
+        if path.is_dir() {
+            found.extend(locks(&path));
+        } else if path.extension().is_some_and(|x| x == "lock") {
+            found.push(path);
+        }
+    }
+    found
+}
+
+/// A quit that can't wait for a removal (a second SIGTERM) stops the git checking the worktree
+/// part-way, and leaves no lock behind: the next commit there works.
+#[test]
+fn a_quit_during_a_removal_leaves_no_git_lock() {
+    let dir = scratch_dir("close-quit-locked").canonicalize().unwrap();
+    // A submodule whose clean filter waits once `dir/slow` exists: `git status` in the worktree
+    // checks the submodule, whose file looks changed, while it holds the worktree's index.
+    sh(
+        &dir,
+        "git init -q -b main sub && cd sub && echo a > f && echo 'f filter=slow' > .gitattributes \
+         && git add -A && git commit -q -m sub",
+    );
+    let repo = acme(&dir);
+    let wt = dir.join("wt-ENG-15");
+    sh(
+        &repo,
+        "git -c protocol.file.allow=always submodule -q add ../sub sub && git commit -q -m sub \
+         && git push -q origin main && git worktree add -q -b ENG-15 ../wt-ENG-15 origin/main \
+         && cd ../wt-ENG-15 && git -c protocol.file.allow=always submodule -q update --init",
+    );
+    let filter = format!(
+        "if [ -e '{d}/slow' ]; then echo $$ > '{d}/filtering'; sleep 60; fi; cat",
+        d = dir.display()
+    );
+    let set = Command::new("git")
+        .args(["config", "filter.slow.clean", &filter])
+        .current_dir(wt.join("sub"))
+        .status()
+        .unwrap();
+    assert!(set.success());
+
+    let state = dir.join("state/taskman");
+    std::fs::create_dir_all(&state).unwrap();
+    let tickets = serde_json::json!({
+        "projects": [{"name": "acme", "repo": repo, "tracker": {"provider": "local", "site": "workplan", "key": "ENG"}}],
+        "tickets": [{"key": "ENG-15", "repo": repo, "cwd": wt, "branch": "ENG-15", "created_worktree": true}],
+    });
+    std::fs::write(state.join("tickets.json"), tickets.to_string()).unwrap();
+    let mut cmd = taskman(&dir);
+    cmd.env("TASKMAN_CLAUDE", stub_cli(&dir, &dir.join("session.pid")));
+    let mut tui = Tui::start(
+        "a_quit_during_a_removal_leaves_no_git_lock",
+        &dir,
+        cmd,
+        Duration::from_secs(90),
+    );
+    tui.wait_until("taskman never started", || state.join("inbox/alive").exists());
+
+    tui.step("close ENG-15, its removal check held up in git status");
+    std::fs::write(dir.join("slow"), "").unwrap();
+    sh(&wt, "touch sub/f");
+    let mut closer = taskman(&dir)
+        .args(["close", "ENG-15"])
+        .current_dir(&repo)
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let filtering = dir.join("filtering");
+    tui.wait_until("git status never reached the filter", || filtering.exists());
+
+    tui.step("quit, and quit again rather than wait");
+    let pid = tui.child.id().cast_signed();
+    // SAFETY: sends a signal; no memory is involved.
+    unsafe { libc::kill(pid, libc::SIGTERM) };
+    tui.wait_text("Quitting once ENG-15's worktree is removed");
+    // SAFETY: as above.
+    unsafe { libc::kill(pid, libc::SIGTERM) };
+    tui.wait_exit();
+    let _ = closer.kill();
+    let _ = closer.wait();
+
+    let filter: libc::pid_t = std::fs::read_to_string(&filtering).unwrap().trim().parse().unwrap();
+    // SAFETY: signal 0 sends nothing, only checks the process is there.
+    assert!(unsafe { libc::kill(filter, 0) } != 0, "the filter outlived taskman");
+    assert!(wt.exists(), "removed after the check was stopped");
+    let left = locks(&repo.join(".git"));
+    assert!(left.is_empty(), "git left {left:?}");
+    std::fs::remove_file(dir.join("slow")).unwrap();
+    sh(&wt, "git commit -q --allow-empty -m after");
 }

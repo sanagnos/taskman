@@ -11,7 +11,10 @@ use std::time::Duration;
 /// shared with it).
 pub fn command(dir: &Path) -> Command {
     let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(dir);
+    // Without the locks git takes only to save work for later, as `git status` writing back the
+    // index it refreshed: one stopped at quit, or at its limit, can't leave a `.lock` behind that
+    // fails the next commit there, and one still running can't fail the session's commit meanwhile.
+    cmd.arg("-C").arg(dir).env("GIT_OPTIONAL_LOCKS", "0");
     cmd
 }
 
