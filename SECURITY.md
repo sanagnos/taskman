@@ -68,18 +68,18 @@ gh attestation verify taskman-vX.Y.Z-<target>.tar.gz --repo sanagnos/taskman \
 
 The background install takes nothing less:
 
-- **Only a verified attestation.** Without `gh`, with `gh` logged out or too old for attestations, or with the check skipped, it doesn't install: the sidebar says to run `taskman update`, and Settings → Updates says why. Otherwise anyone able to publish a release, with a stolen token say, would have their binary installed on every such copy within the hour.
-- **Only the same minor version.** Before 1.0 a new minor version is a breaking release (CHANGELOG.md), so v0.2.0 is announced, never installed in the background: Settings → Updates links its notes, and `taskman update` installs it.
+- **Only a verified attestation.** Without `gh`, with `gh` logged out or too old for attestations, or with the check skipped, it doesn't install: the sidebar says to run `taskman update`, and Settings → General → Updates says why. Otherwise anyone able to publish a release, with a stolen token say, would have their binary installed on every such copy within the hour.
+- **Only the same minor version.** Before 1.0 a new minor version is a breaking release (CHANGELOG.md), so v0.2.0 is announced, never installed in the background: Settings → General → Updates links its notes, and `taskman update` installs it.
 
 `taskman update` and the install script, which you run, install on the checksum alone where `gh` can't check (without it, logged out, too old, or for a v0.0.x release, from before the repository was public), and say so.
 
-**`TASKMAN_INSECURE_SKIP_ATTESTATION=1`** skips the verification for the install script and `taskman update`, and stops background installs. It's for a network that blocks GitHub's API or Sigstore, where the check can't run at all: an install then rests on the checksum alone, as it does without `gh`; `taskman update` and the install script warn each time, and Settings → Updates says so while it's set. A verification that fails because the attestation is wrong (its signature, its signer or the file's digest) never suggests it; only one that could be the network does.
+**`TASKMAN_INSECURE_SKIP_ATTESTATION=1`** skips the verification for the install script and `taskman update`, and stops background installs. It's for a network that blocks GitHub's API or Sigstore, where the check can't run at all: an install then rests on the checksum alone, as it does without `gh`; `taskman update` and the install script warn each time, and Settings → General → Updates says so while it's set. A verification that fails because the attestation is wrong (its signature, its signer or the file's digest) never suggests it; only one that could be the network does.
 
 To go back to an earlier release, set "Only notify" (below) and run the install script with `TASKMAN_VERSION=vX.Y.Z`.
 
 To turn updates off:
 
-- **Settings → Updates → "Only notify"** (`"auto_update": false` in the config file): taskman says when a release is out, and `taskman update` installs it.
+- **Settings → General → Updates → "Only notify"** (`"auto_update": false` in the config file): taskman says when a release is out, and `taskman update` installs it.
 - **`TASKMAN_NO_AUTOUPDATE=1`**: no checks at all.
 
 Copies installed with `cargo install`, development builds and folders taskman can't write to never update themselves.

@@ -40,7 +40,7 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 | `src/app/launch.rs` | how a session's CLI starts (`Launch`, `App::launch`): arguments, environment, the ticket's and agent's briefs; whether its folder is gone (`Gone`) |
 | `src/app/input.rs` | keys: the modes, the prefix commands, paste, the links list, the session's history in `$EDITOR` |
 | `src/app/queue.rs` | `prefix w`: the waiting-on-you queue (`Queue`, `Mode::Queue`): the sessions in `Needs`, oldest first by when their hook said they began waiting (`oldest_first`), and its keys; the popover is `draw_queue` in `ui/dialogs.rs`, and `Status::waiting_since`, `tool` and `input` come from the hook's record |
-| `src/app/toasts.rs` | the footer's toast and its log: `Level` (info, warning, error), `App::toast`/`warn`/`error`, how long each stays (an error until the next key, and a later toast doesn't replace it), the 200-entry ring `prefix L` lists (`Mode::Log`) |
+| `src/app/toasts.rs` | the footer's toast and its log: `Level` (info, warning, error), `App::toast`/`warn`/`error`, how long each stays (an error until the next key, and a later toast doesn't replace it), the 200-entry ring `prefix ~` lists (`Mode::Log`) |
 | `src/app/jump.rs` | `prefix /`: the jump box (`Jump`, `Mode::Jump`), its keys, and the pure match of a card against what's typed (`matches`); the sidebar draws only the matches meanwhile |
 | `src/app/mouse.rs` | the wheel, drag-selecting text in a pane (double and triple clicks pick a word or line), copying it, and the press that may become a sidebar drag |
 | `src/app/reorder.rs` | reordering the sidebar: `place` (the one move), the valid places (`slot_for_gap`, `nearest_gap`), move mode (`Mode::Move`) and mouse drags (`Drag`); the order is the order of `App::tickets` and `App::projects`, saved as they are |
@@ -128,8 +128,22 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 | `tests/helpers.rs` | a stub gh that asks for a passphrase on the terminal, as ssh does: it can't open /dev/tty, and nothing reaches the screen |
 | `tests/selection.rs` | selecting in the Claude pane with mouse reports: the selection stays and is copied, ctrl+c copies without interrupting, streaming output and scrolling keep it on its text, under NO_COLOR it shows with nothing coloured, `prefix v` opens the history in `$EDITOR` |
 | `tests/emoji.rs` | scrolling the Claude pane back over rows of emoji (⚠️ with and without U+FE0F, ✅, ❌) against a terminal that draws them as Windows Terminal does: the rest of each row and the pane's edge stay where they belong, nothing stale is left; warning signs a session draws over a box, and under help and the quit dialog once they close, stay whole both there and in a terminal that widens them as tmux 3.4 does |
+| `tests/add.rs` | `taskman add` checking a key with the tracker (a key it doesn't have is refused, one it can't be asked about is added unchecked), and a session's `--new` waiting for the user to approve the ticket in taskman, creating nothing when they decline |
+| `tests/arguments.rs` | the commands read their arguments alike: an empty `--project=` refused with one message by each, `taskman update --help` printing its usage rather than updating, and help piped into a reader that stops early (`\| head`) ending quietly |
+| `tests/gone_folder.rs` | a session whose worktree or project folder is gone doesn't start anywhere else (portable-pty would run it in `$HOME`), in the pane or through `taskman resume`, until the worktree is made again |
+| `tests/keychain.rs` | the account form saving a pasted token to the keychain through a stub `security` or `secret-tool`: the token goes on stdin, never as an argument, config.json gets only `keychain:jira-1`, and taskman reads it back from there |
 | `tests/fixtures/` | recorded Jira and Linear responses for `src/replay.rs`, and gh output for `github_issues`' test runner and the PR lookup's (`github/`): hand-trimmed, mock data only; `state-first-private-build/`, tickets.json and config.json as the first build wrote them |
 | `tests/common/mod.rs` | what the binary tests share: isolated state, home and config folder, `stub_tools` (gh and the keychain tools, failing, and the notification commands, noting what they show (`notified`), unless a test puts its own in their folder, first on PATH), starting it in a pty, answering terminal queries; `Tui`, the binary in a pty with its screen read through vt100 on a thread (and again as tmux 3.4 shows it, which widens a character on U+FE0F without clearing the column it covers), keys, mouse reports, waits on the screen and `quit` (as a user would, so it writes its coverage); `project`, `stub_session` (a CLI that notes the signals and lines it gets) and `stub_desktop` (clipboard commands and browser), all three set up by `stubbed`; `acme`, a git repository with an origin, and `slow_git` and `slow_add_git`, a git the test holds up at `worktree remove` or `worktree add` |
+
+### Scripts
+
+| File | What it holds |
+|---|---|
+| `scripts/install.sh` | the install script: picks the build for the machine (glibc or musl on Linux, `glibc_min`), downloads the release and checks it against `SHA256SUMS`, verifies its attestation with `gh` when that's logged in, and installs into `~/.local/bin`; `repo=` names the repository |
+| `scripts/release.sh` | cutting a release (see "Releasing" in AGENTS.md): waits for CI on main, moves `changelog.d/` into CHANGELOG.md, bumps the version, commits, tags and pushes, and starts CI or the Release workflow by hand when GitHub doesn't |
+| `scripts/test-install.sh` | tests install.sh and `taskman update` against fake releases served locally, with a fake gh for the attestations |
+| `scripts/test-release.sh` | tests release.sh against a local origin, with gh, cargo, sleep and date faked |
+| `scripts/coverage.sh` | coverage per file through cargo-llvm-cov: the unit tests, `tests/` and test-install.sh; CI reports it on Linux |
 
 ### Docs
 

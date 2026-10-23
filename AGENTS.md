@@ -36,7 +36,7 @@ scripts/release.sh X.Y.Z    # cut a release (see "Releasing")
 scripts/test-install.sh     # install.sh and `taskman update` against fake releases (after cargo build)
 scripts/test-release.sh     # release.sh against a local origin, with gh and cargo faked
 scripts/coverage.sh         # coverage per file, test-install.sh included; CI reports it on Linux (not a gate)
-cargo about generate --locked --fail about.hbs -o LICENSE-THIRD-PARTY   # the third-party notices, after a dependency change (needs cargo-about)
+cargo about generate --locked --fail about.hbs -o LICENSE-THIRD-PARTY   # the third-party notices, after a dependency change (needs cargo-about 0.9.2, the version CI uses)
 ```
 
 Rust edition 2024; the code uses `let` chains, so it needs Rust 1.88 or newer.

@@ -23,7 +23,7 @@ cargo clippy --all-targets -- -D warnings  # as CI runs it: zero warnings
 scripts/test-install.sh     # install.sh and `taskman update` against fake releases (after cargo build)
 scripts/test-release.sh     # release.sh against a local origin, with gh and cargo faked
 scripts/coverage.sh         # coverage per file, test-install.sh included (cargo install cargo-llvm-cov)
-cargo about generate --locked --fail about.hbs -o LICENSE-THIRD-PARTY   # after a dependency change (cargo install cargo-about --locked --features cli)
+cargo about generate --locked --fail about.hbs -o LICENSE-THIRD-PARTY   # after a dependency change (cargo install cargo-about@0.9.2 --locked --features cli, the version CI uses)
 ```
 
 CI runs fmt, clippy, the tests and the install and release scripts' tests on Linux and macOS (the tests weekly too), checks the oldest supported Rust on Linux, runs `cargo deny` (deny.toml) for advisories, bans (wildcard versions; duplicate versions warn), licences and sources, and checks that `LICENSE-THIRD-PARTY` (the notices of the crates in the binary, which the release archives carry and `taskman --licenses` prints) matches `Cargo.lock`: after a dependency change, regenerate it with the `cargo about` command above and commit it. It also reports coverage on Linux, in the run's summary and as a notice on the pull request; nothing fails on the figure, and a failed coverage job leaves the run green, but a change to logic should come with tests that run it.

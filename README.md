@@ -14,7 +14,7 @@ On macOS or Linux, including Windows with WSL:
 curl -fsSL https://raw.githubusercontent.com/sanagnos/taskman/main/scripts/install.sh | bash
 ```
 
-It installs into `~/.local/bin` and keeps taskman up to date, checking every download against the release's checksums and, with `gh` logged in, its signed attestation. [Updates](docs/guide.md#updates) has the details and how to turn it off. Or build it with Rust 1.88 or newer:
+It installs into `~/.local/bin`, checking every download against the release's checksums and, with `gh` logged in, its signed attestation. With `gh` logged in, taskman keeps itself up to date; without it, it tells you when to run `taskman update`. [Updates](docs/guide.md#updates) has the details and how to turn it off. Or build it with Rust 1.88 or newer:
 
 ```bash
 cargo install --locked --git https://github.com/sanagnos/taskman

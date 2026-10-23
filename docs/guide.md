@@ -24,9 +24,9 @@ The install script picks the build for your machine and downloads the latest rel
 
 ### Updates
 
-taskman updates itself: it checks for a new release when it starts and every hour, installs it in the background, and the sidebar says `↑ restart to get vX.Y.Z`. The update applies the next time you start taskman (quit with `ctrl+a q`, then Enter; sessions resume); it never restarts on its own. A background install has stricter rules than the install script: the release must match `SHA256SUMS`, run, and have its attestation verified by `gh`, so it needs `gh` installed and logged in; and it must have the same minor version as the one running (from v0.1.x, v0.1.y installs; v0.2.0 doesn't), since before 1.0 a new minor version is a breaking release. Otherwise the sidebar only announces it: `↑ vX.Y.Z: run taskman update` when `gh` couldn't verify it (Settings → Updates says why), or `↑ vX.Y.Z: breaking changes` for a new minor version, where Settings → Updates links its notes; read them, then run `taskman update`. To install only when you choose, set Settings → Updates to "Only notify"; the sidebar then says `↑ vX.Y.Z: run taskman update` (`↑ run taskman update` when the version doesn't fit), and once you have, `↑ restart to get vX.Y.Z`. `TASKMAN_NO_AUTOUPDATE=1` turns off checking altogether. A copy installed with `cargo install` doesn't update itself (cargo manages its folder): the sidebar says `↑ vX.Y.Z available`, and you update by running the same `cargo install` again. `taskman update` says so too, and replaces cargo's copy with the release only with `--force`. `taskman update` also says whether it verified the attestation, or why the checksum was the only check. As with the install script, a release from v0.1.0 on without an attestation is refused when `gh` can check. `TASKMAN_INSECURE_SKIP_ATTESTATION=1` skips the attestation for `taskman update` too, as for the install script, and warns that it did; the background then installs nothing, and Settings → Updates says so while it's set.
+taskman updates itself: it checks for a new release when it starts and every hour, installs it in the background, and the sidebar says `↑ restart to get vX.Y.Z`. The update applies the next time you start taskman (quit with `ctrl+a q`, then Enter; sessions resume); it never restarts on its own. A background install has stricter rules than the install script: the release must match `SHA256SUMS`, run, and have its attestation verified by `gh`, so it needs `gh` installed and logged in; and it must have the same minor version as the one running (from v0.1.x, v0.1.y installs; v0.2.0 doesn't), since before 1.0 a new minor version is a breaking release. Otherwise the sidebar only announces it: `↑ vX.Y.Z: run taskman update` when `gh` couldn't verify it (Settings → General → Updates says why), or `↑ vX.Y.Z: breaking changes` for a new minor version, where Settings → General → Updates links its notes; read them, then run `taskman update`. To install only when you choose, set Settings → General → Updates to "Only notify"; the sidebar then says `↑ vX.Y.Z: run taskman update` (`↑ run taskman update` when the version doesn't fit), and once you have, `↑ restart to get vX.Y.Z`. `TASKMAN_NO_AUTOUPDATE=1` turns off checking altogether. A copy installed with `cargo install` doesn't update itself (cargo manages its folder): the sidebar says `↑ vX.Y.Z available`, and you update by running the same `cargo install` again. `taskman update` says so too, and replaces cargo's copy with the release only with `--force`. `taskman update` also says whether it verified the attestation, or why the checksum was the only check. As with the install script, a release from v0.1.0 on without an attestation is refused when `gh` can check. `TASKMAN_INSECURE_SKIP_ATTESTATION=1` skips the attestation for `taskman update` too, as for the install script, and warns that it did; the background then installs nothing, and Settings → General → Updates says so while it's set.
 
-To go back to an earlier release, say after a breaking one, set Settings → Updates to "Only notify" (`"auto_update": false` in the config file) and install it with the install script: `curl -fsSL https://raw.githubusercontent.com/sanagnos/taskman/main/scripts/install.sh | TASKMAN_VERSION=vX.Y.Z bash`. A release that changed the saved state's format may have left files the earlier one refuses to read; its notes say what changed.
+To go back to an earlier release, say after a breaking one, set Settings → General → Updates to "Only notify" (`"auto_update": false` in the config file) and install it with the install script: `curl -fsSL https://raw.githubusercontent.com/sanagnos/taskman/main/scripts/install.sh | TASKMAN_VERSION=vX.Y.Z bash`. A release that changed the saved state's format may have left files the earlier one refuses to read; its notes say what changed.
 
 ### From a release, by hand
 
@@ -58,15 +58,14 @@ It updates itself like the quick install does (see [Updates](#updates)), or run 
 Needs Rust 1.88 or newer (through rustup) and a C compiler for the build.
 
 ```bash
-# macOS
+# macOS: the command line tools, for the C compiler
 xcode-select --install                     # skip if the command line tools are installed
-brew install rustup && rustup default stable
 
-# Linux / WSL (Ubuntu)
+# Linux / WSL (Ubuntu): the C compiler
 sudo apt update && sudo apt install -y build-essential
-curl https://sh.rustup.rs -sSf | sh -s -- -y && . ~/.cargo/env
 
-# Both
+# Both: Rust through rustup's own installer, then taskman
+curl https://sh.rustup.rs -sSf | sh -s -- -y && . ~/.cargo/env
 cargo install --locked --git https://github.com/sanagnos/taskman
 ```
 
@@ -110,7 +109,7 @@ The prefix is `ctrl+a` (`ctrl+a a` sends a literal one). Use tmux or screen with
 
 ## Set up
 
-Everything is set up in **Settings** (`ctrl+a ,`): the prefix key, updates, sleeping, the theme, projects and accounts are listed on the left, the selected one's settings on the right. ↑/↓ choose, Enter edits, Enter again saves, `ctrl+d` deletes, Esc goes back. `ctrl+a P` and `ctrl+a A` open it on a new project or a new account. In a window too short for a form, here or in the Add form, the form scrolls to keep the field you're on in view, with its error and keys below it; in a narrow one, each value and its hint go under the label.
+Everything is set up in **Settings** (`ctrl+a ,`). The list on the left has **General** (the prefix key, updates, sleeping, scrollback, the theme and notifications, on one page), then the projects, the accounts and **Help & feedback**; the selected one's settings are on the right. ↑/↓ choose, Enter edits, Enter again saves, `ctrl+d` deletes, Esc goes back. `ctrl+a P` and `ctrl+a A` open it on a new project or a new account. In a window too short for a form, here or in the Add form, the form scrolls to keep the field you're on in view, with its error and keys below it; in a narrow one, each value and its hint go under the label.
 
 In this and every form, Tab and ↑/↓ move between fields and ←/→ change a choice (shown in `‹ ›`). In a text field, ←/→ move the cursor, Home and End go to the start and end, ctrl+←/→ (or alt+←/→) move a word, Backspace and Delete delete before and after the cursor, ctrl+w deletes the word before it and ctrl+u clears the field; typing and pasting go in at the cursor. A token's field takes the same keys, but its word moves go to its start and end.
 
@@ -169,7 +168,7 @@ The Add form opens on Type, set to Agent; ←/→ switches it to Ticket. What yo
 |---|---|
 | `ctrl+a [` / `]` | switch ticket |
 | `ctrl+a {` / `}` | move the selected agent or ticket up / down, then keep going (see [Sidebar](#sidebar)) |
-| `ctrl+a ctrl+a` | jump to the next ticket waiting on you |
+| `ctrl+a ctrl+a` | jump to the next ticket waiting on you (`ctrl+a Tab` too) |
 | `ctrl+a w` | list every session waiting on you, oldest first, with how long, why and what it asks (see below) |
 | `ctrl+a /` | jump to a ticket, agent or project by typing (see below) |
 | `ctrl+a n` / `x` | add / close a ticket |
@@ -178,11 +177,14 @@ The Add form opens on Type, set to Agent; ←/→ switches it to Ticket. What yo
 | `ctrl+a j` / `c` / `g` / `b` | toggle the tracker panel, its comments, the PR panel; collapse the sidebar. On an agent, `j`, `c` and `g` change the panels tickets show, and say so; its board shows while the tracker or PR panel is on |
 | `ctrl+a o` / `p` | open the ticket / PR in your browser (a Local files ticket opens in `$EDITOR`) |
 | `ctrl+a r` / `m` | refresh now (and check GitHub again) / take the `●` off comments that were new |
+| `ctrl+a PgUp` / `PgDn` | scroll the session's history half a pane; the mouse wheel over a pane scrolls it too. A full-screen CLI gets the key itself |
 | `ctrl+a v` | open the session's history in `$EDITOR` |
 | `ctrl+a l` | the ticket's links (issue, PR, checks), then the session's, newest first: Enter opens one, `c` copies it |
 | `ctrl+a ~` | notices: the last 200 messages the footer showed, newest first, with how long ago; ↑/↓ and PgUp/PgDn scroll, any other key closes |
 | `ctrl+a R` | restart the session on the same conversation; while it's working or needs you, it asks first, as that turn or question would be cut short |
 | `ctrl+a t` | continue the session in another terminal (see [taskman resume](#continuing-a-session-in-another-terminal-taskman-resume)) |
+| `ctrl+a e` / `M` | rename the selected agent (see [Agents](#agents)) / run the session in the main checkout when its worktree couldn't be made (see [Worktrees](#worktrees)) |
+| `ctrl+a ?` / `q` | help: every key and what the sidebar's states mean / quit, once you press Enter; sessions resume at the next start |
 | `ctrl+a a` | send the prefix itself to the session |
 
 ### The waiting queue
@@ -237,6 +239,23 @@ The tracker panel shows for tickets in a project with a tracker, and the GitHub 
 
 The sidebar lists each project's agents and tickets, each with its session's state beside its name; a folded project's header shows `●` when one of its tickets needs you. A list longer than the screen scrolls: selecting a card out of view, by key or click, scrolls just enough to show it, and the mouse wheel over the sidebar scrolls the list without moving the selection; selecting the selected card again (from `ctrl+a /`, or a click on what shows of it) brings it back into view. The top and bottom rows then say what's hidden past them (`↑ 3 more`, `↓ 5 more`), with `●` when a hidden ticket needs you.
 
+What the states mean, as `ctrl+a ?` lists them (a folded sidebar shows the symbol alone):
+
+| State | Means |
+|---|---|
+| `▲ needs you` | asking you something: a permission prompt, a question or a plan (`▲ 4m` once it has waited a minute) |
+| `⠋ working` | working on something |
+| `● your turn` | done, and you haven't looked yet |
+| `✓ your turn` | done, and seen |
+| `■ exited` | ended, and you haven't looked yet |
+| `■` | ended, and seen |
+| `+ new` | added by `taskman add`, not selected yet |
+| `○` | idle, or not started |
+| `☾` | asleep: selecting it wakes it (see [Sleeping sessions](#sleeping-sessions)) |
+| `✦` before a name | an agent: a session with no ticket |
+| `↗ outside` | running in another terminal (see [taskman resume](#continuing-a-session-in-another-terminal-taskman-resume)) |
+| `↩ back` | quit in that terminal: Enter resumes it here |
+
 The order is yours to change. An agent moves among its project's agents, a ticket among its project's tickets, and a project among the projects; a card never crosses into another group or project. Press `ctrl+a }` or `ctrl+a {` to move the selected card down or up one place. That starts move mode, where `{` and `}` or ↑ and ↓ go on without the prefix, `p` switches to moving the card's project (every project then shows folded, so each step passes one project, and their folds come back afterwards), Enter or any other key ends it, and Esc puts the order back as it was before the first move. The footer says what is moving and which keys do what. A card stops at the edge of its group.
 
 With the mouse, press on a card and drag it up or down. It becomes a drag only once the pointer leaves the card's rows, so a click selects as before. While you drag, the card stays where it is, dimmed, a line shows where it would land and the footer says where (`move ENG-52 below ENG-61 · Esc cancels`). The line snaps to the nearest place the card can go, wherever the pointer is. A long list scrolls while the pointer rests at its top or bottom edge. Release to drop; Esc cancels. Dragging a project's header moves the project, with every project drawn folded for the drag; a click on the header still folds it, on release. Clicking or dragging a project's header, an empty project's too, makes it the current project, which `ctrl+a n` and `ctrl+a ,` open on, until you select a card.
@@ -253,7 +272,7 @@ Each session is a full Claude Code or Codex process, a few hundred MB with its s
 
 ### Copying text
 
-Drag over any pane, or double-click a word (a key, path, URL or id) or triple-click a line: a word runs to the next space, quote, bracket or `,` `;` `|` `<` `>`, without a full stop, comma or other sentence punctuation at its end, and clicks must come within 0.4 seconds on the same cell. The text is copied when you let go and stays highlighted until you click, press a key or `Esc`; meanwhile the pane holds still, so the session's output can't move it. To select more than the pane shows, drag past its top or bottom edge, which scrolls it, or use the wheel while dragging; the selection stays on its text as the pane scrolls. `ctrl+a v` opens the session's whole history in `$EDITOR` instead. A full-screen CLI (Codex, or Claude's full-screen mode) keeps its history itself, so only its screen can be selected. `ctrl+c` with text selected copies it again and clears it instead of interrupting the session (the next `ctrl+c` interrupts as usual). Inside tmux the text goes to tmux's buffer, which passes it on to your terminal; otherwise to `pbcopy`, `clip.exe` (WSL), `wl-copy` or `xclip`, and failing those to the terminal as OSC 52. The toast says which.
+Drag over any pane, or double-click a word (a key, path, URL or id) or triple-click a line: a word runs to the next space, quote, bracket or `,` `;` `|` `<` `>`, without a full stop, comma or other sentence punctuation at its end, and clicks must come within 0.4 seconds on the same cell. The text is copied when you let go and stays highlighted until you click, press a key or `Esc`; meanwhile the pane holds still, so the session's output can't move it. To select more than the pane shows, drag past its top or bottom edge, which scrolls it, or use the wheel while dragging; the selection stays on its text as the pane scrolls. `ctrl+a v` opens the session's whole history in `$EDITOR` instead. A full-screen CLI (Codex, or Claude's full-screen mode) keeps its history itself, so only its screen can be selected. `ctrl+c` with text selected copies it again and clears it instead of interrupting the session (the next `ctrl+c` interrupts as usual). Inside tmux the text goes to tmux's buffer, which passes it on to your terminal; otherwise to `pbcopy`, `clip.exe` (WSL), `wl-copy`, `xclip` or `xsel`, and failing those to the terminal as OSC 52. The toast says which.
 
 ### Light and dark terminals
 
@@ -304,10 +323,10 @@ When you add a ticket that has no worktree yet, taskman creates one: it fetches 
 When one ticket builds on another that hasn't merged yet, set **Base** on the Add form to that ticket (or `taskman add 62 --on 61`). The new worktree starts from the base's branch: the local one or origin's, whichever is newer. The new branch is still named by the project's format. Base applies only when taskman creates the worktree. The session is told to open its PR against the base's branch and to say in the PR that it depends on the base.
 
 ```
- 2 ENG-62            your turn
-   Add SSO
-   #15 →ENG-61 ✓2              the PR goes into ENG-61's branch
-   #15 →ENG-61 merged ✓2       ENG-61 merged but the PR still targets its branch: retarget it
+  ENG-62         ● your turn
+  Add SSO
+  #15 →ENG-61 ✓2              the PR goes into ENG-61's branch
+  #15 →ENG-61 merged ✓2       ENG-61 merged but the PR still targets its branch: retarget it
 ```
 
 The sidebar shows where a PR goes whenever that isn't the default branch, by ticket key when it's another ticket's branch. Merge the base first. With "Automatically delete head branches" on, GitHub moves the upper PR to main as the base merges, and the arrow goes away; the GitHub panel and `taskman status` then say "ENG-61 merged; PR now targets main". After a squash merge the upper PR still carries the base's commits, so rebase it onto main. taskman never rebases or retargets anything itself; tools like Graphite or git-spice can manage longer chains in the worktree.
@@ -381,7 +400,7 @@ Added ENG-61 "Rate-limit uploads" to acme-web; creating worktree ~/acme-web-ENG-
 ```
 
 - **What it takes:** a number (`61` becomes `ENG-61`), a key or a link; several at once. On GitHub Issues, `#61` and `acme/web#61` too. `--codex` runs the session in Codex, `--worktree` / `--no-worktree` overrides the project's worktree setting, `--on KEY` stacks it on another open ticket (see [Stacked tickets](#stacked-tickets)), and `--agent NAME` adds a project agent instead. `--new "Fix login"` creates the ticket first (see below).
-- **Agents adding agents:** `taskman add --agent tester --role "Run the TUI in tmux and check PRs against their tickets' 'Done when'."` adds a helper whose startup instructions carry the role. taskman shows you the agent and its role first, and adds it when you press Enter: sessions run `taskman add` without asking, and an issue or PR comment could talk one into it. Every line of the role has a `│` bar in front, so none can pass for taskman's own text, and a role too long for the screen scrolls with ↑/↓ (the dialog says how many lines are above and below), with the keys always in view. Once you approve, its session starts, so the agent that asked can message it; it does nothing until someone does. `--role` on an agent that's already open replaces its role from its next session start (`ctrl+a R` restarts it), also after you approve it. Tickets that exist are added without asking; a session's new ticket waits for you (see below).
+- **Agents adding agents:** `taskman add --agent tester --role "Run the TUI in tmux and check PRs against their tickets' 'Done when'."` adds a helper whose startup instructions carry the role. taskman shows you the agent and its role first, and adds it when you press Enter: sessions run `taskman add` without asking, and an issue or PR comment could talk one into it. For its first 1.5 seconds this dialog, like a new ticket's (below), ignores Enter and Esc, so a key meant for a session can't answer it. Every line of the role has a `│` bar in front, so none can pass for taskman's own text, and a role too long for the screen scrolls with ↑/↓ (the dialog says how many lines are above and below), with the keys always in view. Once you approve, its session starts, so the agent that asked can message it; it does nothing until someone does. `--role` on an agent that's already open replaces its role from its next session start (`ctrl+a R` restarts it), also after you approve it. Tickets that exist are added without asking; a session's new ticket waits for you (see below).
 - **Creating the ticket:** `taskman add --new "Fix login"` creates it in the project's tracker with the project's account, the one taskman reads it with, then adds it as above. Linear: in the team the ticket prefix names, in the state the team starts issues in. Jira: in the project the prefix names, as a Task (or the project's first standard issue type when it has no Task); a project that requires fields taskman doesn't fill, such as a sprint or a team, is refused with Jira's reasons, so create that ticket in Jira and add its key. GitHub Issues: in the project's repository, through `gh`'s login. Local files: a file in the board's `todo/` (see [Local files](#local-files-tickets-without-an-account)). `--description TEXT` gives the one new ticket a description, in Markdown; `--new` can be repeated, and each key is printed as it's created. A create that fails isn't tried again, and one that timed out or got a broken answer says the ticket may exist anyway: look in the tracker before running it again. If the tickets were created but couldn't be added, it names them, to add with `taskman add KEY`.
 - **A session's new ticket waits for you:** run in a session, `--new` creates nothing by itself. taskman shows who asked and the title and description in full, and creates the ticket when you press Enter: its title and description are published under your account, and text the session read, such as an issue on a public repository, could talk it into putting a secret there. The command waits up to a minute for your answer, then prints the new key as above, or says you declined (Esc) and exits 1. If you haven't answered by then, it says so, and the ticket is still created and added when you approve. From your own shell, `--new` creates the ticket at once.
 - **Which project:** the session's, else the one whose folder you're in, else the one whose ticket prefix the key has. `--project NAME` picks one by its name, ignoring case, or its name with dashes for spaces; when that could mean several projects it asks for the exact name. A project without a tracker takes `--agent` only.
