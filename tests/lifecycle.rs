@@ -2,9 +2,9 @@
 //! quit as `prefix q` does, restoring the terminal, stopping the sessions and waiting for a
 //! worktree still being removed, which a second signal cuts short; ctrl+z never reaches a session;
 //! a panic in one session's reader ends that session alone, and its pane says so; a second taskman
-//! on the same state,
-//! or a tickets.json this release can't read, is refused and nothing is overwritten, while one
-//! started straight after a kill -9 starts. Losing the terminal is tests/hangup.rs.
+//! on the same state, its lock file removed or not, or a tickets.json this release can't read, is
+//! refused and nothing is overwritten, while one started straight after a kill -9 starts. Losing
+//! the terminal is tests/hangup.rs.
 
 mod common;
 
@@ -229,6 +229,30 @@ fn a_second_taskman_is_refused() {
     );
     assert_eq!(std::fs::read_to_string(&tickets).unwrap(), saved);
     assert!(tui.text().contains("stub ready for ENG-1"));
+}
+
+/// With its lock file removed while it runs (or a state folder shared where flock doesn't reach),
+/// a second taskman takes a lock of its own, but the first one's heartbeat names a process that
+/// runs: refused all the same, and the heartbeat left for the first.
+#[test]
+fn a_second_taskman_is_refused_when_the_lock_file_is_gone() {
+    let dir = scratch_dir("lock-gone");
+    project(&dir, &["ENG-1"]);
+    let alive = dir.join("state/taskman/inbox/alive");
+    let mut tui = Tui::start("lock-gone", &dir, stubbed(&dir), LIMIT);
+    tui.wait_text("stub ready for ENG-1");
+    std::fs::remove_file(dir.join("state/taskman/lock")).unwrap();
+
+    let second = taskman(&dir).stdin(Stdio::null()).output().unwrap();
+    let err = String::from_utf8_lossy(&second.stderr);
+    assert_eq!(second.status.code(), Some(1), "{err}");
+    assert!(
+        err.contains(&format!("another taskman is already running (pid {})", tui.child.id())),
+        "{err}"
+    );
+    assert!(alive.exists());
+    assert!(tui.text().contains("stub ready for ENG-1"));
+    tui.quit();
 }
 
 /// Killed (kill -9, an OOM kill), taskman leaves its heartbeat behind, fresh for a few seconds.

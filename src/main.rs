@@ -536,15 +536,15 @@ fn detach_output() {
 }
 
 /// The state folder's lock, held while the TUI runs, and the inbox's heartbeat that says so,
-/// removed before the lock goes however `main` ends (an error, a panic too), so that commands
-/// queue and the next taskman doesn't take it for one that crashed.
+/// removed before the lock goes however `main` ends (an error, say), so that commands queue and
+/// the next taskman doesn't take it for one that crashed; but kept after a panic, so that it does.
 struct Running {
     _lock: store::Lock,
 }
 
 impl Drop for Running {
     fn drop(&mut self) {
-        add::stopped();
+        add::ending();
     }
 }
 
@@ -556,10 +556,12 @@ fn open_state() -> Result<(Running, store::Saved, store::Config, add::Before), S
     if let Some(dir) = store::own_config_dir().filter(|d| d.exists()) {
         let _ = store::private_dir(&dir);
     }
-    // A release from before the lock doesn't take it, but it keeps the inbox's `alive` file fresh.
+    // A release from before the lock doesn't take it, and a lock file removed while taskman ran
+    // was made again by this one, but either keeps the inbox's `alive` file fresh.
     let before = add::before();
-    if before == add::Before::Running {
-        return Err(store::already_running(&store::state_dir(), ""));
+    if let add::Before::Running(pid) = before {
+        let pid = pid.map(|p| format!(" (pid {p})")).unwrap_or_default();
+        return Err(store::already_running(&store::state_dir(), &pid));
     }
     let (saved, config) = (store::load()?, store::load_config()?);
     // Commands count taskman as running from here, before its first frame (`add::tui_running`).
