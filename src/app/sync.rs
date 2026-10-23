@@ -7,7 +7,7 @@ use super::{App, Id, Level, Mode};
 use crate::session::Wake;
 use crate::store::{self, Base, Ticket};
 use crate::tracker::{Access, FetchError, Issue, Text};
-use crate::{add, github, selection, worktree};
+use crate::{add, github, keys, selection, worktree};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
@@ -321,12 +321,11 @@ impl App {
                     }
                     // gh was removed or logged out since the last check: hide the panel until
                     // the next.
-                    if let Err(e) = &*res
-                        && let Some(gh) = github::Gh::from_error(e)
-                    {
-                        changed |= self.github.insert(tv.t.repo.clone(), gh) != Some(gh);
-                    }
+                    let gh = (*res).as_ref().err().and_then(|e| github::Gh::from_error(e));
                     changed |= tv.take_pr(*res, worktree);
+                    if let Some(gh) = gh {
+                        changed |= self.gh_checked(repo, gh);
+                    }
                     fetched = true;
                 }
                 Msg::Worktree(n, (repo, key), res, base) => {
@@ -421,7 +420,7 @@ impl App {
                     self.toast_for(tip, Duration::from_secs(8));
                 }
                 // Saved, for the next start's first frame.
-                Msg::Gh(repo, gh) => changed |= self.github.insert(repo, gh) != Some(gh),
+                Msg::Gh(repo, gh) => changed |= self.gh_checked(repo, gh),
                 Msg::Keychain(k) => self.keychain_probed(k),
                 Msg::Machine(m) => self.machine_found(m),
                 Msg::Scanned(id, launch, kind, found) => self.scanned(&id, &launch, kind, found),
@@ -571,6 +570,37 @@ impl App {
                 let _ = tx.send(Msg::Gh(repo, gh));
             }
         });
+    }
+
+    /// Takes a check's answer for `repo`; true if it changed what's known. gh not answering says
+    /// nothing about the setup, so a folder with an answer keeps it, saved and shown (a PR panel
+    /// isn't hidden for a keyring locked a moment), and only one never answered for is
+    /// `Unanswered`.
+    fn gh_checked(&mut self, repo: PathBuf, gh: github::Gh) -> bool {
+        use github::Gh;
+        match (gh, self.github.get(&repo).copied().filter(|g| g.saved())) {
+            (Gh::Unanswered, Some(known)) => {
+                // No GitHub remote as far as gh said: its hanging doesn't matter here.
+                if !matches!(known, Gh::NoRemote | Gh::NotGit) {
+                    self.gh_unanswered.insert(repo);
+                }
+                false
+            }
+            _ => {
+                self.gh_unanswered.remove(&repo);
+                self.github.insert(repo, gh) != Some(gh)
+            }
+        }
+    }
+
+    /// Why the folder's last check has no answer, when it kept an earlier one (`gh_checked`).
+    pub(super) fn gh_unanswered(&self, repo: &Path) -> Option<String> {
+        self.gh_unanswered.contains(repo).then(|| {
+            format!(
+                "gh didn't answer the last check, so this is from before; {} r checks again",
+                keys::prefix()
+            )
+        })
     }
 
     /// Whether the folder can show PRs. Not yet checked counts as ready, for fetches and worktrees:

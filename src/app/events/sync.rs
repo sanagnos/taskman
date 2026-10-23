@@ -503,14 +503,52 @@ fn the_pr_panel_draws_from_the_saved_gh_check_until_the_new_one_answers() {
     app.drain_messages();
     assert!(!app.panels().1);
     assert_eq!(saved().ui.github, [(acme.clone(), Gh::LoggedOut)].into());
+}
 
-    // gh not answering hides the panel and says why, but isn't saved: it says nothing about the
-    // setup, so the next start checks again before drawing the panel.
-    app.tx.send(Msg::Gh(acme.clone(), Gh::Unanswered)).unwrap();
-    app.drain_messages();
+/// gh not answering (a locked keyring, a stalled proxy) says nothing about the setup: a folder
+/// keeps the answer it had, saved and shown, and only one never answered for says gh didn't.
+#[test]
+fn a_gh_that_doesnt_answer_keeps_the_last_answer() {
+    use crate::github::Gh;
+    let acme = std::path::PathBuf::from("/src/acme");
+    let answer = |app: &mut App, gh: Gh| {
+        app.tx.send(Msg::Gh(acme.clone(), gh)).unwrap();
+        app.drain_messages();
+        app.save();
+    };
+    let note = |app: &App| app.project_settings_form(0).note.clone().unwrap_or_default();
+    let unanswered = "gh didn't answer";
+
+    // Ready, then a timeout: the panel stays and so does what's saved; Settings says gh didn't
+    // answer, until a check answers again.
+    let mut app = offline(crate::app::test_support::acme());
+    answer(&mut app, Gh::Ready);
+    answer(&mut app, Gh::Unanswered);
+    assert!(app.panels().1);
+    assert_eq!(app.gh(&acme), Gh::Ready);
+    assert_eq!(saved().ui.github, [(acme.clone(), Gh::Ready)].into());
+    assert!(note(&app).contains("PR panel: on"), "{}", note(&app));
+    assert!(note(&app).contains(unanswered), "{}", note(&app));
+    let mut app = offline(saved());
+    assert!(app.panels().1);
+    answer(&mut app, Gh::Unanswered);
+    answer(&mut app, Gh::Ready);
+    assert!(!note(&app).contains(unanswered), "{}", note(&app));
+
+    // No GitHub remote, then a timeout: still none, and nothing about gh.
+    answer(&mut app, Gh::NoRemote);
+    answer(&mut app, Gh::Unanswered);
+    assert_eq!(app.gh(&acme), Gh::NoRemote);
+    assert_eq!(saved().ui.github, [(acme.clone(), Gh::NoRemote)].into());
+    assert!(!note(&app).contains(unanswered), "{}", note(&app));
+
+    // A first check that times out says so, and isn't saved: the next start checks again before
+    // drawing the panel.
+    let mut app = offline(crate::app::test_support::acme());
+    answer(&mut app, Gh::Unanswered);
     assert!(!app.panels().1);
     assert_eq!(app.gh(&acme), Gh::Unanswered);
-    app.save();
+    assert!(note(&app).contains(unanswered), "{}", note(&app));
     assert!(saved().ui.github.is_empty(), "{:?}", saved().ui.github);
 }
 

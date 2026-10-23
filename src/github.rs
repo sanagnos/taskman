@@ -306,7 +306,8 @@ pub const NO_REMOTE: &str = "This repo has no GitHub remote";
 
 /// Whether a project's folder can show PRs: a git repository with a GitHub remote, and `gh`
 /// installed and logged in to it. Saved as the last known answer (`store::UiPrefs::github`),
-/// except `Unanswered`, which says nothing about the setup.
+/// except `Unanswered`, which says nothing about the setup and so never replaces an answer
+/// (`App::gh_checked`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Gh {
