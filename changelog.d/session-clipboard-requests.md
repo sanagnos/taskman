@@ -1,1 +1,2 @@
+- Only the session you're looking at can set your clipboard: a copy from a session in the background is dropped, with a warning to select it and copy again.
 - taskman warns, naming the session, when a session asks to read your clipboard (it never passes a read on, and answers that the clipboard is empty, so the program doesn't wait) or copies more than 750 KB (not copied: tmux drops a copy that size). A session's copy keeps the selection it named, such as the primary one. Session titles are cleaned of characters that hide text (thanks, XdartMc).

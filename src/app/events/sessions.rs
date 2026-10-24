@@ -852,20 +852,42 @@ fn a_sessions_clipboard_write_is_forwarded_and_a_read_answered_with_nothing_and_
 }
 
 #[test]
-fn the_newest_clipboard_write_of_any_session_is_the_one_forwarded_with_one_warning() {
+fn only_the_selected_sessions_clipboard_write_is_forwarded_and_a_background_one_is_warned_of() {
     let (mut app, _sent) = at_eng_52();
     attach(&mut app, "ENG-70", SCREEN);
-    print(&app, "ENG-52", b"\x1b]52;c;b25l\x07\x1b]52;c;?\x07");
-    print(&app, "ENG-70", b"\x1b]52;c;dHdv\x07\x1b]52;z;eA==\x07");
+    // ENG-70's write comes last, but it isn't the session in view.
+    print(&app, "ENG-52", b"\x1b]52;c;b25l\x07\x1b]52;c;dHdv\x07");
+    print(&app, "ENG-70", b"\x1b]52;c;dGhyZWU=\x07");
+    app.take_clipboards();
+    assert_eq!(decoded(&app.clipboard_out), ["two"], "the selected session's latest");
+    let warning = "ENG-70 tried to copy while in the background; select it and copy again";
+    assert_eq!(toast(&app), Some(warning));
+
+    // Not kept for later: selecting it forwards nothing, and it's warned of once a minute.
+    let logged = app.toast_log.len();
+    app.toast = None;
+    print(&app, "ENG-70", b"\x1b]52;c;dGhyZWU=\x07");
+    app.take_clipboards();
+    assert_eq!((toast(&app), app.toast_log.len()), (None, logged));
+    app.sel = app.tickets.iter().position(|tv| tv.t.key == "ENG-70").unwrap();
     app.take_clipboards();
     assert_eq!(decoded(&app.clipboard_out), ["two"]);
-    // The read matters most of what was refused; the rest is left out of this pass.
-    let logged = app.toast_log.len();
-    assert_eq!(toast(&app), Some("ENG-52 asked to read your clipboard; taskman refused"));
-    print(&app, "ENG-52", b"\x1b]52;c;b25l\x07");
+    print(&app, "ENG-70", b"\x1b]52;c;Zm91cg==\x07");
     app.take_clipboards();
-    assert_eq!(decoded(&app.clipboard_out), ["two", "one"]);
-    assert_eq!(app.toast_log.len(), logged);
+    assert_eq!(decoded(&app.clipboard_out), ["two", "four"]);
+}
+
+#[test]
+fn what_several_sessions_had_refused_one_warning_shows_a_read_first() {
+    let (mut app, _sent) = at_eng_52();
+    attach(&mut app, "ENG-70", SCREEN);
+    print(&app, "ENG-52", b"\x1b]52;z;eA==\x07");
+    print(&app, "ENG-70", b"\x1b]52;c;dHdv\x07\x1b]52;c;?\x07");
+    let logged = app.toast_log.len();
+    app.take_clipboards();
+    assert_eq!(toast(&app), Some("ENG-70 asked to read your clipboard; taskman refused"));
+    assert_eq!(app.toast_log.len(), logged + 1, "one a pass");
+    assert!(app.clipboard_out.is_empty());
 }
 
 #[test]

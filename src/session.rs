@@ -16,9 +16,8 @@ pub const QUEUE: usize = 4 << 20;
 pub struct Callbacks {
     replies: Vec<u8>,
     pub title: String,
-    /// The last clipboard write since `take_clipboard`, numbered across sessions (`WRITES`) so
-    /// the newest of theirs can be told.
-    pub clipboard: Option<(u64, ClipboardWrite)>,
+    /// The last clipboard write since `take_clipboard`.
+    pub clipboard: Option<ClipboardWrite>,
     /// Why clipboard requests weren't forwarded since `take_clipboard`, each once.
     pub refused: Vec<Refused>,
     /// What a colour query is answered with: the terminal's own, as `theme` found them.
@@ -40,9 +39,6 @@ impl Callbacks {
 /// default, past which tmux drops it without a word. Claude Code sets no limit of its own, and
 /// other terminals take more, but taskman is often run in tmux. 750 KB of text.
 pub const CLIPBOARD_MAX: usize = 1_000_000;
-
-/// How many clipboard writes the sessions have made, which numbers the next.
-static WRITES: AtomicU64 = AtomicU64::new(0);
 
 /// A clipboard write to forward: the selection the session named (`c`, `p`, `s`, a digit, or
 /// none), which vt100 checked, and the base64.
@@ -70,6 +66,8 @@ pub enum Refused {
     Malformed,
     /// A write over `CLIPBOARD_MAX`, with the size of the text it held.
     TooLarge(usize),
+    /// A write from a session that isn't the selected one (`App::take_clipboards`).
+    Background,
 }
 
 impl Refused {
@@ -79,6 +77,7 @@ impl Refused {
         match self {
             Self::Read => 0,
             Self::TooLarge(_) => 1,
+            Self::Background => 2,
             Self::Malformed => 3,
         }
     }
@@ -97,6 +96,9 @@ impl Refused {
             }
             Self::TooLarge(bytes) => {
                 format!("{name} copied {}, more than tmux takes; not copied", size(bytes))
+            }
+            Self::Background => {
+                format!("{name} tried to copy while in the background; select it and copy again")
             }
         }
     }
@@ -129,8 +131,7 @@ impl vt100::Callbacks for Callbacks {
             self.refuse(Refused::TooLarge((data.len() * 3 + 2) / 4));
         } else {
             let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
-            let write = ClipboardWrite { target: text(ty), data: text(data) };
-            self.clipboard = Some((WRITES.fetch_add(1, Ordering::Relaxed), write));
+            self.clipboard = Some(ClipboardWrite { target: text(ty), data: text(data) });
         }
     }
 
@@ -557,7 +558,7 @@ impl Session {
     }
 
     /// The clipboard write to forward, and why any requests weren't.
-    pub fn take_clipboard(&self) -> (Option<(u64, ClipboardWrite)>, Vec<Refused>) {
+    pub fn take_clipboard(&self) -> (Option<ClipboardWrite>, Vec<Refused>) {
         let mut parser = lock(&self.parser);
         let cb = parser.callbacks_mut();
         (std::mem::take(&mut cb.clipboard), std::mem::take(&mut cb.refused))
@@ -1031,7 +1032,7 @@ mod tests {
         let mut p = parser(24, 80);
         p.process(output);
         let cb = p.callbacks_mut();
-        (cb.clipboard.take().map(|(_, w)| w), std::mem::take(&mut cb.refused))
+        (cb.clipboard.take(), std::mem::take(&mut cb.refused))
     }
 
     fn write(target: &str, data: &str) -> Option<ClipboardWrite> {
@@ -1186,7 +1187,7 @@ mod tests {
                 let mut p = parser(24, 80);
                 for piece in pieces {
                     p.process(&piece);
-                    if let Some((_, write)) = p.callbacks_mut().clipboard.take() {
+                    if let Some(write) = p.callbacks_mut().clipboard.take() {
                         let base64 = |b: u8| b.is_ascii_alphanumeric() || b"+/=".contains(&b);
                         prop_assert!(write.data.bytes().all(base64), "{write:?}");
                         prop_assert!(write.target.bytes().all(|b| b"cpqs01234567".contains(&b)));

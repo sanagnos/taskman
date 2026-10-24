@@ -29,21 +29,26 @@ const TMUX_ENV: [&str; 8] = [
 ];
 
 impl App {
-    /// Queues the newest of the sessions' clipboard writes for the terminal (there's one
-    /// clipboard, so the others would be overwritten at once), and warns of a request they
-    /// refused (`session::Refused`): one a pass, the one that matters most, and once a minute at
-    /// most for each session and why, so a program that keeps asking can't flood the toasts.
+    /// Queues the selected session's newest clipboard write for the terminal, and warns of a
+    /// request the sessions had refused (`session::Refused`): one a pass, the one that matters
+    /// most, and once a minute at most for each session and why, so a program that keeps asking
+    /// can't flood the toasts. Only the session in view may set the clipboard, as in tmux and
+    /// foot: a program in one the user isn't looking at could otherwise replace what they just
+    /// copied, or put there what they'd paste into a shell. Its write is dropped, not kept for
+    /// later, when it would be just as unexpected.
     pub(super) fn take_clipboards(&mut self) {
         let now = Instant::now();
-        let mut newest: Option<(u64, session::ClipboardWrite)> = None;
+        let mut forward = None;
         let mut warning: Option<(usize, session::Refused)> = None;
         for (i, tv) in self.tickets.iter().enumerate() {
             let Some(s) = &tv.session else { continue };
-            let (write, refused) = s.take_clipboard();
-            if let Some((at, write)) = write
-                && newest.as_ref().is_none_or(|(n, _)| at > *n)
-            {
-                newest = Some((at, write));
+            let (write, mut refused) = s.take_clipboard();
+            if let Some(write) = write {
+                if i == self.sel {
+                    forward = Some(write);
+                } else {
+                    refused.push(session::Refused::Background);
+                }
             }
             for why in refused {
                 if warn_due(&tv.clipboard_warned, why, now)
@@ -53,7 +58,7 @@ impl App {
                 }
             }
         }
-        self.clipboard_out.extend(newest.map(|(_, write)| write));
+        self.clipboard_out.extend(forward);
         if let Some((i, why)) = warning {
             let tv = &mut self.tickets[i];
             tv.clipboard_warned.retain(|(w, _)| !w.same(why));
