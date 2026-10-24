@@ -65,10 +65,10 @@ fn saved() -> Saved {
     store::read_json(&store::state_dir().join("tickets.json")).unwrap()
 }
 
-fn decoded(clipboard: &[String]) -> Vec<String> {
+fn decoded(clipboard: &[crate::session::ClipboardWrite]) -> Vec<String> {
     use base64::Engine;
     let b64 = base64::engine::general_purpose::STANDARD;
-    clipboard.iter().map(|c| String::from_utf8(b64.decode(c).unwrap()).unwrap()).collect()
+    clipboard.iter().map(|c| String::from_utf8(b64.decode(&c.data).unwrap()).unwrap()).collect()
 }
 
 /// ENG-52 on an 80 by 24 screen, its session showing `SCREEN`.

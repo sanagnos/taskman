@@ -811,3 +811,72 @@ fn only_the_selected_sessions_output_calls_for_a_frame() {
     app.sel = app.tickets.iter().position(|tv| tv.t.key == "ENG-61").unwrap();
     assert!(app.selected_fresh());
 }
+
+// ---- what a session sends the clipboard ------------------------------------------------------
+
+/// Feeds `output` to `key`'s session as if its CLI printed it.
+fn print(app: &App, key: &str, output: &[u8]) {
+    let tv = app.tickets.iter().find(|tv| tv.t.key == key).unwrap();
+    tv.session.as_ref().unwrap().output(output);
+}
+
+#[test]
+fn a_sessions_clipboard_write_is_forwarded_and_a_read_answered_with_nothing_and_a_warning() {
+    let (mut app, to_session) = at_eng_52();
+    print(&app, "ENG-52", b"\x1b]52;c;b25l\x07\x1b]52;p;dHdv\x07");
+    app.take_clipboards();
+    assert_eq!(decoded(&app.clipboard_out), ["two"], "the last of a burst");
+    assert_eq!(app.clipboard_out[0].target, "p", "for the selection it named");
+    assert_eq!(toast(&app), None);
+
+    app.clipboard_out.clear();
+    print(&app, "ENG-52", b"\x1b]52;c;?\x07");
+    app.take_clipboards();
+    assert!(app.clipboard_out.is_empty());
+    assert_eq!(sent(&to_session), "\x1b]52;c;\x07", "an empty clipboard");
+    assert_eq!(toast(&app), Some("ENG-52 asked to read your clipboard; taskman refused"));
+    assert_eq!(app.toast.as_ref().unwrap().level, crate::app::Level::Warn);
+
+    // Asking again is answered, but not toasted again for a while; another refusal is.
+    let logged = app.toast_log.len();
+    app.toast = None;
+    print(&app, "ENG-52", b"\x1b]52;c;?\x07\x1b]52;c;?\x07");
+    app.take_clipboards();
+    assert_eq!(sent(&to_session), "\x1b]52;c;\x07".repeat(3));
+    assert_eq!((toast(&app), app.toast_log.len()), (None, logged));
+    let over = "A".repeat(crate::session::CLIPBOARD_MAX + 4);
+    print(&app, "ENG-52", format!("\x1b]52;c;{over}\x07").as_bytes());
+    app.take_clipboards();
+    assert_eq!(toast(&app), Some("ENG-52 copied 750 KB, more than tmux takes; not copied"));
+    assert!(app.clipboard_out.is_empty());
+}
+
+#[test]
+fn the_newest_clipboard_write_of_any_session_is_the_one_forwarded_with_one_warning() {
+    let (mut app, _sent) = at_eng_52();
+    attach(&mut app, "ENG-70", SCREEN);
+    print(&app, "ENG-52", b"\x1b]52;c;b25l\x07\x1b]52;c;?\x07");
+    print(&app, "ENG-70", b"\x1b]52;c;dHdv\x07\x1b]52;z;eA==\x07");
+    app.take_clipboards();
+    assert_eq!(decoded(&app.clipboard_out), ["two"]);
+    // The read matters most of what was refused; the rest is left out of this pass.
+    let logged = app.toast_log.len();
+    assert_eq!(toast(&app), Some("ENG-52 asked to read your clipboard; taskman refused"));
+    print(&app, "ENG-52", b"\x1b]52;c;b25l\x07");
+    app.take_clipboards();
+    assert_eq!(decoded(&app.clipboard_out), ["two", "one"]);
+    assert_eq!(app.toast_log.len(), logged);
+}
+
+#[test]
+fn a_refused_clipboard_request_is_warned_of_once_a_minute_for_each_reason() {
+    use crate::app::sessions::{CLIPBOARD_WARN_EVERY, warn_due};
+    use crate::session::Refused;
+    let start = std::time::Instant::now();
+    let warned = [(Refused::Read, start), (Refused::TooLarge(10), start)];
+    assert!(!warn_due(&warned, Refused::Read, start + CLIPBOARD_WARN_EVERY / 2));
+    assert!(!warn_due(&warned, Refused::TooLarge(20), start), "whatever the size");
+    assert!(warn_due(&warned, Refused::Malformed, start));
+    assert!(warn_due(&warned, Refused::Read, start + CLIPBOARD_WARN_EVERY));
+    assert!(warn_due(&[], Refused::Read, start));
+}

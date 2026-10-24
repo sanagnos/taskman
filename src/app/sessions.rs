@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 
 /// How long `ctrl+a t` waits for the CLI to quit before stopping it.
 pub(super) const HAND_OFF_WAIT: Duration = Duration::from_secs(5);
+/// How often a session's refused clipboard requests of one kind are toasted at most.
+pub(super) const CLIPBOARD_WARN_EVERY: Duration = Duration::from_secs(60);
 /// What taskman's own variables a tmux window gets, so `taskman resume` there finds the same state,
 /// config and CLIs: tmux gives new windows its server's environment, not taskman's.
 const TMUX_ENV: [&str; 8] = [
@@ -27,6 +29,40 @@ const TMUX_ENV: [&str; 8] = [
 ];
 
 impl App {
+    /// Queues the newest of the sessions' clipboard writes for the terminal (there's one
+    /// clipboard, so the others would be overwritten at once), and warns of a request they
+    /// refused (`session::Refused`): one a pass, the one that matters most, and once a minute at
+    /// most for each session and why, so a program that keeps asking can't flood the toasts.
+    pub(super) fn take_clipboards(&mut self) {
+        let now = Instant::now();
+        let mut newest: Option<(u64, session::ClipboardWrite)> = None;
+        let mut warning: Option<(usize, session::Refused)> = None;
+        for (i, tv) in self.tickets.iter().enumerate() {
+            let Some(s) = &tv.session else { continue };
+            let (write, refused) = s.take_clipboard();
+            if let Some((at, write)) = write
+                && newest.as_ref().is_none_or(|(n, _)| at > *n)
+            {
+                newest = Some((at, write));
+            }
+            for why in refused {
+                if warn_due(&tv.clipboard_warned, why, now)
+                    && warning.is_none_or(|(_, w)| why.rank() < w.rank())
+                {
+                    warning = Some((i, why));
+                }
+            }
+        }
+        self.clipboard_out.extend(newest.map(|(_, write)| write));
+        if let Some((i, why)) = warning {
+            let tv = &mut self.tickets[i];
+            tv.clipboard_warned.retain(|(w, _)| !w.same(why));
+            tv.clipboard_warned.push((why, now));
+            let msg = why.toast(tv.t.display());
+            self.warn(msg);
+        }
+    }
+
     pub(super) fn ensure_selected_session(&mut self) {
         let area = self.areas.claude;
         let Some(tv) = self.tickets.get(self.sel) else { return };
@@ -427,4 +463,14 @@ impl App {
             let _ = tx.send(Msg::Toast(Level::Warn, format!("Couldn't open a tmux window: {why}")));
         });
     }
+}
+
+/// Whether to warn that a session's clipboard request was refused for `why`, at `now`: not when
+/// `warned` (when it was last warned of each) has the same reason within `CLIPBOARD_WARN_EVERY`.
+pub(super) fn warn_due(
+    warned: &[(session::Refused, Instant)],
+    why: session::Refused,
+    now: Instant,
+) -> bool {
+    warned.iter().all(|(w, at)| !w.same(why) || now.duration_since(*at) >= CLIPBOARD_WARN_EVERY)
 }

@@ -733,8 +733,9 @@ fn run(
         // Not only with a frame: these come from the sessions and the poll, which needn't draw.
         if !app.clipboard_out.is_empty() || app.bell || !app.notify_out.is_empty() {
             let mut out = std::io::stdout();
-            for data in app.clipboard_out.drain(..) {
-                let _ = write!(out, "\x1b]52;c;{data}\x07");
+            // One clipboard: only the last write of the pass would stay on it.
+            if let Some(w) = app.clipboard_out.drain(..).next_back() {
+                let _ = write!(out, "\x1b]52;{};{}\x07", w.target, w.data);
             }
             if std::mem::take(&mut app.bell) {
                 let _ = write!(out, "\x07");
