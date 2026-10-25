@@ -200,9 +200,6 @@ pub struct App {
     /// The fields at the top of tickets.json this build doesn't know, saved back as they were.
     unknown: store::Extra,
     pub prefix: bool,
-    /// The session `prefix PgUp` scrolled back, whose view PgUp/PgDn, ↑/↓ and Home/End go on moving
-    /// until another key returns it to the bottom (`App::scrolling_back`).
-    pub scrolling: Option<Id>,
     pub mode: Mode,
     pub projects: Vec<Project>,
     pub config: Config,
@@ -378,7 +375,6 @@ impl App {
             prefs: saved.ui,
             unknown: saved.extra,
             prefix: false,
-            scrolling: None,
             mode: Mode::Normal,
             projects: saved.projects,
             config,

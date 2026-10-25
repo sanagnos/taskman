@@ -396,10 +396,6 @@ impl App {
             }
         } else {
             s.scroll(if up { 3 } else { -3 });
-            // Back at the bottom, keyboard scrollback ends as it would by key (`scroll_key`).
-            if s.scrollback() == 0 {
-                self.scrolling = None;
-            }
         }
     }
 }

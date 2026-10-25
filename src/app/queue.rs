@@ -83,6 +83,7 @@ impl App {
                 self.mode = Mode::Normal;
                 if let Some(&i) = rows.get(at) {
                     self.select(i);
+                    self.to_live(i);
                 }
             }
             KeyCode::Esc | KeyCode::Char('q') => self.mode = Mode::Normal,

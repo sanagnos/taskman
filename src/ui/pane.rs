@@ -57,9 +57,16 @@ pub(super) fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     }
     let branch =
         tv.t.branch.as_deref().map(|b| format!(" {}", untrusted::line(b))).unwrap_or_default();
-    // Scrolled back, how far, in place of the folder: over the session's rows it hid them.
+    let cols = usize::from(area.width);
+    // Scrolled back, how far, in place of the folder: over the session's rows it hid them. It
+    // shows however narrow the pane or long the title, which is cut to make room for it.
     let (right, style) = match scrolled_back(app, tv) {
-        Some(badge) => (badge, Style::new().fg(Color::Black).bg(Color::Yellow)),
+        Some((long, short)) => {
+            let label = width(&spans[0].content);
+            let badge = if label + width(&long) + 2 <= cols { long } else { short };
+            spans = cut_spans(spans, cols.saturating_sub(width(&badge) + 3));
+            (badge, Style::new().fg(Color::Black).bg(Color::Yellow))
+        }
         None => (format!("{}{branch} ", tilde(&tv.t.cwd)), dim()),
     };
     let left_len: usize = spans.iter().map(|s| width(&s.content)).sum();
@@ -70,16 +77,43 @@ pub(super) fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(Line::from(spans)).style(Style::new().bg(Color::Reset)), area);
 }
 
-/// The header's badge for a session scrolled back into its history: how far, and how to return.
-/// None at the bottom, and while text is selected, as the pane then shows the selection's copy.
-fn scrolled_back(app: &App, tv: &TicketView) -> Option<String> {
+/// The header's badge for a session scrolled back into its history, how far and how to return,
+/// and a short one for a narrow pane. None at the bottom, and while text is selected, as the pane
+/// then shows the selection's copy.
+fn scrolled_back(app: &App, tv: &TicketView) -> Option<(String, String)> {
     if app.selection.as_ref().is_some_and(|sel| sel.snapshot.is_some()) {
         return None;
     }
     let back = crate::session::lock(tv.screen()?).screen().scrollback();
     let rows = if back == 1 { "line" } else { "lines" };
-    let how = if app.scrolling_back() { "Esc" } else { "type" };
-    (back > 0).then(|| format!(" ↑ {back} {rows} back · {how} to return "))
+    // An ended session's keys don't return it: Enter starts it again.
+    let (how, key) = match () {
+        _ if tv.ended() => ("Enter resumes", "Enter"),
+        _ if app.scrolling_back() => ("Esc to return", "Esc"),
+        _ => ("type to return", "type"),
+    };
+    (back > 0).then(|| (format!(" ↑ {back} {rows} back · {how} "), format!(" ↑ {back} · {key} ")))
+}
+
+/// `spans` cut to `max` columns, the one that crosses it ending in `…` unless that leaves too
+/// little of it to read, and the first kept whole.
+fn cut_spans(spans: Vec<Span<'static>>, max: usize) -> Vec<Span<'static>> {
+    let mut used = 0;
+    let mut kept = Vec::new();
+    for (i, mut s) in spans.into_iter().enumerate() {
+        let w = width(&s.content);
+        if i > 0 && used + w > max {
+            let cut = truncate(&s.content, max.saturating_sub(used));
+            if width(&cut) > 5 {
+                s.content = cut.into();
+                kept.push(s);
+            }
+            break;
+        }
+        used += w;
+        kept.push(s);
+    }
+    kept
 }
 
 pub(super) fn draw_claude(f: &mut Frame, app: &App, area: Rect) {
@@ -388,7 +422,8 @@ fn draw_session(
         if scrolled > 0
             && let Some(hint) = transcript_hint(screen, tv.t.cli)
         {
-            let w = (width(&hint) as u16).min(area.width);
+            // A column clear of the pane's right edge, inside it however narrow.
+            let w = (width(&hint) as u16).min(area.width.saturating_sub(1));
             let r = Rect { x: area.right().saturating_sub(w + 1), y: area.y, width: w, height: 1 };
             let style = Style::new().fg(Color::Black).bg(Color::Yellow);
             // Clear drops the links marked under it.
@@ -576,8 +611,8 @@ pub(super) fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Line::from(Span::styled(format!(" {hint}"), Style::new().fg(accent())))
     } else if let Some(toast) = &app.toast {
         return draw_toast(f, app, toast, area);
-    } else if app.scrolling_back() {
-        scroll_keys(area.width)
+    } else if app.scrolling_back() && matches!(app.mode, Mode::Normal) {
+        scroll_keys(app, area.width)
     } else {
         let key = Style::new().bold();
         let p = prefix().short();
@@ -604,27 +639,33 @@ pub(super) fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(line).style(Style::new().bg(selection_bg())), area);
 }
 
-/// The footer's keys during keyboard scrollback (`App::scroll_key`), as many as fit.
-fn scroll_keys(cols: u16) -> Line<'static> {
-    let keys = [
-        ("PgUp/PgDn", "page"),
-        ("↑/↓", "line"),
-        ("Home/End", "top / bottom"),
-        ("Esc", "live"),
-        ("other keys", "go to the session"),
-    ];
-    let mut v = vec![Span::styled(" scrollback ", Style::new().fg(Color::Black).bg(Color::Yellow))];
-    let mut used = width(&v[0].content);
-    for (i, (k, what)) in keys.into_iter().enumerate() {
-        let gap = if i == 0 { " " } else { " · " };
-        let w = width(gap) + width(k) + 1 + width(what);
-        if used + w > usize::from(cols) {
-            break;
-        }
-        v.push(Span::styled(gap, dim()));
-        v.push(Span::styled(k, Style::new().bold()));
+/// The footer during keyboard scrollback (`App::scroll_key`): its keys, and the waiting count
+/// on the right. Short of room, the label goes first, then the keys least needed.
+fn scroll_keys(app: &App, cols: u16) -> Line<'static> {
+    let cols = usize::from(cols);
+    let right = waiting_on_you(app).filter(|r| width(r) + 30 <= cols);
+    let room = cols - right.as_ref().map_or(0, |r| width(r) + 1);
+    // By importance, each drawn only with those before it: the header's badge names Esc too.
+    let keys = [("PgUp/PgDn ↑/↓ Home/End", "scroll"), ("other keys", "type"), ("Esc", "live")];
+    let label = " scrollback ";
+    let shown = |n: usize| -> usize {
+        keys[..n].iter().map(|(k, what)| 3 + width(k) + 1 + width(what)).sum::<usize>() - 2
+    };
+    let n = (1..=keys.len()).rev().find(|&n| shown(n) <= room).unwrap_or(1);
+    let with_label = width(label) + shown(n) <= room;
+    let mut v = Vec::new();
+    if with_label {
+        v.push(Span::styled(label, Style::new().fg(Color::Black).bg(Color::Yellow)));
+    }
+    for (i, (k, what)) in keys[..n].iter().enumerate() {
+        v.push(Span::styled(if i == 0 { " " } else { " · " }, dim()));
+        v.push(Span::styled(*k, Style::new().bold()));
         v.push(Span::styled(format!(" {what}"), dim()));
-        used += w;
+    }
+    if let Some(r) = right {
+        let used: usize = v.iter().map(|s| width(&s.content)).sum();
+        v.push(Span::raw(" ".repeat(cols.saturating_sub(used + width(&r)))));
+        v.push(Span::styled(r, Style::new().fg(yellow()).bold()));
     }
     Line::from(v)
 }

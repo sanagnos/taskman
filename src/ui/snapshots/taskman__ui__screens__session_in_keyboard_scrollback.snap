@@ -1,6 +1,6 @@
 ---
 source: src/ui/screens.rs
-expression: "draw(&mut app, 80, 24)"
+expression: "in_keyboard_scrollback(80, 24, \"\")"
 ---
 " taskman    │  ENG-70                         ↑ 21 lines back · Esc to return   "
 "            │ line 59                                                           "
@@ -25,4 +25,4 @@ expression: "draw(&mut app, 80, 24)"
 "            │ line 78                                                           "
 "            │ line 79                                                           "
 "            │ line 80                                                           "
-" scrollback  PgUp/PgDn page · ↑/↓ line · Home/End top / bottom · Esc live       "
+" PgUp/PgDn ↑/↓ Home/End scroll · other keys type    ▲ 2 need you · ● 1 finished "

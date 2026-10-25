@@ -515,6 +515,111 @@ fn keyboard_scrollback_stays_with_its_session() {
     assert_eq!(sent(&to_52), "");
 }
 
+/// Keyboard scrollback starts only where `prefix PgUp` left the view scrolled back: not after
+/// `prefix PgDn` to the bottom, a history with nothing in it, or a clear of the history. The
+/// wheel scrolling back later leaves the arrows and Esc to the session.
+#[test]
+fn keyboard_scrollback_is_not_left_armed_at_the_bottom() {
+    let (mut app, to_session) = with_history(500);
+    let c = app.areas.claude;
+    let wheel_up = |app: &mut App| mouse(app, MouseEventKind::ScrollUp, c.x + 1, c.y + 1);
+    let mut expected = String::new();
+    let mut arrow_reaches_the_session = |app: &mut App, why: &str| {
+        wheel_up(app);
+        assert!(!app.scrolling_back(), "{why}");
+        app.on_key(key(KeyCode::Up));
+        expected += "\x1b[A";
+        assert_eq!(sent(&to_session), expected, "{why}");
+    };
+    prefix(&mut app, KeyCode::PageUp);
+    prefix(&mut app, KeyCode::PageDown);
+    arrow_reaches_the_session(&mut app, "after prefix PgDn to the bottom");
+    prefix(&mut app, KeyCode::PageDown);
+    arrow_reaches_the_session(&mut app, "after prefix PgDn at the bottom");
+    prefix(&mut app, KeyCode::PageUp);
+    let s = app.tickets[app.sel].session.as_ref().unwrap();
+    s.output(b"\x1b[3J");
+    assert_eq!(scrolled(&app), 0);
+    let s = app.tickets[app.sel].session.as_ref().unwrap();
+    s.output("line\r\n".repeat(50).as_bytes());
+    arrow_reaches_the_session(&mut app, "after a clear of the history");
+
+    // No history at all: nothing to scroll back to.
+    let (mut app, to_session) = at_eng_52();
+    prefix(&mut app, KeyCode::PageUp);
+    assert_eq!(scrolled(&app), 0);
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(sent(&to_session), "\x1b");
+}
+
+/// The wheel and a paste in one session leave another's keyboard scrollback as it was.
+#[test]
+fn one_session_leaves_anothers_keyboard_scrollback_alone() {
+    let (mut app, _) = with_history(500);
+    prefix(&mut app, KeyCode::PageUp);
+    let back = scrolled(&app);
+    prefix(&mut app, KeyCode::Char(']'));
+    let lines: String = (1..=500).map(|n| format!("line {n}\r\n")).collect();
+    attach(&mut app, "ENG-53", &lines);
+    let c = app.areas.claude;
+    mouse(&mut app, MouseEventKind::ScrollUp, c.x + 1, c.y + 1);
+    mouse(&mut app, MouseEventKind::ScrollDown, c.x + 1, c.y + 1);
+    app.on_paste("hi");
+    prefix(&mut app, KeyCode::Char('['));
+    assert_eq!(selected(&app), "ENG-52");
+    assert!(app.scrolling_back());
+    assert_eq!(scrolled(&app), back);
+}
+
+/// `prefix prefix` to a session waiting on you shows it live, where its question is.
+#[test]
+fn going_to_a_waiting_session_returns_it_to_live() {
+    let (mut app, _) = with_history(10);
+    prefix(&mut app, KeyCode::Char(']'));
+    assert_eq!(selected(&app), "ENG-53");
+    let lines: String = (1..=500).map(|n| format!("line {n}\r\n")).collect();
+    attach(&mut app, "ENG-53", &lines);
+    prefix(&mut app, KeyCode::PageUp);
+    prefix(&mut app, KeyCode::Char('['));
+    app.on_key(ctrl('a'));
+    app.on_key(ctrl('a'));
+    assert_eq!(selected(&app), "ENG-53");
+    assert_eq!(scrolled(&app), 0);
+    assert!(!app.scrolling_back());
+}
+
+/// `prefix a` sends the prefix, and like any key typed it returns the view to the bottom.
+#[test]
+fn sending_the_prefix_ends_keyboard_scrollback() {
+    let (mut app, to_session) = with_history(500);
+    prefix(&mut app, KeyCode::PageUp);
+    prefix(&mut app, KeyCode::Char('a'));
+    assert_eq!((scrolled(&app), sent(&to_session).as_str()), (0, "\x01"));
+    assert!(!app.scrolling_back());
+}
+
+/// A pane that changes size keeps its view on the same rows, still scrolling by key: toggling a
+/// panel changes its width, which moves no rows, and a taller window takes rows out of the
+/// history.
+#[test]
+fn a_resize_keeps_the_place_in_the_history() {
+    let (mut app, _) = with_history(500);
+    let top_row = |app: &App| {
+        let s = app.tickets[app.sel].session.as_ref().unwrap();
+        let p = crate::session::lock(&s.parser);
+        p.screen().rows(0, 40).next().unwrap()
+    };
+    prefix(&mut app, KeyCode::PageUp);
+    app.on_key(key(KeyCode::PageUp));
+    let (back, top) = (scrolled(&app), top_row(&app));
+    prefix(&mut app, KeyCode::Char('b'));
+    lay_out(&mut app, 80, 24);
+    assert_eq!((scrolled(&app), top_row(&app)), (back, top.clone()));
+    lay_out(&mut app, 80, 30);
+    assert_eq!(top_row(&app), top);
+    assert!(app.scrolling_back());
+}
+
 /// Scrolled to the top of a history that has dropped rows, the pane says where the rest is, in
 /// the CLI's words, and stops saying it when scrolled down; none of it reaches the session.
 #[test]

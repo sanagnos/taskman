@@ -8,6 +8,7 @@ use super::ticket::merged_head;
 use super::tickets::{Closed, left_open};
 use super::{ASK_ARMS, AgentState, App, Away, FormKind, HelpView, LinkList, Mode, SettingsItem};
 use crate::selection;
+use crate::session::Session;
 use crate::store::{self, UiPrefs};
 use crate::ui;
 use crate::{close, keys, links, local, untrusted, util};
@@ -114,7 +115,10 @@ impl App {
         let all = self.ordered(false);
         let needs = |i: usize| self.tickets[i].status.state == AgentState::Needs;
         match next_attention_in(&all, self.sel, needs, |i| self.tickets[i].needs_attention()) {
-            Some(i) => self.select(i),
+            Some(i) => {
+                self.select(i);
+                self.to_live(i);
+            }
             None => self.toast("Nothing is waiting on you"),
         }
     }
@@ -439,10 +443,12 @@ impl App {
             KeyCode::Tab => self.next_attention(),
             // `a` whatever the prefix, as in screen: the prefix's own letter may be a command.
             KeyCode::Char('a') => {
-                if let Some(s) = self.tickets.get(self.sel).and_then(|tv| tv.session.as_ref())
-                    && !s.write(&[prefix.byte()])
-                {
-                    self.warn(NOT_SENT);
+                if let Some(s) = self.tickets.get(self.sel).and_then(|tv| tv.session.as_ref()) {
+                    // Like any key typed, it returns the view to the bottom.
+                    s.reset_scroll();
+                    if !s.write(&[prefix.byte()]) {
+                        self.warn(NOT_SENT);
+                    }
                 }
             }
             KeyCode::Char('{') => self.start_move(-1),
@@ -589,15 +595,13 @@ impl App {
     /// so it gets the key.
     fn page_claude(&mut self, up: bool) {
         let page = self.page();
-        let Some(tv) = self.tickets.get(self.sel) else { return };
-        let Some(s) = tv.session.as_ref() else { return };
+        let Some(s) = self.tickets.get(self.sel).and_then(|tv| tv.session.as_ref()) else { return };
         if s.wants_mouse() {
             if !s.write(if up { b"\x1b[5~" } else { b"\x1b[6~" }) {
                 self.warn(NOT_SENT);
             }
         } else {
-            s.scroll(if up { page } else { -page });
-            self.scrolling = Some((tv.t.repo.clone(), tv.t.key.clone()));
+            s.scroll_keys(if up { page } else { -page });
         }
     }
 
@@ -606,31 +610,17 @@ impl App {
         (i32::from(self.areas.claude.height) - 1).max(1)
     }
 
-    /// Whether the keys scroll the selected session's history: `prefix PgUp` scrolled it back,
-    /// it isn't back at the bottom, and it hasn't gone full-screen since.
+    /// Whether the keys scroll the selected session's history (`Session::keys_scroll`).
     pub fn scrolling_back(&self) -> bool {
-        let Some(s) = self.selected().and_then(|tv| tv.session.as_ref()) else { return false };
-        self.scrolling_here() && !s.exited() && !s.wants_mouse() && s.scrollback() > 0
-    }
-
-    /// Whether `prefix PgUp` last scrolled the selected session, rather than another one, which
-    /// keeps its scrollback for when it's selected again.
-    fn scrolling_here(&self) -> bool {
-        let here = |tv: &super::TicketView| {
-            self.scrolling.as_ref().is_some_and(|(repo, key)| tv.t.is(repo, key))
-        };
-        self.selected().is_some_and(here)
+        self.selected().and_then(|tv| tv.session.as_ref()).is_some_and(Session::keys_scroll)
     }
 
     /// Keyboard scrollback: PgUp/PgDn move the view a page, ↑/↓ a row, Home/End to the top or
     /// bottom of the history, and Esc returns to the bottom, none of them reaching the session.
-    /// True when it used the key. Any other key ends it and goes on to the session, which returns
-    /// the view to the bottom as typing always has: letters are typing, so none of them scroll.
+    /// True when it used the key. Any other key goes on to the session, which returns the view to
+    /// the bottom as typing always has: letters are typing, so none of them scroll.
     fn scroll_key(&mut self, key: &KeyEvent) -> bool {
         if !self.scrolling_back() {
-            if self.scrolling_here() {
-                self.scrolling = None;
-            }
             return false;
         }
         let page = self.page();
@@ -644,15 +634,20 @@ impl App {
             KeyCode::End | KeyCode::Esc => Some(i32::MIN),
             _ => None,
         };
-        let Some(s) = self.tickets[self.sel].session.as_ref() else { return false };
-        if let Some(delta) = delta {
-            s.scroll(delta);
-        }
-        // Back at the bottom it ends, so the wheel scrolling back later doesn't take the keys.
-        if delta.is_none() || s.scrollback() == 0 {
-            self.scrolling = None;
+        if let Some(delta) = delta
+            && let Some(s) = self.tickets[self.sel].session.as_ref()
+        {
+            s.scroll_keys(delta);
         }
         delta.is_some()
+    }
+
+    /// Returns session `i`'s view to the bottom, ending keyboard scrollback: for a session
+    /// selected because it waits on you, whose question is at the bottom.
+    pub(super) fn to_live(&self, i: usize) {
+        if let Some(s) = self.tickets.get(i).and_then(|tv| tv.session.as_ref()) {
+            s.reset_scroll();
+        }
     }
 
     fn open_ticket(&mut self) {
@@ -703,7 +698,6 @@ impl App {
             Mode::Normal if !self.prefix => {
                 // Like a key, a paste ends the selection.
                 self.selection = None;
-                self.scrolling = None;
                 if let Some(s) = self.tickets.get(self.sel).and_then(|tv| tv.session.as_ref()) {
                     s.reset_scroll();
                     if !s.paste(text) {

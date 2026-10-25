@@ -31,6 +31,23 @@ fn the_queue_lists_every_waiting_session_oldest_first() {
     assert_eq!(rows(&app), ["notes-writer", "ENG-53", "ENG-61"]);
 }
 
+/// The queue shows the session chosen live, where its question is, though it was scrolled back.
+#[test]
+fn the_queue_returns_the_chosen_session_to_live() {
+    let (mut app, _) = at_eng_52();
+    waits(&mut app, "ENG-53", 270, Some("cargo test"));
+    prefix(&mut app, KeyCode::Char(']'));
+    let lines: String = (1..=500).map(|n| format!("line {n}\r\n")).collect();
+    attach(&mut app, "ENG-53", &lines);
+    prefix(&mut app, KeyCode::PageUp);
+    prefix(&mut app, KeyCode::Char('['));
+    draw(&mut app, 120, 30);
+    prefix(&mut app, KeyCode::Char('w'));
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(selected(&app), "ENG-53");
+    assert_eq!(app.tickets[app.sel].session.as_ref().unwrap().scrollback(), 0);
+}
+
 #[test]
 fn enter_goes_to_the_chosen_session_and_closes_the_queue() {
     let (mut app, to_session) = at_eng_52();
