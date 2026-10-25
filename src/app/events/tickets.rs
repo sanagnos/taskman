@@ -191,14 +191,85 @@ fn closing_an_agent_remembers_its_conversation() {
 #[test]
 fn a_ticket_running_in_another_terminal_does_not_close() {
     let mut app = acme_app();
+    let files = left_behind("/src/acme", "ENG-52");
     // `taskman resume` holds the claim on ENG-52's session.
-    let outside =
-        resume::take(&resume::owner_file("/src/acme".as_ref(), "ENG-52")).unwrap().unwrap();
+    let outside = held_outside("ENG-52");
     prefix(&mut app, KeyCode::Char('x'));
     assert!(matches!(app.mode, Mode::Normal));
     assert!(toast(&app).is_some_and(|t| t.contains("another terminal")), "{:?}", toast(&app));
     assert_eq!(app.tickets.len(), 7);
+    // A close that gets past the dialog doesn't close it either, nor touch its files.
+    assert!(matches!(app.close_at(index(&app, "ENG-52")), Err(crate::close::Outcome::Elsewhere)));
+    assert!(files.iter().all(|f| f.exists()));
     drop(outside);
+}
+
+/// Closing removes what the ticket's session left in the state folder: the history `ctrl+a v`
+/// saved, its status and its owner file. Keys repeat across projects, so another project's ticket
+/// with the same key keeps its own.
+#[test]
+fn closing_removes_what_its_session_left_but_not_another_projects() {
+    let (mut app, _) = at_eng_52();
+    let ours = left_behind("/src/acme", "ENG-52");
+    let theirs = left_behind("/src/notes", "ENG-52");
+    std::fs::remove_file(&ours[2]).unwrap();
+    prefix(&mut app, KeyCode::Char('v'));
+    assert!(ours[2].exists(), "ctrl+a v saved no history");
+    prefix(&mut app, KeyCode::Char('x'));
+    app.on_key(key(KeyCode::Enter));
+    assert!(!app.tickets.iter().any(|tv| tv.t.key == "ENG-52"));
+    for f in &ours {
+        assert!(!f.exists(), "{} is left", f.display());
+    }
+    for f in &theirs {
+        assert!(f.exists(), "{} is gone", f.display());
+    }
+}
+
+/// Removing the worktree keeps the owner file, as the claim that keeps a new session out of the
+/// folder, until git is done; then it goes.
+#[test]
+fn removing_a_worktree_removes_the_owner_file_once_done() {
+    let (repo, wt) = merged_worktree();
+    let (mut app, _) = at_eng_52();
+    let tv = &mut app.tickets[app.sel];
+    (tv.t.repo, tv.t.cwd, tv.t.created_worktree) = (repo.clone(), wt.clone(), true);
+    let files = left_behind(repo.to_str().unwrap(), "ENG-52");
+    prefix(&mut app, KeyCode::Char('x'));
+    app.on_key(key(KeyCode::Char('r')));
+    settle(&mut app);
+    assert!(!wt.exists());
+    for f in &files {
+        assert!(!f.exists(), "{} is left", f.display());
+    }
+}
+
+/// `taskman close --keep-worktree` keeps the worktree only: the session's files go.
+#[test]
+fn a_close_request_keeping_the_worktree_removes_the_sessions_files() {
+    let wt = store::scratch::dir().join("acme-ENG-52");
+    std::fs::create_dir_all(&wt).unwrap();
+    let mut app = acme_app();
+    let i = index(&app, "ENG-52");
+    let tv = &mut app.tickets[i];
+    (tv.t.cwd, tv.t.created_worktree) = (wt.clone(), true);
+    let files = left_behind("/src/acme", "ENG-52");
+    request(
+        "close-ENG-52",
+        &serde_json::json!({
+            "repo": "/src/acme", "reply_by": crate::util::now() + 60,
+            "items": [{ "kind": "ticket", "key": "ENG-52" }], "close": { "keep_worktree": true },
+        }),
+    );
+    app.take_inbox();
+    app.close_next();
+    app.drain_messages();
+    let expected = format!("Closed ENG-52. Kept {} (--keep-worktree)", store::tilde(&wt));
+    assert_eq!(reply("close-ENG-52")[0].text, expected);
+    assert!(wt.exists());
+    for f in &files {
+        assert!(!f.exists(), "{} is left", f.display());
+    }
 }
 
 /// Claims the pane's session of agent `key`, as a session the pane started holds it.

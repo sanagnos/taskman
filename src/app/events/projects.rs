@@ -381,3 +381,22 @@ fn a_list_that_panics_says_so() {
     let hint = hint_of(&app, "Project");
     assert!(hint.starts_with(&format!("Couldn't list the projects: {BUG}")), "{hint}");
 }
+
+/// Deleting a project removes what its tickets' sessions left in the state folder, except for a
+/// session another terminal runs: its claim stays, so it can't start twice, and so does its
+/// history.
+#[test]
+fn deleting_a_project_removes_its_sessions_files_but_not_a_held_ones() {
+    let mut app = acme_app();
+    let gone = left_behind("/src/acme", "ENG-52");
+    let held = left_behind("/src/acme", "ENG-53");
+    let other = left_behind("/src/notes", "ENG-52");
+    let outside = held_outside("ENG-53");
+    app.delete_project(0);
+    assert!(!app.projects.iter().any(|p| p.name == "acme"));
+    assert!(gone.iter().all(|f| !f.exists()));
+    let [_, owner, history] = &held;
+    assert!(owner.exists() && history.exists());
+    assert!(other.iter().all(|f| f.exists()));
+    drop(outside);
+}

@@ -117,6 +117,22 @@ fn held_outside(key: &str) -> resume::Hold {
     hold
 }
 
+/// Writes what a session of `key` in the project at `repo` leaves in the state folder: its status
+/// file, the owner file of a session that ended, and the history `ctrl+a v` saved. Returns them.
+fn left_behind(repo: &str, key: &str) -> [std::path::PathBuf; 3] {
+    let repo = std::path::Path::new(repo);
+    let files = [
+        store::status_file(repo, key),
+        resume::owner_file(repo, key),
+        store::history_file(repo, key),
+    ];
+    for f in &files {
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(f, "").unwrap();
+    }
+    files
+}
+
 fn owner(key: &str) -> resume::Owner {
     resume::peek(&resume::owner_file("/src/acme".as_ref(), key))
 }
