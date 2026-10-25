@@ -1,8 +1,9 @@
 //! `prefix /`: a one-off jump to a ticket, agent or project by typing. The sidebar narrows to the
-//! cards that match what's typed, ↑/↓ move among them and Enter selects one.
+//! cards that match what's typed, ↑/↓ move among them and Enter selects one. With the sidebar
+//! folded, a picker over the screen lists them instead.
 
 use super::{App, Mode};
-use crate::{keys, untrusted};
+use crate::untrusted;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// The jump box while it's open.
@@ -11,6 +12,8 @@ pub struct Jump {
     pub query: String,
     /// The highlighted match, as an index into `App::jump_matches`.
     pub at: usize,
+    /// The picker's first row in view, as it was last drawn.
+    pub top: usize,
 }
 
 /// What a card is matched on, as the sidebar shows it.
@@ -55,21 +58,20 @@ impl App {
             .collect()
     }
 
+    /// Whether the jump box is a picker over the screen rather than the sidebar's top row: a
+    /// folded sidebar, folded by the user or by a narrow window, has no titles to narrow.
+    pub fn jump_picker(&self) -> bool {
+        self.prefs.sidebar_collapsed || self.areas.sidebar_folded
+    }
+
     pub(super) fn open_jump(&mut self) {
-        if self.prefs.sidebar_collapsed {
-            let msg = format!("Unfold the sidebar to jump ({} b)", keys::prefix());
-            self.warn(msg);
-        } else if self.areas.sidebar_folded {
-            self.warn("The window is too narrow for the sidebar: widen it to jump");
-        } else {
-            self.mode = Mode::Jump(Jump::default());
-            self.sidebar_scroll = Default::default();
-        }
+        self.mode = Mode::Jump(Jump::default());
+        self.sidebar_scroll = Default::default();
     }
 
     pub(super) fn jump_key(&mut self, key: KeyEvent) {
         let Mode::Jump(jump) = &self.mode else { return };
-        let (mut query, at) = (jump.query.clone(), jump.at);
+        let (mut query, at, top) = (jump.query.clone(), jump.at, jump.top);
         let found = self.jump_matches(&query);
         let typed = !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         match key.code {
@@ -80,8 +82,10 @@ impl App {
                     self.select(i);
                 }
             }
-            KeyCode::Up => self.jump_to(query, at.saturating_sub(1)),
-            KeyCode::Down => self.jump_to(query, (at + 1).min(found.len().saturating_sub(1))),
+            KeyCode::Up => self.jump_to(query, at.saturating_sub(1), top),
+            KeyCode::Down => {
+                self.jump_to(query, (at + 1).min(found.len().saturating_sub(1)), top);
+            }
             KeyCode::Backspace => {
                 query.pop();
                 self.jump_edited(query);
@@ -94,13 +98,13 @@ impl App {
         }
     }
 
-    fn jump_to(&mut self, query: String, at: usize) {
-        self.mode = Mode::Jump(Jump { query, at });
+    fn jump_to(&mut self, query: String, at: usize, top: usize) {
+        self.mode = Mode::Jump(Jump { query, at, top });
     }
 
     /// The matches changed: the first is highlighted and the list starts from the top.
     fn jump_edited(&mut self, query: String) {
-        self.jump_to(query, 0);
+        self.jump_to(query, 0, 0);
         self.sidebar_scroll = Default::default();
     }
 

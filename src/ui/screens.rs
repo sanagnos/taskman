@@ -1094,6 +1094,65 @@ fn jump_box_without_a_match() {
     assert_snapshot!(draw(&mut app, 120, 30));
 }
 
+/// With the sidebar folded the jump box is a picker over the screen.
+#[test]
+fn jump_picker_with_the_sidebar_folded() {
+    let mut app = acme_app();
+    draw(&mut app, 80, 24);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char('/')));
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
+#[test]
+fn jump_picker_narrowed() {
+    let mut app = acme_app();
+    draw(&mut app, 80, 24);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char('/')));
+    for c in "sign".chars() {
+        app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char(c)));
+    }
+    app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Down));
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
+#[test]
+fn jump_picker_in_a_narrow_window() {
+    let mut app = acme_app();
+    draw(&mut app, 64, 24);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char('/')));
+    assert_snapshot!(draw(&mut app, 64, 24));
+}
+
+/// A short window, as a split pane: the spare rows round the box go first, and the list keeps
+/// room for a card between its "more" rows.
+#[test]
+fn jump_picker_in_a_short_window() {
+    let mut app = acme_app();
+    draw(&mut app, 80, 14);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char('/')));
+    for _ in 0..3 {
+        app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Down));
+    }
+    assert_snapshot!(draw(&mut app, 80, 14));
+}
+
+/// Scrolled to the last of more cards than fit: the top row counts those above.
+#[test]
+fn jump_picker_scrolled() {
+    let mut app = long_sidebar(20);
+    draw(&mut app, 80, 24);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char('/')));
+    for _ in 0..app.tickets.len() {
+        app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Down));
+    }
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
 /// ENG-53 and notes-writer wait, the second for longer: mid-bucket ages, so they draw the same on
 /// any day.
 fn waiting_app() -> crate::app::App {

@@ -1,0 +1,18 @@
+---
+source: src/ui/screens.rs
+expression: "draw(&mut app, 80, 14)"
+---
+" taskman    │  ENG-52                           /src/acme-ENG-52 eng-52-login   "
+" ╭ Jump to ───────────────────────────────────────────────────────────────────╮ "
+"▾│                                                                            │ "
+" │  /                                                                         │ "
+" │                                                                            │ "
+"┃│   ↑ 2 more                                                              ●  │ "
+" │    ENG-52                acme   Sign in with a magic link     ✓ your turn  │ "
+" │  › ENG-53                acme   Single sign-on for teams      ▲ needs you  │ "
+" │   ↓ 3 more                                                              ●  │ "
+" │                                                                            │ "
+"▸│  ↑/↓ choose   Enter go to it   Esc close                                   │ "
+" │                                                                            │ "
+" ╰────────────────────────────────────────────────────────────────────────────╯ "
+" ^a menu · ^a ^a next waiting · ^a ? help           ▲ 2 need you · ● 2 finished "
