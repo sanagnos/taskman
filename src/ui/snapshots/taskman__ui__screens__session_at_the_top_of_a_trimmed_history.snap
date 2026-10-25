@@ -2,9 +2,9 @@
 source: src/ui/screens.rs
 expression: "draw(&mut app, 80, 24)"
 ---
-" taskman    │  ENG-70                            /src/acme-ENG-70 eng-70-work   "
-"            │ line 80                      ↑ 10000 lines back · type to return  "
-"▾ acme      │ line 81      Older output: ctrl+o shows Claude's full transcript  "
+" taskman    │  ENG-70                     ↑ 10000 lines back · type to return   "
+"            │ line 80      Older output: ctrl+o shows Claude's full transcript  "
+"▾ acme      │ line 81                                                           "
 " ✦lead ●    │ line 82                                                           "
 " ✦release… ○│ line 83                                                           "
 " ENG-52 ✓   │ line 84                                                           "

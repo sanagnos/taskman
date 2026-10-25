@@ -361,6 +361,9 @@ impl App {
             }
             return;
         }
+        if self.scroll_key(&key) {
+            return;
+        }
         let tv = &mut self.tickets[self.sel];
         if let Some(s) = tv.session.as_ref().filter(|s| !s.exited()) {
             tv.status.key(tv.t.cli, &key, || s.screen_count("Interrupted"));
@@ -581,16 +584,75 @@ impl App {
         self.save();
     }
 
+    /// `prefix PgUp` and `PgDn`: a page of the session's history, after which the keys go on
+    /// scrolling without the prefix (`scroll_key`). A full-screen CLI keeps its history itself,
+    /// so it gets the key.
     fn page_claude(&mut self, up: bool) {
-        let half = i32::from(self.areas.claude.height) / 2;
-        let Some(s) = self.tickets.get(self.sel).and_then(|tv| tv.session.as_ref()) else { return };
+        let page = self.page();
+        let Some(tv) = self.tickets.get(self.sel) else { return };
+        let Some(s) = tv.session.as_ref() else { return };
         if s.wants_mouse() {
             if !s.write(if up { b"\x1b[5~" } else { b"\x1b[6~" }) {
                 self.warn(NOT_SENT);
             }
         } else {
-            s.scroll(if up { half } else { -half });
+            s.scroll(if up { page } else { -page });
+            self.scrolling = Some((tv.t.repo.clone(), tv.t.key.clone()));
         }
+    }
+
+    /// A page of the session's pane: its height less a row, which stays in view as the context.
+    fn page(&self) -> i32 {
+        (i32::from(self.areas.claude.height) - 1).max(1)
+    }
+
+    /// Whether the keys scroll the selected session's history: `prefix PgUp` scrolled it back,
+    /// it isn't back at the bottom, and it hasn't gone full-screen since.
+    pub fn scrolling_back(&self) -> bool {
+        let Some(s) = self.selected().and_then(|tv| tv.session.as_ref()) else { return false };
+        self.scrolling_here() && !s.exited() && !s.wants_mouse() && s.scrollback() > 0
+    }
+
+    /// Whether `prefix PgUp` last scrolled the selected session, rather than another one, which
+    /// keeps its scrollback for when it's selected again.
+    fn scrolling_here(&self) -> bool {
+        let here = |tv: &super::TicketView| {
+            self.scrolling.as_ref().is_some_and(|(repo, key)| tv.t.is(repo, key))
+        };
+        self.selected().is_some_and(here)
+    }
+
+    /// Keyboard scrollback: PgUp/PgDn move the view a page, ↑/↓ a row, Home/End to the top or
+    /// bottom of the history, and Esc returns to the bottom, none of them reaching the session.
+    /// True when it used the key. Any other key ends it and goes on to the session, which returns
+    /// the view to the bottom as typing always has: letters are typing, so none of them scroll.
+    fn scroll_key(&mut self, key: &KeyEvent) -> bool {
+        if !self.scrolling_back() {
+            if self.scrolling_here() {
+                self.scrolling = None;
+            }
+            return false;
+        }
+        let page = self.page();
+        let delta = match key.code {
+            _ if !key.modifiers.is_empty() => None,
+            KeyCode::PageUp => Some(page),
+            KeyCode::PageDown => Some(-page),
+            KeyCode::Up => Some(1),
+            KeyCode::Down => Some(-1),
+            KeyCode::Home => Some(i32::MAX),
+            KeyCode::End | KeyCode::Esc => Some(i32::MIN),
+            _ => None,
+        };
+        let Some(s) = self.tickets[self.sel].session.as_ref() else { return false };
+        if let Some(delta) = delta {
+            s.scroll(delta);
+        }
+        // Back at the bottom it ends, so the wheel scrolling back later doesn't take the keys.
+        if delta.is_none() || s.scrollback() == 0 {
+            self.scrolling = None;
+        }
+        delta.is_some()
     }
 
     fn open_ticket(&mut self) {
@@ -641,6 +703,7 @@ impl App {
             Mode::Normal if !self.prefix => {
                 // Like a key, a paste ends the selection.
                 self.selection = None;
+                self.scrolling = None;
                 if let Some(s) = self.tickets.get(self.sel).and_then(|tv| tv.session.as_ref()) {
                     s.reset_scroll();
                     if !s.paste(text) {

@@ -1390,7 +1390,7 @@ fn draw_help(f: &mut Frame, app: &mut App) {
         ("R / t", "restart the session / hand it to another terminal"),
         ("M", "run in the main checkout when the worktree failed"),
         ("e", "rename the current agent"),
-        ("PgUp/PgDn", "scroll the session's history"),
+        ("PgUp/PgDn", "scroll back, then PgUp/PgDn ↑/↓ Home/End go on"),
         ("v", "open the session's history in $EDITOR"),
         ("l", "list links (ticket, PR, session) to open or copy"),
         ("~", "notices: what the footer showed, newest first"),
