@@ -57,9 +57,11 @@ pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
     app.sidebar_hits.clear();
     let collapsed = app.prefs.sidebar_collapsed || app.areas.sidebar_folded;
 
-    // The jump box takes the title's rows.
+    // The jump box takes the title's rows, unless it's the picker over the screen.
     let mut narrowed = None;
-    if let Mode::Jump(j) = &app.mode {
+    if let Mode::Jump(j) = &app.mode
+        && !app.jump_picker()
+    {
         let cards = app.jump_matches(&j.query);
         narrowed = Some(Narrowed { focus: cards.get(j.at).copied(), cards });
         draw_jump_box(f, &j.query, inner);
