@@ -20,6 +20,8 @@ pub struct Callbacks {
     pub clipboard: Option<ClipboardWrite>,
     /// Why clipboard requests weren't forwarded since `take_clipboard`, each once.
     pub refused: Vec<Refused>,
+    /// Whether this is the selected session, the only one whose clipboard writes are kept.
+    pub selected: Selected,
     /// What a colour query is answered with: the terminal's own, as `theme` found them.
     pub colours: crate::theme::Colours,
 }
@@ -34,14 +36,62 @@ impl Callbacks {
     }
 }
 
-/// The most base64 a session's clipboard write may have, so that the whole sequence taskman
-/// writes (`ESC ] 52 ; c ;`, the data, BEL) stays under tmux's `input-buffer-size`, 1 MiB by
-/// default, past which tmux drops it without a word. Claude Code sets no limit of its own, and
-/// other terminals take more, but taskman is often run in tmux. 750 KB of text.
+/// The longest clipboard write taskman forwards, as the whole sequence it writes (`ESC ] 52 ;`,
+/// the selection, `;`, the base64 and BEL): a margin under tmux's `input-buffer-size`, 1 MiB
+/// (1,048,576 bytes) by default, past which tmux drops a sequence without a word. Claude Code sets
+/// no limit of its own, and other terminals take more, but taskman is often run in tmux. About
+/// 750 KB of text.
 pub const CLIPBOARD_MAX: usize = 1_000_000;
 
-/// A clipboard write to forward: the selection the session named (`c`, `p`, `s`, a digit, or
-/// none), which vt100 checked, and the base64.
+/// How long the sequence forwarding `data` (base64) for `target` is.
+pub fn sequence_len(target: &str, data: usize) -> usize {
+    "\x1b]52;".len() + target.len() + ";".len() + data + "\x07".len()
+}
+
+/// The selection a session named, each character once, in its order. vt100 lets through only
+/// `c`, `p`, `q`, `s` and the digits 0 to 7, so it's 12 characters at most however long the
+/// request; one with none stays empty, which a terminal takes as its default (`s0` in xterm).
+fn target(ty: &[u8]) -> String {
+    let mut out = String::new();
+    for c in ty.iter().map(|&b| char::from(b)) {
+        if !out.contains(c) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Whether a session is the selected one. Only the App sets it (`App::sync_clipboard_owner`), and
+/// a session's clipboard writes are checked against it as they arrive and again as they're
+/// forwarded (`App::clipboard_to_forward`), so a write can't reach the clipboard from a session
+/// that was in the background at either moment.
+#[derive(Clone, Debug, Default)]
+pub struct Selected(Arc<AtomicBool>);
+
+impl Selected {
+    pub fn get(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+
+    pub fn set(&self, on: bool) {
+        self.0.store(on, Ordering::Release);
+    }
+
+    /// Whether `self` and `other` are the same session's.
+    pub fn is(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// A clipboard write waiting to be forwarded, and the session it came from: None for one of
+/// taskman's own copies.
+#[derive(Debug)]
+pub struct Outgoing {
+    pub write: ClipboardWrite,
+    pub from: Option<Selected>,
+}
+
+/// A clipboard write to forward: the selection the session named (`target`), and the base64.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClipboardWrite {
     pub target: String,
@@ -66,7 +116,7 @@ pub enum Refused {
     Malformed,
     /// A write over `CLIPBOARD_MAX`, with the size of the text it held.
     TooLarge(usize),
-    /// A write from a session that isn't the selected one (`App::take_clipboards`).
+    /// A write from a session that wasn't the selected one when it came or when it was to go.
     Background,
 }
 
@@ -95,7 +145,7 @@ impl Refused {
                 format!("{name} sent a clipboard request taskman can't read; ignored")
             }
             Self::TooLarge(bytes) => {
-                format!("{name} copied {}, more than tmux takes; not copied", size(bytes))
+                format!("{name} copied {}, over taskman's clipboard limit; not copied", size(bytes))
             }
             Self::Background => {
                 format!("{name} tried to copy while in the background; select it and copy again")
@@ -123,15 +173,19 @@ impl vt100::Callbacks for Callbacks {
     // `data` can end the escape sequence it's forwarded in (the tests below hold vt100 to that).
     // The rest goes to `paste_from_clipboard` or `unhandled_osc`.
     fn copy_to_clipboard(&mut self, _: &mut vt100::Screen, ty: &[u8], data: &[u8]) {
+        let target = target(ty);
         // Only the last of a burst matters: each write replaces the clipboard (an empty one
         // clears it).
-        if data.len() > CLIPBOARD_MAX {
+        if !self.selected.get() {
+            self.clipboard = None;
+            self.refuse(Refused::Background);
+        } else if sequence_len(&target, data.len()) > CLIPBOARD_MAX {
             // Refused whole: a cut-off copy would pass for the real thing.
             self.clipboard = None;
             self.refuse(Refused::TooLarge((data.len() * 3 + 2) / 4));
         } else {
-            let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
-            self.clipboard = Some(ClipboardWrite { target: text(ty), data: text(data) });
+            let data = String::from_utf8_lossy(data).into_owned();
+            self.clipboard = Some(ClipboardWrite { target, data });
         }
     }
 
@@ -140,9 +194,7 @@ impl vt100::Callbacks for Callbacks {
     // could read the clipboard. The answer is an empty clipboard, as zellij gives: with none,
     // Neovim and others wait seconds for one. vt100 doesn't say how the request ended, so BEL.
     fn paste_from_clipboard(&mut self, _: &mut vt100::Screen, ty: &[u8]) {
-        self.replies.extend_from_slice(b"\x1b]52;");
-        self.replies.extend_from_slice(ty);
-        self.replies.extend_from_slice(b";\x07");
+        self.replies.extend(format!("\x1b]52;{};\x07", target(ty)).into_bytes());
         self.refuse(Refused::Read);
     }
 
@@ -555,6 +607,26 @@ impl Session {
 
     pub fn title(&self) -> String {
         lock(&self.parser).callbacks().title.clone()
+    }
+
+    pub fn selected(&self) -> Selected {
+        lock(&self.parser).callbacks().selected.clone()
+    }
+
+    /// Refuses its clipboard write waiting to be taken, if any, as one from the background: the
+    /// session stopped being the selected one before it went.
+    pub fn drop_clipboard(&self) {
+        let mut parser = lock(&self.parser);
+        let cb = parser.callbacks_mut();
+        if cb.clipboard.take().is_some() {
+            cb.refuse(Refused::Background);
+        }
+    }
+
+    /// Notes a write of its that was taken but not forwarded, as one from the background, for
+    /// the next `take_clipboard`.
+    pub fn refuse_background(&self) {
+        lock(&self.parser).callbacks_mut().refuse(Refused::Background);
     }
 
     /// The clipboard write to forward, and why any requests weren't.
@@ -992,12 +1064,15 @@ mod tests {
         }
     }
 
+    /// A selected session's screen.
     fn parser(rows: u16, cols: u16) -> Parser {
+        let selected = Selected::default();
+        selected.set(true);
         vt100::Parser::new_with_callbacks(
             crate::term::dim(rows),
             crate::term::dim(cols),
             crate::store::SCROLLBACK,
-            Callbacks::default(),
+            Callbacks { selected, ..Callbacks::default() },
         )
     }
 
@@ -1052,13 +1127,18 @@ mod tests {
     }
 
     /// The selection is forwarded as the session named it, as tmux does: the primary selection,
-    /// several, or none (which a terminal takes as its default).
+    /// several, a cut buffer, or none (which a terminal takes as its default); each character
+    /// once, so however long the request, the selection stays a few characters.
     #[test]
-    fn a_clipboard_write_keeps_its_selection() {
-        for target in ["p", "s", "pc", "0", ""] {
-            let output = format!("\x1b]52;{target};aGVsbG8=\x07");
+    fn a_clipboard_write_keeps_its_selection_each_character_once() {
+        for (asked, target) in
+            [("p", "p"), ("s", "s"), ("pc", "pc"), ("07", "07"), ("", ""), ("ccppc", "cp")]
+        {
+            let output = format!("\x1b]52;{asked};aGVsbG8=\x07");
             assert_eq!(clipboard_of(output.as_bytes()), (write(target, "aGVsbG8="), vec![]));
         }
+        let huge = format!("\x1b]52;{};eA==\x07", "c".repeat(1_000_000));
+        assert_eq!(clipboard_of(huge.as_bytes()), (write("c", "eA=="), vec![]));
     }
 
     /// The clipboard writes vt100 passes on are written into an escape sequence as they are, so
@@ -1089,10 +1169,15 @@ mod tests {
         let mut p = parser(24, 80);
         p.process(b"\x1b]52;c;?\x07\x1b]52;p;?\x1b\\");
         assert_eq!(p.callbacks().replies, b"\x1b]52;c;\x07\x1b]52;p;\x07");
+        // The answer names the selection as a write would, so a long request gets a short one.
+        let mut p = parser(24, 80);
+        p.process(format!("\x1b]52;{};?\x07", "sc".repeat(500_000)).as_bytes());
+        assert_eq!(p.callbacks().replies, b"\x1b]52;sc;\x07");
     }
 
-    /// An ESC ends the sequence there, as in a terminal: what came before it is the write, and the
-    /// rest is ordinary output.
+    /// An ESC ends the sequence there in the vt100 taskman pins (its parser, vte, ends an OSC at
+    /// any ESC): what came before it is a complete write, and the rest is ordinary output. Not
+    /// an injection, as only that base64 goes out, in taskman's own sequence.
     #[test]
     fn an_escape_inside_a_clipboard_write_ends_it() {
         let (clipboard, refused) = clipboard_of(b"\x1b]52;c;aGVs\x1b]0;bG8=\x07");
@@ -1101,25 +1186,33 @@ mod tests {
         assert_eq!(clipboard, write("c", "aGVs"));
     }
 
-    /// The limit is on the base64, and the toast gives the text's size, never the text.
+    /// The limit is on the whole sequence taskman would write, selection included, and the
+    /// toast gives the text's size, never the text.
     #[test]
     fn a_clipboard_write_over_the_limit_is_refused_and_leaves_nothing_to_forward() {
-        let at_limit = "A".repeat(CLIPBOARD_MAX);
-        let (clipboard, refused) = clipboard_of(format!("\x1b]52;c;{at_limit}\x07").as_bytes());
-        assert_eq!((clipboard.map(|w| w.data.len()), refused), (Some(CLIPBOARD_MAX), vec![]));
-        let over = format!("\x1b]52;c;aGVsbG8=\x07\x1b]52;c;{at_limit}AAAA\x07\x1b]52;c;?\x07");
+        let fits = "A".repeat(CLIPBOARD_MAX - sequence_len("c", 0));
+        let (clipboard, refused) = clipboard_of(format!("\x1b]52;c;{fits}\x07").as_bytes());
+        let forwarded = clipboard.map(|w| sequence_len(&w.target, w.data.len()));
+        assert_eq!((forwarded, refused), (Some(CLIPBOARD_MAX), vec![]));
+        // A byte more, or a longer selection, takes it over.
+        for output in [format!("\x1b]52;c;{fits}A\x07"), format!("\x1b]52;pc;{fits}\x07")] {
+            let (clipboard, refused) = clipboard_of(output.as_bytes());
+            assert!(clipboard.is_none());
+            assert!(matches!(refused[..], [Refused::TooLarge(749_994..=749_995)]), "{refused:?}");
+        }
+        let over = format!("\x1b]52;c;aGVsbG8=\x07\x1b]52;c;{fits}AAAA\x07\x1b]52;c;?\x07");
         let (clipboard, refused) = clipboard_of(over.as_bytes());
         assert_eq!(
             (clipboard, &refused[..]),
-            (None, &[Refused::TooLarge(750_003), Refused::Read][..])
+            (None, &[Refused::TooLarge(749_997), Refused::Read][..])
         );
         assert_eq!(
             refused[0].toast("ENG-52"),
-            "ENG-52 copied 750 KB, more than tmux takes; not copied"
+            "ENG-52 copied 750 KB, over taskman's clipboard limit; not copied"
         );
         assert_eq!(
             Refused::TooLarge(3_400_000).toast("x"),
-            "x copied 3.4 MB, more than tmux takes; not copied"
+            "x copied 3.4 MB, over taskman's clipboard limit; not copied"
         );
     }
 

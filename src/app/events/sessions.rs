@@ -820,16 +820,28 @@ fn print(app: &App, key: &str, output: &[u8]) {
     tv.session.as_ref().unwrap().output(output);
 }
 
+/// ENG-52 selected, with ENG-70 running in the background, marked as each pass of the loop marks
+/// them before taking their writes.
+fn eng_52_and_70() -> (App, crate::session::fake::Sent) {
+    let (mut app, to_session) = at_eng_52();
+    attach(&mut app, "ENG-70", SCREEN);
+    app.sync_clipboard_owner();
+    (app, to_session)
+}
+
+const COPIED_BEHIND: &str = "tried to copy while in the background; select it and copy again";
+
 #[test]
 fn a_sessions_clipboard_write_is_forwarded_and_a_read_answered_with_nothing_and_a_warning() {
-    let (mut app, to_session) = at_eng_52();
+    let (mut app, to_session) = eng_52_and_70();
     print(&app, "ENG-52", b"\x1b]52;c;b25l\x07\x1b]52;p;dHdv\x07");
     app.take_clipboards();
     assert_eq!(decoded(&app.clipboard_out), ["two"], "the last of a burst");
-    assert_eq!(app.clipboard_out[0].target, "p", "for the selection it named");
+    assert_eq!(app.clipboard_out[0].write.target, "p", "for the selection it named");
     assert_eq!(toast(&app), None);
+    let forwarded = app.clipboard_to_forward().unwrap();
+    assert_eq!((forwarded.target.as_str(), forwarded.data.as_str()), ("p", "dHdv"));
 
-    app.clipboard_out.clear();
     print(&app, "ENG-52", b"\x1b]52;c;?\x07");
     app.take_clipboards();
     assert!(app.clipboard_out.is_empty());
@@ -844,43 +856,88 @@ fn a_sessions_clipboard_write_is_forwarded_and_a_read_answered_with_nothing_and_
     app.take_clipboards();
     assert_eq!(sent(&to_session), "\x1b]52;c;\x07".repeat(3));
     assert_eq!((toast(&app), app.toast_log.len()), (None, logged));
-    let over = "A".repeat(crate::session::CLIPBOARD_MAX + 4);
+    let over = "A".repeat(crate::session::CLIPBOARD_MAX);
     print(&app, "ENG-52", format!("\x1b]52;c;{over}\x07").as_bytes());
     app.take_clipboards();
-    assert_eq!(toast(&app), Some("ENG-52 copied 750 KB, more than tmux takes; not copied"));
+    assert_eq!(
+        toast(&app),
+        Some("ENG-52 copied 750 KB, over taskman's clipboard limit; not copied")
+    );
     assert!(app.clipboard_out.is_empty());
 }
 
 #[test]
-fn only_the_selected_sessions_clipboard_write_is_forwarded_and_a_background_one_is_warned_of() {
-    let (mut app, _sent) = at_eng_52();
-    attach(&mut app, "ENG-70", SCREEN);
+fn a_background_sessions_write_is_dropped_with_a_warning_even_once_its_selected() {
+    let (mut app, _sent) = eng_52_and_70();
     // ENG-70's write comes last, but it isn't the session in view.
-    print(&app, "ENG-52", b"\x1b]52;c;b25l\x07\x1b]52;c;dHdv\x07");
-    print(&app, "ENG-70", b"\x1b]52;c;dGhyZWU=\x07");
+    print(&app, "ENG-52", b"\x1b]52;c;b25l\x07");
+    print(&app, "ENG-70", b"\x1b]52;c;dHdv\x07");
     app.take_clipboards();
-    assert_eq!(decoded(&app.clipboard_out), ["two"], "the selected session's latest");
-    let warning = "ENG-70 tried to copy while in the background; select it and copy again";
-    assert_eq!(toast(&app), Some(warning));
+    assert_eq!(decoded(&app.clipboard_out), ["one"]);
+    assert_eq!(toast(&app), Some(format!("ENG-70 {COPIED_BEHIND}").as_str()));
+    app.clipboard_to_forward();
 
-    // Not kept for later: selecting it forwards nothing, and it's warned of once a minute.
-    let logged = app.toast_log.len();
-    app.toast = None;
+    // Written in the background, then selected before the loop took it: not kept for later.
     print(&app, "ENG-70", b"\x1b]52;c;dGhyZWU=\x07");
-    app.take_clipboards();
-    assert_eq!((toast(&app), app.toast_log.len()), (None, logged));
     app.sel = app.tickets.iter().position(|tv| tv.t.key == "ENG-70").unwrap();
     app.take_clipboards();
-    assert_eq!(decoded(&app.clipboard_out), ["two"]);
+    assert!(app.clipboard_out.is_empty());
+    // Now in view, its writes go.
     print(&app, "ENG-70", b"\x1b]52;c;Zm91cg==\x07");
     app.take_clipboards();
-    assert_eq!(decoded(&app.clipboard_out), ["two", "four"]);
+    assert_eq!(decoded(&app.clipboard_out), ["four"]);
+}
+
+#[test]
+fn a_selected_sessions_write_is_dropped_when_another_card_is_selected_before_it_goes() {
+    // Selected with a key while the write waited in the session.
+    let (mut app, _sent) = eng_52_and_70();
+    print(&app, "ENG-52", b"\x1b]52;c;b25l\x07");
+    prefix(&mut app, KeyCode::Char(']'));
+    assert_eq!(selected(&app), "ENG-53", "a card with no session");
+    app.take_clipboards();
+    assert!(app.clipboard_out.is_empty());
+    assert_eq!(toast(&app), Some(format!("ENG-52 {COPIED_BEHIND}").as_str()));
+
+    // Selected from the jump box after the loop took the write, before it was forwarded.
+    let (mut app, _sent) = eng_52_and_70();
+    print(&app, "ENG-52", b"\x1b]52;c;b25l\x07");
+    app.take_clipboards();
+    assert_eq!(app.clipboard_out.len(), 1);
+    draw(&mut app, 120, 30);
+    prefix(&mut app, KeyCode::Char('/'));
+    type_text(&mut app, "70");
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(selected(&app), "ENG-70");
+    assert_eq!(app.clipboard_to_forward(), None);
+    app.take_clipboards();
+    assert_eq!(toast(&app), Some(format!("ENG-52 {COPIED_BEHIND}").as_str()));
+
+    // Its session stopped (as closing the ticket stops it) before the write went.
+    let (mut app, _sent) = eng_52_and_70();
+    print(&app, "ENG-52", b"\x1b]52;c;b25l\x07");
+    app.take_clipboards();
+    let i = app.sel;
+    app.tickets[i].stop_session();
+    assert_eq!(app.clipboard_to_forward(), None);
+}
+
+#[test]
+fn taskmans_own_copy_still_goes_when_a_sessions_write_is_dropped() {
+    let (mut app, _sent) = eng_52_and_70();
+    crate::app::test_support::copy(&mut app, "mine");
+    settle(&mut app);
+    print(&app, "ENG-52", b"\x1b]52;c;b25l\x07");
+    app.take_clipboards();
+    assert_eq!(decoded(&app.clipboard_out), ["mine", "one"]);
+    prefix(&mut app, KeyCode::Char(']'));
+    let forwarded = app.clipboard_to_forward().unwrap();
+    assert_eq!((forwarded.target.as_str(), decoded_text(&forwarded)), ("c", "mine".into()));
 }
 
 #[test]
 fn what_several_sessions_had_refused_one_warning_shows_a_read_first() {
-    let (mut app, _sent) = at_eng_52();
-    attach(&mut app, "ENG-70", SCREEN);
+    let (mut app, _sent) = eng_52_and_70();
     print(&app, "ENG-52", b"\x1b]52;z;eA==\x07");
     print(&app, "ENG-70", b"\x1b]52;c;dHdv\x07\x1b]52;c;?\x07");
     let logged = app.toast_log.len();
@@ -888,6 +945,37 @@ fn what_several_sessions_had_refused_one_warning_shows_a_read_first() {
     assert_eq!(toast(&app), Some("ENG-70 asked to read your clipboard; taskman refused"));
     assert_eq!(app.toast_log.len(), logged + 1, "one a pass");
     assert!(app.clipboard_out.is_empty());
+}
+
+/// Keys repeat across projects, so the once-a-minute rule is each card's, not each key's.
+#[test]
+fn the_same_key_in_two_projects_is_warned_of_for_each() {
+    let (mut app, _sent) = eng_52_and_70();
+    let t = serde_json::json!({ "key": "ENG-52", "repo": "/src/notes", "cwd": "/src/notes" });
+    app.tickets.push(super::super::ticket::TicketView::new(serde_json::from_value(t).unwrap()));
+    let other = app.tickets.len() - 1;
+    attach_at(&mut app, other);
+    app.sync_clipboard_owner();
+    app.tickets[app.sel].session.as_ref().unwrap().output(b"\x1b]52;c;?\x07");
+    app.take_clipboards();
+    let read = "ENG-52 asked to read your clipboard; taskman refused";
+    assert_eq!(toast(&app), Some(read));
+    app.toast = None;
+    app.tickets[other].session.as_ref().unwrap().output(b"\x1b]52;c;?\x07");
+    app.take_clipboards();
+    assert_eq!(toast(&app), Some(read), "the other project's ENG-52");
+}
+
+/// Gives the card at `i` a session, as `attach` does by key.
+fn attach_at(app: &mut App, i: usize) {
+    let a = app.areas.claude;
+    app.tickets[i].session = Some(crate::session::Session::fake(a.height, a.width).0);
+}
+
+fn decoded_text(write: &crate::session::ClipboardWrite) -> String {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    String::from_utf8(b64.decode(&write.data).unwrap()).unwrap()
 }
 
 #[test]

@@ -734,7 +734,7 @@ fn run(
         if !app.clipboard_out.is_empty() || app.bell || !app.notify_out.is_empty() {
             let mut out = std::io::stdout();
             // One clipboard: only the last write of the pass would stay on it.
-            if let Some(w) = app.clipboard_out.drain(..).next_back() {
+            if let Some(w) = app.clipboard_to_forward() {
                 let _ = write!(out, "\x1b]52;{};{}\x07", w.target, w.data);
             }
             if std::mem::take(&mut app.bell) {

@@ -29,26 +29,53 @@ const TMUX_ENV: [&str; 8] = [
 ];
 
 impl App {
-    /// Queues the selected session's newest clipboard write for the terminal, and warns of a
-    /// request the sessions had refused (`session::Refused`): one a pass, the one that matters
-    /// most, and once a minute at most for each session and why, so a program that keeps asking
-    /// can't flood the toasts. Only the session in view may set the clipboard, as in tmux and
-    /// foot: a program in one the user isn't looking at could otherwise replace what they just
-    /// copied, or put there what they'd paste into a shell. Its write is dropped, not kept for
-    /// later, when it would be just as unexpected.
+    /// Marks the selected session as the one whose clipboard writes are kept, and the one marked
+    /// before as not, dropping the write it had waiting. Only the session in view may set the
+    /// clipboard, as in tmux and foot: a program in one the user isn't looking at could otherwise
+    /// replace what they just copied, or put there what they'd paste into a shell. Called before
+    /// writes are taken and again before they're forwarded, so whatever changed the selection
+    /// meanwhile (a key, a click, the jump box, a ticket closed) is caught either way.
+    pub(super) fn sync_clipboard_owner(&mut self) {
+        let owner =
+            self.tickets.get(self.sel).and_then(|tv| tv.session.as_ref()).map(Session::selected);
+        let unchanged = match (&owner, &self.clipboard_owner) {
+            (Some(new), Some(old)) => new.is(old),
+            (new, old) => new.is_none() && old.is_none(),
+        };
+        if unchanged {
+            return;
+        }
+        if let Some(old) = self.clipboard_owner.take() {
+            old.set(false);
+            if let Some(s) = self.session_of(&old) {
+                s.drop_clipboard();
+            }
+        }
+        if let Some(new) = &owner {
+            new.set(true);
+        }
+        self.clipboard_owner = owner;
+    }
+
+    /// The session whose `Selected` is `selected`, if it's still running.
+    fn session_of(&self, selected: &session::Selected) -> Option<&Session> {
+        self.tickets.iter().filter_map(|tv| tv.session.as_ref()).find(|s| s.selected().is(selected))
+    }
+
+    /// Queues the selected session's clipboard write for the terminal, and warns of a request
+    /// the sessions refused (`session::Refused`): one a pass, the one that matters most, and once
+    /// a minute at most for each session and why, so a program that keeps asking can't flood the
+    /// toasts. A background session's write was refused as it came (`session::Selected`), and is
+    /// dropped, not kept for when it's selected, which would be as unexpected.
     pub(super) fn take_clipboards(&mut self) {
+        self.sync_clipboard_owner();
         let now = Instant::now();
-        let mut forward = None;
         let mut warning: Option<(usize, session::Refused)> = None;
         for (i, tv) in self.tickets.iter().enumerate() {
             let Some(s) = &tv.session else { continue };
-            let (write, mut refused) = s.take_clipboard();
+            let (write, refused) = s.take_clipboard();
             if let Some(write) = write {
-                if i == self.sel {
-                    forward = Some(write);
-                } else {
-                    refused.push(session::Refused::Background);
-                }
+                self.clipboard_out.push(session::Outgoing { write, from: Some(s.selected()) });
             }
             for why in refused {
                 if warn_due(&tv.clipboard_warned, why, now)
@@ -58,7 +85,6 @@ impl App {
                 }
             }
         }
-        self.clipboard_out.extend(forward);
         if let Some((i, why)) = warning {
             let tv = &mut self.tickets[i];
             tv.clipboard_warned.retain(|(w, _)| !w.same(why));
@@ -66,6 +92,25 @@ impl App {
             let msg = why.toast(tv.t.display());
             self.warn(msg);
         }
+    }
+
+    /// The clipboard write to send the terminal now: the last queued whose session is still the
+    /// selected one (taskman's own copies always are). The others are dropped, and warned of
+    /// with the next `take_clipboards`.
+    pub fn clipboard_to_forward(&mut self) -> Option<session::ClipboardWrite> {
+        self.sync_clipboard_owner();
+        let mut last = None;
+        for out in std::mem::take(&mut self.clipboard_out) {
+            match out.from {
+                Some(from) if !from.get() => {
+                    if let Some(s) = self.session_of(&from) {
+                        s.refuse_background();
+                    }
+                }
+                _ => last = Some(out.write),
+            }
+        }
+        last
     }
 
     pub(super) fn ensure_selected_session(&mut self) {

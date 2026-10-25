@@ -400,7 +400,8 @@ impl App {
                 }
                 Msg::Copied(text, copied, label) => {
                     if copied == selection::Copied::Osc52 {
-                        self.clipboard_out.push(crate::session::ClipboardWrite::own(&text));
+                        let write = crate::session::ClipboardWrite::own(&text);
+                        self.clipboard_out.push(crate::session::Outgoing { write, from: None });
                     }
                     toasts.push((
                         Level::Info,
