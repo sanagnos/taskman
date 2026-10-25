@@ -23,11 +23,37 @@ pub struct Callbacks {
 
 impl vt100::Callbacks for Callbacks {
     fn set_window_title(&mut self, _: &mut vt100::Screen, title: &[u8]) {
-        self.title = String::from_utf8_lossy(title).trim().to_string();
+        self.title = crate::untrusted::line(&String::from_utf8_lossy(title)).trim().to_string();
     }
 
     fn copy_to_clipboard(&mut self, _: &mut vt100::Screen, _ty: &[u8], data: &[u8]) {
-        self.clipboard.push(String::from_utf8_lossy(data).into_owned());
+        // OSC 52 clipboard payloads from a session are limited to 100 KB and capped at 16 queued
+        // items, and must contain only valid base64 characters.
+        const MAX_CLIPBOARD_BYTES: usize = 100 * 1024;
+        const MAX_QUEUED_CLIPBOARD: usize = 16;
+        if data.len() > MAX_CLIPBOARD_BYTES || self.clipboard.len() >= MAX_QUEUED_CLIPBOARD {
+            return;
+        }
+        let is_valid = data.iter().all(|&b| {
+            b.is_ascii_alphanumeric()
+                || b == b'+'
+                || b == b'/'
+                || b == b'='
+                || b == b'\r'
+                || b == b'\n'
+                || b == b' '
+        });
+        if !is_valid {
+            return;
+        }
+        let clean: String = data
+            .iter()
+            .filter(|&&b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'=')
+            .map(|&b| b as char)
+            .collect();
+        if !clean.is_empty() {
+            self.clipboard.push(clean);
+        }
     }
 
     fn unhandled_csi(
@@ -897,6 +923,30 @@ mod tests {
             let rows: Vec<String> = p.screen().rows(0, 80).collect();
             assert!(rows[23].starts_with("\u{26a0}\u{fe0f}"), "{then:?}: {rows:?}");
         }
+    }
+
+    #[test]
+    fn clipboard_accepts_valid_base64_and_rejects_invalid_or_oversized() {
+        let mut p = parser(24, 80);
+        // Valid base64 OSC 52
+        p.process(b"\x1b]52;c;aGVsbG8=\x07");
+        assert_eq!(p.callbacks().clipboard, ["aGVsbG8="]);
+
+        // Non-base64 characters are rejected
+        p.process(b"\x1b]52;c;evil*escape;test\x07");
+        assert_eq!(p.callbacks().clipboard, ["aGVsbG8="]);
+
+        // Oversized payload (> 100 KB) is rejected
+        let huge = "A".repeat(101 * 1024);
+        p.process(format!("\x1b]52;c;{huge}\x07").as_bytes());
+        assert_eq!(p.callbacks().clipboard, ["aGVsbG8="]);
+    }
+
+    #[test]
+    fn window_title_is_sanitized_against_untrusted_bidi_and_controls() {
+        let mut p = parser(24, 80);
+        p.process("\x1b]2;Hello\u{202e}World\x07".as_bytes());
+        assert_eq!(p.callbacks().title, "HelloWorld");
     }
 
     mod props {
