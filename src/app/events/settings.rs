@@ -11,19 +11,19 @@ fn cursor(app: &App) -> SettingsItem {
 fn the_settings_list_wraps_around_and_keeps_the_cursor_in_view() {
     let mut app = many_projects(30);
     app.open_settings(SettingsItem::General, false);
-    assert!(draw(&mut app, 80, 24).contains("Prefix and updates"));
+    assert!(draw(&mut app, 80, 24).contains("▸ General"));
     // ↑ from the first item goes to the last, scrolled into view.
     app.on_key(key(KeyCode::Up));
     assert_eq!(cursor(&app), SettingsItem::Help);
     let screen = draw(&mut app, 80, 24);
     assert!(screen.contains("▸ Help & feedback"), "{screen}");
-    assert!(!screen.contains("Prefix and updates"), "{screen}");
+    assert!(!screen.contains("General"), "{screen}");
     // ↓ from the last goes back to the first, at the top of the list again.
     app.on_key(key(KeyCode::Down));
     assert_eq!(cursor(&app), SettingsItem::General);
     let screen = draw(&mut app, 80, 24);
     assert!(screen.contains("│ GENERAL"), "{screen}");
-    assert!(screen.contains("▸ Prefix and updates"), "{screen}");
+    assert!(screen.contains("▸ General"), "{screen}");
     // Stepping down the projects, each one shows as it's reached.
     for p in 0..30 {
         app.on_key(key(KeyCode::Down));

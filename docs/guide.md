@@ -168,13 +168,13 @@ The Add form opens on Type, set to Agent; ←/→ switches it to Ticket. What yo
 |---|---|
 | `ctrl+a [` / `]` | switch ticket |
 | `ctrl+a {` / `}` | move the selected agent or ticket up / down, then keep going (see [Sidebar](#sidebar)) |
-| `ctrl+a ctrl+a` | jump to the next ticket waiting on you (`ctrl+a Tab` too) |
-| `ctrl+a w` | list every session waiting on you, oldest first, with how long, why and what it asks (see below) |
+| `ctrl+a ctrl+a` | jump to the next ticket that needs you, else the next whose turn finished (`ctrl+a Tab` too) |
+| `ctrl+a w` | list every session that needs you, oldest first, with how long, why and what it asks (see below) |
 | `ctrl+a /` | jump to a ticket, agent or project by typing (see below) |
 | `ctrl+a n` / `x` | add / close a ticket |
-| `ctrl+a ,` | settings: prefix key, updates, notifications, projects and accounts; help and feedback |
+| `ctrl+a ,` | settings: prefix key, updates, sessions, theme, notifications, projects and accounts; help and feedback |
 | `ctrl+a P` / `A` / `z` | new project / new account / fold the current project |
-| `ctrl+a j` / `c` / `g` / `b` | toggle the tracker panel, its comments, the PR panel; collapse the sidebar. On an agent, `j`, `c` and `g` change the panels tickets show, and say so; its board shows while the tracker or PR panel is on |
+| `ctrl+a j` / `c` / `g` / `b` | toggle the tracker panel, its comments, the PR panel; collapse the sidebar. On a ticket whose tracker or PR panel can't show (no tracker, no GitHub remote, `gh` missing or logged out), `j` or `g` says why and leaves the panel on for the tickets that have one. On an agent, `j`, `c` and `g` change the panels tickets show, and say so; its board shows while the tracker or PR panel is on |
 | `ctrl+a o` / `p` | open the ticket / PR in your browser (a Local files ticket opens in `$EDITOR`) |
 | `ctrl+a r` / `m` | refresh now (and check GitHub again) / take the `●` off comments that were new |
 | `ctrl+a PgUp` / `PgDn` | scroll the session's history half a pane; the mouse wheel over a pane scrolls it too. A full-screen CLI gets the key itself |
@@ -189,7 +189,7 @@ The Add form opens on Type, set to Agent; ←/→ switches it to Ticket. What yo
 
 ### The waiting queue
 
-`ctrl+a w` lists every session that asks you something, the one that has waited longest first. A row shows the key (or the agent's name) and project, how long it has waited, why (`permission` for a permission prompt, `question` for questions and plans) and what it asks for: for a permission prompt the tool and its command, path or input (`Bash: cargo test`), cut to fit, otherwise the session's message. ↑/↓ choose a row, Enter selects that session and closes the list, Esc closes it. The list follows the sessions while it's open, and with nothing waiting `ctrl+a w` says so instead of opening. It doesn't answer prompts: Claude's prompts have more choices than yes and no, and one key approving across sessions would widen what a key approves. A session that has waited a minute shows its time in the sidebar in place of "needs you" (`▲ 4m`). `ctrl+a ctrl+a` still goes to the next one in the sidebar's order.
+`ctrl+a w` lists every session that asks you something, the one that has waited longest first. A row shows the key (or the agent's name) and project, how long it has waited, why (`permission` for a permission prompt, `question` for questions and plans) and what it asks for: for a permission prompt the tool and its command, path or input (`Bash: cargo test`), cut to fit, otherwise the session's message. ↑/↓ choose a row, Enter selects that session and closes the list, Esc closes it. The list follows the sessions while it's open, and with nothing that needs you `ctrl+a w` says so instead of opening, with how many finished a turn you haven't looked at. It doesn't answer prompts: Claude's prompts have more choices than yes and no, and one key approving across sessions would widen what a key approves. A session that has waited a minute shows its time in the sidebar in place of "needs you" (`▲ 4m`). `ctrl+a ctrl+a` still goes to the next one in the sidebar's order.
 
 ### Notifications
 
@@ -212,7 +212,7 @@ Setting it up:
 
 ### Notices
 
-The footer shows what taskman has to say as a toast. A message that says what you just did stays 4 seconds. One that says something didn't go as asked (no PR yet, a key that isn't a command) is in yellow and stays as long; an error (a worktree that couldn't be created, a file that couldn't be written) is in red and stays until your next key, and a later message doesn't replace it. The count of sessions waiting on you stays beside it. A message too long for the row wraps onto the blank row above it, or, on a short window, is cut and ends with `ctrl+a ~ lists it`. `ctrl+a ~` lists them as notices, the last 200 newest first, so one that went by while you were typing in a session can be read again (as tmux's prefix `~` shows its messages). On keyboard layouts where `~` is a dead key, press `~` then Space.
+The footer shows what taskman has to say as a toast. A message that says what you just did stays 4 seconds. One that says something didn't go as asked (no PR yet, a key that isn't a command) is in yellow and stays as long; an error (a worktree that couldn't be created, a file that couldn't be written) is in red and stays until your next key, and a later message doesn't replace it. The count of the other sessions waiting on you stays beside it: `▲ 2 need you` for those asking you something, as `ctrl+a w` lists them, and `● 1 finished` for turns that finished, or sessions that ended, since you last looked. A message too long for the row wraps onto the blank row above it, or, on a short window, is cut and ends with `ctrl+a ~ lists it`. `ctrl+a ~` lists them as notices, the last 200 newest first, so one that went by while you were typing in a session can be read again (as tmux's prefix `~` shows its messages). On keyboard layouts where `~` is a dead key, press `~` then Space.
 
 ### Jumping by typing
 

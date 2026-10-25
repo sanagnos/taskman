@@ -25,6 +25,6 @@ expression: "crate::app::test_support::draw_cursor(&mut app, 80, 24)"
 "            │                                                                   "
 "            │                                                                   "
 "            │                                                                   "
-" ^a menu · ^a ^a next waiting · ^a ? help                    ▲ 4 waiting on you "
+" ^a menu · ^a ^a next waiting · ^a ? help           ▲ 2 need you · ● 2 finished "
 
 cursor at row 13, column 74, on "d"

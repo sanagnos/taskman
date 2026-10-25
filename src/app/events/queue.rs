@@ -67,7 +67,30 @@ fn with_nothing_waiting_the_queue_says_so() {
     }
     prefix(&mut app, KeyCode::Char('w'));
     assert!(matches!(app.mode, Mode::Normal));
-    assert_eq!(toast(&app), Some("Nothing is waiting on you"));
+    assert_eq!(toast(&app), Some("Nothing needs you"));
+}
+
+/// The footer counts a finished turn apart from what needs you, and `prefix w`, which lists only
+/// the latter, says where the finished ones are.
+#[test]
+fn the_footer_and_the_queue_agree_on_a_finished_turn() {
+    let mut app = acme_app();
+    for tv in &mut app.tickets {
+        tv.status.state = AgentState::Idle;
+    }
+    let i = index(&app, "ENG-61");
+    app.tickets[i].status.state = AgentState::Done;
+    app.tickets[i].status.seen = false;
+    let footer = draw(&mut app, 120, 30).lines().last().unwrap_or_default().to_string();
+    assert!(footer.ends_with("● 1 finished \""), "{footer}");
+    assert!(!footer.contains("needs you"), "{footer}");
+    prefix(&mut app, KeyCode::Char('w'));
+    assert!(matches!(app.mode, Mode::Normal));
+    assert_eq!(toast(&app), Some("Nothing needs you; 1 finished: ctrl+a ctrl+a goes to it"));
+    waits(&mut app, "ENG-53", 270, None);
+    let footer = draw(&mut app, 120, 30).lines().last().unwrap_or_default().to_string();
+    assert!(footer.ends_with("▲ 1 needs you · ● 1 finished \""), "{footer}");
+    assert_eq!(rows(&app), ["ENG-53"]);
 }
 
 #[test]
