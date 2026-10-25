@@ -1,0 +1,60 @@
+---
+source: src/ui/screens.rs
+expression: "draw_colours(&mut app, 80, 24)"
+---
+" taskman    │  ENG-52                           /src/acme-ENG-52 eng-52-login   "
+"            │                                                                   "
+"▾ acme      │              The Claude session for ENG-52 has ended.             "
+" ╭ Add ───────────────────────────────────────────────────────────────────────╮ "
+" │                                                                            │ "
+"┃│  Project  ‹ acme ›                                                         │ "
+" │           ←/→ to change                                                    │ "
+" │  Type     ‹ Agent ›                                                        │ "
+" │           a ticket's session, or an agent with no ticket                   │ "
+" │  CLI      ‹ Claude ›                                                       │ "
+"▸│           the coding CLI the session runs                                  │ "
+" │  Role                                                                      │ "
+" │           optional: a standing instruction for its brief, e.g. review PRs  │ "
+" │  Name                                                                      │ "
+" │           an agent's name, e.g. oss-planner; ←/→ on Type for a ticket      │ "
+" │                                                                            │ "
+" │                                                                            │ "
+" │  Enter save   Tab next field   ←/→ change choice   ctrl+u clear            │ "
+" │  Esc cancel                                                                │ "
+" │                                                                            │ "
+" ╰────────────────────────────────────────────────────────────────────────────╯ "
+"            │                                                                   "
+"            │                                                                   "
+" ^a menu · ^a ^a next waiting · ^a ? help           ▲ 2 need you · ● 2 finished "
+
+"............a.bbbbbbbb..........................aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.."
+"............a..................................................................."
+"aa..........a..................................................................."
+".cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc."
+".c............................................................................c."
+"dc............................................................................c."
+".c..aaaaaaaaaaaaaaaaaaaaaa....................................................c."
+".c..cccccccccbbbbbbbbb........................................................c."
+".c..aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...................c."
+".c............................................................................c."
+"ac..aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa..................................c."
+".c............................................................................c."
+".c..aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa..c."
+".c............................................................................c."
+".c..aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa......c."
+".c............................................................................c."
+".c............................................................................c."
+".c............................................................................c."
+".c............................................................................c."
+".c............................................................................c."
+".cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc."
+"............a..................................................................."
+"............a..................................................................."
+"eeeffffffffeeeeeffffffffffffffffeeeefffffeeeeeeeeeeegggggggggggggggggggggggggggg"
+a: Indexed(243) on Reset
+b: Black on Cyan
+c: Indexed(24) on Reset
+d: Indexed(24) on Indexed(254)
+e: Reset on Indexed(254)
+f: Indexed(243) on Indexed(254)
+g: Indexed(130) on Indexed(254)

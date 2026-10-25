@@ -146,6 +146,11 @@ fn yellow() -> Color {
     crate::theme::current().yellow
 }
 
+/// Cyan text, or a dark teal or navy where cyan wouldn't read (`Theme::accent`).
+fn accent() -> Color {
+    crate::theme::current().accent
+}
+
 // The colours of GitHub's states, which github.rs gives their glyphs and words.
 
 impl PrState {
@@ -253,14 +258,14 @@ fn sidebar_badge(tv: &TicketView) -> Span<'static> {
 /// The sidebar's badge. A session in another terminal shows its state with `↗`, which alone
 /// means it's there and idle; one that came back waits for Enter.
 fn state_badge(tv: &TicketView) -> Span<'static> {
-    let outside = || Span::styled("↗ outside", Style::new().fg(Color::Cyan));
+    let outside = || Span::styled("↗ outside", Style::new().fg(accent()));
     match tv.away {
         // A finished turn you haven't looked at is still news, asleep or not.
         None if tv.asleep && !(tv.status.state == AgentState::Done && !tv.status.seen) => asleep(),
         None => badge(tv.status.state, tv.status.seen, tv.new),
         Some(Away::Leaving(_)) => Span::styled(format!("{} handing off", spinner()), dim()),
         Some(Away::HandedOff) => outside(),
-        Some(Away::Back) => Span::styled("↩ back", Style::new().fg(Color::Cyan).bold()),
+        Some(Away::Back) => Span::styled("↩ back", Style::new().fg(accent()).bold()),
         Some(Away::Outside) => match tv.status.state {
             AgentState::Idle | AgentState::NotStarted | AgentState::Exited => outside(),
             state => {
@@ -287,7 +292,7 @@ fn badge(state: AgentState, seen: bool, new: bool) -> Span<'static> {
         }
         AgentState::Done => Span::styled(format!("✓ {word}"), Style::new().fg(Color::Green)),
         AgentState::Working => {
-            Span::styled(format!("{} {word}", spinner()), Style::new().fg(Color::Cyan))
+            Span::styled(format!("{} {word}", spinner()), Style::new().fg(accent()))
         }
         // Added by `taskman add` and not looked at yet.
         AgentState::Idle | AgentState::NotStarted if new => {

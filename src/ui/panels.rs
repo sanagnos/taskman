@@ -1,6 +1,6 @@
 //! The right column: the tracker and GitHub panels beside a ticket, the board beside an agent.
 
-use super::{dim, new_label, pr_spans, pr_state, spinner, state_badge, yellow};
+use super::{accent, dim, new_label, pr_spans, pr_state, spinner, state_badge, yellow};
 use crate::app::{AgentState, App, Remote};
 use crate::github::{CheckState, Mergeable, Pr};
 use crate::keys::prefix;
@@ -32,7 +32,7 @@ fn freshness<T>(r: &Remote<T>) -> Line<'static> {
     if r.loading && r.loud {
         return Line::from(Span::styled(
             format!(" {} refreshing ", spinner()),
-            Style::new().fg(Color::Cyan),
+            Style::new().fg(accent()),
         ));
     }
     match r.fetched_at {
@@ -183,7 +183,7 @@ pub(super) fn draw_jira(f: &mut Frame, app: &mut App, area: Rect) {
                 let mut head = new_tag(tv.is_new_jira(&c.id));
                 head.push(Span::styled(
                     untrusted::line(&c.author),
-                    Style::new().fg(Color::Cyan).bold(),
+                    Style::new().fg(accent()).bold(),
                 ));
                 head.push(Span::styled(format!(" · {}", ago_str(&c.created)), dim()));
                 lines.push(Line::from(head));
@@ -426,7 +426,7 @@ pub(super) fn draw_board(f: &mut Frame, app: &mut App, area: Rect) {
             if is_new {
                 row.push(Span::styled("● ", Style::new().fg(yellow()).bold()));
             }
-            row.push(Span::styled(lead.clone(), Style::new().fg(Color::Cyan)));
+            row.push(Span::styled(lead.clone(), Style::new().fg(accent())));
             row.push(Span::raw(truncate(
                 &text,
                 w.saturating_sub(width(&lead) + 2 * usize::from(is_new)),
@@ -579,7 +579,7 @@ fn pr_lines(pr: &Pr, is_new: impl Fn(&str) -> bool) -> Linked {
                 lines.push(Line::from(""));
                 let place = th.line.map_or(th.path.clone(), |l| format!("{}:{l}", th.path));
                 let mut head =
-                    vec![Span::styled(untrusted::line(&place), Style::new().fg(Color::Cyan))];
+                    vec![Span::styled(untrusted::line(&place), Style::new().fg(accent()))];
                 if th.outdated {
                     head.push(Span::styled(" · outdated", dim()));
                 }
@@ -643,10 +643,7 @@ fn pr_lines(pr: &Pr, is_new: impl Fn(&str) -> bool) -> Linked {
             let mut head = new_tag(is_new(&format!("c:{}", c.id)));
             // The author opens the comment.
             let at = head.len();
-            head.push(Span::styled(
-                untrusted::line(&c.author),
-                Style::new().fg(Color::Cyan).bold(),
-            ));
+            head.push(Span::styled(untrusted::line(&c.author), Style::new().fg(accent()).bold()));
             head.push(Span::styled(format!(" · {}", ago_str(&c.when)), dim()));
             lines.push(head);
             lines.link(at, &c.url);
