@@ -1483,7 +1483,7 @@ fn draw_help(f: &mut Frame, app: &mut App) {
     let keys = [
         ("[ / ]", "previous / next ticket"),
         ("{ / }", "move the card; ↑/↓ go on, p moves its project, Enter ends"),
-        (again.as_str(), "next ticket needing you, else one that finished (also tab)"),
+        (again.as_str(), "next ticket needing you, else one whose turn finished (also tab)"),
         ("/", "jump to a ticket, agent or project by typing"),
         ("w", "list the sessions that need you, oldest first, with what they ask"),
         ("n", "add a ticket, or an agent with no ticket"),

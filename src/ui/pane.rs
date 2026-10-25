@@ -533,18 +533,20 @@ pub(super) fn draw_selecting(f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new(msg).style(Style::new().fg(Color::Black).bg(Color::Yellow)), r);
 }
 
-/// The count of other sessions waiting on you, for the footer's right side: ▲ for those that ask
-/// you something, as `prefix w` lists them, and ● for finished turns. None when none is.
-fn waiting_on_you(app: &App) -> Option<String> {
+/// The count of other sessions waiting on you, for the footer's right side, in `room` columns: ▲
+/// for those that ask you something, as `prefix w` lists them, and ● for finished turns. Short of
+/// room, the finished turns go first, then the words. None when none is, or nothing fits.
+fn waiting_on_you(app: &App, room: usize) -> Option<String> {
     let (needs, done) = app.wanting();
-    let mut parts = Vec::new();
-    if needs > 0 {
-        parts.push(format!("▲ {needs} {}", if needs == 1 { "needs you" } else { "need you" }));
-    }
-    if done > 0 {
-        parts.push(format!("● {done} finished"));
-    }
-    (!parts.is_empty()).then(|| format!("{} ", parts.join(" · ")))
+    let asks = format!("▲ {needs} {}", if needs == 1 { "needs you" } else { "need you" });
+    let finished = format!("● {done} finished");
+    let tries = match (needs, done) {
+        (0, 0) => return None,
+        (0, _) => vec![finished, format!("● {done}")],
+        (_, 0) => vec![asks, format!("▲ {needs}")],
+        _ => vec![format!("{asks} · {finished}"), asks, format!("▲ {needs}")],
+    };
+    tries.into_iter().map(|t| format!("{t} ")).find(|t| width(t) <= room)
 }
 
 /// A toast in the footer's row, the waiting count beside it. A message too long for the row wraps
@@ -556,7 +558,7 @@ fn draw_toast(f: &mut Frame, app: &App, toast: &Toast, area: Rect) {
         Level::Error => Style::new().fg(Color::Red).bold(),
     };
     let cols = usize::from(area.width);
-    let right = waiting_on_you(app).filter(|r| width(r) + 8 <= cols);
+    let right = waiting_on_you(app, cols.saturating_sub(8));
     // Room left of the count, with a space between.
     let room = cols - right.as_ref().map_or(0, |r| width(r) + 1);
     let msg = untrusted::line(&toast.msg);
@@ -627,9 +629,7 @@ pub(super) fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         let used: usize = v.iter().map(|s| width(&s.content)).sum();
         // Right-aligned, like a status line's right side, and left out rather than run into
         // the keys.
-        if let Some(right) = waiting_on_you(app)
-            && used + 1 + width(&right) <= usize::from(area.width)
-        {
+        if let Some(right) = waiting_on_you(app, usize::from(area.width).saturating_sub(used + 1)) {
             v.push(Span::raw(" ".repeat(usize::from(area.width) - used - width(&right))));
             v.push(Span::styled(right, Style::new().fg(yellow()).bold()));
         }
@@ -643,7 +643,7 @@ pub(super) fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
 /// on the right. Short of room, the label goes first, then the keys least needed.
 fn scroll_keys(app: &App, cols: u16) -> Line<'static> {
     let cols = usize::from(cols);
-    let right = waiting_on_you(app).filter(|r| width(r) + 30 <= cols);
+    let right = waiting_on_you(app, cols.saturating_sub(30));
     let room = cols - right.as_ref().map_or(0, |r| width(r) + 1);
     // By importance, each drawn only with those before it: the header's badge names Esc too.
     let keys = [("PgUp/PgDn ↑/↓ Home/End", "scroll"), ("other keys", "type"), ("Esc", "live")];
@@ -689,7 +689,12 @@ pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
         ),
         (
             "Projects",
-            &[(",", "settings"), ("P", "new project"), ("A", "new account"), ("z", "fold")],
+            &[
+                (",", "settings, feedback"),
+                ("P", "new project"),
+                ("A", "new account"),
+                ("z", "fold"),
+            ],
         ),
         (
             "Panels",

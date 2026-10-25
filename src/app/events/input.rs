@@ -72,6 +72,25 @@ fn the_prefix_twice_goes_to_what_waits_on_the_user() {
     assert!(!app.projects[1].collapsed);
 }
 
+/// A session handed back waits for Enter alone, as the footer doesn't count it: the prefix twice
+/// passes it by for one that needs the user, then for one that ended unseen.
+#[test]
+fn the_prefix_twice_passes_a_session_handed_back() {
+    let mut app = acme_app();
+    let eng_53 = index(&app, "ENG-53");
+    app.tickets[eng_53].away = Some(Away::Back);
+    app.on_key(ctrl('a'));
+    app.on_key(ctrl('a'));
+    assert_eq!(selected(&app), "notes-writer");
+    let writer = index(&app, "notes-writer");
+    app.tickets[writer].away = Some(Away::Back);
+    app.select(index(&app, "ENG-52"));
+    app.on_key(ctrl('a'));
+    app.on_key(ctrl('a'));
+    // ENG-70 ended and hasn't been looked at.
+    assert_eq!(selected(&app), "ENG-70");
+}
+
 #[test]
 fn says_why_a_sidebar_turned_on_stays_folded() {
     let mut app = acme_app();
