@@ -269,6 +269,14 @@ fn a_narrow_pane_shows_the_short_badge() {
     assert!(header.contains("ENG-70") && header.contains(" ↑ 21 · Esc "), "{screen}");
 }
 
+/// Short of room, scrollback's footer shortens the waiting count as the usual footer does.
+#[test]
+fn scrollback_footer_shortens_the_waiting_count() {
+    let footer = |w| in_keyboard_scrollback(w, 24, "").lines().last().unwrap().to_string();
+    assert!(footer(50).ends_with(" ▲ 2 need you \""), "{}", footer(50));
+    assert!(footer(40).ends_with(" ▲ 2 \""), "{}", footer(40));
+}
+
 /// An ended session scrolled back: Enter resumes it, so the badge says that.
 #[test]
 fn ended_session_scrolled_back() {
@@ -1247,6 +1255,33 @@ fn sidebar_badge_with_the_waiting_age() {
 fn sidebar_badge_with_the_waiting_age_in_the_narrowest_sidebar() {
     let mut app = waiting_app();
     assert_snapshot!(draw(&mut app, 64, 24));
+}
+
+/// Short of room, the footer's count drops the finished turns, then its words, before going.
+#[test]
+fn footer_count_without_the_finished_turns_at_64_columns() {
+    let mut app = acme_app();
+    let screen = draw(&mut app, 64, 24);
+    assert!(screen.lines().last().is_some_and(|l| l.ends_with("▲ 2 need you \"")), "{screen}");
+    assert_snapshot!(screen);
+}
+
+#[test]
+fn footer_count_whole_at_70_columns() {
+    let mut app = acme_app();
+    let screen = draw(&mut app, 70, 24);
+    assert!(screen.contains("▲ 2 need you · ● 2 finished"), "{screen}");
+    assert_snapshot!(screen);
+}
+
+#[test]
+fn footer_count_in_short_at_52_columns() {
+    let mut app = acme_app();
+    let screen = draw(&mut app, 52, 24);
+    assert!(
+        screen.lines().last().is_some_and(|l| l.ends_with(" ▲ 2 \"") && !l.contains("need")),
+        "{screen}"
+    );
 }
 
 /// An error toast is red and keeps the waiting count beside it.

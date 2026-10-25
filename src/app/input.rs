@@ -113,13 +113,15 @@ impl App {
 
     fn next_attention(&mut self) {
         let all = self.ordered(false);
-        let needs = |i: usize| self.tickets[i].status.state == AgentState::Needs;
-        match next_attention_in(&all, self.sel, needs, |i| self.tickets[i].needs_attention()) {
+        // As the footer counts them: a session handed off or back waits for Enter alone.
+        let attention = |i: usize| self.tickets[i].needs_attention();
+        let needs = |i: usize| self.tickets[i].status.state == AgentState::Needs && attention(i);
+        match next_attention_in(&all, self.sel, needs, attention) {
             Some(i) => {
                 self.select(i);
                 self.to_live(i);
             }
-            None => self.toast("Nothing is waiting on you"),
+            None => self.toast("Nothing needs you or finished since you looked"),
         }
     }
 
