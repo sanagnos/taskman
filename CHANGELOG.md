@@ -2,6 +2,16 @@
 
 What changed in each release; a release's notes on GitHub are its section here. What's merged but not released yet is in [changelog.d/](changelog.d/), a file for each change, which the release moves in here. Versions follow Cargo's rule for 0.x: the patch number (0.1.1) for anything compatible, fixes and new features alike, and the minor (0.2.0) for breaking changes, such as changed keys, config or saved-state format, or a removed command.
 
+## 0.1.33 - 2026-10-25
+
+- The footer counts what needs you apart from what finished (`▲ 1 needs you · ● 2 finished`), as `ctrl+a w` lists only the first and now says where the others are. On a ticket whose tracker or PR panel can't show, the first `ctrl+a j` or `ctrl+a g` says why instead of silently turning the panel off. Settings' first item is called General, and Help lists everything in Settings and points to Help & feedback.
+- Closing a ticket, or deleting its project, now deletes the copy of its session's history that `ctrl+a v` saved, and its owner file, from taskman's state folder; they used to stay forever.
+- In a repository with no remote, closing a ticket no longer says the worktree has "unpushed" commits it never had: a commit counts once it's on the branch the main checkout is on, so a worktree whose branch you merged into it is removed with its branch, and one that isn't says `it has 2 commits not on main (no remote)`.
+- After `ctrl+a PgUp`, PgUp/PgDn, ↑/↓ and Home/End keep scrolling the session's history without the prefix, and Esc or typing returns to the bottom; a page is now the pane's height less a line, how far back you are shows in the header instead of over the session's top row, and a scrolled-back session keeps its place when the pane changes size.
+- `ctrl+a /` works with the sidebar folded, at any window width: the jump box opens over the screen, listing the matching cards with their project, title and state.
+- On a light terminal, the selected card's name, focused labels, titles and the other cyan text are a dark teal, readable on the light selection, instead of cyan, which was too faint. On a darker light grey, or when the terminal doesn't say its background, they're navy.
+- In a narrow window the footer's waiting count drops the finished turns, then its words (`▲ 2`), rather than disappearing, and `ctrl+a ctrl+a` no longer picks a session handed back to taskman over one that needs you.
+
 ## 0.1.32 - 2026-10-25
 
 - Only the session you're looking at can set your clipboard: a copy from a session in the background is dropped, with a warning to select it and copy again.

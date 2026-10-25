@@ -1,1 +1,0 @@
-- After `ctrl+a PgUp`, PgUp/PgDn, ↑/↓ and Home/End keep scrolling the session's history without the prefix, and Esc or typing returns to the bottom; a page is now the pane's height less a line, how far back you are shows in the header instead of over the session's top row, and a scrolled-back session keeps its place when the pane changes size.

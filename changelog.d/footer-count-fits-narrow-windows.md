@@ -1,1 +1,0 @@
-- In a narrow window the footer's waiting count drops the finished turns, then its words (`▲ 2`), rather than disappearing, and `ctrl+a ctrl+a` no longer picks a session handed back to taskman over one that needs you.

@@ -1897,7 +1897,7 @@ dependencies = [
 
 [[package]]
 name = "taskman-app"
-version = "0.1.32"
+version = "0.1.33"
 dependencies = [
  "anyhow",
  "base64 0.23.1",

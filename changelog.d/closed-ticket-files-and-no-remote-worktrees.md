@@ -1,2 +1,0 @@
-- Closing a ticket, or deleting its project, now deletes the copy of its session's history that `ctrl+a v` saved, and its owner file, from taskman's state folder; they used to stay forever.
-- In a repository with no remote, closing a ticket no longer says the worktree has "unpushed" commits it never had: a commit counts once it's on the branch the main checkout is on, so a worktree whose branch you merged into it is removed with its branch, and one that isn't says `it has 2 commits not on main (no remote)`.
