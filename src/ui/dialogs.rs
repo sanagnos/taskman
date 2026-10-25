@@ -275,7 +275,7 @@ fn draw_queue(f: &mut Frame, app: &mut App) {
     let shown = (view_h / 2).max(1);
     let first = (at + 1).saturating_sub(shown);
     if rows.is_empty() {
-        text.push(Line::from(Span::styled("Nothing is waiting on you", dim())));
+        text.push(Line::from(Span::styled("Nothing needs you", dim())));
     }
     for (n, &i) in rows.iter().enumerate().skip(first).take(shown) {
         let tv = &app.tickets[i];
@@ -321,7 +321,7 @@ fn draw_queue(f: &mut Frame, app: &mut App) {
     let r = centered(f, w, h);
     f.render_widget(Clear, r);
     f.render_widget(
-        Paragraph::new(text).block(dialog("Waiting on you, oldest first").padding(DIALOG_PAD)),
+        Paragraph::new(text).block(dialog("Needs you, oldest first").padding(DIALOG_PAD)),
         r,
     );
 }
@@ -1305,14 +1305,7 @@ fn draw_settings(f: &mut Frame, app: &mut App) {
         }
         at.push((lines.len(), heading.is_some()));
         let (left, right, new) = match item {
-            SettingsItem::General => {
-                let how = if app.updater.installs_automatically(app.config.auto_update) {
-                    "auto"
-                } else {
-                    "notify"
-                };
-                ("Prefix and updates".to_string(), how.to_string(), false)
-            }
+            SettingsItem::General => ("General".to_string(), String::new(), false),
             SettingsItem::Project(p) => {
                 let proj = &app.projects[*p];
                 let n = app.tickets.iter().filter(|tv| tv.t.repo == proj.repo).count();
@@ -1381,11 +1374,11 @@ fn draw_help(f: &mut Frame, app: &mut App) {
     let keys = [
         ("[ / ]", "previous / next ticket"),
         ("{ / }", "move the card; ↑/↓ go on, p moves its project, Enter ends"),
-        (again.as_str(), "next ticket waiting on you (also tab)"),
+        (again.as_str(), "next ticket needing you, else one that finished (also tab)"),
         ("/", "jump to a ticket, agent or project by typing"),
-        ("w", "list the sessions waiting on you, oldest first, with what they ask"),
+        ("w", "list the sessions that need you, oldest first, with what they ask"),
         ("n", "add a ticket, or an agent with no ticket"),
-        (",", "settings: prefix key, updates, projects, accounts"),
+        (",", "settings: prefix key, updates, sessions, theme, notifications, projects, accounts"),
         ("P / A", "settings, on a new project / account"),
         ("z", "fold / unfold the current project"),
         ("x", "close the current ticket or agent"),
@@ -1497,6 +1490,12 @@ fn draw_help(f: &mut Frame, app: &mut App) {
             }
         }
     }
+    text.push(Line::from(""));
+    let more = format!(
+        "The guide, and where to report a bug or ask for a feature: Settings ({p} ,), then Help \
+         & feedback."
+    );
+    text.extend(wrap_words(&more, inner).into_iter().map(Line::from));
     // Below the text, a blank row and what keys do, which says where you are when it scrolls.
     // Sized for its longest form, so the rows left for the text stay put as it scrolls; without
     // PgUp/PgDn where that keeps it to a row.
