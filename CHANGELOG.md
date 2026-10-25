@@ -2,6 +2,11 @@
 
 What changed in each release; a release's notes on GitHub are its section here. What's merged but not released yet is in [changelog.d/](changelog.d/), a file for each change, which the release moves in here. Versions follow Cargo's rule for 0.x: the patch number (0.1.1) for anything compatible, fixes and new features alike, and the minor (0.2.0) for breaking changes, such as changed keys, config or saved-state format, or a removed command.
 
+## 0.1.32 - 2026-10-25
+
+- Only the session you're looking at can set your clipboard: a copy from a session in the background is dropped, with a warning to select it and copy again.
+- taskman warns, naming the session, when a session asks to read your clipboard (it never passes a read on, nor answers it) or copies more than about 750 KB (over taskman's clipboard limit, so not copied). A session's copy keeps the selection it named, such as the primary one. Session titles are cleaned of characters that hide text (thanks, XdartMc).
+
 ## 0.1.31 - 2026-10-24
 
 - When `gh` doesn't answer within 30 seconds (a keyring locked at login, say), a project keeps the GitHub panel it had, now and at the next start, and Settings says the answer is from before until `ctrl+a r` gets a new one. A project with no GitHub remote keeps saying so, rather than that gh didn't answer.
