@@ -233,17 +233,51 @@ fn session_at_the_top_of_a_trimmed_history() {
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 
-/// Keyboard scrollback (`ctrl+a PgUp`): how far back in the header, in place of the folder, and
-/// the keys in the footer; none of it over the session's rows.
+/// ENG-70 in keyboard scrollback (`ctrl+a PgUp`) on a `w` by `h` screen, its window titled
+/// `title`.
+fn in_keyboard_scrollback(w: u16, h: u16, title: &str) -> String {
+    let mut app = acme_app();
+    select(&mut app, "ENG-70");
+    draw(&mut app, w, h);
+    let lines: String = (1..=100).map(|n| format!("line {n}\r\n")).collect();
+    attach(&mut app, "ENG-70", &format!("\x1b]0;{title}\x07{lines}"));
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(key(KeyCode::PageUp));
+    draw(&mut app, w, h)
+}
+
+/// Keyboard scrollback: how far back in the header, in place of the folder, and the keys in the
+/// footer beside the waiting count; none of it over the session's rows.
 #[test]
 fn session_in_keyboard_scrollback() {
+    assert_snapshot!(in_keyboard_scrollback(80, 24, ""));
+}
+
+/// At 60 columns, under a long window title: the title is cut for the badge, and the footer
+/// keeps the keys that matter most.
+#[test]
+fn session_in_keyboard_scrollback_at_60_columns() {
+    let title = "Refactor the session pane's header and footer layout";
+    assert_snapshot!(in_keyboard_scrollback(60, 24, title));
+}
+
+/// A pane too narrow for the whole badge shows the short one.
+#[test]
+fn a_narrow_pane_shows_the_short_badge() {
+    let screen = in_keyboard_scrollback(40, 24, "");
+    let header = screen.lines().next().unwrap();
+    assert!(header.contains("ENG-70") && header.contains(" ↑ 21 · Esc "), "{screen}");
+}
+
+/// An ended session scrolled back: Enter resumes it, so the badge says that.
+#[test]
+fn ended_session_scrolled_back() {
     let mut app = acme_app();
     select(&mut app, "ENG-70");
     draw(&mut app, 80, 24);
     let lines: String = (1..=100).map(|n| format!("line {n}\r\n")).collect();
-    attach(&mut app, "ENG-70", &lines);
-    app.on_key(crate::app::test_support::ctrl('a'));
-    app.on_key(key(KeyCode::PageUp));
+    attach_ended(&mut app, "ENG-70", &lines, 0);
+    app.tickets[app.sel].session.as_ref().unwrap().scroll(10);
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 

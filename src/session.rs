@@ -300,6 +300,10 @@ pub struct Session {
     /// for; the others' stays set, so their readers don't wake the loop again.
     fresh: Arc<AtomicBool>,
     size: (u16, u16),
+    /// Keyboard scrollback (`App::scroll_key`): `prefix PgUp` scrolled the view back, and the keys
+    /// go on scrolling it. Here rather than on the App, so a restart or a wake, a new session,
+    /// starts without it.
+    keys_scroll: AtomicBool,
 }
 
 impl Session {
@@ -404,6 +408,7 @@ impl Session {
             last_output,
             fresh,
             size: (rows, cols),
+            keys_scroll: AtomicBool::new(false),
         })
     }
 
@@ -435,7 +440,17 @@ impl Session {
         // that output must land on a screen of that size. vt100 0.18 moves rows between the screen
         // and its history on a resize, so the redraw of a CLI that got there first would be
         // taken as drawn on the old screen, and rows of its history overwritten.
-        lock(&self.parser).screen_mut().set_size(crate::term::dim(rows), crate::term::dim(cols));
+        let mut p = lock(&self.parser);
+        let (back, held) = (p.screen().scrollback(), p.screen().scrollback_len());
+        p.screen_mut().set_size(crate::term::dim(rows), crate::term::dim(cols));
+        // vt100 returns the view to the bottom, as xterm does; keep it on the same rows instead,
+        // moved by the rows the resize took into the history or out of it. A full history drops
+        // as many as it takes in, so there it can be off by the rows the height changed by.
+        if back > 0 {
+            let moved = p.screen().scrollback_len().cast_signed() - held.cast_signed();
+            p.screen_mut().set_scrollback(back.saturating_add_signed(moved));
+        }
+        drop(p);
         let _ = self.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
     }
 
@@ -560,10 +575,34 @@ impl Session {
         clippy::cast_possible_wrap,
         reason = "scrollback is capped at the parser's history length, far below i32::MAX"
     )]
+    /// A scroll that starts or ends at the bottom ends keyboard scrollback, so only `prefix PgUp`
+    /// starts it (`scroll_keys`).
     pub fn scroll(&self, delta: i32) {
         let mut p = lock(&self.parser);
         let cur = p.screen().scrollback() as i32;
         p.screen_mut().set_scrollback(usize::try_from(cur.saturating_add(delta)).unwrap_or(0));
+        if cur == 0 || p.screen().scrollback() == 0 {
+            self.keys_scroll.store(false, Ordering::Relaxed);
+        }
+    }
+
+    /// Scrolls by key (`prefix PgUp`, then the keys of `App::scroll_key`), which goes on while the
+    /// view is scrolled back.
+    pub fn scroll_keys(&self, delta: i32) {
+        self.scroll(delta);
+        if self.scrollback() > 0 {
+            self.keys_scroll.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Whether the keys scroll the view: `scroll_keys` scrolled it back, and since then it hasn't
+    /// come back to the bottom (by a scroll, a clear of the history or a resize), gone full-screen
+    /// or ended.
+    pub fn keys_scroll(&self) -> bool {
+        self.keys_scroll.load(Ordering::Relaxed)
+            && !self.exited()
+            && !self.wants_mouse()
+            && self.scrollback() > 0
     }
 
     /// True when the program has turned on mouse reporting (Claude Code's full-screen mode does).
@@ -602,6 +641,7 @@ impl Session {
     }
 
     pub fn reset_scroll(&self) {
+        self.keys_scroll.store(false, Ordering::Relaxed);
         let mut p = lock(&self.parser);
         if p.screen().scrollback() != 0 {
             p.screen_mut().set_scrollback(0);
@@ -933,6 +973,7 @@ pub mod fake {
                 last_output: Arc::new(AtomicU64::new(now_ms())),
                 fresh: Arc::new(AtomicBool::new(false)),
                 size: (rows, cols),
+                keys_scroll: AtomicBool::new(false),
             };
             (session, sent)
         }
