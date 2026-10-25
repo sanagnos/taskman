@@ -1,6 +1,7 @@
 //! The terminal's background, against the binary in a pty with a stub session: a terminal that
-//! says it's white gets a light footer and selection, and a session asking for the background is
-//! told white; one that doesn't say is taken as dark, as before.
+//! says it's white gets a light footer and selection, the selected card's name a dark teal, and a
+//! session asking for the background is told white; one that doesn't say is taken as dark, as
+//! before.
 
 mod common;
 
@@ -26,8 +27,8 @@ fn a_light_terminal_draws_light_and_tells_the_sessions() {
     let footer = tui.with(|t| t.screen().cell(39, 0).map(|c| c.bgcolor()));
     assert_eq!(footer, Some(vt100::Color::Idx(254)));
     let (col, row) = tui.wait_text("┃ ENG-1");
-    let card = tui.with(|t| t.screen().cell(row, col + 2).map(|c| c.bgcolor()));
-    assert_eq!(card, Some(vt100::Color::Idx(254)));
+    let card = tui.with(|t| t.screen().cell(row, col + 2).map(|c| (c.fgcolor(), c.bgcolor())));
+    assert_eq!(card, Some((vt100::Color::Idx(24), vt100::Color::Idx(254))));
 
     tui.send(b"colour\r");
     tui.wait_text("colour ]11;rgb:ffff/ffff/ffff");
@@ -42,6 +43,10 @@ fn a_terminal_that_does_not_say_is_dark() {
     tui.wait_text("stub ready for ENG-1");
     let footer = tui.with(|t| t.screen().cell(39, 0).map(|c| c.bgcolor()));
     assert_eq!(footer, Some(vt100::Color::Idx(236)));
+    // The selected card's name in the terminal's own cyan.
+    let (col, row) = tui.wait_text("┃ ENG-1");
+    let card = tui.with(|t| t.screen().cell(row, col + 2).map(|c| c.fgcolor()));
+    assert_eq!(card, Some(vt100::Color::Idx(6)));
 
     tui.send(b"colour\r");
     tui.wait_text("colour ]11;rgb:1e1e/1e1e/1e1e");

@@ -687,6 +687,19 @@ fn add_form() {
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 
+/// On a white terminal the focused label, like the selected card, is a dark teal rather than
+/// cyan, which is too faint to read on white.
+#[test]
+fn add_form_on_a_light_terminal() {
+    use crate::theme::{Probe, Setting, Theme};
+    let mut app = acme_app();
+    let probe = Probe { fg: Some([0; 3]), bg: Some([255; 3]), colorfgbg: None };
+    app.theme = Theme::new(Setting::Auto, &probe);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(key(KeyCode::Char('n')));
+    assert_snapshot!(draw_colours(&mut app, 80, 24));
+}
+
 /// A name too long for the form, the cursor moved into it: the value scrolls to show the cursor,
 /// cut either side.
 #[test]

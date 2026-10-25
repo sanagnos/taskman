@@ -1,7 +1,7 @@
 //! What draws over the screen: confirm dialogs, links, forms, settings and help.
 
 use super::sidebar::{more_line, scroll_to_show, shown_rows};
-use super::{asleep, badge, dim, selection_bg, spinner};
+use super::{accent, asleep, badge, dim, selection_bg, spinner};
 use crate::app::{AgentAsk, AgentState, App, Form, Level, Mode, Scroll, SettingsItem, toasts};
 use crate::keys::prefix;
 use crate::store::tilde;
@@ -167,7 +167,7 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &mut App) {
                 &format!("Continue {} in a new tmux window?", app.tickets[i].t.display()),
                 vec![
                     Line::from("It runs there with its brief, hooks and name:"),
-                    Line::from(Span::styled(format!("  {line}"), Style::new().fg(Color::Cyan))),
+                    Line::from(Span::styled(format!("  {line}"), Style::new().fg(accent()))),
                     Line::from(Span::styled(
                         "The command is copied too, for any other terminal.",
                         dim(),
@@ -214,7 +214,7 @@ fn draw_links(f: &mut Frame, app: &mut App) {
             Span::raw("  "),
             Span::styled(
                 truncate(&under, room.saturating_sub(util::width(note))),
-                dim().fg(Color::Cyan),
+                dim().fg(accent()),
             ),
             Span::styled(note, dim()),
         ]));
@@ -376,7 +376,7 @@ fn draw_jump_picker(f: &mut Frame, app: &mut App) {
     let query = truncate_start(&untrusted::line(&j.query), room.saturating_sub(2));
     let mut text = vec![
         Line::from(vec![
-            Span::styled("/ ", Style::new().fg(Color::Cyan).bold()),
+            Span::styled("/ ", Style::new().fg(accent()).bold()),
             Span::raw(query.clone()),
         ]),
         Line::from(""),
@@ -705,7 +705,7 @@ fn dialog(title: &str) -> Block<'_> {
     Block::new()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(Color::Cyan))
+        .border_style(Style::new().fg(accent()))
         .title(Span::styled(format!(" {title} "), Style::new().bold()))
 }
 
@@ -1070,7 +1070,7 @@ fn form_lines(form: &Form, active: bool, keys: &[(&str, &str)], width: u16) -> S
     if let Some(note) = &form.note {
         text.extend(
             note.lines()
-                .map(|l| Line::from(Span::styled(l.to_string(), Style::new().fg(Color::Cyan)))),
+                .map(|l| Line::from(Span::styled(l.to_string(), Style::new().fg(accent())))),
         );
         text.push(Line::from(""));
     }
@@ -1089,7 +1089,7 @@ fn form_lines(form: &Form, active: bool, keys: &[(&str, &str)], width: u16) -> S
         let start = text.len();
         starts.push(start);
         let focused = active && i == form.focus;
-        let label_style = if focused { Style::new().fg(Color::Cyan).bold() } else { Style::new() };
+        let label_style = if focused { Style::new().fg(accent()).bold() } else { Style::new() };
         let mut row = if stacked {
             text.push(Line::from(Span::styled(field.label.to_string(), label_style)));
             vec![Span::raw(" ".repeat(col))]
@@ -1434,7 +1434,7 @@ fn draw_settings(f: &mut Frame, app: &mut App) {
         let pad = w.saturating_sub(util::width(&name) + util::width(&right) + 1);
         let base = match (selected, s.editing, new) {
             (true, false, _) => Style::new().fg(Color::Black).bg(Color::Cyan),
-            (true, true, _) => Style::new().fg(Color::Cyan).bold(),
+            (true, true, _) => Style::new().fg(accent()).bold(),
             (false, _, true) => dim(),
             _ => Style::new(),
         };
@@ -1518,8 +1518,8 @@ fn draw_help(f: &mut Frame, app: &mut App) {
         (badge(AgentState::Idle, true, false), "idle or not started"),
         (asleep(), "asleep; selecting wakes it"),
         (Span::styled("✦ lead", Style::new().bold()), "an agent: no ticket"),
-        (Span::styled("↗ outside", Style::new().fg(Color::Cyan)), "in another terminal"),
-        (Span::styled("↩ back", Style::new().fg(Color::Cyan).bold()), "Enter resumes it here"),
+        (Span::styled("↗ outside", Style::new().fg(accent())), "in another terminal"),
+        (Span::styled("↩ back", Style::new().fg(accent()).bold()), "Enter resumes it here"),
     ];
     // Indented under the heading, unless the prefix's name is long enough to need the room.
     let indent = if p.name().len() > "ctrl+a".len() { 0 } else { 2 };
@@ -1541,12 +1541,12 @@ fn draw_help(f: &mut Frame, app: &mut App) {
     text.push(Line::from(""));
     // Each key's description wraps under its own column, or under the key when that column
     // would be too narrow to read.
-    let cyan = Style::new().fg(Color::Cyan);
+    let key_style = Style::new().fg(accent());
     let stacked = inner < indent + key_w + 20;
     for (k, what) in &keys {
         let key = format!("{p} {k}");
         if stacked {
-            text.push(Line::from(Span::styled(format!("{:indent$}{key}", ""), cyan)));
+            text.push(Line::from(Span::styled(format!("{:indent$}{key}", ""), key_style)));
             let under = indent + 4;
             for l in wrap_words(what, inner.saturating_sub(under)) {
                 text.push(Line::from(format!("{:under$}{l}", "")));
@@ -1560,7 +1560,7 @@ fn draw_help(f: &mut Frame, app: &mut App) {
             } else {
                 " ".repeat(col)
             };
-            text.push(Line::from(vec![Span::styled(left, cyan), Span::raw(l)]));
+            text.push(Line::from(vec![Span::styled(left, key_style), Span::raw(l)]));
         }
     }
     text.push(Line::from(""));

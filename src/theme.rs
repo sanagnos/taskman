@@ -1,7 +1,7 @@
 //! The terminal's colours and the ones taskman draws with. At start taskman asks the terminal for
 //! its foreground and background (OSC 10 and 11), else reads COLORFGBG, else takes it to be dark;
-//! the `theme` setting can say light or dark instead. The selection, hints and yellow text are
-//! chosen against that background, and sessions asking for the colours are told the same ones.
+//! the `theme` setting can say light or dark instead. The selection, hints, yellow and cyan text
+//! are chosen against that background, and sessions asking for the colours are told the same ones.
 
 use ratatui::style::Color;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -113,6 +113,10 @@ pub struct Theme {
     /// Toasts and the other yellow text: a dark amber on a light background, where yellow is
     /// unreadable (xterm's is 1.7:1 on white).
     pub yellow: Color,
+    /// The selected card's name, focused labels, titles and the other cyan text: a dark teal or
+    /// navy on a light background, where cyan is the faintest text on the selection (xterm's is
+    /// 1.4:1).
+    pub accent: Color,
 }
 
 impl Default for Theme {
@@ -133,33 +137,67 @@ impl Theme {
         };
         let usual = if light { LIGHT } else { DARK };
         let yellow = if light { Color::Indexed(130) } else { Color::Yellow };
-        let Some(bg) = probe.bg.filter(|&bg| is_light(bg) == light) else {
-            let selection = Color::Indexed(if light { 254 } else { 236 });
-            return Theme { light, colours: usual, selection, hint: Color::DarkGray, yellow };
+        let known = probe.bg.filter(|&bg| is_light(bg) == light);
+        let (colours, selection, hint) = match known {
+            None => (usual, if light { 254 } else { 236 }, Color::DarkGray),
+            Some(bg) => (
+                Colours { fg: probe.fg.unwrap_or(usual.fg), bg },
+                // Faint, but there: 236 on #1e1e1e and 254 on white, as before.
+                grey(bg, 1.25).unwrap_or(if light { 254 } else { 236 }),
+                // WCAG's 4.5:1 for text. The terminal's dark grey can be its background
+                // (Solarized Dark's is), so it's only used when the background isn't known.
+                Color::Indexed(grey(bg, 4.5).unwrap_or(if light { 232 } else { 255 })),
+            ),
         };
-        Theme {
-            light,
-            colours: Colours { fg: probe.fg.unwrap_or(usual.fg), bg },
-            // Faint, but there: 236 on #1e1e1e and 254 on white, as before.
-            selection: grey(bg, 1.25).unwrap_or(Color::Indexed(if light { 254 } else { 236 })),
-            // WCAG's 4.5:1 for text. The terminal's dark grey can be its background (Solarized
-            // Dark's is), so it's only used when the background isn't known.
-            hint: grey(bg, 4.5).unwrap_or(Color::Indexed(if light { 232 } else { 255 })),
-            yellow,
+        // Dark backgrounds keep the terminal's cyan, which dark themes tune to read. On a light
+        // one it's picked against the selection, the darker of the two, so it reads on both.
+        let accent = match known {
+            _ if !light => Color::Cyan,
+            // The background could be any light grey, behind the text off the selection: navy
+            // reads on all but the darkest (and 12:1 on the selection, 254).
+            None => Color::Indexed(18),
+            Some(_) => {
+                let fits = |&i: &u8| contrast(indexed(i), indexed(selection)) >= 4.5;
+                // Else black, which has the most contrast any colour can.
+                Color::Indexed(ACCENTS.into_iter().find(fits).unwrap_or(16))
+            }
+        };
+        let selection = Color::Indexed(selection);
+        Theme { light, colours, selection, hint, yellow, accent }
+    }
+}
+
+/// The accents for a light background, palest first: 24 (#005f87) is 5:1 on the selection on
+/// white or #fafafa; a darker grey (#e7e7e7 and below, such as Tokyo Night Day or tmux's
+/// `bg=white`) takes navy, 18 (#000087); the darkest light greys (#9b9b9b and below) black, 16,
+/// instead. Not 30 (#008787), the nearer teal, which is only 3.1:1 on #dadada.
+const ACCENTS: [u8; 2] = [24, 18];
+
+/// The RGB of a 256-colour palette entry past the 16 that themes change: the 6 by 6 by 6 cube,
+/// then the grey ramp, as xterm defines them.
+fn indexed(i: u8) -> Rgb {
+    match i {
+        232.. => [8 + 10 * (i - 232); 3],
+        16.. => {
+            let level = |c: u8| if c == 0 { 0 } else { 55 + 40 * c };
+            let c = i - 16;
+            [level(c / 36), level(c / 6 % 6), level(c % 6)]
         }
+        // Not used for the 16: what they look like is the terminal's choice.
+        _ => [0; 3],
     }
 }
 
 /// The grey of the 256-colour ramp nearest `bg` (lighter on a dark background, darker on a light
 /// one) that has at least `ratio` contrast with it. The ramp rather than RGB, which some
 /// terminals (macOS Terminal) don't show, and rather than the 16 colours, which themes change.
-fn grey(bg: Rgb, ratio: f64) -> Option<Color> {
+fn grey(bg: Rgb, ratio: f64) -> Option<u8> {
     let light = is_light(bg);
     let ramp = (0..24u8).map(|i| (232 + i, [8 + 10 * i; 3]));
     let enough =
         |&(_, g): &(u8, Rgb)| (luminance(g) < luminance(bg)) == light && contrast(g, bg) >= ratio;
     let found = if light { ramp.rev().find(enough) } else { ramp.into_iter().find(enough) };
-    found.map(|(index, _)| Color::Indexed(index))
+    found.map(|(index, _)| index)
 }
 
 /// WCAG's relative luminance.
@@ -419,6 +457,70 @@ mod tests {
         assert_ne!(solarized.hint, Color::DarkGray);
         // A light background told to be dark isn't believed: the usual dark pair.
         assert_eq!(Theme::new(Setting::Dark, &Probe { bg: Some(WHITE), ..Probe::default() }), dark);
+
+        // Dark keeps the terminal's cyan; light takes the teal, or navy on a darker grey or one
+        // that isn't known.
+        assert_eq!(
+            (dark.accent, vscode.accent, solarized.accent),
+            (Color::Cyan, Color::Cyan, Color::Cyan)
+        );
+        assert_eq!(white.accent, Color::Indexed(24));
+        assert_eq!((light.accent, silver.accent), (Color::Indexed(18), Color::Indexed(18)));
+    }
+
+    /// The selected card's name is the accent on the selection: on light backgrounds, at least
+    /// WCAG's 4.5:1 for text, and more on the background itself (focused labels, titles).
+    #[test]
+    fn the_accent_reads_on_light_backgrounds() {
+        let presets: [(&str, Rgb, u8); 7] = [
+            ("white", WHITE, 24),
+            ("#fafafa (One Half Light, GitHub Light)", [0xfa; 3], 24),
+            ("Solarized Light", [0xfd, 0xf6, 0xe3], 24),
+            ("Tango Light", [0xee, 0xee, 0xec], 24),
+            ("#e5e5e5", [0xe5; 3], 18),
+            ("tmux bg=white", [0xc0; 3], 18),
+            ("#9b9b9b", [0x9b; 3], 16),
+        ];
+        let mut themes: Vec<(&str, Option<Rgb>, u8, Theme)> = presets
+            .iter()
+            .map(|&(name, bg, accent)| {
+                let probe = Probe { fg: None, bg: Some(bg), colorfgbg: None };
+                (name, Some(bg), accent, Theme::new(Setting::Auto, &probe))
+            })
+            .collect();
+        themes.push(("the Light setting", None, 18, Theme::new(Setting::Light, &Probe::default())));
+        let colorfgbg = Probe { colorfgbg: Some(true), ..Probe::default() };
+        themes.push(("COLORFGBG", None, 18, Theme::new(Setting::Auto, &colorfgbg)));
+        for (name, bg, expected, theme) in themes {
+            let (Color::Indexed(accent), Color::Indexed(sel)) = (theme.accent, theme.selection)
+            else {
+                panic!("{name}: {theme:?}");
+            };
+            assert_eq!(accent, expected, "{name}");
+            let on_selection = contrast(indexed(accent), indexed(sel));
+            assert!(on_selection >= 4.5, "{name}: {on_selection:.2}:1 on the selection");
+            let bg = bg.unwrap_or(WHITE);
+            assert!(contrast(indexed(accent), bg) > on_selection, "{name}");
+        }
+        // The darkest light grey: black, as no colour reaches 4.5:1 on its selection (241).
+        let darkest = Probe { fg: None, bg: Some([0x76; 3]), colorfgbg: None };
+        let darkest = Theme::new(Setting::Auto, &darkest);
+        assert!(darkest.light);
+        assert_eq!((darkest.selection, darkest.accent), (Color::Indexed(241), Color::Indexed(16)));
+        assert!(contrast(indexed(16), indexed(241)) > 3.4);
+        // Why not the teal nearer cyan: too faint on #dadada, the selection on #fafafa.
+        assert!(contrast(indexed(30), indexed(253)) < 4.5);
+    }
+
+    #[test]
+    fn palette_entries_as_xterm_draws_them() {
+        assert_eq!(indexed(16), [0; 3]);
+        assert_eq!(indexed(18), [0, 0, 0x87]);
+        assert_eq!(indexed(24), [0, 0x5f, 0x87]);
+        assert_eq!(indexed(231), [0xff; 3]);
+        assert_eq!(indexed(232), [8; 3]);
+        assert_eq!(indexed(253), [0xda; 3]);
+        assert_eq!(indexed(255), [0xee; 3]);
     }
 
     #[test]
