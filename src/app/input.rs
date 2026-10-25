@@ -57,6 +57,21 @@ fn next_attention_in(
 }
 
 impl App {
+    /// `j` or `g` on a ticket: toggles the tracker or PR panel. Where it's on but can't show for
+    /// this ticket, the press leaves it on, as turning it off would hide nothing here, and says
+    /// why instead.
+    fn toggle_panel(&mut self, tracker: bool) {
+        let (on, shows) = if tracker {
+            (self.prefs.show_jira, self.panels().0)
+        } else {
+            (self.prefs.show_gh, self.panels().1)
+        };
+        if !on || shows || self.selected().is_none() {
+            self.toggle(|p| if tracker { &mut p.show_jira } else { &mut p.show_gh });
+        }
+        self.explain_panel(tracker);
+    }
+
     /// After `j` or `g`: says why a panel turned on doesn't show for the selected ticket.
     fn explain_panel(&mut self, tracker: bool) {
         let Some(tv) = self.selected().filter(|tv| tv.t.agent.is_none()) else { return };
@@ -457,14 +472,12 @@ impl App {
                 self.toggle_on_agent(c);
             }
             KeyCode::Char('j') => {
-                self.toggle(|p| &mut p.show_jira);
-                self.explain_panel(true);
+                self.toggle_panel(true);
                 self.explain_narrow(true);
             }
             KeyCode::Char('c') => self.toggle(|p| &mut p.show_comments),
             KeyCode::Char('g') => {
-                self.toggle(|p| &mut p.show_gh);
-                self.explain_panel(false);
+                self.toggle_panel(false);
                 self.explain_narrow(true);
             }
             KeyCode::Char('o') => self.open_ticket(),

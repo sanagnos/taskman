@@ -494,18 +494,18 @@ pub(super) fn draw_selecting(f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new(msg).style(Style::new().fg(Color::Black).bg(Color::Yellow)), r);
 }
 
-/// The sidebar's badge and count of sessions waiting on you, for the footer's right side: ▲ when
-/// one of them asks you something, else ● for finished turns. None when none is.
+/// The count of other sessions waiting on you, for the footer's right side: ▲ for those that ask
+/// you something, as `prefix w` lists them, and ● for finished turns. None when none is.
 fn waiting_on_you(app: &App) -> Option<String> {
-    let waiting: Vec<_> = app
-        .tickets
-        .iter()
-        .enumerate()
-        .filter(|(i, tv)| *i != app.sel && tv.needs_attention())
-        .collect();
-    let needs = waiting.iter().any(|(_, tv)| tv.status.state == AgentState::Needs);
-    let glyph = if needs { '▲' } else { '●' };
-    (!waiting.is_empty()).then(|| format!("{glyph} {} waiting on you ", waiting.len()))
+    let (needs, done) = app.wanting();
+    let mut parts = Vec::new();
+    if needs > 0 {
+        parts.push(format!("▲ {needs} {}", if needs == 1 { "needs you" } else { "need you" }));
+    }
+    if done > 0 {
+        parts.push(format!("● {done} finished"));
+    }
+    (!parts.is_empty()).then(|| format!("{} ", parts.join(" · ")))
 }
 
 /// A toast in the footer's row, the waiting count beside it. A message too long for the row wraps
@@ -610,7 +610,7 @@ pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
                 ("{ }", "move"),
                 (&again, "next waiting"),
                 ("/", "jump"),
-                ("w", "waiting on you"),
+                ("w", "what needs you"),
                 ("n", "add ticket/agent"),
                 ("x", "close"),
             ],

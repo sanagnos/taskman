@@ -5,7 +5,7 @@ expression: screen
 " taskman    │                                               "
 " ╭ Settings ──────────────────────────────────────────────╮ "
 " │ GENERAL                  │ New project                 │ "
-" │  Prefix and upda… notify │ ↑ 7 more                    │ "
+" │  General                 │ ↑ 7 more                    │ "
 " │                          │   Get a token:              │ "
 " │ PROJECTS                 │   https://id.atlassian.com/m│ "
 " │▸ + new project           │   anage-profile/security/api│ "

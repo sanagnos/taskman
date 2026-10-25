@@ -25,4 +25,4 @@ expression: "draw(&mut app, 80, 24)"
 "            │                                                                   "
 "            │                                                                 -e"
 "            │ ⚠️ after                                                          " Hidden by multi-width symbols: [(15, " ")]
-" ^a menu · ^a ^a next waiting · ^a ? help                    ▲ 3 waiting on you "
+" ^a menu · ^a ^a next waiting · ^a ? help           ▲ 2 need you · ● 1 finished "

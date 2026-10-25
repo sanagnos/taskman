@@ -174,12 +174,42 @@ fn prefix_j_toggles_the_tracker_panel_and_says_why_it_does_not_show() {
     assert_eq!(toast(&app), None);
     // Turned on for a ticket whose project has no tracker, it says where to connect one.
     app.projects[0].tracker = None;
+    app.prefs.show_jira = false;
     prefix(&mut app, KeyCode::Char('j'));
+    assert!(app.prefs.show_jira);
+    assert_eq!(
+        toast(&app),
+        Some("This project has no tracker; connect one in its settings (ctrl+a ,)")
+    );
+}
+
+/// Where the panel is on but can't show, the first press says why rather than turn off what
+/// can't be seen.
+#[test]
+fn first_prefix_j_on_a_ticket_without_a_tracker_panel_says_why() {
+    let mut app = acme_app();
+    draw(&mut app, 160, 40);
+    app.projects[0].tracker = None;
     prefix(&mut app, KeyCode::Char('j'));
     assert_eq!(
         toast(&app),
         Some("This project has no tracker; connect one in its settings (ctrl+a ,)")
     );
+    assert!(app.prefs.show_jira);
+}
+
+#[test]
+fn first_prefix_g_on_a_ticket_without_a_pr_panel_says_why() {
+    let mut app = acme_app();
+    draw(&mut app, 160, 40);
+    app.github.insert("/src/acme".into(), crate::github::Gh::LoggedOut);
+    prefix(&mut app, KeyCode::Char('g'));
+    assert_eq!(toast(&app), Some("No PR panel: gh isn't logged in; run gh auth login"));
+    assert!(app.prefs.show_gh);
+    // Where it does show, the key still turns it off.
+    app.github.insert("/src/acme".into(), crate::github::Gh::Ready);
+    prefix(&mut app, KeyCode::Char('g'));
+    assert!(!app.prefs.show_gh && !saved().ui.show_gh);
 }
 
 #[test]
@@ -192,8 +222,9 @@ fn prefix_g_toggles_the_pr_panel_and_says_why_it_does_not_show() {
     assert!(app.prefs.show_gh && saved().ui.show_gh);
     assert_eq!(toast(&app), None);
     app.github.insert("/src/acme".into(), crate::github::Gh::LoggedOut);
+    app.prefs.show_gh = false;
     prefix(&mut app, KeyCode::Char('g'));
-    prefix(&mut app, KeyCode::Char('g'));
+    assert!(app.prefs.show_gh);
     assert_eq!(toast(&app), Some("No PR panel: gh isn't logged in; run gh auth login"));
 }
 

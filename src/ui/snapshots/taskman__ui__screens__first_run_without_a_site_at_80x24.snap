@@ -5,7 +5,7 @@ expression: screen
 " taskman    │                                                                   "
 " ╭ Settings ──────────────────────────────────────────────────────────────────╮ "
 " │ GENERAL                      │ New project                                 │ "
-" │  Prefix and updates   notify │ ↑ 5 more                                    │ "
+" │  General                     │ ↑ 5 more                                    │ "
 " │                              │          with                               │ "
 " │ PROJECTS                     │ Keep in  ‹ Keychain ›                       │ "
 " │▸ + new project               │          ←/→: your macOS Keychain, or a     │ "

@@ -4,6 +4,7 @@
 //! widen what a key approves.
 
 use super::{AgentState, App, Mode};
+use crate::keys;
 use crossterm::event::{KeyCode, KeyEvent};
 
 /// The popover while it's open; the rows are worked out from the sessions each time, so they
@@ -38,9 +39,26 @@ impl App {
         oldest_first(&waiting)
     }
 
+    /// What the footer counts: the other sessions that ask you something, and those whose turn
+    /// finished or that ended since you last looked at them (`TicketView::needs_attention`).
+    pub fn wanting(&self) -> (usize, usize) {
+        let others = self.tickets.iter().enumerate();
+        let wanting = others.filter(|&(i, tv)| i != self.sel && tv.needs_attention());
+        let needs = wanting.clone().filter(|(_, tv)| tv.status.state == AgentState::Needs).count();
+        (needs, wanting.count() - needs)
+    }
+
     pub(super) fn open_queue(&mut self) {
         if self.queue().is_empty() {
-            self.toast("Nothing is waiting on you");
+            let msg = match self.wanting().1 {
+                0 => "Nothing needs you".to_string(),
+                n => {
+                    let p = keys::prefix();
+                    let them = if n == 1 { "it" } else { "them" };
+                    format!("Nothing needs you; {n} finished: {p} {p} goes to {them}")
+                }
+            };
+            self.toast(msg);
         } else {
             self.mode = Mode::Queue(Queue::default());
         }

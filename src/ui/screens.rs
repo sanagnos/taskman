@@ -373,7 +373,7 @@ fn help() {
 fn help_on_a_wide_screen() {
     let mut app = acme_app();
     app.mode = Mode::Help(Default::default());
-    let screen = draw(&mut app, 120, 50);
+    let screen = draw(&mut app, 120, 54);
     assert!(screen.contains("Press any key to close."), "{screen}");
     assert_snapshot!(screen);
 }
@@ -1135,7 +1135,7 @@ fn error_toast_with_the_waiting_count() {
     let mut app = acme_app();
     app.error("Couldn't write ~/.cache/taskman/ENG-52/history.txt: disk full");
     let screen = draw(&mut app, 80, 24);
-    assert!(screen.contains("waiting on you"), "{screen}");
+    assert!(screen.contains("▲ 2 need you · ● 2 finished"), "{screen}");
     assert_snapshot!(screen);
 }
 
@@ -1145,7 +1145,7 @@ fn long_error_toast_wraps_above_the_footer() {
     let mut app = acme_app();
     app.error(LONG_ERROR);
     let screen = draw(&mut app, 80, 40);
-    assert!(screen.contains("waiting on you"), "{screen}");
+    assert!(screen.contains("▲ 2 need you · ● 2 finished"), "{screen}");
     assert_snapshot!(screen);
 }
 
