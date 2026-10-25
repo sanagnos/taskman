@@ -28,7 +28,7 @@ expression: screen
 "                  │    ctrl+a R / t      restart the session / hand it to another terminal           │                 │"
 "▸ notes (1)       │    ctrl+a M          run in the main checkout when the worktree failed           │comments not     │"
 "                  │    ctrl+a e          rename the current agent                                    │o opens the      │"
-"                  │    ctrl+a PgUp/PgDn  scroll the session's history                                │                 │"
+"                  │    ctrl+a PgUp/PgDn  scroll back, then PgUp/PgDn ↑/↓ Home/End go on              │                 │"
 "                  │    ctrl+a v          open the session's history in $EDITOR                       │                 │"
 "                  │    ctrl+a l          list links (ticket, PR, session) to open or copy            │ c hide comments ╯"
 "                  │    ctrl+a ~          notices: what the footer showed, newest first               │updated just now ╮"
