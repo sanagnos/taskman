@@ -107,6 +107,10 @@ fn parse(text: &str, held: bool) -> Owner {
 /// A claim on a session, held until it's dropped or the process ends.
 pub struct Hold {
     file: std::fs::File,
+    path: PathBuf,
+    /// The ticket closed (`closing`): letting go removes the owner file, as nothing will look at
+    /// it again.
+    closed: bool,
 }
 
 impl Hold {
@@ -122,9 +126,11 @@ impl Hold {
         self
     }
 
-    /// Kept by the TUI while it removes a closed ticket's worktree (`Owner::Closing`).
+    /// Kept by the TUI while it removes a closed ticket's worktree (`Owner::Closing`); letting go
+    /// then removes the file, which `take` allows for.
     pub fn closing(mut self) -> Self {
         self.write(&format!("{CLOSING} {}", std::process::id()));
+        self.closed = true;
         self
     }
 
@@ -150,6 +156,10 @@ impl Drop for Hold {
     /// Lets go now, for every copy: processes the CLI started may have one, and would otherwise
     /// keep the session claimed after it ends.
     fn drop(&mut self) {
+        // Removed while still held, so whoever takes it next makes a new file (see `take`).
+        if self.closed {
+            let _ = std::fs::remove_file(&self.path);
+        }
         // SAFETY: flock on a descriptor this value owns; it reads or writes no memory.
         unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
     }
@@ -165,23 +175,45 @@ pub fn take(path: &Path) -> std::io::Result<Result<Hold, Owner>> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)?;
-    // `peek` holds a shared lock for a moment, so a refusal is tried again before it counts.
+    // A closed ticket's hold removes the file as it lets go (`Hold::closing`), so the file locked
+    // here may no longer be the one at `path`, opened just before it went: then it's taken again,
+    // or two could hold the same session, one on the old file and one on a new one.
     for _ in 0..5 {
-        // SAFETY: flock on a descriptor this function owns; it reads or writes no memory.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-            return Ok(Ok(Hold { file }));
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
+        // `peek` holds a shared lock for a moment, so a refusal is tried again before it counts.
+        let mut locked = false;
+        for _ in 0..5 {
+            // SAFETY: flock on a descriptor this function owns; it reads or writes no memory.
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                locked = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
-        std::thread::sleep(Duration::from_millis(10));
+        if !locked {
+            let mut text = String::new();
+            let _ = file.read_to_string(&mut text);
+            return Ok(Err(parse(&text, true)));
+        }
+        if same_file(&file, path) {
+            return Ok(Ok(Hold { file, path: path.to_path_buf(), closed: false }));
+        }
     }
-    let mut text = String::new();
-    let _ = file.read_to_string(&mut text);
-    Ok(Err(parse(&text, true)))
+    Err(std::io::Error::other(format!("{} keeps being replaced", store::tilde(path))))
+}
+
+/// Whether `file` is still the file at `path`.
+fn same_file(file: &std::fs::File, path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (file.metadata(), std::fs::metadata(path)) {
+        (Ok(a), Ok(b)) => (a.dev(), a.ino()) == (b.dev(), b.ino()),
+        _ => false,
+    }
 }
 
 /// Who runs the session at `path`, without claiming it.
@@ -584,10 +616,27 @@ mod tests {
             refusal("ENG-52", &refused),
             "ENG-52's worktree is still being removed; try again in a moment"
         );
-        // The removal is done.
+        // The removal is done: the ticket is gone, and its file with it.
         drop(closing);
+        assert!(!path.exists());
         assert_eq!(peek(&path), Owner::Free);
         assert!(take(&path).unwrap().is_ok());
+    }
+
+    /// A closed ticket's file goes as its hold lets go: a claim on the file opened just before
+    /// isn't a claim at all, so it's taken again on the new file, and only one can hold it.
+    #[test]
+    fn a_removed_owner_file_is_never_held_twice() {
+        let path = scratch("replaced").join("ENG-52.owner");
+        let closing = take(&path).unwrap().ok().unwrap().closing();
+        let stale = std::fs::File::open(&path).unwrap();
+        drop(closing);
+        // SAFETY: flock on a descriptor this test owns.
+        assert_eq!(unsafe { libc::flock(stale.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+        assert!(!same_file(&stale, &path));
+        let hold = take(&path).unwrap().ok().unwrap();
+        assert!(same_file(&hold.file, &path));
+        assert!(take(&path).unwrap().is_err());
     }
 
     #[test]

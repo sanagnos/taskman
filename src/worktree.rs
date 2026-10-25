@@ -319,8 +319,8 @@ pub fn some_of(names: &[String]) -> String {
 
 /// Checks the worktree at `path` for anything removing it would lose: uncommitted, untracked or
 /// ignored files (`git status` leaves ignored ones out, and `git worktree remove` deletes them
-/// without asking), and commits that are on no remote and not in `merged`, the head commit of the
-/// ticket's merged PR (a squash merge leaves the branch's own commits on no remote once GitHub
+/// without asking), and commits that are on no remote (with no remote at all, not on the main
+/// checkout's branch) and not in `merged`, the head commit of the ticket's merged PR (a squash merge leaves the branch's own commits on no remote once GitHub
 /// deletes the branch, but commits made after the merge are in neither). Ok(None) when there's
 /// no worktree there to remove; Err when git couldn't be run or failed, with what went wrong,
 /// since the folder stays then and the reply says why. Local git only, so it's quick enough to
@@ -352,7 +352,21 @@ pub fn removal_check(
     let pr_head = merged
         .filter(|oid| !oid.is_empty() && oid.chars().all(|c| c.is_ascii_hexdigit()))
         .and_then(|oid| rev(repo, &format!("{oid}^{{commit}}")));
-    let mut args = vec!["rev-list", "--count", head.as_str(), "--not", "--remotes"];
+    // Without a remote nothing is ever pushed: a commit is safe once it's on the main checkout's
+    // branch, where the worktree started (`create`) and where it's merged locally.
+    let remotes = checked(repo, &["remote"])?;
+    let local = String::from_utf8_lossy(&remotes.stdout).trim().is_empty();
+    let base = if local {
+        checkout_branch(repo).map(|b| format!("refs/heads/{b}"))
+    } else {
+        local_default_branch(repo)
+    };
+    let mut args = vec!["rev-list", "--count", head.as_str(), "--not"];
+    match (local, &base) {
+        (false, _) => args.push("--remotes"),
+        (true, Some(b)) => args.push(b),
+        (true, None) => {}
+    }
     args.extend(pr_head.as_deref());
     let o = checked(path, &args)?;
     let unpushed: usize = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap_or(1);
@@ -372,11 +386,17 @@ pub fn removal_check(
         problems.push(format!("{what} hidden from git status ({})", kinds.join(", ")));
     }
     if unpushed > 0 {
-        problems.push(plural(unpushed, "unpushed commit"));
+        problems.push(match (local, &base) {
+            (false, _) => plural(unpushed, "unpushed commit"),
+            (true, Some(b)) => {
+                let b = b.strip_prefix("refs/heads/").unwrap_or(b);
+                format!("{} not on {b} (no remote)", plural(unpushed, "commit"))
+            }
+            (true, None) => format!("{} on no remote or branch", plural(unpushed, "commit")),
+        });
     }
     let within = |tip: &str| ok(&git(repo, &["merge-base", "--is-ancestor", &head, tip]));
-    let merged = pr_head.as_deref().is_some_and(within)
-        || local_default_branch(repo).is_some_and(|b| within(&b));
+    let merged = pr_head.as_deref().is_some_and(within) || base.as_deref().is_some_and(within);
     let branch = listed.branch.clone().filter(|_| merged);
     Ok(Some(RemoveCheck { path: path.to_path_buf(), problems, branch, head, ignored }))
 }
@@ -655,12 +675,7 @@ pub fn default_branch_of(repo: &Path) -> DefaultBranch {
         // `create` asks the remote, which the form can't wait for.
         return DefaultBranch { start: "origin's default branch".into(), ..unknown() };
     }
-    let head = git(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|b| !b.is_empty());
-    match head {
+    match checkout_branch(repo) {
         Some(b) => DefaultBranch { start: format!("HEAD ({b}): no remote"), name: b },
         None => DefaultBranch { start: "HEAD: no remote".into(), ..unknown() },
     }
@@ -672,6 +687,15 @@ fn local_default_branch(repo: &Path) -> Option<String> {
         .ok()
         .filter(|o| o.status.success())?;
     Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
+/// The branch the main checkout at `repo` is on, like `main`. None when its HEAD is detached.
+fn checkout_branch(repo: &Path) -> Option<String> {
+    git(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|b| !b.is_empty())
 }
 
 /// Origin's default branch, like `origin/main`: from `origin/HEAD`, or by asking the remote when a
@@ -1151,6 +1175,52 @@ mod tests {
         // Never the main checkout, nor a folder that isn't a worktree any more.
         assert_eq!(removal_check(&repo, &repo, None), Ok(None));
         assert_eq!(removal_check(&repo, &clean, None), Ok(None));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Without a remote nothing is pushed, so the main checkout's branch is what a commit must be
+    /// on: a fresh worktree loses nothing, and one with work of its own stays until it's merged.
+    #[test]
+    fn without_a_remote_checks_commits_against_the_main_checkouts_branch() {
+        let (root, repo) = scratch_repo("local");
+        let lock = hold(&root);
+        let sh = |dir: &Path, cmd: &str| {
+            assert!(
+                Command::new("sh").arg("-c").arg(cmd).current_dir(dir).status().unwrap().success(),
+                "{cmd}"
+            );
+        };
+        let id = "-c user.name=t -c user.email=t@example.com";
+        sh(&repo, "git remote remove origin");
+        let add = |key: &str| {
+            create(&repo, &folder_path(BESIDE, &repo, key), key, None, false).unwrap().path
+        };
+
+        let clean = add("ENG-1");
+        let check = removal_check(&repo, &clean, None).unwrap().unwrap();
+        assert_eq!((check.safe(), check.branch.as_deref()), (true, Some("ENG-1")));
+
+        let ahead = add("ENG-2");
+        sh(&ahead, &format!("git {id} commit -q --allow-empty -m work"));
+        let check = removal_check(&repo, &ahead, None).unwrap().unwrap();
+        assert_eq!(
+            (check.problems.as_slice(), check.branch.as_deref()),
+            (&["1 commit not on main (no remote)".to_string()][..], None)
+        );
+        assert_eq!(check.kept_because(), "it has 1 commit not on main (no remote)");
+
+        // Merged into main: nothing is lost, and the branch goes too.
+        sh(&repo, "git merge -q --ff-only ENG-2");
+        let merged = removal_check(&repo, &ahead, None).unwrap().unwrap();
+        assert_eq!((merged.safe(), merged.branch.as_deref()), (true, Some("ENG-2")));
+        assert!(remove(&repo, &merged, None, &lock).unwrap().starts_with("Removed"));
+        assert!(!ok(&git(&repo, &["rev-parse", "--verify", "--quiet", "refs/heads/ENG-2"])));
+
+        // A detached main checkout is on no branch to check against: everything counts.
+        let detached = add("ENG-3");
+        sh(&repo, "git checkout -q --detach");
+        let check = removal_check(&repo, &detached, None).unwrap().unwrap();
+        assert_eq!(check.problems, ["2 commits on no remote or branch"]);
         let _ = std::fs::remove_dir_all(root);
     }
 
