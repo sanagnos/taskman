@@ -191,10 +191,12 @@ impl vt100::Callbacks for Callbacks {
 
     // Reads are never forwarded: a terminal that answers one types the user's clipboard back as
     // input, and taskman's input goes to the selected session, so any program in any session
-    // could read the clipboard. The answer is an empty clipboard, as zellij gives: with none,
-    // Neovim and others wait seconds for one. vt100 doesn't say how the request ended, so BEL.
-    fn paste_from_clipboard(&mut self, _: &mut vt100::Screen, ty: &[u8]) {
-        self.replies.extend(format!("\x1b]52;{};\x07", target(ty)).into_bytes());
+    // could read the clipboard. Nor are they answered, even with an empty clipboard: the answer
+    // would be typed into whatever reads the session's input, so a file printed with a read in it
+    // would type `ESC ] 52 ; c ;` and a ctrl+G into Claude's prompt. Programs that wait for one
+    // (Neovim) use OSC 52 only when the terminal's device attributes offer it, and taskman's
+    // answer (`unhandled_csi`) doesn't.
+    fn paste_from_clipboard(&mut self, _: &mut vt100::Screen, _ty: &[u8]) {
         self.refuse(Refused::Read);
     }
 
@@ -1162,17 +1164,14 @@ mod tests {
         }
     }
 
-    /// A read is answered with an empty clipboard, for the selection asked about, so a program
-    /// waiting on the answer goes on at once.
+    /// A read gets no answer at all: one would be typed into the session's input.
     #[test]
-    fn a_clipboard_read_is_answered_with_nothing() {
+    fn a_clipboard_read_is_not_answered() {
         let mut p = parser(24, 80);
         p.process(b"\x1b]52;c;?\x07\x1b]52;p;?\x1b\\");
-        assert_eq!(p.callbacks().replies, b"\x1b]52;c;\x07\x1b]52;p;\x07");
-        // The answer names the selection as a write would, so a long request gets a short one.
-        let mut p = parser(24, 80);
         p.process(format!("\x1b]52;{};?\x07", "sc".repeat(500_000)).as_bytes());
-        assert_eq!(p.callbacks().replies, b"\x1b]52;sc;\x07");
+        assert!(p.callbacks().replies.is_empty(), "{:?}", p.callbacks().replies);
+        assert_eq!(p.callbacks().refused, [Refused::Read]);
     }
 
     /// An ESC ends the sequence there in the vt100 taskman pins (its parser, vte, ends an OSC at

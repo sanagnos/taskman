@@ -832,7 +832,7 @@ fn eng_52_and_70() -> (App, crate::session::fake::Sent) {
 const COPIED_BEHIND: &str = "tried to copy while in the background; select it and copy again";
 
 #[test]
-fn a_sessions_clipboard_write_is_forwarded_and_a_read_answered_with_nothing_and_a_warning() {
+fn a_sessions_clipboard_write_is_forwarded_and_a_read_refused_with_a_warning() {
     let (mut app, to_session) = eng_52_and_70();
     print(&app, "ENG-52", b"\x1b]52;c;b25l\x07\x1b]52;p;dHdv\x07");
     app.take_clipboards();
@@ -845,16 +845,16 @@ fn a_sessions_clipboard_write_is_forwarded_and_a_read_answered_with_nothing_and_
     print(&app, "ENG-52", b"\x1b]52;c;?\x07");
     app.take_clipboards();
     assert!(app.clipboard_out.is_empty());
-    assert_eq!(sent(&to_session), "\x1b]52;c;\x07", "an empty clipboard");
+    assert_eq!(sent(&to_session), "", "no answer, which would be typed into the session");
     assert_eq!(toast(&app), Some("ENG-52 asked to read your clipboard; taskman refused"));
     assert_eq!(app.toast.as_ref().unwrap().level, crate::app::Level::Warn);
 
-    // Asking again is answered, but not toasted again for a while; another refusal is.
+    // Asking again isn't toasted again for a while; another refusal is.
     let logged = app.toast_log.len();
     app.toast = None;
     print(&app, "ENG-52", b"\x1b]52;c;?\x07\x1b]52;c;?\x07");
     app.take_clipboards();
-    assert_eq!(sent(&to_session), "\x1b]52;c;\x07".repeat(3));
+    assert_eq!(sent(&to_session), "");
     assert_eq!((toast(&app), app.toast_log.len()), (None, logged));
     let over = "A".repeat(crate::session::CLIPBOARD_MAX);
     print(&app, "ENG-52", format!("\x1b]52;c;{over}\x07").as_bytes());
