@@ -57,13 +57,29 @@ pub(super) fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     }
     let branch =
         tv.t.branch.as_deref().map(|b| format!(" {}", untrusted::line(b))).unwrap_or_default();
-    let right = format!("{}{branch} ", tilde(&tv.t.cwd));
+    // Scrolled back, how far, in place of the folder: over the session's rows it hid them.
+    let (right, style) = match scrolled_back(app, tv) {
+        Some(badge) => (badge, Style::new().fg(Color::Black).bg(Color::Yellow)),
+        None => (format!("{}{branch} ", tilde(&tv.t.cwd)), dim()),
+    };
     let left_len: usize = spans.iter().map(|s| width(&s.content)).sum();
     // At least a space between the two sides, however long the folder.
     let room = (area.width as usize).saturating_sub(left_len + 3);
     spans.push(Span::raw(" ".repeat(1 + room.saturating_sub(width(&right).min(room)))));
-    spans.push(Span::styled(truncate(&right, room), dim()));
+    spans.push(Span::styled(truncate(&right, room), style));
     f.render_widget(Paragraph::new(Line::from(spans)).style(Style::new().bg(Color::Reset)), area);
+}
+
+/// The header's badge for a session scrolled back into its history: how far, and how to return.
+/// None at the bottom, and while text is selected, as the pane then shows the selection's copy.
+fn scrolled_back(app: &App, tv: &TicketView) -> Option<String> {
+    if app.selection.as_ref().is_some_and(|sel| sel.snapshot.is_some()) {
+        return None;
+    }
+    let back = crate::session::lock(tv.screen()?).screen().scrollback();
+    let rows = if back == 1 { "line" } else { "lines" };
+    let how = if app.scrolling_back() { "Esc" } else { "type" };
+    (back > 0).then(|| format!(" ↑ {back} {rows} back · {how} to return "))
 }
 
 pub(super) fn draw_claude(f: &mut Frame, app: &App, area: Rect) {
@@ -368,28 +384,16 @@ fn draw_session(
         // From here on, whatever is drawn over the pane must render `Clear` first, or its
         // cells keep the links and their forced widths (see `links::mark`).
         crate::links::mark(f.buffer_mut(), area, screen);
-        if scrolled > 0 {
-            let msg = format!(" ↑ {scrolled} lines back · type to return ");
-            let w = width(&msg) as u16;
-            let r = Rect {
-                x: area.right().saturating_sub(w + 1),
-                y: area.y,
-                width: w.min(area.width),
-                height: 1,
-            };
+        // Under the header's badge (`scrolled_back`), over the oldest row in view.
+        if scrolled > 0
+            && let Some(hint) = transcript_hint(screen, tv.t.cli)
+        {
+            let w = (width(&hint) as u16).min(area.width);
+            let r = Rect { x: area.right().saturating_sub(w + 1), y: area.y, width: w, height: 1 };
             let style = Style::new().fg(Color::Black).bg(Color::Yellow);
             // Clear drops the links marked under it.
             f.render_widget(Clear, r);
-            f.render_widget(Paragraph::new(msg).style(style), r);
-            // Under the badge: a pane rarely has room for both on one row.
-            if let Some(hint) = transcript_hint(screen, tv.t.cli)
-                && area.height > 1
-            {
-                let w = (width(&hint) as u16).min(area.width);
-                let r = Rect { x: r.right().saturating_sub(w), y: area.y + 1, width: w, height: 1 };
-                f.render_widget(Clear, r);
-                f.render_widget(Paragraph::new(truncate(&hint, usize::from(w))).style(style), r);
-            }
+            f.render_widget(Paragraph::new(truncate(&hint, usize::from(w))).style(style), r);
         }
     }
     if ended {
@@ -572,6 +576,8 @@ pub(super) fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Line::from(Span::styled(format!(" {hint}"), Style::new().fg(Color::Cyan)))
     } else if let Some(toast) = &app.toast {
         return draw_toast(f, app, toast, area);
+    } else if app.scrolling_back() {
+        scroll_keys(area.width)
     } else {
         let key = Style::new().bold();
         let p = prefix().short();
@@ -596,6 +602,31 @@ pub(super) fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     };
     // A full-width bar, as in tmux, so the panes end above a solid edge rather than above text.
     f.render_widget(Paragraph::new(line).style(Style::new().bg(selection_bg())), area);
+}
+
+/// The footer's keys during keyboard scrollback (`App::scroll_key`), as many as fit.
+fn scroll_keys(cols: u16) -> Line<'static> {
+    let keys = [
+        ("PgUp/PgDn", "page"),
+        ("↑/↓", "line"),
+        ("Home/End", "top / bottom"),
+        ("Esc", "live"),
+        ("other keys", "go to the session"),
+    ];
+    let mut v = vec![Span::styled(" scrollback ", Style::new().fg(Color::Black).bg(Color::Yellow))];
+    let mut used = width(&v[0].content);
+    for (i, (k, what)) in keys.into_iter().enumerate() {
+        let gap = if i == 0 { " " } else { " · " };
+        let w = width(gap) + width(k) + 1 + width(what);
+        if used + w > usize::from(cols) {
+            break;
+        }
+        v.push(Span::styled(gap, dim()));
+        v.push(Span::styled(k, Style::new().bold()));
+        v.push(Span::styled(format!(" {what}"), dim()));
+        used += w;
+    }
+    Line::from(v)
 }
 
 /// The commands available after the prefix, shown while it waits for its key.

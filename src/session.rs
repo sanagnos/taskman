@@ -563,7 +563,7 @@ impl Session {
     pub fn scroll(&self, delta: i32) {
         let mut p = lock(&self.parser);
         let cur = p.screen().scrollback() as i32;
-        p.screen_mut().set_scrollback(usize::try_from(cur + delta).unwrap_or(0));
+        p.screen_mut().set_scrollback(usize::try_from(cur.saturating_add(delta)).unwrap_or(0));
     }
 
     /// True when the program has turned on mouse reporting (Claude Code's full-screen mode does).
@@ -594,6 +594,11 @@ impl Session {
                 (32 + r.min(223)) as u8,
             ]),
         }
+    }
+
+    /// How many rows back into its history the view is scrolled.
+    pub fn scrollback(&self) -> usize {
+        lock(&self.parser).screen().scrollback()
     }
 
     pub fn reset_scroll(&self) {

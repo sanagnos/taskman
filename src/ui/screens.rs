@@ -218,8 +218,8 @@ fn session_running_in_claudes_background() {
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 
-/// A session scrolled to the top of a history that has dropped rows: under the badge, the hint
-/// names Claude's transcript.
+/// A session scrolled to the top of a history that has dropped rows: under the header's badge,
+/// the hint names Claude's transcript.
 #[test]
 fn session_at_the_top_of_a_trimmed_history() {
     let mut app = acme_app();
@@ -230,6 +230,20 @@ fn session_at_the_top_of_a_trimmed_history() {
     attach(&mut app, "ENG-70", &lines);
     let s = app.tickets[app.sel].session.as_ref().unwrap();
     s.scroll(i32::MAX);
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
+/// Keyboard scrollback (`ctrl+a PgUp`): how far back in the header, in place of the folder, and
+/// the keys in the footer; none of it over the session's rows.
+#[test]
+fn session_in_keyboard_scrollback() {
+    let mut app = acme_app();
+    select(&mut app, "ENG-70");
+    draw(&mut app, 80, 24);
+    let lines: String = (1..=100).map(|n| format!("line {n}\r\n")).collect();
+    attach(&mut app, "ENG-70", &lines);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(key(KeyCode::PageUp));
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 

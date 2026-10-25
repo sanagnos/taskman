@@ -31,10 +31,6 @@ fn problem(screen: &vt100::Screen) -> Option<String> {
     let mut edges = Vec::new();
     for (y, row) in rows(screen).iter().enumerate() {
         let text: String = row.iter().map(|c| if c.is_empty() { " " } else { c }).collect();
-        // The scrolled-back note takes the pane's top row's right end.
-        if text.contains("lines back") {
-            continue;
-        }
         let Some(at) =
             row.iter().position(|c| c == "r").filter(|&i| row[i..].concat().starts_with("row "))
         else {
