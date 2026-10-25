@@ -400,9 +400,8 @@ impl App {
                 }
                 Msg::Copied(text, copied, label) => {
                     if copied == selection::Copied::Osc52 {
-                        use base64::Engine;
-                        self.clipboard_out
-                            .push(base64::engine::general_purpose::STANDARD.encode(&text));
+                        let write = crate::session::ClipboardWrite::own(&text);
+                        self.clipboard_out.push(crate::session::Outgoing { write, from: None });
                     }
                     toasts.push((
                         Level::Info,

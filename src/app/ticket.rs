@@ -100,6 +100,8 @@ pub struct TicketView {
     /// the ticket is left (`leave`). Not saved.
     fresh_jira: Vec<String>,
     fresh_gh: Vec<String>,
+    /// When its session's refused clipboard requests were last toasted, by why (`take_clipboards`).
+    pub(super) clipboard_warned: Vec<(crate::session::Refused, Instant)>,
 }
 
 /// A session that ended because its conversation runs as a Claude background session.
@@ -155,6 +157,7 @@ impl TicketView {
             watch: Watch::new(Instant::now()),
             fresh_jira: Vec::new(),
             fresh_gh: Vec::new(),
+            clipboard_warned: Vec::new(),
         }
     }
 

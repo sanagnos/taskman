@@ -227,8 +227,12 @@ pub struct App {
     pub edit: Option<PathBuf>,
     /// Ring the terminal bell on the next frame (a background ticket needs you).
     pub bell: bool,
-    /// OSC 52 clipboard writes from sessions, to forward to the real terminal.
-    pub clipboard_out: Vec<String>,
+    /// OSC 52 clipboard writes to forward to the real terminal, of which the last is forwarded
+    /// (`clipboard_to_forward`): the selected session's (`take_clipboards`) and taskman's own
+    /// copies (`Msg::Copied`).
+    pub clipboard_out: Vec<crate::session::Outgoing>,
+    /// The session marked as the selected one for its clipboard writes (`sync_clipboard_owner`).
+    clipboard_owner: Option<crate::session::Selected>,
     /// Notifications left to the terminal (`notify::escape`), to write on the next frame.
     pub notify_out: Vec<String>,
     /// Whether the terminal has the focus, as it last said (focus reports); None until it does.
@@ -387,6 +391,7 @@ impl App {
             edit: None,
             bell: false,
             clipboard_out: Vec::new(),
+            clipboard_owner: None,
             notify_out: Vec::new(),
             focused: None,
             notifier: Arc::new(crate::notify::send),
@@ -676,11 +681,7 @@ impl App {
         }
         self.ensure_selected_session();
         self.sleep_tick(Instant::now());
-        for tv in &self.tickets {
-            if let Some(s) = &tv.session {
-                self.clipboard_out.extend(s.take_clipboard());
-            }
-        }
+        self.take_clipboards();
         if let Some(tv) = self.tickets.get_mut(self.sel) {
             tv.status.seen = true;
             tv.new = false;

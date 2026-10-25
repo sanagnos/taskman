@@ -16,9 +16,152 @@ pub const QUEUE: usize = 4 << 20;
 pub struct Callbacks {
     replies: Vec<u8>,
     pub title: String,
-    pub clipboard: Vec<String>,
+    /// The last clipboard write since `take_clipboard`.
+    pub clipboard: Option<ClipboardWrite>,
+    /// Why clipboard requests weren't forwarded since `take_clipboard`, each once.
+    pub refused: Vec<Refused>,
+    /// Whether this is the selected session, the only one whose clipboard writes are kept.
+    pub selected: Selected,
     /// What a colour query is answered with: the terminal's own, as `theme` found them.
     pub colours: crate::theme::Colours,
+}
+
+impl Callbacks {
+    /// Notes why a request was refused, once for each kind (the latest size for `TooLarge`).
+    fn refuse(&mut self, why: Refused) {
+        match self.refused.iter_mut().find(|r| r.same(why)) {
+            Some(r) => *r = why,
+            None => self.refused.push(why),
+        }
+    }
+}
+
+/// The longest clipboard write taskman forwards, as the whole sequence it writes (`ESC ] 52 ;`,
+/// the selection, `;`, the base64 and BEL): a margin under tmux's `input-buffer-size`, 1 MiB
+/// (1,048,576 bytes) by default, past which tmux drops a sequence without a word. Claude Code sets
+/// no limit of its own, and other terminals take more, but taskman is often run in tmux. About
+/// 750 KB of text.
+pub const CLIPBOARD_MAX: usize = 1_000_000;
+
+/// How long the sequence forwarding `data` (base64) for `target` is.
+pub fn sequence_len(target: &str, data: usize) -> usize {
+    "\x1b]52;".len() + target.len() + ";".len() + data + "\x07".len()
+}
+
+/// The selection a session named, each character once, in its order. vt100 lets through only
+/// `c`, `p`, `q`, `s` and the digits 0 to 7, so it's 12 characters at most however long the
+/// request; one with none stays empty, which a terminal takes as its default (`s0` in xterm).
+fn target(ty: &[u8]) -> String {
+    let mut out = String::new();
+    for c in ty.iter().map(|&b| char::from(b)) {
+        if !out.contains(c) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Whether a session is the selected one. Only the App sets it (`App::sync_clipboard_owner`), and
+/// a session's clipboard writes are checked against it as they arrive and again as they're
+/// forwarded (`App::clipboard_to_forward`), so a write can't reach the clipboard from a session
+/// that was in the background at either moment.
+#[derive(Clone, Debug, Default)]
+pub struct Selected(Arc<AtomicBool>);
+
+impl Selected {
+    pub fn get(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+
+    pub fn set(&self, on: bool) {
+        self.0.store(on, Ordering::Release);
+    }
+
+    /// Whether `self` and `other` are the same session's.
+    pub fn is(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// A clipboard write waiting to be forwarded, and the session it came from: None for one of
+/// taskman's own copies.
+#[derive(Debug)]
+pub struct Outgoing {
+    pub write: ClipboardWrite,
+    pub from: Option<Selected>,
+}
+
+/// A clipboard write to forward: the selection the session named (`target`), and the base64.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClipboardWrite {
+    pub target: String,
+    pub data: String,
+}
+
+impl ClipboardWrite {
+    /// One of taskman's own copies, to the clipboard.
+    pub fn own(text: &str) -> Self {
+        use base64::Engine;
+        let data = base64::engine::general_purpose::STANDARD.encode(text);
+        Self { target: "c".into(), data }
+    }
+}
+
+/// Why a session's OSC 52 request didn't reach the terminal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refused {
+    /// It asked to read the clipboard.
+    Read,
+    /// An OSC 52 that isn't a plain write: not base64, an unknown selection, extra parameters.
+    Malformed,
+    /// A write over `CLIPBOARD_MAX`, with the size of the text it held.
+    TooLarge(usize),
+    /// A write from a session that wasn't the selected one when it came or when it was to go.
+    Background,
+}
+
+impl Refused {
+    /// Which to warn of first when several come at once: a read, which a program may have meant
+    /// to be quiet, then what the user tried to copy.
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::Read => 0,
+            Self::TooLarge(_) => 1,
+            Self::Background => 2,
+            Self::Malformed => 3,
+        }
+    }
+
+    /// Whether `self` and `other` are the same kind of refusal, whatever the size.
+    pub fn same(self, other: Self) -> bool {
+        std::mem::discriminant(&self) == std::mem::discriminant(&other)
+    }
+
+    /// The toast, for the session called `name`. Never what it tried to copy.
+    pub fn toast(self, name: &str) -> String {
+        match self {
+            Self::Read => format!("{name} asked to read your clipboard; taskman refused"),
+            Self::Malformed => {
+                format!("{name} sent a clipboard request taskman can't read; ignored")
+            }
+            Self::TooLarge(bytes) => {
+                format!("{name} copied {}, over taskman's clipboard limit; not copied", size(bytes))
+            }
+            Self::Background => {
+                format!("{name} tried to copy while in the background; select it and copy again")
+            }
+        }
+    }
+}
+
+/// "750 KB", "1.2 MB": a size for a toast, in thousands as file managers count.
+fn size(bytes: usize) -> String {
+    if bytes < 1_000_000 {
+        format!("{} KB", (bytes + 500) / 1000)
+    } else {
+        let tenths = (bytes + 50_000) / 100_000;
+        format!("{}.{} MB", tenths / 10, tenths % 10)
+    }
 }
 
 impl vt100::Callbacks for Callbacks {
@@ -26,34 +169,35 @@ impl vt100::Callbacks for Callbacks {
         self.title = crate::untrusted::line(&String::from_utf8_lossy(title)).trim().to_string();
     }
 
-    fn copy_to_clipboard(&mut self, _: &mut vt100::Screen, _ty: &[u8], data: &[u8]) {
-        // OSC 52 clipboard payloads from a session are limited to 100 KB and capped at 16 queued
-        // items, and must contain only valid base64 characters.
-        const MAX_CLIPBOARD_BYTES: usize = 100 * 1024;
-        const MAX_QUEUED_CLIPBOARD: usize = 16;
-        if data.len() > MAX_CLIPBOARD_BYTES || self.clipboard.len() >= MAX_QUEUED_CLIPBOARD {
-            return;
+    // vt100 calls this only for a plain write: a known selection and base64 alone, so nothing in
+    // `data` can end the escape sequence it's forwarded in (the tests below hold vt100 to that).
+    // The rest goes to `paste_from_clipboard` or `unhandled_osc`.
+    fn copy_to_clipboard(&mut self, _: &mut vt100::Screen, ty: &[u8], data: &[u8]) {
+        let target = target(ty);
+        // Only the last of a burst matters: each write replaces the clipboard (an empty one
+        // clears it).
+        if !self.selected.get() {
+            self.clipboard = None;
+            self.refuse(Refused::Background);
+        } else if sequence_len(&target, data.len()) > CLIPBOARD_MAX {
+            // Refused whole: a cut-off copy would pass for the real thing.
+            self.clipboard = None;
+            self.refuse(Refused::TooLarge((data.len() * 3 + 2) / 4));
+        } else {
+            let data = String::from_utf8_lossy(data).into_owned();
+            self.clipboard = Some(ClipboardWrite { target, data });
         }
-        let is_valid = data.iter().all(|&b| {
-            b.is_ascii_alphanumeric()
-                || b == b'+'
-                || b == b'/'
-                || b == b'='
-                || b == b'\r'
-                || b == b'\n'
-                || b == b' '
-        });
-        if !is_valid {
-            return;
-        }
-        let clean: String = data
-            .iter()
-            .filter(|&&b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'=')
-            .map(|&b| b as char)
-            .collect();
-        if !clean.is_empty() {
-            self.clipboard.push(clean);
-        }
+    }
+
+    // Reads are never forwarded: a terminal that answers one types the user's clipboard back as
+    // input, and taskman's input goes to the selected session, so any program in any session
+    // could read the clipboard. Nor are they answered, even with an empty clipboard: the answer
+    // would be typed into whatever reads the session's input, so a file printed with a read in it
+    // would type `ESC ] 52 ; c ;` and a ctrl+G into Claude's prompt. Programs that wait for one
+    // (Neovim) use OSC 52 only when the terminal's device attributes offer it, and taskman's
+    // answer (`unhandled_csi`) doesn't.
+    fn paste_from_clipboard(&mut self, _: &mut vt100::Screen, _ty: &[u8]) {
+        self.refuse(Refused::Read);
     }
 
     fn unhandled_csi(
@@ -80,6 +224,9 @@ impl vt100::Callbacks for Callbacks {
     }
 
     fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
+        if params.first() == Some(&&b"52"[..]) {
+            return self.refuse(Refused::Malformed);
+        }
         // Foreground and background colour queries.
         if params.len() >= 2
             && params[1] == b"?"
@@ -464,8 +611,31 @@ impl Session {
         lock(&self.parser).callbacks().title.clone()
     }
 
-    pub fn take_clipboard(&self) -> Vec<String> {
-        std::mem::take(&mut lock(&self.parser).callbacks_mut().clipboard)
+    pub fn selected(&self) -> Selected {
+        lock(&self.parser).callbacks().selected.clone()
+    }
+
+    /// Refuses its clipboard write waiting to be taken, if any, as one from the background: the
+    /// session stopped being the selected one before it went.
+    pub fn drop_clipboard(&self) {
+        let mut parser = lock(&self.parser);
+        let cb = parser.callbacks_mut();
+        if cb.clipboard.take().is_some() {
+            cb.refuse(Refused::Background);
+        }
+    }
+
+    /// Notes a write of its that was taken but not forwarded, as one from the background, for
+    /// the next `take_clipboard`.
+    pub fn refuse_background(&self) {
+        lock(&self.parser).callbacks_mut().refuse(Refused::Background);
+    }
+
+    /// The clipboard write to forward, and why any requests weren't.
+    pub fn take_clipboard(&self) -> (Option<ClipboardWrite>, Vec<Refused>) {
+        let mut parser = lock(&self.parser);
+        let cb = parser.callbacks_mut();
+        (std::mem::take(&mut cb.clipboard), std::mem::take(&mut cb.refused))
     }
 }
 
@@ -779,9 +949,15 @@ pub mod fake {
             self.close();
         }
 
-        /// Shows `bytes` as if the CLI had written them.
+        /// Shows `bytes` as if the CLI had written them, and sends it the replies, as the
+        /// reader does.
         pub fn output(&self, bytes: &[u8]) {
-            super::lock(&self.parser).process(bytes);
+            let replies = {
+                let mut p = super::lock(&self.parser);
+                p.process(bytes);
+                std::mem::take(&mut p.callbacks_mut().replies)
+            };
+            self.input.send(replies);
             self.fresh.store(true, Ordering::Relaxed);
         }
     }
@@ -890,12 +1066,15 @@ mod tests {
         }
     }
 
+    /// A selected session's screen.
     fn parser(rows: u16, cols: u16) -> Parser {
+        let selected = Selected::default();
+        selected.set(true);
         vt100::Parser::new_with_callbacks(
             crate::term::dim(rows),
             crate::term::dim(cols),
             crate::store::SCROLLBACK,
-            Callbacks::default(),
+            Callbacks { selected, ..Callbacks::default() },
         )
     }
 
@@ -925,21 +1104,115 @@ mod tests {
         }
     }
 
-    #[test]
-    fn clipboard_accepts_valid_base64_and_rejects_invalid_or_oversized() {
+    /// What `p` would forward of `output`, and why it refused the rest.
+    fn clipboard_of(output: &[u8]) -> (Option<ClipboardWrite>, Vec<Refused>) {
         let mut p = parser(24, 80);
-        // Valid base64 OSC 52
-        p.process(b"\x1b]52;c;aGVsbG8=\x07");
-        assert_eq!(p.callbacks().clipboard, ["aGVsbG8="]);
+        p.process(output);
+        let cb = p.callbacks_mut();
+        (cb.clipboard.take(), std::mem::take(&mut cb.refused))
+    }
 
-        // Non-base64 characters are rejected
-        p.process(b"\x1b]52;c;evil*escape;test\x07");
-        assert_eq!(p.callbacks().clipboard, ["aGVsbG8="]);
+    fn write(target: &str, data: &str) -> Option<ClipboardWrite> {
+        Some(ClipboardWrite { target: target.into(), data: data.into() })
+    }
 
-        // Oversized payload (> 100 KB) is rejected
-        let huge = "A".repeat(101 * 1024);
-        p.process(format!("\x1b]52;c;{huge}\x07").as_bytes());
-        assert_eq!(p.callbacks().clipboard, ["aGVsbG8="]);
+    #[test]
+    fn a_clipboard_write_is_forwarded_and_the_last_of_a_burst_wins() {
+        assert_eq!(clipboard_of(b"\x1b]52;c;aGVsbG8=\x07"), (write("c", "aGVsbG8="), vec![]));
+        assert_eq!(clipboard_of(b"\x1b]52;c;aGVsbG8=\x1b\\"), (write("c", "aGVsbG8="), vec![]));
+        let burst = b"\x1b]52;c;b25l\x07\x1b]52;c;dHdv\x07\x1b]52;c;dGhyZWU=\x07";
+        assert_eq!(clipboard_of(burst), (write("c", "dGhyZWU="), vec![]));
+        // An empty write clears the clipboard, as it would without taskman.
+        assert_eq!(clipboard_of(b"\x1b]52;c;\x07"), (write("c", ""), vec![]));
+        // Carriage returns and newlines inside are dropped by the parser, as a terminal would.
+        assert_eq!(clipboard_of(b"\x1b]52;c;aGVs\r\nbG8=\x07"), (write("c", "aGVsbG8="), vec![]));
+    }
+
+    /// The selection is forwarded as the session named it, as tmux does: the primary selection,
+    /// several, a cut buffer, or none (which a terminal takes as its default); each character
+    /// once, so however long the request, the selection stays a few characters.
+    #[test]
+    fn a_clipboard_write_keeps_its_selection_each_character_once() {
+        for (asked, target) in
+            [("p", "p"), ("s", "s"), ("pc", "pc"), ("07", "07"), ("", ""), ("ccppc", "cp")]
+        {
+            let output = format!("\x1b]52;{asked};aGVsbG8=\x07");
+            assert_eq!(clipboard_of(output.as_bytes()), (write(target, "aGVsbG8="), vec![]));
+        }
+        let huge = format!("\x1b]52;{};eA==\x07", "c".repeat(1_000_000));
+        assert_eq!(clipboard_of(huge.as_bytes()), (write("c", "eA=="), vec![]));
+    }
+
+    /// The clipboard writes vt100 passes on are written into an escape sequence as they are, so
+    /// anything that could end it (ESC, BEL, ST) or isn't base64 must be refused before taskman
+    /// sees it; and a read must never reach the terminal (see `paste_from_clipboard`).
+    #[test]
+    fn a_clipboard_read_or_anything_but_a_plain_write_is_refused() {
+        assert_eq!(clipboard_of(b"\x1b]52;c;?\x07"), (None, vec![Refused::Read]));
+        assert_eq!(clipboard_of(b"\x1b]52;c;?\x1b\\"), (None, vec![Refused::Read]));
+        for output in [
+            &b"\x1b]52;c;aGVs bG8=\x07"[..],
+            b"\x1b]52;c;aGVs\x7fbG8=\x07",
+            b"\x1b]52;c;aGVs\x9cbG8=\x07",
+            "\x1b]52;c;aGVs\u{9c}bG8=\x07".as_bytes(),
+            b"\x1b]52;z;aGVsbG8=\x07",
+            b"\x1b]52;c;aGVs;bG8=\x07",
+            b"\x1b]52;c;evil*escape;test\x07",
+            b"\x1b]52;aGVsbG8=\x07",
+        ] {
+            assert_eq!(clipboard_of(output), (None, vec![Refused::Malformed]), "{output:?}");
+        }
+    }
+
+    /// A read gets no answer at all: one would be typed into the session's input.
+    #[test]
+    fn a_clipboard_read_is_not_answered() {
+        let mut p = parser(24, 80);
+        p.process(b"\x1b]52;c;?\x07\x1b]52;p;?\x1b\\");
+        p.process(format!("\x1b]52;{};?\x07", "sc".repeat(500_000)).as_bytes());
+        assert!(p.callbacks().replies.is_empty(), "{:?}", p.callbacks().replies);
+        assert_eq!(p.callbacks().refused, [Refused::Read]);
+    }
+
+    /// An ESC ends the sequence there in the vt100 taskman pins (its parser, vte, ends an OSC at
+    /// any ESC): what came before it is a complete write, and the rest is ordinary output. Not
+    /// an injection, as only that base64 goes out, in taskman's own sequence.
+    #[test]
+    fn an_escape_inside_a_clipboard_write_ends_it() {
+        let (clipboard, refused) = clipboard_of(b"\x1b]52;c;aGVs\x1b]0;bG8=\x07");
+        assert_eq!((clipboard, refused), (write("c", "aGVs"), vec![]));
+        let (clipboard, _) = clipboard_of(b"\x1b]52;c;aGVs\x1b[31mbG8=\x07");
+        assert_eq!(clipboard, write("c", "aGVs"));
+    }
+
+    /// The limit is on the whole sequence taskman would write, selection included, and the
+    /// toast gives the text's size, never the text.
+    #[test]
+    fn a_clipboard_write_over_the_limit_is_refused_and_leaves_nothing_to_forward() {
+        let fits = "A".repeat(CLIPBOARD_MAX - sequence_len("c", 0));
+        let (clipboard, refused) = clipboard_of(format!("\x1b]52;c;{fits}\x07").as_bytes());
+        let forwarded = clipboard.map(|w| sequence_len(&w.target, w.data.len()));
+        assert_eq!((forwarded, refused), (Some(CLIPBOARD_MAX), vec![]));
+        // A byte more, or a longer selection, takes it over.
+        for output in [format!("\x1b]52;c;{fits}A\x07"), format!("\x1b]52;pc;{fits}\x07")] {
+            let (clipboard, refused) = clipboard_of(output.as_bytes());
+            assert!(clipboard.is_none());
+            assert!(matches!(refused[..], [Refused::TooLarge(749_994..=749_995)]), "{refused:?}");
+        }
+        let over = format!("\x1b]52;c;aGVsbG8=\x07\x1b]52;c;{fits}AAAA\x07\x1b]52;c;?\x07");
+        let (clipboard, refused) = clipboard_of(over.as_bytes());
+        assert_eq!(
+            (clipboard, &refused[..]),
+            (None, &[Refused::TooLarge(749_997), Refused::Read][..])
+        );
+        assert_eq!(
+            refused[0].toast("ENG-52"),
+            "ENG-52 copied 750 KB, over taskman's clipboard limit; not copied"
+        );
+        assert_eq!(
+            Refused::TooLarge(3_400_000).toast("x"),
+            "x copied 3.4 MB, over taskman's clipboard limit; not copied"
+        );
     }
 
     #[test]
@@ -997,6 +1270,37 @@ mod tests {
                     }
                 }
             }
+
+            /// Whatever a session prints, what's forwarded to the terminal is base64 alone.
+            #[test]
+            fn only_base64_is_ever_forwarded_to_the_clipboard(
+                pieces in proptest::collection::vec(clipboard_piece(), 1..40),
+            ) {
+                let mut p = parser(24, 80);
+                for piece in pieces {
+                    p.process(&piece);
+                    if let Some(write) = p.callbacks_mut().clipboard.take() {
+                        let base64 = |b: u8| b.is_ascii_alphanumeric() || b"+/=".contains(&b);
+                        prop_assert!(write.data.bytes().all(base64), "{write:?}");
+                        prop_assert!(write.target.bytes().all(|b| b"cpqs01234567".contains(&b)));
+                    }
+                }
+            }
+        }
+
+        /// The start of a clipboard write, base64, what may end it, and any bytes at all.
+        fn clipboard_piece() -> impl Strategy<Value = Vec<u8>> {
+            prop_oneof![
+                3 => "[cpqs0-7z?]{0,2}".prop_map(|ty| format!("\x1b]52;{ty};").into_bytes()),
+                3 => "[A-Za-z0-9+/=]{0,40}".prop_map(String::into_bytes),
+                1 => Just(b"\x07".to_vec()),
+                1 => Just(b"\x1b\\".to_vec()),
+                1 => Just(b"\x1b".to_vec()),
+                1 => Just(b"\x9c".to_vec()),
+                1 => Just("\u{9c}".as_bytes().to_vec()),
+                1 => Just(b";".to_vec()),
+                3 => proptest::collection::vec(any::<u8>(), 0..16),
+            ]
         }
     }
 }
