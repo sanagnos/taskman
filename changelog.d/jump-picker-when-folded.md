@@ -1,0 +1,1 @@
+- `ctrl+a /` works with the sidebar folded, at any window width: the jump box opens over the screen, listing the matching cards with their project, title and state.

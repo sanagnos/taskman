@@ -109,7 +109,8 @@ pub enum Mode {
     OfferTmux(Id),
     /// The ticket's and the session's links (`prefix l`), the selected one highlighted.
     Links(Box<LinkList>),
-    /// The jump box (`prefix /`): the sidebar narrows to what's typed.
+    /// The jump box (`prefix /`): the sidebar narrows to what's typed, or, while it's folded, a
+    /// picker over the screen lists the matches.
     Jump(jump::Jump),
     /// The waiting-on-you queue (`prefix w`).
     Queue(queue::Queue),

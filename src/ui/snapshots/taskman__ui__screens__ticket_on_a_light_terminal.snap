@@ -66,12 +66,12 @@ expression: "draw_colours(&mut app, 100, 30)"
 a: Indexed(243) on Reset
 b: Black on Cyan
 c: Green on Reset
-d: Cyan on Indexed(254)
+d: Indexed(24) on Indexed(254)
 e: Reset on Indexed(254)
 f: Green on Indexed(254)
 g: Gray on Reset
 h: Red on Indexed(254)
 i: Indexed(130) on Reset
-j: Cyan on Reset
+j: Indexed(24) on Reset
 k: Red on Reset
 l: Indexed(130) on Indexed(254)

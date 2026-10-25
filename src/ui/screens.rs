@@ -721,6 +721,19 @@ fn add_form() {
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 
+/// On a white terminal the focused label, like the selected card, is a dark teal rather than
+/// cyan, which is too faint to read on white.
+#[test]
+fn add_form_on_a_light_terminal() {
+    use crate::theme::{Probe, Setting, Theme};
+    let mut app = acme_app();
+    let probe = Probe { fg: Some([0; 3]), bg: Some([255; 3]), colorfgbg: None };
+    app.theme = Theme::new(Setting::Auto, &probe);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(key(KeyCode::Char('n')));
+    assert_snapshot!(draw_colours(&mut app, 80, 24));
+}
+
 /// A name too long for the form, the cursor moved into it: the value scrolls to show the cursor,
 /// cut either side.
 #[test]
@@ -1126,6 +1139,65 @@ fn jump_box_without_a_match() {
         app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char(c)));
     }
     assert_snapshot!(draw(&mut app, 120, 30));
+}
+
+/// With the sidebar folded the jump box is a picker over the screen.
+#[test]
+fn jump_picker_with_the_sidebar_folded() {
+    let mut app = acme_app();
+    draw(&mut app, 80, 24);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char('/')));
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
+#[test]
+fn jump_picker_narrowed() {
+    let mut app = acme_app();
+    draw(&mut app, 80, 24);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char('/')));
+    for c in "sign".chars() {
+        app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char(c)));
+    }
+    app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Down));
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
+#[test]
+fn jump_picker_in_a_narrow_window() {
+    let mut app = acme_app();
+    draw(&mut app, 64, 24);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char('/')));
+    assert_snapshot!(draw(&mut app, 64, 24));
+}
+
+/// A short window, as a split pane: the spare rows round the box go first, and the list keeps
+/// room for a card between its "more" rows.
+#[test]
+fn jump_picker_in_a_short_window() {
+    let mut app = acme_app();
+    draw(&mut app, 80, 14);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char('/')));
+    for _ in 0..3 {
+        app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Down));
+    }
+    assert_snapshot!(draw(&mut app, 80, 14));
+}
+
+/// Scrolled to the last of more cards than fit: the top row counts those above.
+#[test]
+fn jump_picker_scrolled() {
+    let mut app = long_sidebar(20);
+    draw(&mut app, 80, 24);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char('/')));
+    for _ in 0..app.tickets.len() {
+        app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Down));
+    }
+    assert_snapshot!(draw(&mut app, 80, 24));
 }
 
 /// ENG-53 and notes-writer wait, the second for longer: mid-bucket ages, so they draw the same on

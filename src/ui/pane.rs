@@ -1,7 +1,7 @@
 //! The session's pane: its header, the embedded terminal or what stands in for it, the footer
 //! and the prefix menu over it.
 
-use super::{dim, selection_bg, spinner, yellow};
+use super::{accent, dim, selection_bg, spinner, yellow};
 use crate::app::{AgentState, App, Away, Gone, Level, Mode, TicketView, Toast};
 use crate::keys::prefix;
 use crate::session::{End, Exit};
@@ -41,7 +41,7 @@ pub(super) fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         Style::new().fg(Color::Black).bg(Color::Cyan).bold(),
     )];
     if let Some(away) = away_label(tv) {
-        spans.push(Span::styled(format!(" {away}"), Style::new().fg(Color::Cyan).bold()));
+        spans.push(Span::styled(format!(" {away}"), Style::new().fg(accent()).bold()));
     }
     if !tv.t.cli.is_default() {
         spans.push(Span::styled(
@@ -143,7 +143,7 @@ pub(super) fn draw_claude(f: &mut Frame, app: &App, area: Rect) {
         let line = |i| app.resume_line(i);
         let i = app.sel;
         let (name, cli) = (tv.t.display(), tv.t.cli.label());
-        let command = || Line::from(Span::styled(line(i), Style::new().fg(Color::Cyan).bold()));
+        let command = || Line::from(Span::styled(line(i), Style::new().fg(accent()).bold()));
         let text = match tv.away {
             None => None,
             Some(Away::Leaving(_)) => Some(vec![Line::from(
@@ -608,7 +608,7 @@ pub(super) fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             Span::raw(" press a command key · Esc cancels"),
         ])
     } else if let Some(hint) = app.reorder_hint() {
-        Line::from(Span::styled(format!(" {hint}"), Style::new().fg(Color::Cyan)))
+        Line::from(Span::styled(format!(" {hint}"), Style::new().fg(accent())))
     } else if let Some(toast) = &app.toast {
         return draw_toast(f, app, toast, area);
     } else if app.scrolling_back() && matches!(app.mode, Mode::Normal) {

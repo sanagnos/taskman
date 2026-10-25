@@ -1,7 +1,7 @@
 //! What draws over the screen: confirm dialogs, links, forms, settings and help.
 
 use super::sidebar::{more_line, scroll_to_show, shown_rows};
-use super::{asleep, badge, dim, selection_bg, spinner};
+use super::{accent, asleep, badge, dim, selection_bg, spinner};
 use crate::app::{AgentAsk, AgentState, App, Form, Level, Mode, Scroll, SettingsItem, toasts};
 use crate::keys::prefix;
 use crate::store::tilde;
@@ -18,7 +18,9 @@ use unicode_segmentation::UnicodeSegmentation as _;
 /// The dialog over the screen in `app.mode`, if any.
 pub(super) fn draw_dialog(f: &mut Frame, app: &mut App) {
     match &app.mode {
-        // The jump box is the sidebar's own top row; move mode shows in the sidebar and footer.
+        Mode::Jump(_) if app.jump_picker() => draw_jump_picker(f, app),
+        // The jump box is otherwise the sidebar's own top row; move mode shows in the sidebar and
+        // footer.
         Mode::Normal | Mode::Jump(_) | Mode::Move(_) => {}
         Mode::Help(_) => draw_help(f, app),
         Mode::Links(_) => draw_links(f, app),
@@ -165,7 +167,7 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &mut App) {
                 &format!("Continue {} in a new tmux window?", app.tickets[i].t.display()),
                 vec![
                     Line::from("It runs there with its brief, hooks and name:"),
-                    Line::from(Span::styled(format!("  {line}"), Style::new().fg(Color::Cyan))),
+                    Line::from(Span::styled(format!("  {line}"), Style::new().fg(accent()))),
                     Line::from(Span::styled(
                         "The command is copied too, for any other terminal.",
                         dim(),
@@ -212,7 +214,7 @@ fn draw_links(f: &mut Frame, app: &mut App) {
             Span::raw("  "),
             Span::styled(
                 truncate(&under, room.saturating_sub(util::width(note))),
-                dim().fg(Color::Cyan),
+                dim().fg(accent()),
             ),
             Span::styled(note, dim()),
         ]));
@@ -324,6 +326,113 @@ fn draw_queue(f: &mut Frame, app: &mut App) {
         Paragraph::new(text).block(dialog("Needs you, oldest first").padding(DIALOG_PAD)),
         r,
     );
+}
+
+/// The most cards the jump picker lists at once.
+const JUMP_ROWS: usize = 12;
+
+/// The jump box over the screen, while the sidebar is folded (`App::jump_picker`): what's typed on
+/// top, then the cards that match, a row each with its project, title and state, then the keys.
+fn draw_jump_picker(f: &mut Frame, app: &mut App) {
+    let Mode::Jump(j) = &app.mode else { return };
+    let found = app.jump_matches(&j.query);
+    let w = (76 + DIALOG_PAD_W).min(f.area().width.saturating_sub(2));
+    let room = usize::from(w.saturating_sub(2 + DIALOG_PAD_W));
+    let keys = key_rows(&[("↑/↓", "choose"), ("Enter", "go to it"), ("Esc", "close")], room);
+    // A row for each card there is, so the box keeps its size as typing narrows them, up to what
+    // fits with the borders, the query and the blank rows and keys round the list, and two rows
+    // spare above and below the dialog. A short window gives up the spare rows before the list
+    // goes under three, which still shows a card between the "more" rows.
+    let chrome = usize::from(2 + DIALOG_PAD_H + 3) + keys.len();
+    let height = usize::from(f.area().height);
+    let fits = match height.saturating_sub(chrome + 4) {
+        n if n >= 3 => n,
+        _ => height.saturating_sub(chrome + 2).max(3),
+    };
+    let view_h = app.tickets.len().min(JUMP_ROWS).min(fits).max(1);
+    let total = found.len();
+    // The matches can shrink under the highlight while the box is open, as a ticket closes.
+    let at = j.at.min(total.saturating_sub(1));
+    let top = scroll_to_show(j.top, total, view_h, at..at + 1, None);
+    let (first, end) = shown_rows(top, total, view_h);
+    let rows: Vec<_> = found.iter().map(|&i| &app.tickets[i]).collect();
+    let all: Vec<_> = app.tickets.iter().collect();
+    let label = |tv: &crate::app::TicketView| match tv.t.agent {
+        Some(_) => format!("✦ {}", untrusted::line(tv.t.display())),
+        None => untrusted::line(&tv.t.key),
+    };
+    let project = |tv: &crate::app::TicketView| {
+        let p = app.project_of(&tv.t).map_or("", |p| app.projects[p].name.as_str());
+        untrusted::line(p)
+    };
+    // The labels and projects line up in columns as wide as the longest of all the cards, so they
+    // stay put as typing narrows them, within limits that leave the titles room in a narrow window.
+    let widest = |of: &dyn Fn(&crate::app::TicketView) -> String| {
+        all.iter().map(|tv| util::width(&of(tv))).max().unwrap_or(0)
+    };
+    let label_w = widest(&label).min(20).min(room / 3);
+    let project_w = widest(&project).min(14).min(room / 5);
+
+    let query = truncate_start(&untrusted::line(&j.query), room.saturating_sub(2));
+    let mut text = vec![
+        Line::from(vec![
+            Span::styled("/ ", Style::new().fg(accent()).bold()),
+            Span::raw(query.clone()),
+        ]),
+        Line::from(""),
+    ];
+    if total == 0 {
+        text.push(Line::from(Span::styled("No matches", dim())));
+    }
+    let hidden = |tvs: &[&crate::app::TicketView]| tvs.iter().any(|tv| tv.needs_attention());
+    if first > 0 {
+        // `more_line` ends its ● a column short of the edge, where the sidebar's badges end; here
+        // they end at the edge.
+        text.push(more_line("↑", first, hidden(&rows[..first]), room + 1));
+    }
+    for (n, tv) in rows[first..end].iter().enumerate() {
+        let chosen = first + n == at;
+        let mut style = Style::new().bold();
+        if chosen {
+            style = style.add_modifier(ratatui::style::Modifier::REVERSED);
+        }
+        // The badge ends at the right edge, as in the sidebar; the title gets what's left.
+        let badge = super::sidebar_badge(tv);
+        let badge_w = util::width(&badge.content);
+        let name = truncate(&label(tv), label_w);
+        let used = 2 + label_w + 2 + project_w + 2;
+        let title = tv.title().map(|t| untrusted::line(&t)).unwrap_or_default();
+        let title = truncate(&title, room.saturating_sub(used + badge_w + 2));
+        let gap = room.saturating_sub(used + util::width(&title) + badge_w).max(1);
+        text.push(Line::from(vec![
+            Span::raw(if chosen { "› " } else { "  " }),
+            Span::styled(name.clone(), style),
+            Span::raw(" ".repeat(label_w - util::width(&name) + 2)),
+            Span::styled(pad(&truncate(&project(tv), project_w), project_w + 2), dim()),
+            Span::styled(title, dim()),
+            Span::raw(" ".repeat(gap)),
+            badge,
+        ]));
+    }
+    if end < total {
+        text.push(more_line("↓", total - end, hidden(&rows[end..]), room + 1));
+    }
+    text.resize(2 + view_h, Line::from(""));
+    text.push(Line::from(""));
+    text.extend(keys);
+    let h = u16::try_from(text.len()).unwrap_or(u16::MAX) + 2 + DIALOG_PAD_H;
+    let r = centered(f, w, h);
+    let block = dialog("Jump to").padding(DIALOG_PAD);
+    let inner = block.inner(r);
+    f.render_widget(Clear, r);
+    f.render_widget(Paragraph::new(text).block(block), r);
+    if inner.width > 0 && inner.height > 0 {
+        let x = inner.x + 2 + u16::try_from(util::width(&query)).unwrap_or(0);
+        f.set_cursor_position((x.min(inner.right().saturating_sub(1)), inner.y));
+    }
+    if let Mode::Jump(j) = &mut app.mode {
+        (j.at, j.top) = (at, top);
+    }
 }
 
 /// The notices: every toast shown, newest first (`prefix ~`): how long ago, then the text, wrapped
@@ -596,7 +705,7 @@ fn dialog(title: &str) -> Block<'_> {
     Block::new()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(Color::Cyan))
+        .border_style(Style::new().fg(accent()))
         .title(Span::styled(format!(" {title} "), Style::new().bold()))
 }
 
@@ -961,7 +1070,7 @@ fn form_lines(form: &Form, active: bool, keys: &[(&str, &str)], width: u16) -> S
     if let Some(note) = &form.note {
         text.extend(
             note.lines()
-                .map(|l| Line::from(Span::styled(l.to_string(), Style::new().fg(Color::Cyan)))),
+                .map(|l| Line::from(Span::styled(l.to_string(), Style::new().fg(accent())))),
         );
         text.push(Line::from(""));
     }
@@ -980,7 +1089,7 @@ fn form_lines(form: &Form, active: bool, keys: &[(&str, &str)], width: u16) -> S
         let start = text.len();
         starts.push(start);
         let focused = active && i == form.focus;
-        let label_style = if focused { Style::new().fg(Color::Cyan).bold() } else { Style::new() };
+        let label_style = if focused { Style::new().fg(accent()).bold() } else { Style::new() };
         let mut row = if stacked {
             text.push(Line::from(Span::styled(field.label.to_string(), label_style)));
             vec![Span::raw(" ".repeat(col))]
@@ -1325,7 +1434,7 @@ fn draw_settings(f: &mut Frame, app: &mut App) {
         let pad = w.saturating_sub(util::width(&name) + util::width(&right) + 1);
         let base = match (selected, s.editing, new) {
             (true, false, _) => Style::new().fg(Color::Black).bg(Color::Cyan),
-            (true, true, _) => Style::new().fg(Color::Cyan).bold(),
+            (true, true, _) => Style::new().fg(accent()).bold(),
             (false, _, true) => dim(),
             _ => Style::new(),
         };
@@ -1409,8 +1518,8 @@ fn draw_help(f: &mut Frame, app: &mut App) {
         (badge(AgentState::Idle, true, false), "idle or not started"),
         (asleep(), "asleep; selecting wakes it"),
         (Span::styled("✦ lead", Style::new().bold()), "an agent: no ticket"),
-        (Span::styled("↗ outside", Style::new().fg(Color::Cyan)), "in another terminal"),
-        (Span::styled("↩ back", Style::new().fg(Color::Cyan).bold()), "Enter resumes it here"),
+        (Span::styled("↗ outside", Style::new().fg(accent())), "in another terminal"),
+        (Span::styled("↩ back", Style::new().fg(accent()).bold()), "Enter resumes it here"),
     ];
     // Indented under the heading, unless the prefix's name is long enough to need the room.
     let indent = if p.name().len() > "ctrl+a".len() { 0 } else { 2 };
@@ -1432,12 +1541,12 @@ fn draw_help(f: &mut Frame, app: &mut App) {
     text.push(Line::from(""));
     // Each key's description wraps under its own column, or under the key when that column
     // would be too narrow to read.
-    let cyan = Style::new().fg(Color::Cyan);
+    let key_style = Style::new().fg(accent());
     let stacked = inner < indent + key_w + 20;
     for (k, what) in &keys {
         let key = format!("{p} {k}");
         if stacked {
-            text.push(Line::from(Span::styled(format!("{:indent$}{key}", ""), cyan)));
+            text.push(Line::from(Span::styled(format!("{:indent$}{key}", ""), key_style)));
             let under = indent + 4;
             for l in wrap_words(what, inner.saturating_sub(under)) {
                 text.push(Line::from(format!("{:under$}{l}", "")));
@@ -1451,7 +1560,7 @@ fn draw_help(f: &mut Frame, app: &mut App) {
             } else {
                 " ".repeat(col)
             };
-            text.push(Line::from(vec![Span::styled(left, cyan), Span::raw(l)]));
+            text.push(Line::from(vec![Span::styled(left, key_style), Span::raw(l)]));
         }
     }
     text.push(Line::from(""));

@@ -1,0 +1,1 @@
+- On a light terminal, the selected card's name, focused labels, titles and the other cyan text are a dark teal, readable on the light selection, instead of cyan, which was too faint. On a darker light grey, or when the terminal doesn't say its background, they're navy.

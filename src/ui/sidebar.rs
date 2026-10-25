@@ -1,6 +1,6 @@
 //! The sidebar: the projects, their cards, and the list's scrolling.
 
-use super::{dim, new_total, pr_spans, selection_bg, sidebar_badge, state_badge, yellow};
+use super::{accent, dim, new_total, pr_spans, selection_bg, sidebar_badge, state_badge, yellow};
 use crate::app::{App, Hit, Mode, Piece, TicketView};
 use crate::keys::prefix;
 use crate::untrusted;
@@ -57,9 +57,11 @@ pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
     app.sidebar_hits.clear();
     let collapsed = app.prefs.sidebar_collapsed || app.areas.sidebar_folded;
 
-    // The jump box takes the title's rows.
+    // The jump box takes the title's rows, unless it's the picker over the screen.
     let mut narrowed = None;
-    if let Mode::Jump(j) = &app.mode {
+    if let Mode::Jump(j) = &app.mode
+        && !app.jump_picker()
+    {
         let cards = app.jump_matches(&j.query);
         narrowed = Some(Narrowed { focus: cards.get(j.at).copied(), cards });
         draw_jump_box(f, &j.query, inner);
@@ -163,11 +165,11 @@ pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
             let cell = f.buffer_mut();
             for x in r.x..r.right() {
                 cell[(x, r.y)].modifier.insert(Modifier::UNDERLINED);
-                cell[(x, r.y)].set_fg(Color::Cyan);
+                cell[(x, r.y)].set_fg(accent());
             }
         } else {
             let line = format!(" {}", "━".repeat(w.saturating_sub(2)));
-            f.render_widget(Paragraph::new(line).style(Style::new().fg(Color::Cyan)), r);
+            f.render_widget(Paragraph::new(line).style(Style::new().fg(accent())), r);
         }
     }
 }
@@ -186,7 +188,7 @@ fn draw_title(f: &mut Frame, app: &App, inner: Rect) {
     {
         let room = (inner.width as usize).saturating_sub(1);
         let text = truncate(&crate::update::notice_text(&n, room), room);
-        let line = Line::from(Span::styled(format!(" {text}"), Style::new().fg(Color::Cyan)));
+        let line = Line::from(Span::styled(format!(" {text}"), Style::new().fg(accent())));
         f.render_widget(Paragraph::new(line), Rect { y: inner.y + 1, height: 1, ..inner });
     }
 }
@@ -196,7 +198,7 @@ fn draw_jump_box(f: &mut Frame, query: &str, inner: Rect) {
     let room = (inner.width as usize).saturating_sub(4);
     let shown = truncate_start(&untrusted::line(query), room);
     let line = Line::from(vec![
-        Span::styled(" / ", Style::new().fg(Color::Cyan).bold()),
+        Span::styled(" / ", Style::new().fg(accent()).bold()),
         Span::raw(shown.clone()),
     ]);
     f.render_widget(Paragraph::new(line), Rect { height: 1, ..inner });
@@ -305,12 +307,12 @@ fn sidebar_rows(
             let title = if collapsed { None } else { tv.title() };
             // ┃ joins across lines, so the selected card reads as one block.
             let marker = if selected {
-                Span::styled("┃", Style::new().fg(Color::Cyan))
+                Span::styled("┃", Style::new().fg(accent()))
             } else {
                 Span::raw(" ")
             };
             let key_style =
-                if selected { Style::new().fg(Color::Cyan).bold() } else { Style::new().bold() };
+                if selected { Style::new().fg(accent()).bold() } else { Style::new().bold() };
             let mut lines: Vec<Line> = Vec::new();
             if collapsed {
                 let label = if agent { format!("✦{}", tv.t.display()) } else { tv.t.key.clone() };
