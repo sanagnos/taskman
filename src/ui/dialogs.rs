@@ -20,10 +20,10 @@ use unicode_segmentation::UnicodeSegmentation as _;
 /// The dialog over the screen in `app.mode`, if any.
 pub(super) fn draw_dialog(f: &mut Frame, app: &mut App) {
     match &app.mode {
-        Mode::Jump(_) if app.jump_picker() => draw_jump_picker(f, app),
-        // The jump box is otherwise the sidebar's own top row; move mode shows in the sidebar and
+        Mode::Find(_) if app.find_picker() => draw_find_picker(f, app),
+        // The find box is otherwise the sidebar's own top row; move mode shows in the sidebar and
         // footer.
-        Mode::Normal | Mode::Jump(_) | Mode::Move(_) => {}
+        Mode::Normal | Mode::Find(_) | Mode::Move(_) => {}
         Mode::Help(_) => draw_help(f, app),
         Mode::Links(_) => draw_links(f, app),
         Mode::Queue(_) => draw_queue(f, app),
@@ -331,17 +331,25 @@ fn draw_queue(f: &mut Frame, app: &mut App) {
     );
 }
 
-/// The most cards the jump picker lists at once.
-const JUMP_ROWS: usize = 12;
+/// The most cards the find picker lists at once.
+const FIND_ROWS: usize = 12;
 
-/// The jump box over the screen, while the sidebar is folded (`App::jump_picker`): what's typed on
+/// The find picker's keys, under its list.
+const FIND_KEYS: [(&str, &str); 3] = [("↑/↓", "choose"), ("Enter", "go to it"), ("Esc", "close")];
+
+/// The same keys in the footer, while the box is in the sidebar: by importance, as the footer
+/// drops them from the end when short of room.
+pub(super) const FIND_FOOTER_KEYS: [(&str, &str); 3] =
+    [("Esc", "close"), ("Enter", "go to it"), ("↑/↓", "choose")];
+
+/// The find box over the screen, while the sidebar is folded (`App::find_picker`): what's typed on
 /// top, then the cards that match, a row each with its project, title and state, then the keys.
-fn draw_jump_picker(f: &mut Frame, app: &mut App) {
-    let Mode::Jump(j) = &app.mode else { return };
-    let found = app.jump_matches(&j.query);
+fn draw_find_picker(f: &mut Frame, app: &mut App) {
+    let Mode::Find(j) = &app.mode else { return };
+    let found = app.find_matches(&j.query);
     let w = (76 + DIALOG_PAD_W).min(f.area().width.saturating_sub(2));
     let room = usize::from(w.saturating_sub(2 + DIALOG_PAD_W));
-    let keys = key_rows(&[("↑/↓", "choose"), ("Enter", "go to it"), ("Esc", "close")], room);
+    let keys = key_rows(&FIND_KEYS, room);
     // A row for each card there is, so the box keeps its size as typing narrows them, up to what
     // fits with the borders, the query and the blank rows and keys round the list, and two rows
     // spare above and below the dialog. A short window gives up the spare rows before the list
@@ -352,7 +360,7 @@ fn draw_jump_picker(f: &mut Frame, app: &mut App) {
         n if n >= 3 => n,
         _ => height.saturating_sub(chrome + 2).max(3),
     };
-    let view_h = app.tickets.len().min(JUMP_ROWS).min(fits).max(1);
+    let view_h = app.tickets.len().min(FIND_ROWS).min(fits).max(1);
     let total = found.len();
     // The matches can shrink under the highlight while the box is open, as a ticket closes.
     let at = j.at.min(total.saturating_sub(1));
@@ -425,7 +433,7 @@ fn draw_jump_picker(f: &mut Frame, app: &mut App) {
     text.extend(keys);
     let h = u16::try_from(text.len()).unwrap_or(u16::MAX) + 2 + DIALOG_PAD_H;
     let r = centered(f, w, h);
-    let block = dialog("Jump to").padding(DIALOG_PAD);
+    let block = dialog("Find").padding(DIALOG_PAD);
     let inner = block.inner(r);
     f.render_widget(Clear, r);
     f.render_widget(Paragraph::new(text).block(block), r);
@@ -433,7 +441,7 @@ fn draw_jump_picker(f: &mut Frame, app: &mut App) {
         let x = inner.x + 2 + u16::try_from(util::width(&query)).unwrap_or(0);
         f.set_cursor_position((x.min(inner.right().saturating_sub(1)), inner.y));
     }
-    if let Mode::Jump(j) = &mut app.mode {
+    if let Mode::Find(j) = &mut app.mode {
         (j.at, j.top) = (at, top);
     }
 }
@@ -1675,7 +1683,7 @@ fn draw_help(f: &mut Frame, app: &mut App) {
                 ("[ / ]", "prev/next ticket"),
                 (&again, "next waiting: one needing you, else one done (or tab)"),
                 ("w", "who needs you: oldest first, with what each asks"),
-                ("/", "jump to a ticket, agent or project by typing"),
+                ("/", "find a ticket, agent or project by typing"),
             ],
         ),
         (

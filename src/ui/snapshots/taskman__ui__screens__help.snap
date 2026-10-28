@@ -17,7 +17,7 @@ expression: screen
 " │    ctrl+a ctrl+a     next waiting: one needing you, else one done (or      │ "
 " │                      tab)                                                  │ "
 " │    ctrl+a w          who needs you: oldest first, with what each asks      │ "
-" │    ctrl+a /          jump to a ticket, agent or project by typing          │ "
+" │    ctrl+a /          find a ticket, agent or project by typing             │ "
 " │  This ticket                                                               │ "
 " │    ctrl+a { / }      move: ↑/↓ go on, p moves the project, Enter ends      │ "
 " │    ctrl+a e          rename agent                                          │ "

@@ -1,6 +1,7 @@
 //! The session's pane: its header, the embedded terminal or what stands in for it, the footer
 //! and the prefix menu over it.
 
+use super::dialogs::FIND_FOOTER_KEYS;
 use super::{accent, dim, selection_bg, spinner, yellow};
 use crate::app::{AgentState, App, Away, Gone, Level, Mode, TicketView, Toast};
 use crate::keys::prefix;
@@ -613,8 +614,13 @@ pub(super) fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Line::from(Span::styled(format!(" {hint}"), Style::new().fg(accent())))
     } else if let Some(toast) = &app.toast {
         return draw_toast(f, app, toast, area);
+    } else if matches!(app.mode, Mode::Find(_)) && !app.find_picker() {
+        // The box in the sidebar has no room for its keys; the picker lists its own.
+        mode_keys(app, area.width, None, &FIND_FOOTER_KEYS)
     } else if app.scrolling_back() && matches!(app.mode, Mode::Normal) {
-        scroll_keys(app, area.width)
+        // By importance, each drawn only with those before it: the header's badge names Esc too.
+        let keys = [("PgUp/PgDn ↑/↓ Home/End", "scroll"), ("other keys", "type"), ("Esc", "live")];
+        mode_keys(app, area.width, Some(" scrollback "), &keys)
     } else {
         let key = Style::new().bold();
         let p = prefix().short();
@@ -639,22 +645,26 @@ pub(super) fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(line).style(Style::new().bg(selection_bg())), area);
 }
 
-/// The footer during keyboard scrollback (`App::scroll_key`): its keys, and the waiting count
-/// on the right. Short of room, the label goes first, then the keys least needed.
-fn scroll_keys(app: &App, cols: u16) -> Line<'static> {
+/// The footer in a mode with keys of its own, such as keyboard scrollback (`App::scroll_key`):
+/// its label, its keys, and the waiting count on the right. Short of room, the label goes first,
+/// then the keys from the end.
+fn mode_keys(
+    app: &App,
+    cols: u16,
+    label: Option<&'static str>,
+    keys: &[(&'static str, &'static str)],
+) -> Line<'static> {
     let cols = usize::from(cols);
     let right = waiting_on_you(app, cols.saturating_sub(30));
     let room = cols - right.as_ref().map_or(0, |r| width(r) + 1);
-    // By importance, each drawn only with those before it: the header's badge names Esc too.
-    let keys = [("PgUp/PgDn ↑/↓ Home/End", "scroll"), ("other keys", "type"), ("Esc", "live")];
-    let label = " scrollback ";
     let shown = |n: usize| -> usize {
         keys[..n].iter().map(|(k, what)| 3 + width(k) + 1 + width(what)).sum::<usize>() - 2
     };
     let n = (1..=keys.len()).rev().find(|&n| shown(n) <= room).unwrap_or(1);
-    let with_label = width(label) + shown(n) <= room;
     let mut v = Vec::new();
-    if with_label {
+    if let Some(label) = label
+        && width(label) + shown(n) <= room
+    {
         v.push(Span::styled(label, Style::new().fg(Color::Black).bg(Color::Yellow)));
     }
     for (i, (k, what)) in keys[..n].iter().enumerate() {
@@ -682,7 +692,7 @@ pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
                 ("[ ]", "prev/next"),
                 (&again, "next waiting"),
                 ("w", "who needs you"),
-                ("/", "jump"),
+                ("/", "find"),
             ],
         ),
         ("This ticket", &[("{ }", "move"), ("e", "rename agent"), ("x", "close")]),
@@ -751,6 +761,18 @@ pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
 mod tests {
     use super::*;
     use ratatui::buffer::Buffer;
+
+    /// Short of room beside the waiting count, the find box's footer keeps Esc to the last.
+    #[test]
+    fn a_narrow_footer_keeps_esc_close() {
+        let app = crate::app::test_support::acme_app();
+        let text = |cols| mode_keys(&app, cols, None, &FIND_FOOTER_KEYS).to_string();
+        assert!(text(120).starts_with(" Esc close · Enter go to it · ↑/↓ choose "));
+        for cols in 12..120 {
+            assert!(text(cols).starts_with(" Esc close"), "{cols}: {}", text(cols));
+        }
+        assert!(!text(50).contains("choose") && !text(25).contains("Enter"));
+    }
 
     /// The hint shows at the oldest row of a full history only, names each CLI's key, and goes
     /// with a clear of the history and on the alternate screen.

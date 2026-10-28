@@ -34,7 +34,7 @@ Prebuilt binaries cover macOS and Linux on x86_64 and arm64, WSL included ([Plat
 1. Run `taskman`, press `ctrl+a P` and enter the path of a folder you work in.
 2. Press `ctrl+a n` to add an agent: a session in that folder. Every command starts with the prefix, `ctrl+a`, which shows the command keys; other keys go to the session. `ctrl+a ?` explains them. Claude asks once per repository you haven't trusted in Claude Code; answer in the pane.
 3. For tickets, pick a tracker in the same form, or later with `ctrl+a ,`: Jira, Linear, GitHub Issues or Local files. A Jira or Linear token goes in your keychain, or a file only you can read where there's none, never in the config ([Storing a token](docs/guide.md#storing-a-token)). Then `ctrl+a n` adds a ticket by number, key or link.
-4. `ctrl+a [` / `]` switch tickets, `ctrl+a /` jumps to one by name or key, and `ctrl+a ctrl+a` jumps to the next one waiting on you.
+4. `ctrl+a [` / `]` switch tickets, `ctrl+a /` finds one by name or key, and `ctrl+a ctrl+a` jumps to the next one waiting on you.
 5. `ctrl+a q`, then Enter, quits; sessions resume where they left off next time.
 
 Use tmux or screen with `ctrl+a`? Pick another prefix in Settings. The [guide](docs/guide.md) covers the rest.

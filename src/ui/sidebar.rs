@@ -57,14 +57,14 @@ pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
     app.sidebar_hits.clear();
     let collapsed = app.prefs.sidebar_collapsed || app.areas.sidebar_folded;
 
-    // The jump box takes the title's rows, unless it's the picker over the screen.
+    // The find box takes the title's rows, unless it's the picker over the screen.
     let mut narrowed = None;
-    if let Mode::Jump(j) = &app.mode
-        && !app.jump_picker()
+    if let Mode::Find(j) = &app.mode
+        && !app.find_picker()
     {
-        let cards = app.jump_matches(&j.query);
+        let cards = app.find_matches(&j.query);
         narrowed = Some(Narrowed { focus: cards.get(j.at).copied(), cards });
-        draw_jump_box(f, &j.query, inner);
+        draw_find_box(f, &j.query, inner);
     } else {
         draw_title(f, app, inner);
     }
@@ -193,26 +193,26 @@ fn draw_title(f: &mut Frame, app: &App, inner: Rect) {
     }
 }
 
-/// The jump box: what's typed on the title's row, with the cursor after it, and the keys under it.
-fn draw_jump_box(f: &mut Frame, query: &str, inner: Rect) {
+/// The find box: what's typed on the title's row, with the cursor after it, or what it finds
+/// while nothing is. The footer lists its keys.
+fn draw_find_box(f: &mut Frame, query: &str, inner: Rect) {
     let room = (inner.width as usize).saturating_sub(4);
     let shown = truncate_start(&untrusted::line(query), room);
-    let line = Line::from(vec![
-        Span::styled(" / ", Style::new().fg(accent()).bold()),
-        Span::raw(shown.clone()),
-    ]);
+    // A cell after the cursor, so a block cursor doesn't cover its first letter.
+    let typed = if query.is_empty() {
+        Span::styled(
+            format!(" {}", truncate("key, title, name or project", room.saturating_sub(1))),
+            dim(),
+        )
+    } else {
+        Span::raw(shown.clone())
+    };
+    let line = Line::from(vec![Span::styled(" / ", Style::new().fg(accent()).bold()), typed]);
     f.render_widget(Paragraph::new(line), Rect { height: 1, ..inner });
     f.set_cursor_position((inner.x + 3 + width(&shown) as u16, inner.y));
-    if inner.height > 1 {
-        let hint = truncate(" ↑/↓ · Enter go · Esc", inner.width as usize);
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(hint, dim()))),
-            Rect { y: inner.y + 1, height: 1, ..inner },
-        );
-    }
 }
 
-/// The sidebar while the jump box is open: only these cards, folded projects open, and the
+/// The sidebar while the find box is open: only these cards, folded projects open, and the
 /// highlighted one in place of the selection.
 struct Narrowed {
     cards: Vec<usize>,

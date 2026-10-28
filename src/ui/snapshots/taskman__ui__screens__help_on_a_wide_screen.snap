@@ -16,7 +16,7 @@ expression: screen
 "                  │    ctrl+a [ / ]      prev/next ticket                                            │es and works     │"
 "  ENG-53         ▲│    ctrl+a ctrl+a     next waiting: one needing you, else one done (or tab)       │                 │"
 "  3 new comments ·│    ctrl+a w          who needs you: oldest first, with what each asks            │                 │"
-"  #129 →ENG-52 dra│    ctrl+a /          jump to a ticket, agent or project by typing                │nts (2) · 1 new  │"
+"  #129 →ENG-52 dra│    ctrl+a /          find a ticket, agent or project by typing                   │nts (2) · 1 new  │"
 "                  │  This ticket                                                                     │                 │"
 "  ENG-61          │    ctrl+a { / }      move: ↑/↓ go on, p moves the project, Enter ends            │                 │"
 "  3 new comments ·│    ctrl+a e          rename agent                                                │afor · 3h        │"
