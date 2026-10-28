@@ -1163,6 +1163,18 @@ fn find_box_narrowing_the_sidebar() {
     assert_snapshot!(draw(&mut app, 120, 30));
 }
 
+/// Opened, before anything is typed: what it finds in the box, its keys in the footer.
+#[test]
+fn find_box_opened() {
+    let mut app = acme_app();
+    draw(&mut app, 120, 30);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char('/')));
+    let screen = draw(&mut app, 120, 30);
+    assert!(screen.contains("type to find · ↑/↓ choose · Enter go to it · Esc close"), "{screen}");
+    assert_snapshot!(screen);
+}
+
 #[test]
 fn find_box_without_a_match() {
     let mut app = acme_app();

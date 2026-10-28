@@ -193,23 +193,19 @@ fn draw_title(f: &mut Frame, app: &App, inner: Rect) {
     }
 }
 
-/// The find box: what's typed on the title's row, with the cursor after it, and the keys under it.
+/// The find box: what's typed on the title's row, with the cursor after it, or what it finds
+/// while nothing is. The footer lists its keys.
 fn draw_find_box(f: &mut Frame, query: &str, inner: Rect) {
     let room = (inner.width as usize).saturating_sub(4);
     let shown = truncate_start(&untrusted::line(query), room);
-    let line = Line::from(vec![
-        Span::styled(" / ", Style::new().fg(accent()).bold()),
-        Span::raw(shown.clone()),
-    ]);
+    let typed = if query.is_empty() {
+        Span::styled(truncate("key, title or name", room), dim())
+    } else {
+        Span::raw(shown.clone())
+    };
+    let line = Line::from(vec![Span::styled(" / ", Style::new().fg(accent()).bold()), typed]);
     f.render_widget(Paragraph::new(line), Rect { height: 1, ..inner });
     f.set_cursor_position((inner.x + 3 + width(&shown) as u16, inner.y));
-    if inner.height > 1 {
-        let hint = truncate(" ↑/↓ · Enter go · Esc", inner.width as usize);
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(hint, dim()))),
-            Rect { y: inner.y + 1, height: 1, ..inner },
-        );
-    }
 }
 
 /// The sidebar while the find box is open: only these cards, folded projects open, and the
