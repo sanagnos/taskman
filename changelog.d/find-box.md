@@ -1,1 +1,0 @@
-- `ctrl+a /` is now called find rather than jump, in the menu, Help and the box itself. While its box is open in the sidebar, the footer lists its keys, Esc to close first; the empty box says what it finds (a key, title, name or project). No key changed.

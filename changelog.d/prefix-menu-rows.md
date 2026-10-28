@@ -1,1 +1,0 @@
-- The `ctrl+a` menu lists the everyday keys a row for each kind: New, Go to, This ticket, Open, Session, Look back (what the session did, its history, scrolling back), Panels and General, with `? help` in the footer. `ctrl+a ?` (Help) lists every key in the same groups and words; no key changed.
