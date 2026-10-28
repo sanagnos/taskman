@@ -797,6 +797,15 @@ impl App {
         proj.collapsed = !proj.collapsed;
         self.save();
     }
+
+    /// `ctrl+a Z`: folds every project while any is open, else unfolds them all.
+    pub fn toggle_all_projects(&mut self) {
+        let fold = self.projects.iter().any(|p| !p.collapsed);
+        for proj in &mut self.projects {
+            proj.collapsed = fold;
+        }
+        self.save();
+    }
 }
 
 /// The toast while a quit waits for the worktree removals of tickets `names`.

@@ -365,6 +365,15 @@ fn folded_long_sidebar_at_its_last_card() {
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 
+/// Every project folded with `ctrl+a Z`: acme's header keeps the ● of ENG-53, which needs you.
+#[test]
+fn every_project_folded() {
+    let mut app = acme_app();
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(key(KeyCode::Char('Z')));
+    assert_snapshot!(draw(&mut app, 160, 40));
+}
+
 /// Move mode: the card steps down one place, and the footer says how to go on.
 #[test]
 fn moving_a_card_with_the_keys() {

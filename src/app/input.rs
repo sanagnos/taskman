@@ -477,6 +477,7 @@ impl App {
                     self.toggle_project(p);
                 }
             }
+            KeyCode::Char('Z') => self.toggle_all_projects(),
             KeyCode::Char('x') if !self.tickets.is_empty() => self.confirm_close(),
             KeyCode::Char('b') => {
                 self.toggle(|p| &mut p.sidebar_collapsed);
