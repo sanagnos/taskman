@@ -112,11 +112,13 @@ impl std::fmt::Display for Record {
 
 /// A field as its type, or its default when it holds something else: a record with one odd field
 /// still says what the rest do.
-fn lenient<'de, D: Deserializer<'de>, T: DeserializeOwned + Default>(d: D) -> Result<T, D::Error> {
+pub(crate) fn lenient<'de, D: Deserializer<'de>, T: DeserializeOwned + Default>(
+    d: D,
+) -> Result<T, D::Error> {
     Ok(lenient_value(Value::deserialize(d)?))
 }
 
-fn lenient_value<T: DeserializeOwned + Default>(v: Value) -> T {
+pub(crate) fn lenient_value<T: DeserializeOwned + Default>(v: Value) -> T {
     T::deserialize(v).unwrap_or_default()
 }
 

@@ -59,6 +59,7 @@ pub(crate) mod test_support;
 mod ticket;
 mod tickets;
 pub mod toasts;
+mod turns;
 
 pub use forms::{Field, Form, FormKind, List};
 pub use launch::{Gone, NESTED_ENV, launch_id};
@@ -118,6 +119,8 @@ pub enum Mode {
     Move(Box<reorder::Moving>),
     /// Every toast shown (`prefix ~`), newest first.
     Log(Scroll),
+    /// What a session's turns did (`prefix d`), newest first.
+    Turns(Box<turns::Turns>),
 }
 
 pub struct LinkList {
@@ -671,6 +674,7 @@ impl App {
         if self.last_status_poll.elapsed() >= STATUS_EVERY {
             self.last_status_poll = Instant::now();
             self.poll_status();
+            self.poll_turns();
             self.take_inbox();
         }
         self.ask_next();

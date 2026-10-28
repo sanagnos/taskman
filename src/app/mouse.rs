@@ -61,6 +61,14 @@ impl App {
             }
             return;
         }
+        if let Mode::Turns(t) = &mut self.mode {
+            match ev.kind {
+                MouseEventKind::ScrollUp => t.wheel(true),
+                MouseEventKind::ScrollDown => t.wheel(false),
+                _ => {}
+            }
+            return;
+        }
         if let Mode::Log(v) = &mut self.mode {
             match ev.kind {
                 MouseEventKind::ScrollUp => v.top = v.top.saturating_sub(3),

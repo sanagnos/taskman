@@ -1,11 +1,15 @@
 //! `taskman hook <state>`: run by the Claude Code and Codex hooks in sessions taskman launched.
-//! Records the session's state and id to the ticket's status file, which the TUI polls.
+//! Records the session's state and id to the ticket's status file, which the TUI polls, and each
+//! finished turn to its log (`events_log`).
 //! It must never block or fail loudly, so every error is swallowed.
 
+use crate::events_log;
+use crate::git;
 use crate::status_file::{self, HookState, Reason, Record};
 use serde_json::{Value, json};
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// The `--settings` JSON that wires every relevant hook event to `taskman hook`, and lets
 /// `taskman status`, `taskman add` and `taskman move` run without a prompt.
@@ -133,6 +137,177 @@ pub fn run(state_arg: &str) {
     // earlier one, written late (see `app::TicketView::takes`).
     out.launch = std::env::var("TASKMAN_LAUNCH").ok().filter(|l| !l.is_empty());
     let _ = status_file::write(path, &out);
+    // After the status record, so the git calls a turn's end makes never hold up "done": nothing
+    // reads the log for it, and a CLI ends a hook that takes too long (Codex after 3 s).
+    log_turn(path, &v, session_dir(std::env::var_os("TASKMAN_CWD"), &v).as_deref());
+}
+
+/// The session's own folder: the one taskman started it in (`TASKMAN_CWD`, given as `started`),
+/// not where its shell has `cd`'d to, so a look into another worktree doesn't credit that branch's
+/// commits to it. A session an older taskman started has only the hook's `cwd`.
+fn session_dir(started: Option<std::ffi::OsString>, v: &Value) -> Option<PathBuf> {
+    started
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| v["cwd"].as_str().map(PathBuf::from))
+        .or_else(|| std::env::current_dir().ok())
+}
+
+/// How long a hook waits for git: the CLIs give a hook 3 s (Codex) or 5 s.
+const GIT_WAIT: Duration = Duration::from_millis(800);
+
+/// Adds to the session's log (`events_log`) for a hook event in the session working in `dir`: a
+/// prompt notes the commit the turn starts on, an edit the files, and the turn's end writes its
+/// line from those and the CLI's last message. From the hooks' own input only, never the CLI's
+/// transcript, whose format is its own.
+fn log_turn(status: &Path, v: &Value, dir: Option<&Path>) {
+    let pending = events_log::pending_path(status);
+    match v["hook_event_name"].as_str().unwrap_or("") {
+        "UserPromptSubmit" => {
+            if let Some(h) = dir.and_then(head) {
+                let _ = events_log::note_start(&pending, &h);
+            }
+        }
+        "PostToolUse" => {
+            let tool = v["tool_name"].as_str().unwrap_or("");
+            let edited = events_log::edited(tool, &v["tool_input"], dir.unwrap_or(Path::new("")));
+            let _ = events_log::note_files(&pending, &edited);
+        }
+        "Stop" => {
+            let noted = events_log::read_pending(&pending);
+            let mut files = noted.files;
+            let mut commits = Vec::new();
+            if let (Some(from), Some(dir)) = (noted.head, dir)
+                && let Some(made) = made_since(dir, &from)
+            {
+                // What the commits changed, so files a shell command or formatter wrote count
+                // too once they're committed.
+                for f in made.files {
+                    if !files.contains(&f) {
+                        files.push(f);
+                    }
+                }
+                commits = made.commits;
+            }
+            // Claude's and Codex's Stop both carry it (Claude Code 2.1.309, Codex 0.163).
+            let message = v["last_assistant_message"].as_str().unwrap_or("");
+            let mut turn = events_log::Turn::new(message, files, commits, crate::util::now());
+            turn.session_id = v["session_id"].as_str().map(str::to_string);
+            if events_log::append(&events_log::log_path(status), &turn).is_ok() {
+                // A Stop hook of the user's own can keep Claude going with no new prompt
+                // (`stop_hook_active`): the commit it ends on starts what follows, until a prompt
+                // starts a turn of its own.
+                let _ = std::fs::remove_file(&pending);
+                if let Some(h) = dir.and_then(head) {
+                    let _ = events_log::note_stop(&pending, &h);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The commit checked out in `dir`; None outside a repository or before its first commit.
+fn head(dir: &Path) -> Option<String> {
+    let out = git::run(dir, &["rev-parse", "--verify", "-q", "HEAD"], GIT_WAIT).ok()?;
+    let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !id.is_empty()).then_some(id)
+}
+
+/// The commits a turn made and the files they changed.
+#[derive(Debug, Default, PartialEq)]
+struct Made {
+    /// Newest first.
+    commits: Vec<String>,
+    /// Relative to the session's folder, as the edit tools' are (`events_log::edited`).
+    files: Vec<String>,
+}
+
+/// What's on `dir`'s HEAD since `from` that the repository's default branch doesn't have: a turn
+/// that rebases or merges onto main brings main's commits into `from..HEAD`, and they aren't the
+/// turn's. The default branch is the remote's (`origin/HEAD`), else a local main or master; on that
+/// branch itself, nothing is left out, or a session committing there would show nothing.
+fn made_since(dir: &Path, from: &str) -> Option<Made> {
+    let run = |args: &[&str]| {
+        let out = git::run(dir, args, GIT_WAIT).ok().filter(|o| o.status.success())?;
+        Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    // One call for where the session is, its branch and the default branch.
+    let format = "--format=%(HEAD)%09%(refname)%09%(symref)";
+    let refs = run(&["for-each-ref", format, "refs/remotes/origin/HEAD", "refs/heads/"])?;
+    let prefix = run(&["rev-parse", "--show-prefix"])?;
+    let range = format!("{from}..HEAD");
+    let log = |not: Option<&str>| {
+        let mut args = vec!["log", "--format=%x00%H", "--name-only", "-z", &range];
+        args.extend(not);
+        args.push("--");
+        run(&args)
+    };
+    // A default branch that's gone (an `origin/HEAD` left pointing nowhere) leaves nothing out.
+    let not_base = base_ref(&refs).map(|b| format!("^{b}"));
+    let out = log(not_base.as_deref()).or_else(|| not_base.and_then(|_| log(None)))?;
+    Some(parse_made(&out, prefix.trim_end_matches('\n')))
+}
+
+/// The default branch to leave out, from `for-each-ref`'s `%(HEAD)\t%(refname)\t%(symref)` lines
+/// for `origin/HEAD` and the local branches; None when there's none, or it's the one checked out.
+fn base_ref(refs: &str) -> Option<String> {
+    let lines: Vec<(&str, &str, &str)> = refs
+        .lines()
+        .map(|l| {
+            let mut f = l.split('\t');
+            (f.next().unwrap_or(""), f.next().unwrap_or(""), f.next().unwrap_or(""))
+        })
+        .collect();
+    let current = lines.iter().find(|l| l.0 == "*").map(|l| l.1);
+    let local = |name: &str| lines.iter().any(|l| l.1 == format!("refs/heads/{name}"));
+    let (base, name) = match lines.iter().find(|l| l.1 == "refs/remotes/origin/HEAD") {
+        Some(&(_, _, target)) => {
+            (target.to_string(), target.strip_prefix("refs/remotes/origin/")?.to_string())
+        }
+        None => {
+            let name = ["main", "master"].into_iter().find(|n| local(n))?;
+            (format!("refs/heads/{name}"), name.to_string())
+        }
+    };
+    let checked_out = format!("refs/heads/{name}");
+    (current != Some(checked_out.as_str())).then_some(base)
+}
+
+/// `git log --format=%x00%H --name-only -z`'s output: a NUL, a commit, a NUL, then its files, each
+/// ending in a NUL, the first after a newline. Files are from the repository's top; `prefix` is
+/// the session's folder in it (`rev-parse --show-prefix`).
+fn parse_made(out: &str, prefix: &str) -> Made {
+    let mut made = Made::default();
+    let mut seen = std::collections::HashSet::new();
+    let mut next_is_commit = false;
+    for token in out.split('\0') {
+        let token = token.trim_start_matches('\n');
+        if token.is_empty() {
+            next_is_commit = true;
+        } else if std::mem::take(&mut next_is_commit) {
+            made.commits.push(token.to_string());
+        } else {
+            let f = relative_to(prefix, token);
+            if seen.insert(f.clone()) {
+                made.files.push(f);
+            }
+        }
+    }
+    made
+}
+
+/// `path`, from the repository's top, as seen from its folder `prefix` (`git rev-parse
+/// --show-prefix`: empty at the top, else ending in `/`).
+fn relative_to(prefix: &str, path: &str) -> String {
+    if let Some(inside) = path.strip_prefix(prefix) {
+        return inside.to_string();
+    }
+    let here: Vec<&str> = prefix.split('/').filter(|s| !s.is_empty()).collect();
+    let there: Vec<&str> = path.split('/').collect();
+    let same = here.iter().zip(&there).take_while(|(a, b)| a == b).count();
+    let up = "../".repeat(here.len() - same);
+    format!("{up}{}", there[same..].join("/"))
 }
 
 /// What the status file says after a hook event.
@@ -303,6 +478,213 @@ fn touches_github(tool: &str, command: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `git args` in `dir`, as a user who commits.
+    fn git_in(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.name=Tester", "-c", "user.email=tester@example.com"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn logs_each_turn_with_its_edits_and_commits() {
+        let dir = crate::store::scratch::dir().join("hook-turns");
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = dir.join("acme");
+        std::fs::create_dir_all(&repo).unwrap();
+        git_in(&repo, &["init", "-q"]);
+        git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "start"]);
+        let status = dir.join("status/acme/ENG-52.json");
+        let cwd = repo.display().to_string();
+        let hook = |v: Value| log_turn(&status, &v, v["cwd"].as_str().map(Path::new));
+        let edit = |file: &str| {
+            json!({ "hook_event_name": "PostToolUse", "cwd": cwd, "tool_name": "Edit",
+                "tool_input": { "file_path": repo.join(file).display().to_string() } })
+        };
+
+        hook(json!({ "hook_event_name": "UserPromptSubmit", "cwd": cwd, "prompt": "fix it" }));
+        hook(edit("src/main.rs"));
+        hook(json!({ "hook_event_name": "PostToolUse", "cwd": cwd, "tool_name": "Bash",
+            "tool_input": { "command": "cargo test" } }));
+        hook(edit("src/main.rs"));
+        // The edited file, committed, and one a formatter wrote, which no edit tool named.
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(repo.join("src/fmt.rs"), "\n").unwrap();
+        git_in(&repo, &["add", "-A"]);
+        git_in(&repo, &["commit", "-q", "-m", "one"]);
+        git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "two"]);
+        let newest = git_in(&repo, &["rev-parse", "HEAD"]);
+        hook(json!({ "hook_event_name": "Stop", "cwd": cwd, "session_id": "5f0c",
+            "last_assistant_message": "Fixed the lint failure." }));
+        let turns = events_log::read(&events_log::log_path(&status));
+        assert_eq!(turns.len(), 1);
+        let t = &turns[0];
+        assert_eq!(
+            (t.message.as_str(), t.files.as_slice()),
+            ("Fixed the lint failure.", &["src/main.rs".to_string(), "src/fmt.rs".into()][..])
+        );
+        assert_eq!((t.commits.len(), t.commits[0].as_str()), (2, newest.as_str()));
+        assert_eq!(t.session_id.as_deref(), Some("5f0c"));
+        let left = events_log::read_pending(&events_log::pending_path(&status));
+        assert_eq!((left.head, left.after_stop), (Some(newest), true));
+
+        // A Stop hook of the user's own kept Claude going, with no prompt: what it commits then is
+        // the next Stop's.
+        git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "more"]);
+        hook(json!({ "hook_event_name": "Stop", "cwd": cwd, "stop_hook_active": true,
+            "last_assistant_message": "Also did more." }));
+        let t = &events_log::read(&events_log::log_path(&status))[0];
+        assert_eq!((t.message.as_str(), t.commits.len()), ("Also did more.", 1));
+        // ... while a prompt starts from where it is: a commit of the user's between turns isn't
+        // the session's.
+        git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "by hand"]);
+        hook(json!({ "hook_event_name": "UserPromptSubmit", "cwd": cwd }));
+        hook(json!({ "hook_event_name": "Stop", "cwd": cwd, "last_assistant_message": "" }));
+        assert_eq!(events_log::read(&events_log::log_path(&status))[0].commits.len(), 0);
+
+        // An interrupted turn fires no Stop: its edits go into the next turn's line, which
+        // counts commits from where the interrupted one started.
+        hook(json!({ "hook_event_name": "UserPromptSubmit", "cwd": cwd }));
+        hook(edit("a.rs"));
+        git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "three"]);
+        hook(json!({ "hook_event_name": "UserPromptSubmit", "cwd": cwd }));
+        hook(edit("b.rs"));
+        hook(json!({ "hook_event_name": "Stop", "cwd": cwd, "last_assistant_message": "" }));
+        let t = &events_log::read(&events_log::log_path(&status))[0];
+        assert_eq!(
+            (t.files.clone(), t.commits.len()),
+            (vec!["a.rs".to_string(), "b.rs".into()], 1)
+        );
+
+        // A turn outside a repository.
+        let elsewhere = dir.join("plain");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let cwd = elsewhere.display().to_string();
+        hook(json!({ "hook_event_name": "UserPromptSubmit", "cwd": cwd }));
+        hook(json!({ "hook_event_name": "Stop", "cwd": cwd, "last_assistant_message": "Done." }));
+        let t = &events_log::read(&events_log::log_path(&status))[0];
+        assert_eq!((t.message.as_str(), t.commits.len(), t.file_count()), ("Done.", 0, 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rebase_or_merge_onto_main_credits_only_the_turns_own_commits() {
+        let dir = crate::store::scratch::dir().join("hook-rebase");
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = dir.join("acme");
+        std::fs::create_dir_all(&repo).unwrap();
+        let status = dir.join("status/acme/ENG-52.json");
+        let commit = |file: &str| {
+            std::fs::write(repo.join(file), file).unwrap();
+            git_in(&repo, &["add", file]);
+            git_in(&repo, &["commit", "-q", "-m", file]);
+        };
+        git_in(&repo, &["init", "-q", "-b", "main"]);
+        commit("start.rs");
+        git_in(&repo, &["checkout", "-q", "-b", "eng-52"]);
+        commit("feature.rs");
+        git_in(&repo, &["checkout", "-q", "main"]);
+        commit("upstream-1.rs");
+        commit("upstream-2.rs");
+        git_in(&repo, &["checkout", "-q", "eng-52"]);
+        // The session works in its worktree; its shell's `cd` elsewhere doesn't move the range.
+        let elsewhere = dir.join("elsewhere").display().to_string();
+        let hook = |v: Value| log_turn(&status, &v, Some(&repo));
+        let turn = |run: &dyn Fn()| {
+            hook(json!({ "hook_event_name": "UserPromptSubmit", "cwd": elsewhere }));
+            run();
+            hook(json!({ "hook_event_name": "Stop", "cwd": elsewhere }));
+            let t = events_log::read(&events_log::log_path(&status)).remove(0);
+            (t.commit_count(), t.files)
+        };
+
+        // On a local main, no remote: the rebased commit is the turn's, main's aren't.
+        let rebase = || {
+            git_in(&repo, &["rebase", "-q", "main"]);
+        };
+        assert_eq!(turn(&rebase), (1, vec!["feature.rs".to_string()]));
+
+        // With a remote, its default branch: a merge brings in only the merge commit.
+        let main = git_in(&repo, &["rev-parse", "main"]);
+        git_in(&repo, &["checkout", "-q", "main"]);
+        commit("upstream-3.rs");
+        let advanced = git_in(&repo, &["rev-parse", "main"]);
+        git_in(&repo, &["update-ref", "refs/remotes/origin/main", &advanced]);
+        git_in(&repo, &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+        git_in(&repo, &["checkout", "-q", "eng-52"]);
+        // The local main is behind; only the remote's counts.
+        git_in(&repo, &["branch", "-q", "-f", "main", &main]);
+        let merge = || {
+            git_in(&repo, &["merge", "-q", "--no-edit", "origin/main"]);
+        };
+        assert_eq!(turn(&merge), (1, vec![]));
+
+        // On the default branch itself, everything since the prompt is the turn's.
+        git_in(&repo, &["checkout", "-q", "main"]);
+        let work = || {
+            commit("on-main-1.rs");
+            commit("on-main-2.rs");
+        };
+        let (count, files) = turn(&work);
+        assert_eq!((count, files.len()), (2, 2));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_default_branch_left_out() {
+        let refs = |lines: &[&str]| lines.join("\n");
+        let origin = " \trefs/remotes/origin/HEAD\trefs/remotes/origin/trunk";
+        assert_eq!(
+            base_ref(&refs(&[origin, "*\trefs/heads/eng-52\t", " \trefs/heads/main\t"])),
+            Some("refs/remotes/origin/trunk".into())
+        );
+        assert_eq!(base_ref(&refs(&[origin, "*\trefs/heads/trunk\t"])), None, "on it");
+        assert_eq!(
+            base_ref(&refs(&[" \trefs/heads/master\t", "*\trefs/heads/eng-52\t"])),
+            Some("refs/heads/master".into())
+        );
+        assert_eq!(base_ref(&refs(&["*\trefs/heads/main\t"])), None);
+        assert_eq!(base_ref(&refs(&["*\trefs/heads/eng-52\t"])), None, "no default branch");
+        assert_eq!(base_ref(""), None);
+    }
+
+    #[test]
+    fn a_turns_commits_and_their_files() {
+        let out = "\0aaa\0\nsrc/a.rs\0b c.rs\0\0bbb\0\0ccc\0\nsrc/a.rs\0";
+        assert_eq!(
+            parse_made(out, ""),
+            Made {
+                commits: vec!["aaa".into(), "bbb".into(), "ccc".into()],
+                files: vec!["src/a.rs".into(), "b c.rs".into()],
+            }
+        );
+        assert_eq!(parse_made(out, "src/").files, ["a.rs", "../b c.rs"]);
+        assert_eq!(parse_made("", ""), Made::default());
+    }
+
+    #[test]
+    fn the_sessions_folder_is_where_taskman_started_it() {
+        let v = json!({ "cwd": "/src/acme-other" });
+        let started = Some("/src/acme-ENG-52".into());
+        assert_eq!(session_dir(started, &v), Some("/src/acme-ENG-52".into()));
+        assert_eq!(session_dir(Some("".into()), &v), Some("/src/acme-other".into()));
+        assert_eq!(session_dir(None, &v), Some("/src/acme-other".into()));
+    }
+
+    #[test]
+    fn committed_files_are_relative_to_the_sessions_folder() {
+        assert_eq!(relative_to("", "src/a.rs"), "src/a.rs");
+        assert_eq!(relative_to("crates/app/", "crates/app/src/a.rs"), "src/a.rs");
+        assert_eq!(relative_to("crates/app/", "crates/lib/b.rs"), "../lib/b.rs");
+        assert_eq!(relative_to("crates/app/", "README.md"), "../../README.md");
+        assert_eq!(relative_to("app/", "application.rs"), "../application.rs");
+    }
 
     #[test]
     fn detects_tools_that_change_panels() {
