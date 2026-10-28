@@ -1,0 +1,1 @@
+- `ctrl+a Z` folds every project in the sidebar, or unfolds them all when they're all folded already.

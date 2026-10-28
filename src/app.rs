@@ -734,22 +734,24 @@ impl App {
     }
 
     /// Selects ticket `i`: by key, number or click, so the sidebar shows its card even when it's
-    /// selected already and the wheel had scrolled it out of view.
+    /// selected already and the wheel had scrolled it out of view, or its project folded. Every
+    /// caller is the user going to the ticket, so unfolding never undoes a fold they didn't see.
     pub fn select(&mut self, i: usize) {
         if i >= self.tickets.len() {
             return;
         }
         self.header_project = None;
         self.sidebar_scroll.asked = true;
+        let folded = self.project_of(&self.tickets[i].t).filter(|&p| self.projects[p].collapsed);
+        if let Some(p) = folded {
+            self.projects[p].collapsed = false;
+        }
         if i != self.sel {
             self.selection = None;
             if let Some(prev) = self.tickets.get_mut(self.sel) {
                 prev.leave();
             }
             self.sel = i;
-            if let Some(p) = self.project_of(&self.tickets[i].t) {
-                self.projects[p].collapsed = false;
-            }
             let tv = &mut self.tickets[i];
             tv.status.seen = true;
             tv.new = false;
@@ -758,6 +760,8 @@ impl App {
             tv.mark_seen();
             tv.jira.request_if_older_than(STALE, true);
             tv.pr.request_if_older_than(STALE, true);
+            self.save();
+        } else if folded.is_some() {
             self.save();
         }
     }
@@ -773,6 +777,10 @@ impl App {
     fn step(&mut self, dir: isize) {
         let order = self.ordered(true);
         if order.is_empty() {
+            if !self.tickets.is_empty() {
+                let prefix = crate::keys::prefix();
+                self.warn(format!("Every project is folded: {prefix} Z unfolds them"));
+            }
             return;
         }
         let n = order.len().cast_signed();
@@ -795,6 +803,20 @@ impl App {
     pub fn toggle_project(&mut self, p: usize) {
         let proj = &mut self.projects[p];
         proj.collapsed = !proj.collapsed;
+        self.save();
+    }
+
+    /// `ctrl+a Z`: folds every project while any is open, else unfolds them all.
+    pub fn toggle_all_projects(&mut self) {
+        if self.projects.is_empty() {
+            return;
+        }
+        let fold = self.projects.iter().any(|p| !p.collapsed);
+        for proj in &mut self.projects {
+            proj.collapsed = fold;
+        }
+        // Folding put the list at its top; unfolded, it goes back to the selected card.
+        self.sidebar_scroll.asked |= !fold;
         self.save();
     }
 }

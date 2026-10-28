@@ -182,7 +182,7 @@ Press `ctrl+a n` (just `n` while the list is empty) to add a ticket to the curre
 | `ctrl+a PgUp` / `PgDn` | scroll the session's history a page, then keep going without the prefix: PgUp/PgDn a page, ↑/↓ a line, Home/End to the top or bottom, Esc back to live (see [Scrolling back](#scrolling-back)). A full-screen CLI gets the key itself |
 | `ctrl+a j` / `c` / `g` / `b` | toggle the tracker panel, its comments, the PR panel; collapse the sidebar. On a ticket whose tracker or PR panel can't show (no tracker, no GitHub remote, `gh` missing or logged out), `j` or `g` says why and leaves the panel on for the tickets that have one. On an agent, `j`, `c` and `g` change the panels tickets show, and say so; its board shows while the tracker or PR panel is on |
 | `ctrl+a r` / `m` | refresh now (and check GitHub again) / take the `●` off comments that were new |
-| `ctrl+a z` | fold or unfold the current project |
+| `ctrl+a z` / `Z` | fold or unfold the current project / every project: `Z` folds them all while any is open, else unfolds them all |
 | `ctrl+a ,` | settings: prefix key, updates, sessions, theme, notifications, projects and accounts; help and feedback |
 | `ctrl+a ~` | notices: the last 200 messages the footer showed, newest first, with how long ago; ↑/↓ and PgUp/PgDn scroll, any other key closes |
 | `ctrl+a ?` / `q` | help: every key and what the sidebar's states mean / quit, once you press Enter; sessions resume at the next start |

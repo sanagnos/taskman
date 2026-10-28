@@ -359,6 +359,24 @@ fn card(app: &App, key: &str) -> Option<ratatui::layout::Rect> {
     app.sidebar_hits.iter().find(|(_, h)| *h == hit).map(|(r, _)| *r)
 }
 
+/// Unfolding every project brings the selected card back into view: folding them put the list at
+/// its top.
+#[test]
+fn unfolding_every_project_scrolls_back_to_the_selected_card() {
+    let mut app = long_sidebar(20);
+    draw(&mut app, 160, 40);
+    app.select(index(&app, "ENG-90"));
+    draw(&mut app, 160, 40);
+    assert!(app.sidebar_scroll.top > 0);
+    prefix(&mut app, KeyCode::Char('Z'));
+    draw(&mut app, 160, 40);
+    assert_eq!(app.sidebar_scroll.top, 0);
+    prefix(&mut app, KeyCode::Char('Z'));
+    draw(&mut app, 160, 40);
+    let r = card(&app, "ENG-90").expect("scrolled back into view");
+    assert!(list_rows(&app).contains(&r.y) && r.bottom() <= list_rows(&app).end, "{r:?}");
+}
+
 #[test]
 fn selecting_a_card_below_the_fold_scrolls_it_into_view() {
     let mut app = long_sidebar(20);

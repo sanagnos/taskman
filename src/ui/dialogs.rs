@@ -1725,6 +1725,7 @@ fn draw_help(f: &mut Frame, app: &mut App) {
                 ("r", "refresh tracker and GitHub now"),
                 ("m", "mark read: take the ● off this ticket's new comments"),
                 ("z", "fold / unfold the current project"),
+                ("Z", "fold / unfold every project"),
             ],
         ),
         (

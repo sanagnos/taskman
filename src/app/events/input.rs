@@ -72,6 +72,67 @@ fn the_prefix_twice_goes_to_what_waits_on_the_user() {
     assert!(!app.projects[1].collapsed);
 }
 
+/// `ctrl+a Z` folds every project while any is open (acme open, notes folded), else unfolds
+/// them all, saying nothing either way, as `z` doesn't.
+#[test]
+fn the_prefix_and_shift_z_folds_or_unfolds_every_project() {
+    let mut app = acme_app();
+    let folded = |app: &App| app.projects.iter().map(|p| p.collapsed).collect::<Vec<_>>();
+    assert_eq!(folded(&app), [false, true]);
+    prefix(&mut app, KeyCode::Char('Z'));
+    assert_eq!(folded(&app), [true, true]);
+    assert!(saved().projects.iter().all(|p| p.collapsed));
+    prefix(&mut app, KeyCode::Char('Z'));
+    assert_eq!(folded(&app), [false, false]);
+    assert!(saved().projects.iter().all(|p| !p.collapsed));
+    // All open, they all fold.
+    prefix(&mut app, KeyCode::Char('Z'));
+    assert_eq!(folded(&app), [true, true]);
+    assert_eq!(toast(&app), None);
+    // A kitty terminal's shift+z is the same key.
+    app.on_key(ctrl('a'));
+    let shift_z = crossterm::event::KeyEvent::new(KeyCode::Char('z'), KeyModifiers::SHIFT);
+    app.on_key(crate::keys::normalize(shift_z));
+    assert_eq!(folded(&app), [false, false]);
+    // `[` and `]` have no card to go to, and say how to get them back.
+    prefix(&mut app, KeyCode::Char('Z'));
+    prefix(&mut app, KeyCode::Char(']'));
+    assert_eq!(toast(&app), Some("Every project is folded: ctrl+a Z unfolds them"));
+    assert_eq!(selected(&app), "ENG-52");
+    // Going to a ticket in a folded project unfolds it, as after `z`.
+    app.on_key(ctrl('a'));
+    app.on_key(ctrl('a'));
+    assert_eq!(selected(&app), "ENG-53");
+    assert_eq!(folded(&app), [false, true]);
+    // So does going to the selected ticket itself: by find, …
+    prefix(&mut app, KeyCode::Char('Z'));
+    prefix(&mut app, KeyCode::Char('/'));
+    type_text(&mut app, "ENG-53");
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(selected(&app), "ENG-53");
+    assert_eq!(folded(&app), [false, true]);
+    assert!(!saved().projects[0].collapsed);
+    // … and by the queue.
+    prefix(&mut app, KeyCode::Char('Z'));
+    prefix(&mut app, KeyCode::Char('w'));
+    let at = app.queue().iter().position(|&i| i == app.sel).unwrap();
+    for _ in 0..at {
+        app.on_key(key(KeyCode::Down));
+    }
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(selected(&app), "ENG-53");
+    assert_eq!(folded(&app), [false, true]);
+}
+
+/// With no project, `ctrl+a Z` has nothing to fold and saves nothing.
+#[test]
+fn the_prefix_and_shift_z_with_no_project_saves_nothing() {
+    let mut app = offline(Saved::default());
+    prefix(&mut app, KeyCode::Char('Z'));
+    assert!(!store::state_dir().join("tickets.json").exists());
+    assert_eq!(toast(&app), None);
+}
+
 /// A session handed back waits for Enter alone, as the footer doesn't count it: the prefix twice
 /// passes it by for one that needs the user, then for one that ended unseen.
 #[test]
