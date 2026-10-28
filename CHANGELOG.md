@@ -2,6 +2,12 @@
 
 What changed in each release; a release's notes on GitHub are its section here. What's merged but not released yet is in [changelog.d/](changelog.d/), a file for each change, which the release moves in here. Versions follow Cargo's rule for 0.x: the patch number (0.1.1) for anything compatible, fixes and new features alike, and the minor (0.2.0) for breaking changes, such as changed keys, config or saved-state format, or a removed command.
 
+## 0.1.34 - 2026-10-28
+
+- `ctrl+a d` lists what the selected session did, a row per turn, newest first: how long ago, the files it changed or committed, its commits and the first sentence of the CLI's last message, for Claude Code and Codex sessions. Enter shows a turn's whole message, its Markdown as plain text; ←/→ show the next session's without closing, and `g` goes to it.
+- The `ctrl+a` menu lists the everyday keys a row for each kind: New, Go to, This ticket, Open, Session, Look back (what the session did, its history, scrolling back), Panels and General, with `? help` in the footer. `ctrl+a ?` (Help) lists every key in the same groups and words; no key changed.
+- `ctrl+a /` is now called find rather than jump, in the menu, Help and the box itself. While its box is open in the sidebar, the footer lists its keys, Esc to close first; the empty box says what it finds (a key, title, name or project). No key changed.
+
 ## 0.1.33 - 2026-10-25
 
 - The footer counts what needs you apart from what finished (`▲ 1 needs you · ● 2 finished`), as `ctrl+a w` lists only the first and now says where the others are. On a ticket whose tracker or PR panel can't show, the first `ctrl+a j` or `ctrl+a g` says why instead of silently turning the panel off. Settings' first item is called General, and Help lists everything in Settings and points to Help & feedback.
