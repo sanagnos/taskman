@@ -1,0 +1,14 @@
+---
+source: src/ui/screens.rs
+expression: screen
+---
+" ╭────────────────────────────────────────────────────────────────────────────╮ "
+" │ New         n ticket / agent   P project   A account                       │ "
+"▾│ Go to       [ ] prev/next   ^a tab next waiting   w who needs you   / jump │ "
+" │ This ticket { } move   e rename agent   x close                            │ "
+" │ Open        o ticket   p PR   l links                                      │ "
+"┃│ Session     R restart   t to a terminal                                    │ "
+" │ Look back   d what it did   v history in $EDITOR   PgUp scroll             │ "
+" │ Panels      j tracker   c comments   g GitHub   b sidebar   r refresh      │ "
+" ╰────────────────────────────────────────────────────────────────────────────╯ "
+" ctrl+a  press a command key · ? help · Esc cancels                             "

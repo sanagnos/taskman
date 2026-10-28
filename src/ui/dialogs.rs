@@ -1660,33 +1660,79 @@ fn draw_help(f: &mut Frame, app: &mut App) {
     let Mode::Help(view) = &mut app.mode else { return };
     let p = prefix();
     let (again, send) = (p.to_string(), format!("send {p} itself to the session"));
-    let keys = [
-        ("[ / ]", "previous / next ticket"),
-        ("{ / }", "move the card; ↑/↓ go on, p moves its project, Enter ends"),
-        (again.as_str(), "next ticket needing you, else one whose turn finished (also tab)"),
-        ("/", "jump to a ticket, agent or project by typing"),
-        ("w", "list the sessions that need you, oldest first, with what they ask"),
-        ("n", "add a ticket, or an agent with no ticket"),
-        (",", "settings: prefix key, updates, sessions, theme, notifications, projects, accounts"),
-        ("P / A", "settings, on a new project / account"),
-        ("z", "fold / unfold the current project"),
-        ("x", "close the current ticket or agent"),
-        ("b", "collapse / expand the sidebar"),
-        ("j / c / g", "toggle the tracker panel, its comments, the PR panel"),
-        ("o / p", "open ticket / PR in your browser"),
-        ("r", "refresh tracker and GitHub now"),
-        ("m", "take the ● off comments that were new on this ticket"),
-        ("R / t", "restart the session / hand it to another terminal"),
-        ("M", "run in the main checkout when the worktree failed"),
-        ("e", "rename the current agent"),
-        ("PgUp/PgDn", "scroll back, then PgUp/PgDn ↑/↓ Home/End go on"),
-        ("d", "the session's turns: files, commits, what it said"),
-        ("v", "open the session's history in $EDITOR"),
-        ("l", "list links (ticket, PR, session) to open or copy"),
-        ("~", "notices: what the footer showed, newest first"),
-        ("a", send.as_str()),
-        ("q", "quit"),
+    // The prefix menu's groups, in its order and with its words first, and the keys it leaves out.
+    let groups: [(&str, &[(&str, &str)]); 8] = [
+        (
+            "New",
+            &[
+                ("n", "ticket / agent: add either; an agent has no ticket"),
+                ("P / A", "project / account: settings, on a new one"),
+            ],
+        ),
+        (
+            "Go to",
+            &[
+                ("[ / ]", "prev/next ticket"),
+                (&again, "next waiting: one needing you, else one done (or tab)"),
+                ("w", "who needs you: oldest first, with what each asks"),
+                ("/", "jump to a ticket, agent or project by typing"),
+            ],
+        ),
+        (
+            "This ticket",
+            &[
+                ("{ / }", "move: ↑/↓ go on, p moves the project, Enter ends"),
+                ("e", "rename agent"),
+                ("M", "run in the main checkout when the worktree failed"),
+                ("x", "close the ticket or agent"),
+            ],
+        ),
+        (
+            "Open",
+            &[
+                ("o / p", "ticket / PR in your browser"),
+                ("l", "links (ticket, PR, session) to open or copy"),
+            ],
+        ),
+        (
+            "Session",
+            &[
+                ("R", "restart the session"),
+                ("t", "to a terminal: continue the session in another"),
+            ],
+        ),
+        (
+            "Look back",
+            &[
+                ("d", "what it did: each turn's files, commits and message"),
+                ("v", "history in $EDITOR"),
+                ("PgUp/PgDn", "scroll back, then PgUp/PgDn ↑/↓ Home/End go on"),
+            ],
+        ),
+        (
+            "Panels",
+            &[
+                ("j / c / g", "tracker / comments / GitHub: show or hide each"),
+                ("b", "sidebar: collapse / expand it"),
+                ("r", "refresh tracker and GitHub now"),
+                ("m", "mark read: take the ● off this ticket's new comments"),
+                ("z", "fold / unfold the current project"),
+            ],
+        ),
+        (
+            "General",
+            &[
+                (
+                    ",",
+                    "settings: prefix, updates, sessions, theme, notifications, projects, accounts",
+                ),
+                ("~", "notices: what the footer showed, newest first"),
+                ("q", "quit"),
+                ("a", &send),
+            ],
+        ),
     ];
+    let keys = || groups.iter().flat_map(|(_, keys)| keys.iter());
     // The legend, drawn with the sidebar's own badges.
     let legend = [
         (badge(AgentState::Needs, false, false), "asking you something"),
@@ -1704,14 +1750,14 @@ fn draw_help(f: &mut Frame, app: &mut App) {
     ];
     // Indented under the heading, unless the prefix's name is long enough to need the room.
     let indent = if p.name().len() > "ctrl+a".len() { 0 } else { 2 };
-    let key_w = keys.iter().map(|(k, _)| util::width(&format!("{p} {k}"))).max().unwrap_or(0) + 2;
+    let key_w = keys().map(|(k, _)| util::width(&format!("{p} {k}"))).max().unwrap_or(0) + 2;
     let badge_w = legend.iter().map(|(b, _)| util::width(&b.content)).max().unwrap_or(0) + 2;
     // Two to a row, each column as wide as its own words.
     let words = |skip: usize| {
         legend.iter().skip(skip).step_by(2).map(|(_, what)| util::width(what)).max().unwrap_or(0)
     };
     let what_w = words(0) + 3;
-    let keys_w = keys.iter().map(|(_, what)| indent + key_w + util::width(what)).max().unwrap_or(0);
+    let keys_w = keys().map(|(_, what)| indent + key_w + util::width(what)).max().unwrap_or(0);
     let pairs_w = 2 + 2 * badge_w + what_w + words(1);
     let room = usize::from(f.area().width.saturating_sub(2 + 2 + DIALOG_PAD_W));
     let inner = keys_w.max(pairs_w).min(HELP_W).min(room).max(1);
@@ -1724,24 +1770,27 @@ fn draw_help(f: &mut Frame, app: &mut App) {
     // would be too narrow to read.
     let key_style = Style::new().fg(accent());
     let stacked = inner < indent + key_w + 20;
-    for (k, what) in &keys {
-        let key = format!("{p} {k}");
-        if stacked {
-            text.push(Line::from(Span::styled(format!("{:indent$}{key}", ""), key_style)));
-            let under = indent + 4;
-            for l in wrap_words(what, inner.saturating_sub(under)) {
-                text.push(Line::from(format!("{:under$}{l}", "")));
+    for (title, keys) in groups {
+        text.push(Line::from(title.bold()));
+        for (k, what) in keys {
+            let key = format!("{p} {k}");
+            if stacked {
+                text.push(Line::from(Span::styled(format!("{:indent$}{key}", ""), key_style)));
+                let under = indent + 4;
+                for l in wrap_words(what, inner.saturating_sub(under)) {
+                    text.push(Line::from(format!("{:under$}{l}", "")));
+                }
+                continue;
             }
-            continue;
-        }
-        let col = indent + key_w;
-        for (i, l) in wrap_words(what, inner - col).into_iter().enumerate() {
-            let left = if i == 0 {
-                format!("{:indent$}{}", "", pad(&key, key_w))
-            } else {
-                " ".repeat(col)
-            };
-            text.push(Line::from(vec![Span::styled(left, key_style), Span::raw(l)]));
+            let col = indent + key_w;
+            for (i, l) in wrap_words(what, inner - col).into_iter().enumerate() {
+                let left = if i == 0 {
+                    format!("{:indent$}{}", "", pad(&key, key_w))
+                } else {
+                    " ".repeat(col)
+                };
+                text.push(Line::from(vec![Span::styled(left, key_style), Span::raw(l)]));
+            }
         }
     }
     text.push(Line::from(""));
