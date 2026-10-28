@@ -34,7 +34,7 @@ impl App {
     /// clipboard, as in tmux and foot: a program in one the user isn't looking at could otherwise
     /// replace what they just copied, or put there what they'd paste into a shell. Called before
     /// writes are taken and again before they're forwarded, so whatever changed the selection
-    /// meanwhile (a key, a click, the jump box, a ticket closed) is caught either way.
+    /// meanwhile (a key, a click, the find box, a ticket closed) is caught either way.
     pub(super) fn sync_clipboard_owner(&mut self) {
         let owner =
             self.tickets.get(self.sel).and_then(|tv| tv.session.as_ref()).map(Session::selected);

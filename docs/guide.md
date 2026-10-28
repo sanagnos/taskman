@@ -169,7 +169,7 @@ Press `ctrl+a n` (just `n` while the list is empty) to add a ticket to the curre
 | `ctrl+a [` / `]` | switch ticket |
 | `ctrl+a ctrl+a` | jump to the next ticket that needs you, else the next whose turn finished (`ctrl+a Tab` too) |
 | `ctrl+a w` | list every session that needs you, oldest first, with how long, why and what it asks (see below) |
-| `ctrl+a /` | jump to a ticket, agent or project by typing (see below) |
+| `ctrl+a /` | find a ticket, agent or project by typing (see below) |
 | `ctrl+a {` / `}` | move the selected agent or ticket up / down, then keep going (see [Sidebar](#sidebar)) |
 | `ctrl+a e` / `M` | rename the selected agent (see [Agents](#agents)) / run the session in the main checkout when its worktree couldn't be made (see [Worktrees](#worktrees)) |
 | `ctrl+a x` | close the selected ticket or agent |
@@ -223,9 +223,9 @@ Setting it up:
 
 The footer shows what taskman has to say as a toast. A message that says what you just did stays 4 seconds. One that says something didn't go as asked (no PR yet, a key that isn't a command) is in yellow and stays as long; an error (a worktree that couldn't be created, a file that couldn't be written) is in red and stays until your next key, and a later message doesn't replace it. The count of the other sessions waiting on you stays beside it: `▲ 2 need you` for those asking you something, as `ctrl+a w` lists them, and `● 1 finished` for turns that finished, or sessions that ended, since you last looked. A message too long for the row wraps onto the blank row above it, or, on a short window, is cut and ends with `ctrl+a ~ lists it`. `ctrl+a ~` lists them as notices, the last 200 newest first, so one that went by while you were typing in a session can be read again (as tmux's prefix `~` shows its messages). On keyboard layouts where `~` is a dead key, press `~` then Space.
 
-### Jumping by typing
+### Finding by typing
 
-`ctrl+a /` puts a text box at the top of the sidebar, and the sidebar narrows to the cards that match what you type: a ticket's key (a bare number finds its key, so `52` finds ENG-52), a title, an agent's name, or a project's name, which shows all that project's cards, folded or not. It's a case-insensitive substring match, not a fuzzy one, over the tickets and agents taskman holds, not the tracker's other issues. ↑/↓ move the highlight, Enter selects the highlighted card as a click would, and Esc closes the box leaving the selection as it was. Either way the full sidebar comes back; this is a one-off jump, not a filter that stays on. With no match the sidebar says so and Enter does nothing. Nothing typed in the box reaches the session. When the sidebar is folded (with `ctrl+a b`, or by a narrow window), the box opens over the screen instead: what you type on top, and under it the cards that match, a row each with its project, title and state, with the same keys.
+`ctrl+a /` puts a text box at the top of the sidebar, and the sidebar narrows to the cards that match what you type: a ticket's key (a bare number finds its key, so `52` finds ENG-52), a title, an agent's name, or a project's name, which shows all that project's cards, folded or not. It's a case-insensitive substring match, not a fuzzy one, over the tickets and agents taskman holds, not the tracker's other issues. ↑/↓ move the highlight, Enter selects the highlighted card as a click would, and Esc closes the box leaving the selection as it was. Either way the full sidebar comes back; this is a one-off find, not a filter that stays on. With no match the sidebar says so and Enter does nothing. Nothing typed in the box reaches the session. When the sidebar is folded (with `ctrl+a b`, or by a narrow window), the box opens over the screen instead: what you type on top, and under it the cards that match, a row each with its project, title and state, with the same keys.
 
 ### Another prefix
 

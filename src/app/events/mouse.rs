@@ -451,7 +451,7 @@ fn selecting_the_selected_card_again_brings_it_back_into_view() {
     assert!(card(&app, "ENG-52").is_none(), "scrolled out of view");
     draw(&mut app, 160, 40);
     assert_eq!(app.sidebar_scroll.top, 22, "a redraw keeps the wheel's scroll");
-    // The jump box: the full list comes back from the top, and scrolls to show it.
+    // The find box: the full list comes back from the top, and scrolls to show it.
     prefix(&mut app, KeyCode::Char('/'));
     type_text(&mut app, "ENG-52");
     app.on_key(key(KeyCode::Enter));

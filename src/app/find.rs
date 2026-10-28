@@ -1,4 +1,4 @@
-//! `prefix /`: a one-off jump to a ticket, agent or project by typing. The sidebar narrows to the
+//! `prefix /`: finding a ticket, agent or project by typing, once. The sidebar narrows to the
 //! cards that match what's typed, ↑/↓ move among them and Enter selects one. With the sidebar
 //! folded, a picker over the screen lists them instead.
 
@@ -6,11 +6,11 @@ use super::{App, Mode};
 use crate::untrusted;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-/// The jump box while it's open.
+/// The find box while it's open.
 #[derive(Clone, Debug, Default)]
-pub struct Jump {
+pub struct Find {
     pub query: String,
-    /// The highlighted match, as an index into `App::jump_matches`.
+    /// The highlighted match, as an index into `App::find_matches`.
     pub at: usize,
     /// The picker's first row in view, as it was last drawn.
     pub top: usize,
@@ -38,9 +38,9 @@ pub fn matches(query: &str, card: &Card) -> bool {
 }
 
 impl App {
-    /// The tickets and agents the jump box matches, in the sidebar's order, folded projects
+    /// The tickets and agents the find box matches, in the sidebar's order, folded projects
     /// included.
-    pub fn jump_matches(&self, query: &str) -> Vec<usize> {
+    pub fn find_matches(&self, query: &str) -> Vec<usize> {
         self.ordered(false)
             .into_iter()
             .filter(|&i| {
@@ -58,57 +58,57 @@ impl App {
             .collect()
     }
 
-    /// Whether the jump box is a picker over the screen rather than the sidebar's top row: a
+    /// Whether the find box is a picker over the screen rather than the sidebar's top row: a
     /// folded sidebar, folded by the user or by a narrow window, has no titles to narrow.
-    pub fn jump_picker(&self) -> bool {
+    pub fn find_picker(&self) -> bool {
         self.prefs.sidebar_collapsed || self.areas.sidebar_folded
     }
 
-    pub(super) fn open_jump(&mut self) {
-        self.mode = Mode::Jump(Jump::default());
+    pub(super) fn open_find(&mut self) {
+        self.mode = Mode::Find(Find::default());
         self.sidebar_scroll = Default::default();
     }
 
-    pub(super) fn jump_key(&mut self, key: KeyEvent) {
-        let Mode::Jump(jump) = &self.mode else { return };
-        let (mut query, at, top) = (jump.query.clone(), jump.at, jump.top);
-        let found = self.jump_matches(&query);
+    pub(super) fn find_key(&mut self, key: KeyEvent) {
+        let Mode::Find(find) = &self.mode else { return };
+        let (mut query, at, top) = (find.query.clone(), find.at, find.top);
+        let found = self.find_matches(&query);
         let typed = !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         match key.code {
-            KeyCode::Esc => self.close_jump(),
+            KeyCode::Esc => self.close_find(),
             KeyCode::Enter => {
                 if let Some(&i) = found.get(at) {
-                    self.close_jump();
+                    self.close_find();
                     self.select(i);
                 }
             }
-            KeyCode::Up => self.jump_to(query, at.saturating_sub(1), top),
+            KeyCode::Up => self.set_find(query, at.saturating_sub(1), top),
             KeyCode::Down => {
-                self.jump_to(query, (at + 1).min(found.len().saturating_sub(1)), top);
+                self.set_find(query, (at + 1).min(found.len().saturating_sub(1)), top);
             }
             KeyCode::Backspace => {
                 query.pop();
-                self.jump_edited(query);
+                self.find_edited(query);
             }
             KeyCode::Char(c) if typed => {
                 query.push(c);
-                self.jump_edited(query);
+                self.find_edited(query);
             }
             _ => {}
         }
     }
 
-    fn jump_to(&mut self, query: String, at: usize, top: usize) {
-        self.mode = Mode::Jump(Jump { query, at, top });
+    fn set_find(&mut self, query: String, at: usize, top: usize) {
+        self.mode = Mode::Find(Find { query, at, top });
     }
 
     /// The matches changed: the first is highlighted and the list starts from the top.
-    fn jump_edited(&mut self, query: String) {
-        self.jump_to(query, 0, 0);
+    fn find_edited(&mut self, query: String) {
+        self.set_find(query, 0, 0);
         self.sidebar_scroll = Default::default();
     }
 
-    fn close_jump(&mut self) {
+    fn close_find(&mut self) {
         self.mode = Mode::Normal;
         self.sidebar_scroll = Default::default();
     }

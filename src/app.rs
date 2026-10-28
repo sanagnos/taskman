@@ -38,11 +38,11 @@ mod accounts;
 mod add_form;
 #[cfg(test)]
 mod events;
+mod find;
 mod forms;
 pub(crate) mod help;
 mod inbox;
 mod input;
-mod jump;
 mod launch;
 mod line_edit;
 mod mouse;
@@ -110,9 +110,9 @@ pub enum Mode {
     OfferTmux(Id),
     /// The ticket's and the session's links (`prefix l`), the selected one highlighted.
     Links(Box<LinkList>),
-    /// The jump box (`prefix /`): the sidebar narrows to what's typed, or, while it's folded, a
+    /// The find box (`prefix /`): the sidebar narrows to what's typed, or, while it's folded, a
     /// picker over the screen lists the matches.
-    Jump(jump::Jump),
+    Find(find::Find),
     /// The waiting-on-you queue (`prefix w`).
     Queue(queue::Queue),
     /// Moving the selected card, or its project, in the sidebar (`prefix {` and `}`).

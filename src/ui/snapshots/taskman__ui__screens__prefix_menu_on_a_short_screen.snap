@@ -4,7 +4,7 @@ expression: screen
 ---
 " ╭────────────────────────────────────────────────────────────────────────────╮ "
 " │ New         n ticket / agent   P project   A account                       │ "
-"▾│ Go to       [ ] prev/next   ^a tab next waiting   w who needs you   / jump │ "
+"▾│ Go to       [ ] prev/next   ^a tab next waiting   w who needs you   / find │ "
 " │ This ticket { } move   e rename agent   x close                            │ "
 " │ Open        o ticket   p PR   l links                                      │ "
 "┃│ Session     R restart   t to a terminal                                    │ "

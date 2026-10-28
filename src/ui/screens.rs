@@ -1151,7 +1151,7 @@ fn a_frame_smaller_than_the_layout_does_not_panic() {
 }
 
 #[test]
-fn jump_box_narrowing_the_sidebar() {
+fn find_box_narrowing_the_sidebar() {
     let mut app = acme_app();
     draw(&mut app, 120, 30);
     app.on_key(crate::app::test_support::ctrl('a'));
@@ -1164,7 +1164,7 @@ fn jump_box_narrowing_the_sidebar() {
 }
 
 #[test]
-fn jump_box_without_a_match() {
+fn find_box_without_a_match() {
     let mut app = acme_app();
     draw(&mut app, 120, 30);
     app.on_key(crate::app::test_support::ctrl('a'));
@@ -1175,9 +1175,9 @@ fn jump_box_without_a_match() {
     assert_snapshot!(draw(&mut app, 120, 30));
 }
 
-/// With the sidebar folded the jump box is a picker over the screen.
+/// With the sidebar folded the find box is a picker over the screen.
 #[test]
-fn jump_picker_with_the_sidebar_folded() {
+fn find_picker_with_the_sidebar_folded() {
     let mut app = acme_app();
     draw(&mut app, 80, 24);
     app.on_key(crate::app::test_support::ctrl('a'));
@@ -1186,7 +1186,7 @@ fn jump_picker_with_the_sidebar_folded() {
 }
 
 #[test]
-fn jump_picker_narrowed() {
+fn find_picker_narrowed() {
     let mut app = acme_app();
     draw(&mut app, 80, 24);
     app.on_key(crate::app::test_support::ctrl('a'));
@@ -1199,7 +1199,7 @@ fn jump_picker_narrowed() {
 }
 
 #[test]
-fn jump_picker_in_a_narrow_window() {
+fn find_picker_in_a_narrow_window() {
     let mut app = acme_app();
     draw(&mut app, 64, 24);
     app.on_key(crate::app::test_support::ctrl('a'));
@@ -1210,7 +1210,7 @@ fn jump_picker_in_a_narrow_window() {
 /// A short window, as a split pane: the spare rows round the box go first, and the list keeps
 /// room for a card between its "more" rows.
 #[test]
-fn jump_picker_in_a_short_window() {
+fn find_picker_in_a_short_window() {
     let mut app = acme_app();
     draw(&mut app, 80, 14);
     app.on_key(crate::app::test_support::ctrl('a'));
@@ -1223,7 +1223,7 @@ fn jump_picker_in_a_short_window() {
 
 /// Scrolled to the last of more cards than fit: the top row counts those above.
 #[test]
-fn jump_picker_scrolled() {
+fn find_picker_scrolled() {
     let mut app = long_sidebar(20);
     draw(&mut app, 80, 24);
     app.on_key(crate::app::test_support::ctrl('a'));

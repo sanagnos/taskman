@@ -899,7 +899,7 @@ fn a_selected_sessions_write_is_dropped_when_another_card_is_selected_before_it_
     assert!(app.clipboard_out.is_empty());
     assert_eq!(toast(&app), Some(format!("ENG-52 {COPIED_BEHIND}").as_str()));
 
-    // Selected from the jump box after the loop took the write, before it was forwarded.
+    // Selected from the find box after the loop took the write, before it was forwarded.
     let (mut app, _sent) = eng_52_and_70();
     print(&app, "ENG-52", b"\x1b]52;c;b25l\x07");
     app.take_clipboards();

@@ -256,8 +256,8 @@ impl App {
                 self.links_key(key);
                 return;
             }
-            Mode::Jump(_) => {
-                self.jump_key(key);
+            Mode::Find(_) => {
+                self.find_key(key);
                 return;
             }
             Mode::Queue(_) => {
@@ -462,7 +462,7 @@ impl App {
             KeyCode::Up | KeyCode::Char('[') => self.step(-1),
             KeyCode::Down | KeyCode::Char(']') => self.step(1),
             KeyCode::Char('n') => self.open_ticket_form(self.current_project()),
-            KeyCode::Char('/') => self.open_jump(),
+            KeyCode::Char('/') => self.open_find(),
             KeyCode::Char('w') => self.open_queue(),
             KeyCode::Char('d') => self.open_turns(),
             KeyCode::Char('P') => self.open_settings(SettingsItem::NewProject, true),
