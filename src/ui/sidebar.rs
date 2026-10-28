@@ -198,8 +198,12 @@ fn draw_title(f: &mut Frame, app: &App, inner: Rect) {
 fn draw_find_box(f: &mut Frame, query: &str, inner: Rect) {
     let room = (inner.width as usize).saturating_sub(4);
     let shown = truncate_start(&untrusted::line(query), room);
+    // A cell after the cursor, so a block cursor doesn't cover its first letter.
     let typed = if query.is_empty() {
-        Span::styled(truncate("key, title or name", room), dim())
+        Span::styled(
+            format!(" {}", truncate("key, title, name or project", room.saturating_sub(1))),
+            dim(),
+        )
     } else {
         Span::raw(shown.clone())
     };

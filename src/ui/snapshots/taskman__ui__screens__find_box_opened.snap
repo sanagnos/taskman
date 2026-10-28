@@ -2,7 +2,7 @@
 source: src/ui/screens.rs
 expression: screen
 ---
-" / key, title or name        │  ENG-52                     /src/acme-ENG-52 eng-52-login    ╭ Linear EN updated 2m ago ╮"
+" /  key, title, name or pro… │  ENG-52                     /src/acme-ENG-52 eng-52-login    ╭ Linear EN updated 2m ago ╮"
 "                             │                                                              │ Sign in with a magic     │"
 "▾ acme                       │           The Claude session for ENG-52 has ended.           │ link                     │"
 " ─────────────────────────── │                                                              │ Feature · High · Dana    │"
@@ -31,4 +31,4 @@ expression: screen
 "  ✦ writer       ▲ needs you │                                                              │ ── Reviews (2) · 1 new   │"
 "                             │                                                              ╰refresh · p open · g hide ╯"
 "                                                                                                                        "
-" type to find · ↑/↓ choose · Enter go to it · Esc close                                     ▲ 2 need you · ● 2 finished "
+" Esc close · Enter go to it · ↑/↓ choose                                                    ▲ 2 need you · ● 2 finished "

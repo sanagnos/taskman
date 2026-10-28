@@ -111,7 +111,7 @@ fn with_the_sidebar_folded_the_find_box_is_a_picker() {
     prefix(&mut app, KeyCode::Char('/'));
     assert!(matches!(app.mode, Mode::Find(_)));
     let screen = draw(&mut app, 80, 24);
-    assert!(screen.contains("Find"), "{screen}");
+    assert!(screen.contains("╭ Find "), "{screen}");
     type_text(&mut app, "writer");
     assert_eq!(find_matches(&app), ["notes-writer"]);
     let screen = draw(&mut app, 80, 24);
@@ -119,14 +119,14 @@ fn with_the_sidebar_folded_the_find_box_is_a_picker() {
     app.on_key(key(KeyCode::Enter));
     assert!(matches!(app.mode, Mode::Normal));
     assert_eq!(selected(&app), "notes-writer");
-    assert!(!draw(&mut app, 80, 24).contains("Find"));
+    assert!(!draw(&mut app, 80, 24).contains("╭ Find "));
     assert_eq!(sent(&to_session), "");
 
     // Folded with the prefix key in a wide window, the same; Esc keeps the selection.
     app.prefs.sidebar_collapsed = true;
     draw(&mut app, 120, 30);
     prefix(&mut app, KeyCode::Char('/'));
-    assert!(draw(&mut app, 120, 30).contains("Find"));
+    assert!(draw(&mut app, 120, 30).contains("╭ Find "));
     type_text(&mut app, "sign");
     app.on_key(key(KeyCode::Down));
     assert_eq!(highlighted(&app), 1);
@@ -165,7 +165,7 @@ fn the_find_picker_with_no_match_says_so_and_enter_does_nothing() {
     prefix(&mut app, KeyCode::Char('/'));
     type_text(&mut app, "zzz");
     let screen = draw(&mut app, 80, 24);
-    assert!(screen.contains("Find") && screen.contains("No matches"), "{screen}");
+    assert!(screen.contains("╭ Find ") && screen.contains("No matches"), "{screen}");
     app.on_key(key(KeyCode::Enter));
     app.on_key(key(KeyCode::Down));
     assert!(matches!(app.mode, Mode::Find(_)));
@@ -181,9 +181,9 @@ fn a_resize_while_finding_keeps_the_highlight() {
     prefix(&mut app, KeyCode::Char('/'));
     type_text(&mut app, "sign");
     app.on_key(key(KeyCode::Down));
-    assert!(draw(&mut app, 80, 24).contains("Find"));
+    assert!(draw(&mut app, 80, 24).contains("╭ Find "));
     let screen = draw(&mut app, 160, 40);
-    assert!(!app.areas.sidebar_folded && !screen.contains("Find"), "{screen}");
+    assert!(!app.areas.sidebar_folded && !screen.contains("╭ Find "), "{screen}");
     assert!(screen.contains(" / sign"), "{screen}");
     assert_eq!(highlighted(&app), 1);
     assert!(draw(&mut app, 80, 24).contains("› ENG-53"));

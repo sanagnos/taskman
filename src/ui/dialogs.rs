@@ -334,9 +334,13 @@ fn draw_queue(f: &mut Frame, app: &mut App) {
 /// The most cards the find picker lists at once.
 const FIND_ROWS: usize = 12;
 
-/// The find box's keys, under the picker, or in the footer while the box is in the sidebar.
-pub(super) const FIND_KEYS: [(&str, &str); 3] =
-    [("↑/↓", "choose"), ("Enter", "go to it"), ("Esc", "close")];
+/// The find picker's keys, under its list.
+const FIND_KEYS: [(&str, &str); 3] = [("↑/↓", "choose"), ("Enter", "go to it"), ("Esc", "close")];
+
+/// The same keys in the footer, while the box is in the sidebar: by importance, as the footer
+/// drops them from the end when short of room.
+pub(super) const FIND_FOOTER_KEYS: [(&str, &str); 3] =
+    [("Esc", "close"), ("Enter", "go to it"), ("↑/↓", "choose")];
 
 /// The find box over the screen, while the sidebar is folded (`App::find_picker`): what's typed on
 /// top, then the cards that match, a row each with its project, title and state, then the keys.

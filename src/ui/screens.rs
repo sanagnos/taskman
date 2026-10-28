@@ -1171,7 +1171,21 @@ fn find_box_opened() {
     app.on_key(crate::app::test_support::ctrl('a'));
     app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char('/')));
     let screen = draw(&mut app, 120, 30);
-    assert!(screen.contains("type to find · ↑/↓ choose · Enter go to it · Esc close"), "{screen}");
+    assert!(screen.contains(" Esc close · Enter go to it · ↑/↓ choose"), "{screen}");
+    assert_snapshot!(screen);
+}
+
+/// A message that comes while the box is open takes the footer from its keys, so an error isn't
+/// cleared by the next key unseen.
+#[test]
+fn find_box_with_an_error_toast() {
+    let mut app = acme_app();
+    draw(&mut app, 120, 30);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char('/')));
+    app.error("Couldn't write ~/.cache/taskman/ENG-52/history.txt: disk full");
+    let screen = draw(&mut app, 120, 30);
+    assert!(screen.contains("disk full") && !screen.contains("Esc close"), "{screen}");
     assert_snapshot!(screen);
 }
 
