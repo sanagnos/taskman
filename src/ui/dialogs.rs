@@ -3,7 +3,9 @@
 use super::sidebar::{more_line, scroll_to_show, shown_rows};
 use super::{accent, asleep, badge, dim, selection_bg, spinner};
 use crate::app::{AgentAsk, AgentState, App, Form, Level, Mode, Scroll, SettingsItem, toasts};
+use crate::events_log::Turn;
 use crate::keys::prefix;
+use crate::markdown;
 use crate::store::tilde;
 use crate::untrusted;
 use crate::util::{self, pad, truncate, truncate_middle, truncate_start, wrap_words};
@@ -26,6 +28,7 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &mut App) {
         Mode::Links(_) => draw_links(f, app),
         Mode::Queue(_) => draw_queue(f, app),
         Mode::Log(_) => draw_log(f, app),
+        Mode::Turns(_) => draw_turns(f, app),
         Mode::Form(_) => draw_form(f, app),
         Mode::Settings(_) => draw_settings(f, app),
         Mode::ConfirmDeleteAccount(i) => {
@@ -488,6 +491,183 @@ fn draw_log(f: &mut Frame, app: &mut App) {
     shown.extend(key_rows(&keys, inner));
     f.render_widget(Clear, rect);
     f.render_widget(Paragraph::new(shown).block(dialog("Notices").padding(DIALOG_PAD)), rect);
+}
+
+/// A session's turns (`prefix d`), newest first, a row each: how long ago it ended, the files it
+/// changed, its commits and a headline from the CLI's last message (`markdown::headline`), with the
+/// open one's whole message under its row (`message_rows`). The message is the CLI's own output
+/// and may quote anything it read, so all of it goes through `untrusted`.
+fn draw_turns(f: &mut Frame, app: &mut App) {
+    let Mode::Turns(t) = &app.mode else { return };
+    let label = match app.tickets.iter().find(|tv| tv.t.is(&t.id.0, &t.id.1)) {
+        Some(tv) if tv.t.agent.is_some() => format!("✦ {}", tv.t.display()),
+        _ => t.id.1.clone(),
+    };
+    let project = app.projects.iter().find(|p| p.repo == t.id.0).map_or("", |p| p.name.as_str());
+    let w = (100 + DIALOG_PAD_W).min(f.area().width.saturating_sub(2));
+    let inner = usize::from(w.saturating_sub(2 + DIALOG_PAD_W)).max(1);
+    let turns = t.turns.as_deref().unwrap_or_default();
+    let n = turns.len();
+    // The open turn's message, under its row, indented past the marker and the age.
+    let indent = 4;
+    let mut message = match turns.get(t.at) {
+        Some(turn) if t.open => message_rows(&turn.message, inner.saturating_sub(indent)),
+        _ => Vec::new(),
+    };
+    // A blank row between it and the next turn's.
+    if !message.is_empty() && t.at + 1 < n {
+        message.push(String::new());
+    }
+    let total = (n + message.len()).max(1);
+    // Rows for the turns: what the screen leaves, less the border, padding, the line saying whose
+    // they are with a blank row under it, and a blank row and the keys (as `draw_log`).
+    let left = usize::from(f.area().height.saturating_sub(2 + 2 + DIALOG_PAD_H + 3));
+    let longest = format!("{n} of {n}");
+    let keys_h = key_rows(&turns_keys(t.open, (total >= left).then_some(&longest)), inner).len();
+    let rows = total.min(left.saturating_sub(keys_h).max(1));
+    let rect =
+        centered(f, w, u16::try_from(rows + keys_h).unwrap_or(u16::MAX) + 2 + DIALOG_PAD_H + 3);
+    let Mode::Turns(t) = &mut app.mode else { return };
+    t.place(rows, message.len());
+    let t = &**t;
+    let turns = t.turns.as_deref().unwrap_or_default();
+    let mut text = Vec::new();
+    match &t.turns {
+        None => text.push(Line::from(Span::styled("Reading…", dim()))),
+        Some(_) if n == 0 => text.push(Line::from(Span::styled(
+            "No turns yet: each one shows here when it ends.",
+            dim(),
+        ))),
+        Some(_) => {
+            let files = |turn: &Turn| match turn.file_count() {
+                0 => String::new(),
+                1 => "1 file".to_string(),
+                n => format!("{n} files"),
+            };
+            let commits = |turn: &Turn| match turn.commits.first() {
+                None => String::new(),
+                Some(newest) => {
+                    let short: String = untrusted::line(newest).chars().take(7).collect();
+                    match turn.commit_count() - 1 {
+                        0 => short,
+                        more => format!("{short} +{more}"),
+                    }
+                }
+            };
+            let widest = |col: &dyn Fn(&Turn) -> String| {
+                turns.iter().map(|turn| util::width(&col(turn))).max().unwrap_or(0)
+            };
+            let (files_w, commits_w) = (widest(&files), widest(&commits));
+            for (i, turn) in turns.iter().enumerate() {
+                let chosen = i == t.at;
+                let mut spans = vec![
+                    Span::raw(if chosen { "› " } else { "  " }),
+                    Span::styled(
+                        pad(&util::ago(turn.ts), 4),
+                        Style::new().fg(super::yellow()).bold(),
+                    ),
+                ];
+                if files_w > 0 {
+                    spans.push(Span::styled(format!(" {}", pad(&files(turn), files_w)), dim()));
+                }
+                if commits_w > 0 {
+                    let c = format!("  {}", pad(&commits(turn), commits_w));
+                    spans.push(Span::styled(c, Style::new().fg(Color::Green)));
+                }
+                let used: usize = spans.iter().map(|s| util::width(&s.content)).sum();
+                let room = inner.saturating_sub(used + 2);
+                // Worked out and cleaned with `untrusted` when the log was read (`with_headlines`).
+                spans.push(match turn.headline.as_str() {
+                    "" => Span::styled(truncate("  no message", room + 2), dim()),
+                    head => Span::raw(format!("  {}", truncate(head, room))),
+                });
+                if chosen {
+                    let used: usize = spans.iter().map(|s| util::width(&s.content)).sum();
+                    spans.push(Span::raw(" ".repeat(inner.saturating_sub(used))));
+                    for s in &mut spans {
+                        s.style = s.style.bg(selection_bg());
+                    }
+                }
+                text.push(Line::from(spans));
+                if chosen {
+                    let pad = " ".repeat(indent);
+                    text.extend(message.iter().map(|l| match l.as_str() {
+                        "" => Line::from(""),
+                        _ => Line::from(format!("{pad}{l}")),
+                    }));
+                }
+            }
+        }
+    }
+    let mut shown = vec![
+        Line::from(Span::styled(
+            format!("{} · each turn it finished, newest first", untrusted::line(project)),
+            dim(),
+        )),
+        Line::from(""),
+    ];
+    let scrolls = text.len() > rows;
+    shown.extend(text.into_iter().skip(t.top).take(rows));
+    shown.push(Line::from(""));
+    let at = format!("{} of {n}", t.at + 1);
+    shown.extend(key_rows(&turns_keys(t.open, scrolls.then_some(&at)), inner));
+    let title = format!("What {} did", truncate(&untrusted::line(&label), 40));
+    f.render_widget(Clear, rect);
+    f.render_widget(Paragraph::new(shown).block(dialog(&title).padding(DIALOG_PAD)), rect);
+}
+
+/// The keys under the turns, for a turn `open` or not; `at` says which turn is selected when they
+/// don't all fit.
+fn turns_keys(open: bool, at: Option<&str>) -> Vec<(&str, &str)> {
+    let mut keys = vec![("↑/↓", "choose")];
+    if let Some(at) = at {
+        keys.extend([("PgUp/PgDn", "page"), ("", at)]);
+    }
+    keys.push(if open { ("Enter/Esc", "collapse") } else { ("Enter", "expand") });
+    keys.extend([("←/→", "another session"), ("g", "go to it")]);
+    if !open {
+        keys.push(("Esc", "close"));
+    }
+    keys
+}
+
+/// A turn's whole message as rows of at most `room` columns: its Markdown taken out
+/// (`markdown::plain`), each line through `untrusted::line` and wrapped, its indent and a list
+/// item's marker kept with the item's text wrapped under its start, one blank row between
+/// paragraphs and none at either end.
+fn message_rows(message: &str, room: usize) -> Vec<String> {
+    let mut rows: Vec<String> = Vec::new();
+    for line in markdown::plain(&untrusted::clean(message)).lines() {
+        let text = untrusted::line(line);
+        if text.is_empty() {
+            if rows.last().is_some_and(|r| !r.is_empty()) {
+                rows.push(String::new());
+            }
+            continue;
+        }
+        let indent: usize = line
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .map(|c| if c == '\t' { 4 } else { 1 })
+            .sum::<usize>()
+            .min(room / 2);
+        let (marker, text) = match markdown::list_item(&text) {
+            Some((marker, rest)) => (format!("{marker} "), rest.to_string()),
+            None => (String::new(), text),
+        };
+        let hang = indent + util::width(&marker);
+        for (i, part) in wrap_words(&text, room.saturating_sub(hang)).into_iter().enumerate() {
+            let lead = match i {
+                0 => format!("{}{marker}", " ".repeat(indent)),
+                _ => " ".repeat(hang),
+            };
+            rows.push(lead + &part);
+        }
+    }
+    while rows.last().is_some_and(String::is_empty) {
+        rows.pop();
+    }
+    rows
 }
 
 /// The most of a role the dialog shows; a longer one says how much is left out.
@@ -1480,32 +1660,79 @@ fn draw_help(f: &mut Frame, app: &mut App) {
     let Mode::Help(view) = &mut app.mode else { return };
     let p = prefix();
     let (again, send) = (p.to_string(), format!("send {p} itself to the session"));
-    let keys = [
-        ("[ / ]", "previous / next ticket"),
-        ("{ / }", "move the card; ↑/↓ go on, p moves its project, Enter ends"),
-        (again.as_str(), "next ticket needing you, else one whose turn finished (also tab)"),
-        ("/", "jump to a ticket, agent or project by typing"),
-        ("w", "list the sessions that need you, oldest first, with what they ask"),
-        ("n", "add a ticket, or an agent with no ticket"),
-        (",", "settings: prefix key, updates, sessions, theme, notifications, projects, accounts"),
-        ("P / A", "settings, on a new project / account"),
-        ("z", "fold / unfold the current project"),
-        ("x", "close the current ticket or agent"),
-        ("b", "collapse / expand the sidebar"),
-        ("j / c / g", "toggle the tracker panel, its comments, the PR panel"),
-        ("o / p", "open ticket / PR in your browser"),
-        ("r", "refresh tracker and GitHub now"),
-        ("m", "take the ● off comments that were new on this ticket"),
-        ("R / t", "restart the session / hand it to another terminal"),
-        ("M", "run in the main checkout when the worktree failed"),
-        ("e", "rename the current agent"),
-        ("PgUp/PgDn", "scroll back, then PgUp/PgDn ↑/↓ Home/End go on"),
-        ("v", "open the session's history in $EDITOR"),
-        ("l", "list links (ticket, PR, session) to open or copy"),
-        ("~", "notices: what the footer showed, newest first"),
-        ("a", send.as_str()),
-        ("q", "quit"),
+    // The prefix menu's groups, in its order and with its words first, and the keys it leaves out.
+    let groups: [(&str, &[(&str, &str)]); 8] = [
+        (
+            "New",
+            &[
+                ("n", "ticket / agent: add either; an agent has no ticket"),
+                ("P / A", "project / account: settings, on a new one"),
+            ],
+        ),
+        (
+            "Go to",
+            &[
+                ("[ / ]", "prev/next ticket"),
+                (&again, "next waiting: one needing you, else one done (or tab)"),
+                ("w", "who needs you: oldest first, with what each asks"),
+                ("/", "jump to a ticket, agent or project by typing"),
+            ],
+        ),
+        (
+            "This ticket",
+            &[
+                ("{ / }", "move: ↑/↓ go on, p moves the project, Enter ends"),
+                ("e", "rename agent"),
+                ("M", "run in the main checkout when the worktree failed"),
+                ("x", "close the ticket or agent"),
+            ],
+        ),
+        (
+            "Open",
+            &[
+                ("o / p", "ticket / PR in your browser"),
+                ("l", "links (ticket, PR, session) to open or copy"),
+            ],
+        ),
+        (
+            "Session",
+            &[
+                ("R", "restart the session"),
+                ("t", "to a terminal: continue the session in another"),
+            ],
+        ),
+        (
+            "Look back",
+            &[
+                ("d", "what it did: each turn's files, commits and message"),
+                ("v", "history in $EDITOR"),
+                ("PgUp/PgDn", "scroll back, then PgUp/PgDn ↑/↓ Home/End go on"),
+            ],
+        ),
+        (
+            "Panels",
+            &[
+                ("j / c / g", "tracker / comments / GitHub: show or hide each"),
+                ("b", "sidebar: collapse / expand it"),
+                ("r", "refresh tracker and GitHub now"),
+                ("m", "mark read: take the ● off this ticket's new comments"),
+                ("z", "fold / unfold the current project"),
+            ],
+        ),
+        (
+            "General",
+            &[
+                (
+                    ",",
+                    "settings: prefix, updates, sessions, theme, notifications, projects, accounts",
+                ),
+                ("~", "notices: what the footer showed, newest first"),
+                ("q", "quit"),
+                ("a", &send),
+            ],
+        ),
     ];
+    let keys = || groups.iter().flat_map(|(_, keys)| keys.iter());
     // The legend, drawn with the sidebar's own badges.
     let legend = [
         (badge(AgentState::Needs, false, false), "asking you something"),
@@ -1523,14 +1750,14 @@ fn draw_help(f: &mut Frame, app: &mut App) {
     ];
     // Indented under the heading, unless the prefix's name is long enough to need the room.
     let indent = if p.name().len() > "ctrl+a".len() { 0 } else { 2 };
-    let key_w = keys.iter().map(|(k, _)| util::width(&format!("{p} {k}"))).max().unwrap_or(0) + 2;
+    let key_w = keys().map(|(k, _)| util::width(&format!("{p} {k}"))).max().unwrap_or(0) + 2;
     let badge_w = legend.iter().map(|(b, _)| util::width(&b.content)).max().unwrap_or(0) + 2;
     // Two to a row, each column as wide as its own words.
     let words = |skip: usize| {
         legend.iter().skip(skip).step_by(2).map(|(_, what)| util::width(what)).max().unwrap_or(0)
     };
     let what_w = words(0) + 3;
-    let keys_w = keys.iter().map(|(_, what)| indent + key_w + util::width(what)).max().unwrap_or(0);
+    let keys_w = keys().map(|(_, what)| indent + key_w + util::width(what)).max().unwrap_or(0);
     let pairs_w = 2 + 2 * badge_w + what_w + words(1);
     let room = usize::from(f.area().width.saturating_sub(2 + 2 + DIALOG_PAD_W));
     let inner = keys_w.max(pairs_w).min(HELP_W).min(room).max(1);
@@ -1543,24 +1770,27 @@ fn draw_help(f: &mut Frame, app: &mut App) {
     // would be too narrow to read.
     let key_style = Style::new().fg(accent());
     let stacked = inner < indent + key_w + 20;
-    for (k, what) in &keys {
-        let key = format!("{p} {k}");
-        if stacked {
-            text.push(Line::from(Span::styled(format!("{:indent$}{key}", ""), key_style)));
-            let under = indent + 4;
-            for l in wrap_words(what, inner.saturating_sub(under)) {
-                text.push(Line::from(format!("{:under$}{l}", "")));
+    for (title, keys) in groups {
+        text.push(Line::from(title.bold()));
+        for (k, what) in keys {
+            let key = format!("{p} {k}");
+            if stacked {
+                text.push(Line::from(Span::styled(format!("{:indent$}{key}", ""), key_style)));
+                let under = indent + 4;
+                for l in wrap_words(what, inner.saturating_sub(under)) {
+                    text.push(Line::from(format!("{:under$}{l}", "")));
+                }
+                continue;
             }
-            continue;
-        }
-        let col = indent + key_w;
-        for (i, l) in wrap_words(what, inner - col).into_iter().enumerate() {
-            let left = if i == 0 {
-                format!("{:indent$}{}", "", pad(&key, key_w))
-            } else {
-                " ".repeat(col)
-            };
-            text.push(Line::from(vec![Span::styled(left, key_style), Span::raw(l)]));
+            let col = indent + key_w;
+            for (i, l) in wrap_words(what, inner - col).into_iter().enumerate() {
+                let left = if i == 0 {
+                    format!("{:indent$}{}", "", pad(&key, key_w))
+                } else {
+                    " ".repeat(col)
+                };
+                text.push(Line::from(vec![Span::styled(left, key_style), Span::raw(l)]));
+            }
         }
     }
     text.push(Line::from(""));

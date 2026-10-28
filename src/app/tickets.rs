@@ -2,13 +2,13 @@
 //! `taskman close` all end here. Also stacking (the bases a ticket can start from, where a stacked
 //! ticket stands) and renaming an agent.
 
-use super::poll::{remove_status_at, remove_status_files};
+use super::poll::{remove_log_at, remove_status_at, remove_status_files};
 use super::sync::Msg;
 use super::ticket::{Added, merged_head, own_worktree};
 use super::{AgentState, App, Away, Field, Form, FormKind, Level, Mode, TicketView};
 use crate::session::Reaper;
 use crate::store::{self, Base, Cli, Ticket};
-use crate::{close, github, keys, resume, stack, untrusted, util, worktree};
+use crate::{close, events_log, github, keys, resume, stack, untrusted, util, worktree};
 use std::path::{Path, PathBuf};
 
 /// What closing a ticket leaves its caller (`close_at`): the claim on its session, for removing
@@ -167,6 +167,7 @@ impl App {
         }
         // What a hook of its last session wrote after the ticket closed (see `TicketView::takes`).
         remove_status_at(&store::status_file(&repo, &key));
+        remove_log_at(&store::status_file(&repo, &key));
         let found = github::find_worktree(&repo, &key);
         let create = found.is_none() && create && self.gh(&repo) != github::Gh::NotGit;
         let (cwd, branch) = match found {
@@ -291,6 +292,7 @@ impl App {
         let repo = self.projects[p].repo.clone();
         // What a hook of its last session wrote after the agent closed (see `TicketView::takes`).
         remove_status_at(&store::status_file(&repo, &key));
+        remove_log_at(&store::status_file(&repo, &key));
         let t = Ticket {
             key,
             repo: repo.clone(),
@@ -578,6 +580,9 @@ impl App {
         // holds the claim). The CLI still stopping is the renamed agent's, kept out of the pane
         // by its reaper and off `taskman resume` by the new name's claim.
         drop(old_hold);
+        // Its log goes with it, under the new name.
+        let log = |t: &Ticket| events_log::log_path(&store::status_file(&t.repo, &t.key));
+        let _ = std::fs::rename(log(&old_t), log(&self.tickets[i].t));
         remove_status_files(&old_t);
         self.toast(format!("Renamed ✦ {old} to ✦ {name}"));
         Ok(())

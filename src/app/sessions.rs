@@ -231,7 +231,10 @@ impl App {
         let cmd = self.build_command(&self.tickets[i].t, &name, &launch);
         // What the status file says is an earlier start's: at taskman's next start it would pass
         // for the session's latest conversation (`take_leftover_status`).
-        remove_status_at(&store::status_file(&self.tickets[i].t.repo, &self.tickets[i].t.key));
+        let status = store::status_file(&self.tickets[i].t.repo, &self.tickets[i].t.key);
+        remove_status_at(&status);
+        // So is a turn it left unfinished: this start's first turn begins afresh. Its log stays.
+        let _ = std::fs::remove_file(crate::events_log::pending_path(&status));
         let wake = self.wake.clone();
         let (scrollback, colours) = (self.config.scrollback, self.theme.colours);
         match Session::spawn(cmd.clone(), &name, area.height, area.width, scrollback, wake, colours)

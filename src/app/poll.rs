@@ -7,6 +7,7 @@ use super::sync::Msg;
 use super::{App, Away, Blocked};
 use crate::background;
 use crate::coding_cli::Approver;
+use crate::events_log;
 use crate::session::Session;
 use crate::session_ids::{self, Claim};
 use crate::status_file::{self, HookState};
@@ -419,7 +420,9 @@ pub(super) fn take_leftover_status(
 /// a second copy, and a close's own hold removes the file as it lets go (`Hold::closing`). While
 /// another terminal or taskman runs the session, its history stays too. Stop its session first.
 pub(super) fn remove_status_files(t: &Ticket) {
-    remove_status_at(&store::status_file(&t.repo, &t.key));
+    let status = store::status_file(&t.repo, &t.key);
+    remove_status_at(&status);
+    remove_log_at(&status);
     let owner = resume::owner_file(&t.repo, &t.key);
     let who = resume::peek(&owner);
     if !who.elsewhere() {
@@ -428,6 +431,13 @@ pub(super) fn remove_status_files(t: &Ticket) {
     if matches!(who, resume::Owner::Free | resume::Owner::Back) {
         let _ = std::fs::remove_file(owner);
     }
+}
+
+/// Removes the session's log (`events_log`) beside the status file at `status`, and the turn it
+/// noted so far. Only with its ticket: a start of the session, or of taskman, keeps the log.
+pub(super) fn remove_log_at(status: &Path) {
+    let _ = std::fs::remove_file(events_log::log_path(status));
+    let _ = std::fs::remove_file(events_log::pending_path(status));
 }
 
 /// Removes a status file and the refresh signal files and the asleep marker beside it.

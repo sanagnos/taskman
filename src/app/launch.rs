@@ -347,6 +347,9 @@ impl App {
             ("TASKMAN_TICKET", t.key.clone().into()),
             ("TASKMAN_REPO", t.repo.clone().into()),
             ("TASKMAN_SESSION_NAME", session.into()),
+            // The folder the session works in, which the hooks take a turn's commits in
+            // (`hook::session_dir`), wherever its shell has gone since.
+            ("TASKMAN_CWD", t.cwd.clone().into()),
         ];
         // The briefs say `taskman status`; this makes it the running binary, even when taskman
         // isn't on PATH or another build of it is.

@@ -413,13 +413,39 @@ fn prefix_menu() {
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 
+/// The menu is sized to the whole screen: narrower, a row that doesn't fit goes on under its
+/// first command.
+#[test]
+fn prefix_menu_at_60_columns() {
+    let mut app = acme_app();
+    app.on_key(crate::app::test_support::ctrl('a'));
+    assert_snapshot!(draw(&mut app, 60, 24));
+}
+
+#[test]
+fn prefix_menu_at_50_columns() {
+    let mut app = acme_app();
+    app.on_key(crate::app::test_support::ctrl('a'));
+    assert_snapshot!(draw(&mut app, 50, 24));
+}
+
+/// Too short for the menu, its last rows are cut; the footer still names Help.
+#[test]
+fn prefix_menu_on_a_short_screen() {
+    let mut app = acme_app();
+    app.on_key(crate::app::test_support::ctrl('a'));
+    let screen = draw(&mut app, 80, 10);
+    assert!(screen.contains("? help · Esc cancels"), "{screen}");
+    assert_snapshot!(screen);
+}
+
 /// Help whole, tall enough not to scroll: every key and the whole legend, its lines wrapped
 /// rather than cut at 80 columns.
 #[test]
 fn help() {
     let mut app = acme_app();
     app.mode = Mode::Help(Default::default());
-    let screen = draw(&mut app, 80, 60);
+    let screen = draw(&mut app, 80, 72);
     assert!(screen.contains("Press any key to close."), "{screen}");
     assert_snapshot!(screen);
 }
@@ -429,7 +455,7 @@ fn help() {
 fn help_on_a_wide_screen() {
     let mut app = acme_app();
     app.mode = Mode::Help(Default::default());
-    let screen = draw(&mut app, 120, 54);
+    let screen = draw(&mut app, 120, 64);
     assert!(screen.contains("Press any key to close."), "{screen}");
     assert_snapshot!(screen);
 }
@@ -1340,5 +1366,66 @@ fn notices_scrolling_on_a_narrow_screen() {
     app.mode = Mode::Log(Default::default());
     let screen = draw(&mut app, 40, 16);
     assert!(screen.contains("other keys close"), "{screen}");
+    assert_snapshot!(screen);
+}
+
+/// The acme app with the turns overlay open on ENG-52's log: a Claude-style turn, a Codex-style
+/// one and one with no message, with what a terminal would act on in one of them.
+fn turns_open() -> crate::app::App {
+    use crate::app::test_support::{ctrl, key, settle_until};
+    use crate::events_log::{self, Turn};
+    use crossterm::event::KeyCode;
+    let mut app = acme_app();
+    draw(&mut app, 100, 30);
+    let log = events_log::log_path(&crate::store::status_file("/src/acme".as_ref(), "ENG-52"));
+    let now = crate::util::now();
+    let turns = [
+        Turn::new(
+            "Looked into the flaky login test: it races the session's start. Nothing changed yet.",
+            vec![],
+            vec![],
+            now - 3 * 3600 - 1800,
+        ),
+        Turn::new(
+            "**Summary**\n\n- Fixed the lint failure in `src/store.rs`: the \x1b]52;c;ZXZpbA==\x07\
+             check now passes locally, and the *session store* keeps its order when two \
+             sessions save at once.\n- Pushed the branch; CI is running.\n\n```sh\ncargo \
+             clippy --all-targets -- -D warnings\n```\n\n## Next\n\n1. Wait for **CI**.",
+            vec!["src/store.rs".into(), "src/main.rs".into(), "tests/store.rs".into()],
+            vec!["0123456789abcdef".into(), "fedcba9876543210".into()],
+            now - 330,
+        ),
+        Turn::new("", vec!["README.md".into()], vec!["abcdef0123456789".into()], now - 10),
+    ];
+    for t in &turns {
+        events_log::append(&log, t).unwrap();
+    }
+    app.on_key(ctrl('a'));
+    app.on_key(key(KeyCode::Char('d')));
+    settle_until(&mut app, |a| matches!(&a.mode, Mode::Turns(t) if t.turns.is_some()));
+    app
+}
+
+/// A session's turns (`ctrl+a d`), newest first, a row each: how long ago, files and commits,
+/// and the first sentence of the CLI's last message, its Markdown taken out.
+#[test]
+fn turns_of_a_session() {
+    let mut app = turns_open();
+    let screen = draw(&mut app, 100, 30);
+    assert!(screen.contains("Fixed the lint failure in src/store.rs: the"), "{screen}");
+    assert_snapshot!(screen);
+}
+
+/// Enter opens the selected turn under its row: its whole message, its Markdown taken out, list
+/// items wrapped under their text.
+#[test]
+fn a_turn_opened() {
+    use crate::app::test_support::key;
+    use crossterm::event::KeyCode;
+    let mut app = turns_open();
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Enter));
+    let screen = draw(&mut app, 100, 30);
+    assert!(!screen.contains("**") && !screen.contains('`'), "{screen}");
     assert_snapshot!(screen);
 }
