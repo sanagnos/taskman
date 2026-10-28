@@ -413,6 +413,15 @@ fn prefix_menu() {
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 
+/// At 60 columns, the narrowest the session keeps, a row that doesn't fit goes on under its
+/// first command.
+#[test]
+fn prefix_menu_at_60_columns() {
+    let mut app = acme_app();
+    app.on_key(crate::app::test_support::ctrl('a'));
+    assert_snapshot!(draw(&mut app, 60, 24));
+}
+
 /// Help whole, tall enough not to scroll: every key and the whole legend, its lines wrapped
 /// rather than cut at 80 columns.
 #[test]

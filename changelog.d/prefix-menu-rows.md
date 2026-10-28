@@ -1,0 +1,1 @@
+- The `ctrl+a` menu lists its commands a row for each kind: New, Go to, This task, Open, Session, Look back (what the session did, its history, scrolling back), Panels and General. Folding a project, marking comments read and sending the prefix itself are left to `ctrl+a ?`, which lists every key; no key changed.

@@ -670,32 +670,26 @@ fn scroll_keys(app: &App, cols: u16) -> Line<'static> {
     Line::from(v)
 }
 
-/// The commands available after the prefix, shown while it waits for its key.
+/// The commands available after the prefix, shown while it waits for its key: a row for each
+/// kind, by what the keys act on. The rarely used (`z`, `m`, `a`) are left to Help, which lists
+/// every key, and Esc to the footer.
 pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
-    let p = prefix().short();
-    let (again, send) = (format!("{p} tab"), format!("send {p}"));
-    let groups: [(&str, &[(&str, &str)]); 5] = [
+    let again = format!("{} tab", prefix().short());
+    let groups: [(&str, &[(&str, &str)]); 8] = [
+        ("New", &[("n", "ticket / agent"), ("P", "project"), ("A", "account")]),
         (
-            "Tickets",
+            "Go to",
             &[
-                ("[ ]", "prev / next"),
-                ("{ }", "move"),
+                ("[ ]", "prev/next"),
                 (&again, "next waiting"),
+                ("w", "who needs you"),
                 ("/", "jump"),
-                ("w", "what needs you"),
-                ("n", "add ticket/agent"),
-                ("x", "close"),
             ],
         ),
-        (
-            "Projects",
-            &[
-                (",", "settings, feedback"),
-                ("P", "new project"),
-                ("A", "new account"),
-                ("z", "fold"),
-            ],
-        ),
+        ("This task", &[("{ }", "move"), ("e", "rename agent"), ("x", "close")]),
+        ("Open", &[("o", "ticket"), ("p", "PR"), ("l", "links")]),
+        ("Session", &[("R", "restart"), ("t", "to a terminal")]),
+        ("Look back", &[("d", "what it did"), ("v", "history in $EDITOR"), ("PgUp", "scroll")]),
         (
             "Panels",
             &[
@@ -704,31 +698,17 @@ pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
                 ("g", "GitHub"),
                 ("b", "sidebar"),
                 ("r", "refresh"),
-                ("m", "mark read"),
             ],
         ),
-        ("Open", &[("o", "ticket"), ("p", "PR")]),
-        (
-            "Session",
-            &[
-                ("R", "restart"),
-                ("t", "to a terminal"),
-                ("e", "rename agent"),
-                ("PgUp", "scroll"),
-                ("d", "turns"),
-                ("v", "history in $EDITOR"),
-                ("l", "links"),
-                ("~", "notices"),
-                ("a", &send),
-            ],
-        ),
+        ("General", &[(",", "settings"), ("~", "notices"), ("?", "help"), ("q", "quit")]),
     ];
-    // A group that doesn't fit the screen goes on in a row of its own, under its first command.
-    const INDENT: usize = 10;
-    let room = usize::from(f.area().width.saturating_sub(4));
+    // A group that doesn't fit the screen goes on in a row of its own, under its first command;
+    // the room leaves a space before the border.
+    const INDENT: usize = 12;
+    let room = usize::from(f.area().width.saturating_sub(5));
     let mut lines: Vec<Line> = Vec::new();
     for (title, items) in groups {
-        let mut v = vec![Span::styled(format!(" {title:<9}"), Style::new().bold())];
+        let mut v = vec![Span::styled(format!(" {title:<11}"), Style::new().bold())];
         let mut used = INDENT;
         for (k, what) in items {
             let w = width(k) + 1 + width(what);
@@ -743,16 +723,8 @@ pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
         }
         lines.push(Line::from(v));
     }
-    lines.push(Line::from(vec![
-        Span::styled(format!(" {:<9}", ""), Style::new()),
-        Span::styled("? ", Style::new().fg(yellow()).bold()),
-        Span::raw("help   "),
-        Span::styled("q ", Style::new().fg(yellow()).bold()),
-        Span::raw("quit   "),
-        Span::styled("Esc ", Style::new().fg(yellow()).bold()),
-        Span::raw("cancel"),
-    ]));
-    let w = lines.iter().map(|l| line_width(l) as u16).max().unwrap_or(40) + 2;
+    // The gap after a row's last command isn't counted, so the box ends a space after it.
+    let w = lines.iter().map(|l| line_width(l) as u16 - 2).max().unwrap_or(40) + 2;
     let h = lines.len() as u16 + 2;
     let area = f.area();
     let r = Rect {

@@ -160,32 +160,34 @@ taskman reads the token when it starts and again when you save the account. Afte
 
 ## Use
 
-Press `ctrl+a n` (just `n` while the list is empty) to add a ticket to the current project (the one whose header you last clicked, else the selected card's; the form opens on Agent; typing a number, a key or a link switches it to Ticket): a number (`52` becomes `ENG-52`), a key, or a link. Its session starts in the ticket's own worktree (see [Worktrees](#worktrees)). In a project without a tracker, `ctrl+a n` adds an agent. From a shell, or from an agent, `taskman add 52` does the same without switching to it (see [taskman add](#adding-tickets-from-a-shell-or-a-session-taskman-add)). Every key goes to the session except after the `ctrl+a` prefix (and `ctrl+z`, which would suspend the session with no way to resume it, and `ctrl+c` or `Esc` while text is selected). Pressing `ctrl+a` shows a menu of the command keys; `ctrl+a ?` explains them. The ones you'll use most (with the default prefix):
+Press `ctrl+a n` (just `n` while the list is empty) to add a ticket to the current project (the one whose header you last clicked, else the selected card's; the form opens on Agent; typing a number, a key or a link switches it to Ticket): a number (`52` becomes `ENG-52`), a key, or a link. Its session starts in the ticket's own worktree (see [Worktrees](#worktrees)). In a project without a tracker, `ctrl+a n` adds an agent. From a shell, or from an agent, `taskman add 52` does the same without switching to it (see [taskman add](#adding-tickets-from-a-shell-or-a-session-taskman-add)). Every key goes to the session except after the `ctrl+a` prefix (and `ctrl+z`, which would suspend the session with no way to resume it, and `ctrl+c` or `Esc` while text is selected). Pressing `ctrl+a` shows a menu of the command keys, a row for each kind: New, Go to, This task, Open, Session, Look back, Panels and General. `ctrl+a ?` lists every key and explains it, the few the menu leaves out too (`z`, `m` and `a`). The keys, in the menu's order (with the default prefix):
 
 The Add form opens on Type, set to Agent; ←/→ switches it to Ticket. What you type on Type, or on any other choice, goes to the Ticket or Name field: a number, a key of the project or a link switches Type to Ticket, so `ctrl+a n` then `52` adds ENG-52, and anything else is the agent's name. To give a ticket by words of its title instead (or, on Local files, to create one), set Type to Ticket first: on a project with a tracker, the Name's hint says so. The Ticket field is the last one, below Project, Type, CLI, Worktree and Base (an agent's Name is last the same way), and lists the project's open issues under it (they are fetched when the form opens, so they are ready), those assigned to you first, and narrows the list as you type a number or words of a title: on Jira and Linear the project or team whose key is the ticket prefix (the 100 most recently updated, not done), on GitHub Issues the repository's, on Local files the board's tickets not done. Enter adds the one issue that matches. ↑/↓ highlight an issue in the list, scrolling through more than five, and Enter adds the highlighted one; typing narrows the list again and drops the highlight. ↑ on the first issue goes back to what you typed, and ↑ again moves up to Base and the fields above without picking one; ↓ stops at the last issue, since nothing is below. Tab and Shift+Tab always move between fields. The Worktree and Base above follow the ticket typed or highlighted. Elsewhere in the form, or with nothing listed, ↑/↓ move between fields. A closed issue isn't listed, but its number or key adds it.
 
 | Keys | Action |
 |---|---|
+| `ctrl+a n` | add a ticket or an agent |
+| `ctrl+a P` / `A` | new project / new account |
 | `ctrl+a [` / `]` | switch ticket |
-| `ctrl+a {` / `}` | move the selected agent or ticket up / down, then keep going (see [Sidebar](#sidebar)) |
 | `ctrl+a ctrl+a` | jump to the next ticket that needs you, else the next whose turn finished (`ctrl+a Tab` too) |
 | `ctrl+a w` | list every session that needs you, oldest first, with how long, why and what it asks (see below) |
 | `ctrl+a /` | jump to a ticket, agent or project by typing (see below) |
-| `ctrl+a n` / `x` | add / close a ticket |
-| `ctrl+a ,` | settings: prefix key, updates, sessions, theme, notifications, projects and accounts; help and feedback |
-| `ctrl+a P` / `A` / `z` | new project / new account / fold the current project |
-| `ctrl+a j` / `c` / `g` / `b` | toggle the tracker panel, its comments, the PR panel; collapse the sidebar. On a ticket whose tracker or PR panel can't show (no tracker, no GitHub remote, `gh` missing or logged out), `j` or `g` says why and leaves the panel on for the tickets that have one. On an agent, `j`, `c` and `g` change the panels tickets show, and say so; its board shows while the tracker or PR panel is on |
+| `ctrl+a {` / `}` | move the selected agent or ticket up / down, then keep going (see [Sidebar](#sidebar)) |
+| `ctrl+a e` / `M` | rename the selected agent (see [Agents](#agents)) / run the session in the main checkout when its worktree couldn't be made (see [Worktrees](#worktrees)) |
+| `ctrl+a x` | close the selected ticket or agent |
 | `ctrl+a o` / `p` | open the ticket / PR in your browser (a Local files ticket opens in `$EDITOR`) |
-| `ctrl+a r` / `m` | refresh now (and check GitHub again) / take the `●` off comments that were new |
-| `ctrl+a PgUp` / `PgDn` | scroll the session's history a page, then keep going without the prefix: PgUp/PgDn a page, ↑/↓ a line, Home/End to the top or bottom, Esc back to live (see [Scrolling back](#scrolling-back)). A full-screen CLI gets the key itself |
-| `ctrl+a d` | what the session did, a row per turn, newest first: files, commits, what it said; Enter shows a turn's whole message (see below) |
-| `ctrl+a v` | open the session's history in `$EDITOR` |
 | `ctrl+a l` | the ticket's links (issue, PR, checks), then the session's, newest first: Enter opens one, `c` copies it |
-| `ctrl+a ~` | notices: the last 200 messages the footer showed, newest first, with how long ago; ↑/↓ and PgUp/PgDn scroll, any other key closes |
 | `ctrl+a R` | restart the session on the same conversation; while it's working or needs you, it asks first, as that turn or question would be cut short |
 | `ctrl+a t` | continue the session in another terminal (see [taskman resume](#continuing-a-session-in-another-terminal-taskman-resume)) |
-| `ctrl+a e` / `M` | rename the selected agent (see [Agents](#agents)) / run the session in the main checkout when its worktree couldn't be made (see [Worktrees](#worktrees)) |
+| `ctrl+a d` | what the session did, a row per turn, newest first: files, commits, what it said; Enter shows a turn's whole message (see below) |
+| `ctrl+a v` | open the session's history in `$EDITOR` |
+| `ctrl+a PgUp` / `PgDn` | scroll the session's history a page, then keep going without the prefix: PgUp/PgDn a page, ↑/↓ a line, Home/End to the top or bottom, Esc back to live (see [Scrolling back](#scrolling-back)). A full-screen CLI gets the key itself |
+| `ctrl+a j` / `c` / `g` / `b` | toggle the tracker panel, its comments, the PR panel; collapse the sidebar. On a ticket whose tracker or PR panel can't show (no tracker, no GitHub remote, `gh` missing or logged out), `j` or `g` says why and leaves the panel on for the tickets that have one. On an agent, `j`, `c` and `g` change the panels tickets show, and say so; its board shows while the tracker or PR panel is on |
+| `ctrl+a r` / `m` | refresh now (and check GitHub again) / take the `●` off comments that were new |
+| `ctrl+a ,` | settings: prefix key, updates, sessions, theme, notifications, projects and accounts; help and feedback |
+| `ctrl+a ~` | notices: the last 200 messages the footer showed, newest first, with how long ago; ↑/↓ and PgUp/PgDn scroll, any other key closes |
 | `ctrl+a ?` / `q` | help: every key and what the sidebar's states mean / quit, once you press Enter; sessions resume at the next start |
+| `ctrl+a z` | fold or unfold the current project |
 | `ctrl+a a` | send the prefix itself to the session |
 
 ### The waiting queue
