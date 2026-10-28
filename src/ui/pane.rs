@@ -607,7 +607,7 @@ pub(super) fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                 format!(" {} ", prefix()),
                 Style::new().fg(Color::Black).bg(Color::Yellow).bold(),
             ),
-            Span::raw(" press a command key · Esc cancels"),
+            Span::raw(" press a command key · ? help · Esc cancels"),
         ])
     } else if let Some(hint) = app.reorder_hint() {
         Line::from(Span::styled(format!(" {hint}"), Style::new().fg(accent())))
@@ -670,9 +670,8 @@ fn scroll_keys(app: &App, cols: u16) -> Line<'static> {
     Line::from(v)
 }
 
-/// The commands available after the prefix, shown while it waits for its key: a row for each
-/// kind, by what the keys act on. The rarely used (`z`, `m`, `a`) are left to Help, which lists
-/// every key, and Esc to the footer.
+/// The everyday commands after the prefix, shown while it waits for its key: a row for each kind,
+/// by what the keys act on, in Help's order. Help lists every key; the footer names it and Esc.
 pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
     let again = format!("{} tab", prefix().short());
     let groups: [(&str, &[(&str, &str)]); 8] = [
@@ -686,7 +685,7 @@ pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
                 ("/", "jump"),
             ],
         ),
-        ("This task", &[("{ }", "move"), ("e", "rename agent"), ("x", "close")]),
+        ("This ticket", &[("{ }", "move"), ("e", "rename agent"), ("x", "close")]),
         ("Open", &[("o", "ticket"), ("p", "PR"), ("l", "links")]),
         ("Session", &[("R", "restart"), ("t", "to a terminal")]),
         ("Look back", &[("d", "what it did"), ("v", "history in $EDITOR"), ("PgUp", "scroll")]),
@@ -702,29 +701,36 @@ pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
         ),
         ("General", &[(",", "settings"), ("~", "notices"), ("?", "help"), ("q", "quit")]),
     ];
-    // A group that doesn't fit the screen goes on in a row of its own, under its first command;
-    // the room leaves a space before the border.
-    const INDENT: usize = 12;
-    let room = usize::from(f.area().width.saturating_sub(5));
+    // The commands start a space after the longest title, and a group that doesn't fit the
+    // screen goes on in a row of its own, under its first command.
+    let indent = 1 + groups.iter().map(|(title, _)| width(title)).max().unwrap_or(0) + 1;
+    let title_w = indent - 1;
+    const GAP: usize = 3;
+    // The box: a column of margin each side, its borders, and a space after the longest row.
+    let room = usize::from(f.area().width).saturating_sub(2 + 2 + 1);
     let mut lines: Vec<Line> = Vec::new();
     for (title, items) in groups {
-        let mut v = vec![Span::styled(format!(" {title:<11}"), Style::new().bold())];
-        let mut used = INDENT;
+        let title = format!(" {title:<title_w$}");
+        let mut v = vec![Span::styled(title, Style::new().bold())];
+        let mut used = indent;
         for (k, what) in items {
             let w = width(k) + 1 + width(what);
-            if used > INDENT && used + w > room {
+            if used > indent && used + GAP + w > room {
                 lines.push(Line::from(std::mem::take(&mut v)));
-                v.push(Span::raw(" ".repeat(INDENT)));
-                used = INDENT;
+                v.push(Span::raw(" ".repeat(indent)));
+                used = indent;
+            }
+            if used > indent {
+                v.push(Span::raw(" ".repeat(GAP)));
+                used += GAP;
             }
             v.push(Span::styled(format!("{k} "), Style::new().fg(yellow()).bold()));
-            v.push(Span::raw(format!("{what}   ")));
-            used += w + 3;
+            v.push(Span::raw(*what));
+            used += w;
         }
         lines.push(Line::from(v));
     }
-    // The gap after a row's last command isn't counted, so the box ends a space after it.
-    let w = lines.iter().map(|l| line_width(l) as u16 - 2).max().unwrap_or(40) + 2;
+    let w = lines.iter().map(|l| line_width(l) as u16).max().unwrap_or(40) + 1 + 2;
     let h = lines.len() as u16 + 2;
     let area = f.area();
     let r = Rect {
