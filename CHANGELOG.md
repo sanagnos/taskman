@@ -2,6 +2,10 @@
 
 What changed in each release; a release's notes on GitHub are its section here. What's merged but not released yet is in [changelog.d/](changelog.d/), a file for each change, which the release moves in here. Versions follow Cargo's rule for 0.x: the patch number (0.1.1) for anything compatible, fixes and new features alike, and the minor (0.2.0) for breaking changes, such as changed keys, config or saved-state format, or a removed command.
 
+## 0.1.35 - 2026-10-28
+
+- `ctrl+a Z` folds every project in the sidebar, or unfolds them all when they're all folded already.
+
 ## 0.1.34 - 2026-10-28
 
 - `ctrl+a d` lists what the selected session did, a row per turn, newest first: how long ago, the files it changed or committed, its commits and the first sentence of the CLI's last message, for Claude Code and Codex sessions. Enter shows a turn's whole message, its Markdown as plain text; ←/→ show the next session's without closing, and `g` goes to it.
