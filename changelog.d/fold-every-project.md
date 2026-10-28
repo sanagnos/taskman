@@ -1,1 +1,1 @@
-- `ctrl+a Z` folds every project in the sidebar, or unfolds them all when they're all folded already. A folded project's header still shows ● when a session in it needs you.
+- `ctrl+a Z` folds every project in the sidebar, or unfolds them all when they're all folded already.

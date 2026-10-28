@@ -94,12 +94,43 @@ fn the_prefix_and_shift_z_folds_or_unfolds_every_project() {
     let shift_z = crossterm::event::KeyEvent::new(KeyCode::Char('z'), KeyModifiers::SHIFT);
     app.on_key(crate::keys::normalize(shift_z));
     assert_eq!(folded(&app), [false, false]);
-    // Going to a ticket in a folded project unfolds it, as after `z`.
+    // `[` and `]` have no card to go to, and say how to get them back.
     prefix(&mut app, KeyCode::Char('Z'));
+    prefix(&mut app, KeyCode::Char(']'));
+    assert_eq!(toast(&app), Some("Every project is folded: ctrl+a Z unfolds them"));
+    assert_eq!(selected(&app), "ENG-52");
+    // Going to a ticket in a folded project unfolds it, as after `z`.
     app.on_key(ctrl('a'));
     app.on_key(ctrl('a'));
     assert_eq!(selected(&app), "ENG-53");
     assert_eq!(folded(&app), [false, true]);
+    // So does going to the selected ticket itself: by find, …
+    prefix(&mut app, KeyCode::Char('Z'));
+    prefix(&mut app, KeyCode::Char('/'));
+    type_text(&mut app, "ENG-53");
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(selected(&app), "ENG-53");
+    assert_eq!(folded(&app), [false, true]);
+    assert!(!saved().projects[0].collapsed);
+    // … and by the queue.
+    prefix(&mut app, KeyCode::Char('Z'));
+    prefix(&mut app, KeyCode::Char('w'));
+    let at = app.queue().iter().position(|&i| i == app.sel).unwrap();
+    for _ in 0..at {
+        app.on_key(key(KeyCode::Down));
+    }
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(selected(&app), "ENG-53");
+    assert_eq!(folded(&app), [false, true]);
+}
+
+/// With no project, `ctrl+a Z` has nothing to fold and saves nothing.
+#[test]
+fn the_prefix_and_shift_z_with_no_project_saves_nothing() {
+    let mut app = offline(Saved::default());
+    prefix(&mut app, KeyCode::Char('Z'));
+    assert!(!store::state_dir().join("tickets.json").exists());
+    assert_eq!(toast(&app), None);
 }
 
 /// A session handed back waits for Enter alone, as the footer doesn't count it: the prefix twice
