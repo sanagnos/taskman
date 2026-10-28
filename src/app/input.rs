@@ -264,6 +264,10 @@ impl App {
                 self.queue_key(key);
                 return;
             }
+            Mode::Turns(_) => {
+                self.turns_key(key);
+                return;
+            }
             Mode::Move(_) => {
                 self.move_key(key);
                 return;
@@ -460,6 +464,7 @@ impl App {
             KeyCode::Char('n') => self.open_ticket_form(self.current_project()),
             KeyCode::Char('/') => self.open_jump(),
             KeyCode::Char('w') => self.open_queue(),
+            KeyCode::Char('d') => self.open_turns(),
             KeyCode::Char('P') => self.open_settings(SettingsItem::NewProject, true),
             KeyCode::Char(',') => {
                 self.check_github(self.projects.iter().map(|p| p.repo.clone()).collect());
