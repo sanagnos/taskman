@@ -229,8 +229,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { target: aarch64-apple-darwin, os: macos-14 }
-          - { target: x86_64-apple-darwin, os: macos-14 }
+          # macOS. Each build runs on its own architecture too: the Intel image is the last x86_64
+          # one GitHub offers. When it goes, build x86_64 on macos-26, which runs the binary
+          # through Rosetta.
+          - { target: aarch64-apple-darwin, os: macos-26 }
+          - { target: x86_64-apple-darwin, os: macos-26-intel }
           # Linux and WSL. The older Ubuntu keeps the glibc requirement low (install.sh's
           # glibc_min). Each build runs on its own architecture, so each binary is run below.
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
@@ -281,8 +284,8 @@ jobs:
           TASKMAN_RELEASE_BUILD: "1"
 
       # A binary that doesn't start, says another version or takes itself for a development
-      # build must not reach the installs that update to it. The Intel macOS build runs on the Apple
-      # Silicon runner through Rosetta; if the runner has no Rosetta, only that binary goes
+      # build must not reach the installs that update to it. An Intel macOS build on an Apple
+      # Silicon runner runs through Rosetta; if the runner has no Rosetta, only that binary goes
       # unchecked.
       - name: Run the binary
         run: |
@@ -344,8 +347,14 @@ jobs:
       # embedded in the binary, so it must be the committed file: generated again here from the
       # lockfile at the tag, with the cargo-about version CI checks it with, and compared.
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        if: ${{ !(runner.os == 'macOS' && runner.arch == 'X64') }}
         with:
           tool: cargo-about@0.9.2
+      # cargo-about publishes no Intel macOS binary, and install-action's fallback builds it without
+      # the cli feature, which installs nothing and still succeeds.
+      - name: Build cargo-about
+        if: ${{ runner.os == 'macOS' && runner.arch == 'X64' }}
+        run: cargo install --locked --features cli cargo-about@0.9.2
       - name: Check the third-party notices are current
         run: |
           cargo about generate --locked --fail about.hbs -o notices.txt
