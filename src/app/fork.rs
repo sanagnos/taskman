@@ -58,7 +58,7 @@ impl App {
             ],
         );
         form.note = Some(format!(
-            "Fork of {source}, as of now: a new agent in {} with a copy of its conversation so far. {source} carries on as it is.",
+            "Fork of {source}, as of when the fork starts: a new agent in {} with a copy of its conversation. {source} carries on as it is.",
             cli.label()
         ));
         self.mode = Mode::Form(Box::new(form));
@@ -96,6 +96,8 @@ impl App {
             move || Msg::Forked(ask, Ok(probe(cli))),
             move |e| Msg::Forked(again, Err(e)),
         );
+        // Asking the CLI can take a few seconds.
+        self.toast(format!("Forking {}…", self.session_name(i)));
         Ok(())
     }
 
@@ -147,8 +149,22 @@ impl App {
         Ok(i)
     }
 
+    /// As agent `i` starts: a fork whose source's conversation is gone (its transcript removed)
+    /// can't copy it, so it starts as a new agent would, and says so.
+    pub(super) fn fork_source_gone(&mut self, i: usize) {
+        let t = &self.tickets[i].t;
+        let own = t.session_id.as_deref().is_some_and(|sid| t.cli.has_conversation(sid));
+        if own || t.fork.as_ref().is_none_or(|f| t.cli.has_conversation(&f.from)) {
+            return;
+        }
+        let msg = format!("✦ {}'s source conversation is gone, so it starts fresh", t.display());
+        self.tickets[i].t.fork = None;
+        self.save();
+        self.warn(msg);
+    }
+
     /// The CLI answered what it can do for fork `ask`: adds the agent, its session starting as a
-    /// fork of the source's conversation as it is now, or says why it can't.
+    /// fork of the source's conversation as it is when it starts, or says why it can't.
     pub(super) fn forked(&mut self, ask: &ForkAsk, probe: Result<ForkProbe, String>) {
         let name = store::slug(&ask.name);
         let (p, i) = match self.check_fork(ask) {
@@ -168,18 +184,23 @@ impl App {
             Ok(id) => id,
             Err(e) => return self.error(format!("Couldn't fork ✦ {name}: no id for it: {e}")),
         };
+        let in_worktree = source.cwd != source.repo;
         let fork = Fork {
             from: source.session_id.clone().unwrap_or_default(),
             source: self.session_name(i),
-            snapshot_off: probe.snapshot_off,
+            worktree: in_worktree.then(|| source.cwd.clone()),
+            branch: source.branch.clone().filter(|_| in_worktree),
             extra: Default::default(),
         };
         let source = fork.source.clone();
-        match self.add_agent(p, &name, cli, ask.role.clone(), ask.from.is_none()) {
+        // The user's own fork is selected, unless they've moved on from the source meanwhile.
+        let focus = ask.from.is_none() && self.sel == i;
+        match self.add_agent(p, &name, cli, ask.role.clone(), focus) {
             Ok(Added::New(j)) => {
                 let tv = &mut self.tickets[j];
                 tv.t.session_id = id;
                 tv.t.fork = Some(fork);
+                tv.t.prompt_snapshot_off = probe.snapshot_off;
                 tv.start = true;
                 self.save();
                 self.toast(match &ask.from {

@@ -189,6 +189,7 @@ impl App {
             base: None,
             pending_worktree: None,
             fork: None,
+            prompt_snapshot_off: false,
             extra: Default::default(),
         });
         if create {
@@ -309,6 +310,7 @@ impl App {
             base: None,
             pending_worktree: None,
             fork: None,
+            prompt_snapshot_off: false,
             extra: Default::default(),
         };
         self.prefs.codex_explained |= !cli.is_default();

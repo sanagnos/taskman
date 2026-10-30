@@ -16,7 +16,8 @@ pub struct ForkStart<'a> {
     /// Its first message, which tells it who it is now.
     pub message: &'a str,
     pub cwd: &'a Path,
-    /// Record no system prompt, so the fork's own brief replaces the one the source recorded.
+    /// Record no system prompt, so the fork's own brief replaces the one the source recorded
+    /// (`Ticket::prompt_snapshot_off`).
     pub snapshot_off: bool,
 }
 
@@ -245,7 +246,7 @@ impl Cli {
                     before.extend(["--session-id".into(), id.into()]);
                 }
                 if fork.snapshot_off {
-                    before.extend(["--system-prompt-snapshot".into(), "off".into()]);
+                    before.extend(self.no_prompt_snapshot());
                 }
                 self.with(name, brief, hooks, before, vec![fork.message.into()])
             }
@@ -346,6 +347,12 @@ impl Cli {
             Cli::Claude => Some("--system-prompt-snapshot"),
             Cli::Codex => None,
         }
+    }
+
+    /// Arguments that turn off recording the system prompt (`snapshot_option`); none for a CLI
+    /// that doesn't record it.
+    pub fn no_prompt_snapshot(self) -> Vec<String> {
+        self.snapshot_option().map_or_else(Vec::new, |o| vec![o.into(), "off".into()])
     }
 
     /// The installed version, from `--version`; None when it doesn't answer in time. Runs a

@@ -122,7 +122,7 @@ fn forks(cli: &str) {
     tui.wait_text("stub ready");
 
     tui.send(b"\x01f");
-    tui.wait_text("Fork of acme-lead, as of now");
+    tui.wait_text("Fork of acme-lead, as of when the fork starts");
     tui.send(b"deep-dive\r");
     let fork = args(&tui, 1);
     let message = fork.last().unwrap();
@@ -148,8 +148,16 @@ fn forks(cli: &str) {
     };
     tui.wait_text("Forked acme-lead into ✦ deep-dive");
 
-    // Its start may report the source's conversation first: not the fork's to take.
+    // Its start may report the source's conversation first: not the fork's to take. Once the
+    // TUI has read that report (the turn's end shows), the fork is still waiting for its own.
     turn_ends(&dir, 1, SOURCE);
+    tui.wait_until("the source's id not read", || {
+        tui.text().lines().any(|l| l.contains("deep-dive") && l.contains("your turn"))
+    });
+    let pending = saved(&dir, "acme-deep-dive");
+    assert_eq!(pending["fork"]["from"], SOURCE, "{pending}");
+    assert_ne!(pending["session_id"], SOURCE, "{pending}");
+    assert!(!tui.text().contains("switched"), "{}", tui.text());
     turn_ends(&dir, 1, &id);
     transcript(&dir, cli, &id);
     tui.wait_until("the fork's id not saved", || {
@@ -164,6 +172,11 @@ fn forks(cli: &str) {
     assert!(restarted.contains(&id), "{restarted:?}");
     assert!(!restarted.iter().any(|a| a == SOURCE || a == "--fork-session" || a == "fork"));
     assert!(!restarted.last().unwrap().starts_with("You're now"), "{restarted:?}");
+    // Claude's history carries the source's recorded system prompt, which a resume would send in
+    // place of the fork's own brief.
+    if cli == "claude" {
+        assert_eq!(after(&restarted, "--system-prompt-snapshot"), "off");
+    }
     // The source keeps its own.
     assert_eq!(saved(&dir, "acme-lead")["session_id"], SOURCE);
 

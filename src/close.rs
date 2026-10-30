@@ -408,6 +408,7 @@ mod tests {
             base: None,
             pending_worktree: None,
             fork: None,
+            prompt_snapshot_off: false,
             extra: Default::default(),
         }
     }

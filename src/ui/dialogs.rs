@@ -714,7 +714,7 @@ fn agent_ask_text(ask: &AgentAsk, width: usize) -> (String, Vec<Line<'static>>) 
     };
     let intro = match (ask.open, role) {
         _ if source.is_some() => &format!(
-            "Its session starts at once with a copy of {}'s conversation as of now, and anything that session has read{}",
+            "Its session starts once you approve, with a copy of {}'s conversation as of then, and anything that session has read{}",
             source.as_deref().unwrap_or_default(),
             if role.is_some() { ", and this role in its startup brief:" } else { "." }
         ),

@@ -41,7 +41,7 @@ fn the_key_forks_the_selected_session_into_a_new_agent() {
         form.note
             .as_deref()
             .unwrap()
-            .starts_with("Fork of acme-lead, as of now: a new agent in Claude"),
+            .starts_with("Fork of acme-lead, as of when the fork starts: a new agent in Claude"),
         "{:?}",
         form.note
     );
@@ -50,6 +50,8 @@ fn the_key_forks_the_selected_session_into_a_new_agent() {
     type_text(&mut app, "Dig into the flaky tests");
     app.on_key(key(KeyCode::Enter));
     assert!(matches!(app.mode, Mode::Normal));
+    // Asking the CLI can take a few seconds.
+    assert_eq!(toast(&app), Some("Forking acme-lead…"));
     settle(&mut app);
 
     let fork = &app.tickets[app.sel].t;
@@ -60,7 +62,7 @@ fn the_key_forks_the_selected_session_into_a_new_agent() {
     assert!(id.len() == 36 && id != "sid-lead", "{id}");
     let from = fork.fork.as_ref().unwrap();
     assert_eq!((from.from.as_str(), from.source.as_str()), ("sid-lead", "acme-lead"));
-    assert!(from.snapshot_off);
+    assert!(fork.prompt_snapshot_off, "Claude can be told not to reuse the source's prompt");
     assert!(app.tickets[app.sel].start, "its session starts at once");
     assert_eq!(
         toast(&app),
@@ -181,9 +183,126 @@ fn a_claude_forks_first_report_makes_it_an_agent_like_any_other() {
     fork_with_key(&mut app, "acme-lead", "deep-dive");
     let id = app.tickets[index(&app, "acme-deep-dive")].t.session_id.clone().unwrap();
     attach(&mut app, "acme-deep-dive", "");
+    // The source's id first, as a fork's start might report it: neither taken nor a switch.
+    hooks_report(&mut app, "acme-deep-dive", "sid-lead");
+    let fork = &app.tickets[index(&app, "acme-deep-dive")];
+    assert_eq!(fork.t.session_id.as_deref(), Some(id.as_str()));
+    assert!(fork.t.fork.is_some() && fork.switched.is_none());
     hooks_report(&mut app, "acme-deep-dive", &id);
     let fork = &app.tickets[index(&app, "acme-deep-dive")].t;
     assert_eq!((fork.session_id.as_deref(), fork.fork.as_ref()), (Some(id.as_str()), None));
+    // Its history still carries the source's recorded prompt: every start turns it off.
+    assert!(fork.prompt_snapshot_off);
+}
+
+/// The fork's id, chosen and saved before it starts, is the fork's: the source's hooks reporting
+/// it (Claude's race, in the folder they share) is a switch, and the source keeps its own.
+#[test]
+fn the_source_never_takes_its_forks_conversation() {
+    let mut app = acme_app();
+    has_conversation(&mut app, "acme-lead", "sid-lead");
+    fork_with_key(&mut app, "acme-lead", "deep-dive");
+    let id = app.tickets[index(&app, "acme-deep-dive")].t.session_id.clone().unwrap();
+    attach(&mut app, "acme-lead", "");
+    hooks_report(&mut app, "acme-lead", &id);
+    assert_eq!(app.tickets[index(&app, "acme-lead")].t.session_id.as_deref(), Some("sid-lead"));
+    assert_eq!(
+        toast(&app),
+        Some(
+            format!(
+                "lead's Claude switched onto deep-dive's conversation (a Claude Code bug). Restart lead ({} R) to give it its own.",
+                crate::keys::prefix()
+            )
+            .as_str()
+        )
+    );
+}
+
+/// Forking a ticket: the fork is an agent in the main checkout, and remembers the ticket's
+/// worktree and branch, which its first message leaves to the ticket.
+#[test]
+fn a_tickets_fork_runs_in_the_main_checkout() {
+    let mut app = acme_app();
+    has_conversation(&mut app, "ENG-52", "sid-52");
+    fork_with_key(&mut app, "ENG-52", "deep-dive");
+    let fork = &app.tickets[index(&app, "acme-deep-dive")].t;
+    assert_eq!((fork.cwd.to_str(), fork.branch.as_deref()), (Some("/src/acme"), None));
+    let from = fork.fork.as_ref().unwrap();
+    assert_eq!(from.source, "ENG-52");
+    assert_eq!(from.worktree.as_deref(), Some(std::path::Path::new("/src/acme-ENG-52")));
+    assert_eq!(from.branch.as_deref(), Some("eng-52-login"));
+}
+
+/// The user moved on while the CLI was asked: the fork is added without taking the selection.
+#[test]
+fn a_fork_leaves_the_selection_where_the_user_moved_it() {
+    let mut app = acme_app();
+    has_conversation(&mut app, "acme-lead", "sid-lead");
+    app.select(index(&app, "acme-lead"));
+    prefix(&mut app, KeyCode::Char('f'));
+    type_text(&mut app, "deep-dive");
+    app.on_key(key(KeyCode::Enter));
+    app.select(index(&app, "ENG-53"));
+    settle(&mut app);
+    assert_eq!(selected(&app), "ENG-53");
+    assert!(app.tickets[index(&app, "acme-deep-dive")].new, "marked + new instead");
+}
+
+/// The source's transcript went before the fork started: it starts as a new agent, and says so.
+#[test]
+fn a_fork_whose_source_is_gone_starts_fresh_and_says_so() {
+    let mut app = acme_app();
+    has_conversation(&mut app, "ENG-61", "sid-61");
+    fork_with_key(&mut app, "ENG-61", "deep-dive");
+    let i = index(&app, "acme-deep-dive");
+    // Still there: nothing to say.
+    app.fork_source_gone(i);
+    assert!(app.tickets[i].t.fork.is_some());
+    std::fs::remove_dir_all(Cli::Codex.home().join("sessions")).unwrap();
+    app.fork_source_gone(i);
+    assert_eq!(app.tickets[i].t.fork, None);
+    assert_eq!(toast(&app), Some("✦ deep-dive's source conversation is gone, so it starts fresh"));
+    let saved = saved();
+    assert!(saved.tickets.iter().find(|t| t.key == "acme-deep-dive").unwrap().fork.is_none());
+}
+
+/// At startup, a status file a fork's last start left: the source's id isn't taken, the fork's
+/// own is, even the one taskman chose for it, and that ends its being a fork.
+#[test]
+fn leftover_status_gives_a_fork_its_own_id_only() {
+    let mut fork = crate::app::test_support::agent("deep-dive", Cli::Claude, None);
+    fork.session_id = Some("sid-fork".into());
+    fork.fork = Some(
+        serde_json::from_value(serde_json::json!({ "from": "sid-lead", "source": "acme-lead" }))
+            .unwrap(),
+    );
+    let mut tickets = vec![fork];
+    let dir = store::state_dir().join("leftover-fork");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("acme-deep-dive.json");
+    let left = |sid: &str| {
+        let record =
+            serde_json::json!({ "state": "done", "session_id": sid, "message": "", "ts": 5 });
+        std::fs::write(&file, record.to_string()).unwrap();
+    };
+    let take = |tickets: &mut Vec<store::Ticket>| {
+        crate::app::poll::take_leftover_status(
+            tickets,
+            |_| file.clone(),
+            |_| dir.join("x"),
+            |_| false,
+        )
+    };
+    left("sid-lead");
+    assert!(!take(&mut tickets));
+    assert_eq!(tickets[0].session_id.as_deref(), Some("sid-fork"));
+    assert!(tickets[0].fork.is_some());
+    left("sid-fork");
+    assert!(take(&mut tickets), "the same id, but the fork is over");
+    assert_eq!(
+        (tickets[0].session_id.as_deref(), tickets[0].fork.as_ref()),
+        (Some("sid-fork"), None)
+    );
 }
 
 fn fork_request(id: &str, fork: &str) {
@@ -215,7 +334,7 @@ fn a_sessions_fork_waits_for_the_users_approval() {
     ask.shown = ago(crate::app::ASK_ARMS.as_secs_f32()).unwrap();
     let screen = draw(&mut app, 100, 30);
     assert!(screen.contains("✦ lead asks to fork ENG-52 into agent ✦ deep-dive"), "{screen}");
-    assert!(screen.contains("conversation as of now"), "{screen}");
+    assert!(screen.contains("conversation as of then"), "{screen}");
     assert_eq!(app.tickets.len(), before, "nothing before the user approves");
     app.on_key(key(KeyCode::Enter));
     settle(&mut app);
