@@ -3,6 +3,7 @@
 //! session handed to another terminal keeps all of it.
 
 use super::App;
+use crate::coding_cli::ForkStart;
 use crate::session_ids::{self, Claim};
 use crate::store::{self, Cli, Config, Saved, Ticket};
 use crate::{github, local, resume, stack, status_file, untrusted, update};
@@ -129,6 +130,30 @@ pub(super) fn link_bin(exe: &Path) -> Option<PathBuf> {
         std::os::unix::fs::symlink(exe, &link).ok()?;
     }
     Some(dir)
+}
+
+/// The first message of agent `t`, named `session` and forked from session `source`. Its history
+/// is the source's, which says it's the source, so this says who it is now; it stays in the
+/// conversation, so it holds across restarts. Taskman's own words and the user's role only.
+fn fork_message(t: &Ticket, session: &str, source: &str) -> String {
+    let mut text = format!(
+        "You're now {session}, a new agent forked from {source}: the conversation so far is {source}'s, copied as it \
+         was, and {source} carries on with it separately. Act as {session} from here on, not as {source}."
+    );
+    if t.cli.messages_agents() {
+        text += &format!(
+            " Your session name for messages is {session}: other sessions reach you by it. Never message other sessions \
+             as {source}."
+        );
+    }
+    if let Some(role) = &t.role {
+        text += &format!(" Your role: {role}");
+    }
+    text += &format!(
+        " Now say to the user, in one line: \"I'm {session}, a fork of {source}. What should I dig into?\" Then wait \
+         for their answer."
+    );
+    text
 }
 
 /// The part of an agent's brief that doesn't depend on the project's tickets.
@@ -362,12 +387,24 @@ impl App {
             }
         }
         env.push(("TASKMAN_STATUS_FILE", store::status_file(&t.repo, &t.key).into()));
-        Launch {
-            program: t.cli.program(),
-            args: t.cli.args(session, &brief, resume, &t.cli.hooks(&self.exe)),
-            cwd: t.cwd.clone(),
-            env,
-        }
+        let hooks = t.cli.hooks(&self.exe);
+        // A fork with no conversation of its own yet starts as one, while the source's is there.
+        let fork = t.fork.as_ref().filter(|f| resume.is_none() && t.cli.has_conversation(&f.from));
+        let args = match fork {
+            Some(f) => {
+                let message = fork_message(t, session, &f.source);
+                let start = ForkStart {
+                    source: &f.from,
+                    id: t.session_id.as_deref().filter(|_| t.cli.chooses_fork_id()),
+                    message: &message,
+                    cwd: &t.cwd,
+                    snapshot_off: f.snapshot_off,
+                };
+                t.cli.fork_args(session, &brief, &start, &hooks)
+            }
+            None => t.cli.args(session, &brief, resume, &hooks),
+        };
+        Launch { program: t.cli.program(), args, cwd: t.cwd.clone(), env }
     }
 
     /// What `taskman resume` runs for ticket or agent `t`: what the TUI would start in its pane,
@@ -676,6 +713,77 @@ mod tests {
         Cli::Codex.leave_transcript("sid-61");
         let args = argv(&app, "ENG-61");
         assert_eq!(args[args.len() - 2..], ["resume", "sid-61"]);
+    }
+
+    #[test]
+    fn a_fork_starts_as_one_until_it_has_a_conversation_of_its_own() {
+        let argv = |app: &App, key: &str| -> Vec<String> {
+            let t = ticket_in(app, key);
+            let cmd = app.build_command(&t, &t.key, "1-1");
+            cmd.get_argv().iter().skip(1).map(|a| a.to_string_lossy().into_owned()).collect()
+        };
+        let mut app = acme_app();
+        let mut fork = agent("deep-dive", Cli::Claude, Some("Dig into the flaky tests"));
+        fork.session_id = Some("sid-fork".into());
+        fork.fork = Some(store::Fork {
+            from: "sid-lead".into(),
+            source: "acme-lead".into(),
+            snapshot_off: true,
+            extra: Default::default(),
+        });
+        app.tickets.push(crate::app::TicketView::new(fork));
+        // The source's conversation isn't there to copy: it starts as a new agent would.
+        assert!(!argv(&app, "acme-deep-dive").iter().any(|a| a.contains("resume")));
+        Cli::Claude.leave_transcript("sid-lead");
+        let args = argv(&app, "acme-deep-dive");
+        assert_eq!(
+            args[..7],
+            [
+                "--resume",
+                "sid-lead",
+                "--fork-session",
+                "--session-id",
+                "sid-fork",
+                "--system-prompt-snapshot",
+                "off"
+            ]
+        );
+        assert_eq!(after(&args, "--name"), "acme-deep-dive");
+        // Its own brief as a system prompt, and a first message saying who it is now.
+        assert!(after(&args, "--append-system-prompt").contains("\"deep-dive\" agent"));
+        let message = args.last().unwrap();
+        for said in [
+            "You're now acme-deep-dive, a new agent forked from acme-lead",
+            "Your session name for messages is acme-deep-dive",
+            "Never message other sessions as acme-lead",
+            "Your role: Dig into the flaky tests",
+            "\"I'm acme-deep-dive, a fork of acme-lead. What should I dig into?\"",
+        ] {
+            assert!(message.contains(said), "{said}: {message}");
+        }
+        // Once the fork has written its own, a restart resumes it, never the source's.
+        Cli::Claude.leave_transcript("sid-fork");
+        let args = argv(&app, "acme-deep-dive");
+        assert_eq!(args[..2], ["--resume", "sid-fork"]);
+        assert!(!args.iter().any(|a| a == "--fork-session" || a.contains("You're now")));
+
+        // Codex learns the fork's id from its hooks, and can't be messaged.
+        let mut fork = agent("codex-dive", Cli::Codex, None);
+        fork.fork = Some(store::Fork {
+            from: "sid-61".into(),
+            source: "ENG-61".into(),
+            snapshot_off: false,
+            extra: Default::default(),
+        });
+        app.tickets.push(crate::app::TicketView::new(fork));
+        Cli::Codex.leave_transcript("sid-61");
+        let args = argv(&app, "acme-codex-dive");
+        let n = args.len();
+        assert_eq!(args[n - 5..n - 1], ["fork", "sid-61", "-C", "/src/acme"]);
+        assert!(
+            args[n - 1].starts_with("You're now acme-codex-dive, a new agent forked from ENG-61")
+        );
+        assert!(!args[n - 1].contains("messages"));
     }
 
     #[test]

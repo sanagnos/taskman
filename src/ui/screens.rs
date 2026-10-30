@@ -6,7 +6,8 @@
 //! need a wider screen, 160 by 40.
 
 use crate::app::test_support::{
-    acme_app, attach, attach_crashed, attach_ended, draw, draw_colours, key, long_sidebar, offline,
+    acme_app, attach, attach_crashed, attach_ended, ctrl, draw, draw_colours, key, long_sidebar,
+    offline,
 };
 use crate::app::{AgentAsk, AgentState, Mode, SettingsItem};
 use crate::store::Saved;
@@ -625,6 +626,28 @@ fn ask_for_agent(app: &mut crate::app::App, role: &str) {
 fn agent_approval() {
     let mut app = acme_app();
     ask_for_agent(&mut app, "Run the test suite on each PR and report failures");
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
+#[test]
+fn fork_approval() {
+    let mut app = acme_app();
+    let item = serde_json::json!([{
+        "kind": "agent", "name": "deep-dive", "fork": "ENG-52", "role": "Dig into the flaky login tests"
+    }]);
+    ask(&mut app, "✦ lead", &item);
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
+#[test]
+fn fork_form() {
+    let mut app = acme_app();
+    let i = app.tickets.iter().position(|tv| tv.t.key == "acme-lead").unwrap();
+    app.tickets[i].t.session_id = Some("sid-lead".into());
+    crate::store::Cli::Claude.leave_transcript("sid-lead");
+    app.sel = i;
+    app.on_key(ctrl('a'));
+    app.on_key(key(KeyCode::Char('f')));
     assert_snapshot!(draw(&mut app, 80, 24));
 }
 

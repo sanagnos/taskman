@@ -297,6 +297,7 @@ pub(crate) mod tests {
             created_worktree: false,
             base: None,
             pending_worktree: None,
+            fork: None,
             extra: Default::default(),
         }
     }

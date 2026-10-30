@@ -151,7 +151,7 @@ fn plan(a: &Args, saved: &Saved, me: Option<&Ticket>, here: Option<&Here>) -> Re
         let project = &saved.projects[p];
         let name = store::slug(name);
         if store::find_agent(&saved.tickets, &project.repo, &name).is_some() {
-            plan.push(p, Item::Agent { name, role: None });
+            plan.push(p, Item::Agent { name, role: None, fork: None });
         } else {
             plan.lines.push(Line::ok(format!("✦ {name} isn't open in {}", project.name)));
         }
@@ -407,6 +407,7 @@ mod tests {
             created_worktree: false,
             base: None,
             pending_worktree: None,
+            fork: None,
             extra: Default::default(),
         }
     }
@@ -567,7 +568,7 @@ mod tests {
         let me = store::session_ticket(&s.tickets, "API-7", None);
         assert_eq!(
             plan(&args("--agent Planner").unwrap(), &s, me, None).unwrap().requests,
-            vec![(1, vec![Item::Agent { name: "planner".into(), role: None }])]
+            vec![(1, vec![Item::Agent { name: "planner".into(), role: None, fork: None }])]
         );
         assert_eq!(
             plan(&args("--agent tester").unwrap(), &s, me, None).unwrap().lines,
@@ -578,7 +579,7 @@ mod tests {
         renamed.projects[1].name = "api".into();
         assert_eq!(
             plan(&args("--agent planner").unwrap(), &renamed, me, None).unwrap().requests,
-            vec![(1, vec![Item::Agent { name: "planner".into(), role: None }])]
+            vec![(1, vec![Item::Agent { name: "planner".into(), role: None, fork: None }])]
         );
     }
 

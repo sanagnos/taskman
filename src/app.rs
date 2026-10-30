@@ -11,6 +11,7 @@
 //! - `input`: keys, the prefix commands, paste; `mouse`: the wheel, selecting, the clipboard
 //! - `forms`: fields and form keys; the forms are `add_form`, `settings`, `projects`, `accounts`
 //! - `tickets`: adding, closing and renaming tickets and agents, and stacking
+//! - `fork`: forking a session into a new agent with a copy of its conversation
 //! - `inbox`: the TUI's side of `taskman add` and `taskman close`
 //! - `test_support`: an `App` with nothing read or started, for tests; `events`, the tests that
 //!   drive it through its keys, mouse and messages
@@ -39,6 +40,7 @@ mod add_form;
 #[cfg(test)]
 mod events;
 mod find;
+mod fork;
 mod forms;
 pub(crate) mod help;
 mod inbox;
@@ -250,6 +252,9 @@ pub struct App {
     /// Stops a Claude background session by its id (`background::stop`, run on a thread); tests
     /// swap it so they never touch the user's real ones.
     stop_background: Arc<Stopper>,
+    /// Asks the installed CLI what it can do for a fork (`Cli::probe_fork`, run on a thread);
+    /// tests swap it so they never run the CLIs.
+    probe_fork: Arc<dyn Fn(crate::store::Cli) -> crate::coding_cli::ForkProbe + Send + Sync>,
     /// Opens a URL in the user's browser (`util::open_url`); tests swap it so they never open
     /// one, and record what would have.
     open_url: Arc<dyn Fn(&str) -> bool + Send + Sync>,
@@ -401,6 +406,7 @@ impl App {
             notifier: Arc::new(crate::notify::send),
             clipboard: Arc::new(selection::copy),
             stop_background: Arc::new(background::stop),
+            probe_fork: Arc::new(crate::store::Cli::probe_fork),
             open_url: Arc::new(crate::util::open_url),
             selection: None,
             last_click: None,

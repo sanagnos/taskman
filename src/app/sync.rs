@@ -155,6 +155,8 @@ pub(super) enum Msg {
     Machine(super::help::Machine),
     /// A session's log was read (`prefix d`): its ticket, and its turns, newest first.
     Turns(Id, Vec<crate::events_log::Turn>),
+    /// The CLI of a fork asked for answered what it can do, or the probe panicked.
+    Forked(super::fork::ForkAsk, Result<crate::coding_cli::ForkProbe, String>),
 }
 
 /// Where the threads send their `Msg`s: the App's channel, and the event loop's wake-up pipe
@@ -425,6 +427,7 @@ impl App {
                 Msg::Keychain(k) => self.keychain_probed(k),
                 Msg::Machine(m) => self.machine_found(m),
                 Msg::Turns(id, turns) => self.turns_read(&id, turns),
+                Msg::Forked(ask, probe) => self.forked(&ask, probe),
                 Msg::Scanned(id, launch, kind, found) => self.scanned(&id, &launch, kind, found),
                 Msg::BackgroundStopped(id, launch, res) => {
                     self.background_stopped(&id, &launch, res);

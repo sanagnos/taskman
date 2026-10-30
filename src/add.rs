@@ -15,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 const USAGE: &str = "Usage: taskman add KEY... [options]
        taskman add --new TITLE [--description TEXT] [options]
-       taskman add --agent NAME [--role TEXT] [options]
+       taskman add --agent NAME [--role TEXT] [--fork KEY] [options]
 
 Adds tickets to taskman as the Add form does, with the project's worktree settings, without
 switching to them. If taskman isn't running, they're added when it starts. An agent, or a new
@@ -37,6 +37,10 @@ to a minute for the user's answer.
                   as \"Test PRs against their tickets\". Not a first message: the agent waits until
                   messaged. On an agent that's already open, it replaces the role from its next
                   session start
+  --fork KEY      with --agent: start the agent with a copy of another session's conversation
+                  so far (a ticket's key or an agent's name, in the same project), in that
+                  session's CLI. The other session carries on as it was; the new agent's first
+                  message tells it who it is now
   --codex         run the session in Codex (default: Claude)
   --worktree, --no-worktree
                   create the ticket's worktree or not (default: the project's setting)
@@ -65,8 +69,8 @@ const STALE_REPLY: Duration = Duration::from_secs(60);
 const MAX_REQUEST: u64 = 1024 * 1024;
 /// What requests the TUI understands, written in the `alive` file so a command run after an
 /// update doesn't ask an older TUI for something it would drop. 2 added `base`, 3 an agent's
-/// `role`, 4 `close`, 5 `new` items.
-const INBOX_FORMAT: u32 = 5;
+/// `role`, 4 `close`, 5 `new` items, 6 an agent's `fork`.
+const INBOX_FORMAT: u32 = 6;
 
 /// What the command asks the TUI to add, all to one project. Unknown fields are refused rather
 /// than dropped, so a TUI older than the command says so instead of half doing it.
@@ -121,6 +125,9 @@ pub enum Item {
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         role: Option<String>,
+        /// The key of the session to fork the agent from, in the same project (`--fork`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fork: Option<String>,
     },
     /// A ticket for the TUI to create in the project's tracker, then add: a session's `--new`,
     /// which waits for the user to approve it.
@@ -136,7 +143,15 @@ impl Request {
     /// The agent asked for, with its role: the TUI asks the user before adding it.
     pub fn agent(&self) -> Option<(&str, Option<&str>)> {
         self.items.iter().find_map(|i| match i {
-            Item::Agent { name, role } => Some((name.as_str(), role.as_deref())),
+            Item::Agent { name, role, .. } => Some((name.as_str(), role.as_deref())),
+            Item::Ticket { .. } | Item::New { .. } => None,
+        })
+    }
+
+    /// The key of the session the agent asked for is forked from.
+    pub fn fork(&self) -> Option<&str> {
+        self.items.iter().find_map(|i| match i {
+            Item::Agent { fork, .. } => fork.as_deref(),
             Item::Ticket { .. } | Item::New { .. } => None,
         })
     }
@@ -171,6 +186,11 @@ pub fn declined(req: &Request) -> Vec<Line> {
 /// that long. `open`: the agent is open, so only its role changes.
 pub fn asked(req: &Request, open: bool) -> Vec<Line> {
     let Some((name, role)) = req.agent() else { return Vec::new() };
+    if let Some(source) = req.fork() {
+        return vec![Line::ok(format!(
+            "taskman asks the user to approve ✦ {name}, a fork of {source}; its session starts once they do, and `taskman status` lists it"
+        ))];
+    }
     vec![Line::ok(match (open, role) {
         (true, _) => {
             format!(
@@ -297,7 +317,9 @@ fn read_alive() -> Option<Alive> {
 /// Why the running TUI can't take this request, if it can't: it's older than the command.
 fn too_old(req: &Request, alive: &Alive) -> Option<String> {
     let role = req.items.iter().any(|i| matches!(i, Item::Agent { role: Some(_), .. }));
-    let (needs, flag) = if !req.new_tickets().is_empty() {
+    let (needs, flag) = if req.fork().is_some() {
+        (6, "--fork")
+    } else if !req.new_tickets().is_empty() {
         (5, "--new from a session")
     } else if req.close.is_some() {
         (4, "taskman close")
@@ -552,11 +574,32 @@ fn add(args: &[String]) -> Result<bool, String> {
             return Err("use letters or digits in the agent's name".into());
         }
         let open = store::find_agent(&saved.tickets, &project.repo, &name).is_some();
+        let fork = match &a.fork {
+            Some(input) => {
+                if open {
+                    return Err(format!(
+                        "✦ {name} is already open in taskman; fork into another name"
+                    ));
+                }
+                let source = fork_source(input, p, &saved)?;
+                if a.cli.is_some_and(|c| c != source.cli) {
+                    return Err(format!(
+                        "{} runs in {}, and a fork runs in the same CLI; drop --{}",
+                        source.display(),
+                        source.cli.label(),
+                        a.cli.unwrap_or_default().label().to_lowercase()
+                    ));
+                }
+                Some(source)
+            }
+            None => None,
+        };
         // An open agent given a role still goes to taskman, which replaces its role.
         if open && a.role.is_none() {
             show(Line::ok(format!("✦ {name} is already open in taskman")));
         } else {
-            items.push(Item::Agent { name, role: a.role.clone() });
+            let fork_key = fork.map(|t| t.key.clone());
+            items.push(Item::Agent { name, role: a.role.clone(), fork: fork_key });
         }
     } else {
         if project.tracker.is_none() {
@@ -646,11 +689,13 @@ fn add(args: &[String]) -> Result<bool, String> {
             items.push(Item::Ticket { key, title });
         }
     }
+    // A fork runs in its source's CLI.
+    let source_cli = a.fork.as_ref().and_then(|f| fork_source(f, p, &saved).ok()).map(|t| t.cli);
     let req = |items| Request {
         repo: project.repo.clone(),
         from: session.as_deref().map(|s| from(s, me)),
         items,
-        cli: a.cli,
+        cli: source_cli.or(a.cli).unwrap_or_default(),
         worktree: a.worktree,
         base: base.clone(),
         reply_by: 0,
@@ -708,8 +753,11 @@ struct Args {
     inputs: Vec<String>,
     agent: Option<String>,
     role: Option<String>,
+    /// `--fork`: the session to fork the agent from, as typed.
+    fork: Option<String>,
     project: Option<String>,
-    cli: Cli,
+    /// None unless asked for: a fork's is its source's.
+    cli: Option<Cli>,
     worktree: Option<bool>,
     /// `--on`: the ticket to stack on, as typed.
     on: Option<String>,
@@ -724,14 +772,15 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut lex = Lexer::new(args, USAGE);
     while let Some(arg) = lex.next()? {
         match arg {
-            Arg::Option("--codex") => a.cli = Cli::Codex,
-            Arg::Option("--claude") => a.cli = Cli::Claude,
+            Arg::Option("--codex") => a.cli = Some(Cli::Codex),
+            Arg::Option("--claude") => a.cli = Some(Cli::Claude),
             Arg::Option("--worktree") => a.worktree = Some(true),
             Arg::Option("--no-worktree") => a.worktree = Some(false),
             Arg::Option("--agent") => a.agent = Some(lex.value()?.to_string()),
             Arg::Option("--role") => {
                 a.role = Some(lex.value()?.trim().to_string()).filter(|r| !r.is_empty());
             }
+            Arg::Option("--fork") => a.fork = Some(lex.value()?.trim().to_string()),
             Arg::Option("--project") => a.project = Some(lex.value()?.to_string()),
             Arg::Option("--on") => a.on = Some(lex.value()?.to_string()),
             Arg::Option("--new") => a.new.push(lex.value()?.trim().to_string()),
@@ -752,6 +801,9 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     }
     if a.role.is_some() && a.agent.is_none() {
         return Err("--role is for agents: taskman add --agent NAME --role TEXT".into());
+    }
+    if a.fork.is_some() && a.agent.is_none() {
+        return Err("--fork starts a new agent: taskman add --agent NAME --fork KEY".into());
     }
     if a.agent.is_some() && a.worktree.is_some() {
         return Err("agents run in the main checkout; drop --worktree and --no-worktree".into());
@@ -789,6 +841,35 @@ fn base_key(input: &str, p: usize, saved: &Saved) -> Result<String, String> {
         )),
         Some(t) => Ok(t.key.clone()),
     }
+}
+
+/// The session `--fork` names in project `p`: an agent by its name, or a ticket by its number or
+/// key, with a conversation to copy. The TUI checks again as it forks.
+fn fork_source<'a>(input: &str, p: usize, saved: &'a Saved) -> Result<&'a Ticket, String> {
+    let project = &saved.projects[p];
+    let source = match store::find_agent(&saved.tickets, &project.repo, input) {
+        Some(agent) => agent,
+        None => {
+            let key = resolve_key(input, p, &saved.projects).map_err(|_| {
+                format!("{input} isn't an agent or ticket open in {}", project.name)
+            })?;
+            saved
+                .tickets
+                .iter()
+                .find(|t| t.repo == project.repo && t.key.eq_ignore_ascii_case(&key))
+                .ok_or_else(|| format!("{key} isn't open in {}", project.name))?
+        }
+    };
+    // The hooks write the latest id to the status file a moment before the TUI saves it.
+    let latest = crate::status_file::read(&store::status_file(&source.repo, &source.key))
+        .and_then(|r| r.session_id);
+    if !latest.iter().chain(&source.session_id).any(|sid| source.cli.has_conversation(sid)) {
+        return Err(format!(
+            "{} has no conversation to fork yet: start its session and wait for its first turn",
+            source.display()
+        ));
+    }
+    Ok(source)
 }
 
 /// Whether project `repo` has `key` open; another project's ticket with the same key doesn't count.
@@ -908,7 +989,7 @@ mod tests {
         let a = args("52 --codex --no-worktree --project acme-web").unwrap();
         assert_eq!(
             (a.cli, a.worktree, a.project.as_deref()),
-            (Cli::Codex, Some(false), Some("acme-web"))
+            (Some(Cli::Codex), Some(false), Some("acme-web"))
         );
         assert_eq!(args("52 --worktree --project=acme").unwrap().worktree, Some(true));
         assert_eq!(args("--agent reviewer").unwrap().agent.as_deref(), Some("reviewer"));
@@ -981,7 +1062,11 @@ mod tests {
         );
         assert_eq!(too_old(&stacked, &alive("1.1.0", INBOX_FORMAT)), None);
         let agent = |role: Option<&str>| Request {
-            items: vec![Item::Agent { name: "tester".into(), role: role.map(String::from) }],
+            items: vec![Item::Agent {
+                name: "tester".into(),
+                role: role.map(String::from),
+                fork: None,
+            }],
             ..req.clone()
         };
         let stacking = alive("1.1.0", 2);
@@ -1065,6 +1150,60 @@ mod tests {
     }
 
     #[test]
+    fn forks_only_into_a_new_agent_from_a_session_with_a_conversation() {
+        let a = args("--agent deep-dive --fork planner --role Dig").unwrap();
+        assert_eq!((a.fork.as_deref(), a.cli), (Some("planner"), None));
+        assert_eq!(
+            args("--fork planner").unwrap_err(),
+            "--fork starts a new agent: taskman add --agent NAME --fork KEY"
+        );
+        assert_eq!(args("--agent x --fork"), Err("--fork needs a value".into()));
+
+        let mut saved = saved();
+        // Found by an agent's name or a ticket's number, in the project only.
+        let no_conversation = fork_source("planner", 1, &saved).unwrap_err();
+        assert_eq!(
+            no_conversation,
+            "planner has no conversation to fork yet: start its session and wait for its first turn"
+        );
+        saved.tickets[1].session_id = Some("sid-planner".into());
+        Cli::Claude.leave_transcript("sid-planner");
+        assert_eq!(fork_source("planner", 1, &saved).unwrap().key, "acme-api-planner");
+        saved.tickets[0].session_id = Some("sid-planner".into());
+        assert_eq!(fork_source("52", 0, &saved).unwrap().key, "ENG-52");
+        assert_eq!(fork_source("53", 0, &saved).unwrap_err(), "ENG-53 isn't open in acme-web");
+        assert!(fork_source("planner", 0, &saved).is_err(), "another project's agent");
+    }
+
+    #[test]
+    fn says_what_a_fork_waits_for() {
+        let req = Request {
+            repo: "/src/acme".into(),
+            from: None,
+            items: vec![Item::Agent {
+                name: "deep-dive".into(),
+                role: None,
+                fork: Some("ENG-52".into()),
+            }],
+            cli: Cli::Claude,
+            worktree: None,
+            base: None,
+            reply_by: 0,
+            close: None,
+        };
+        assert_eq!(req.fork(), Some("ENG-52"));
+        assert_eq!(
+            asked(&req, false),
+            [Line::ok(
+                "taskman asks the user to approve ✦ deep-dive, a fork of ENG-52; its session starts once they do, and `taskman status` lists it"
+            )]
+        );
+        // An older taskman would add a plain agent: it's refused instead.
+        assert!(too_old(&req, &alive("0.1.35", 5)).unwrap().contains("doesn't know --fork yet"));
+        assert_eq!(too_old(&req, &alive("0.1.36", INBOX_FORMAT)), None);
+    }
+
+    #[test]
     fn takes_a_role_only_for_an_agent() {
         let a = parse_args(&[
             "--agent".into(),
@@ -1105,7 +1244,11 @@ mod tests {
             from: Some("✦ planner".into()),
             items: vec![
                 Item::Ticket { key: "ENG-52".into(), title: "Fix login".into() },
-                Item::Agent { name: "reviewer".into(), role: Some("Review PRs".into()) },
+                Item::Agent {
+                    name: "reviewer".into(),
+                    role: Some("Review PRs".into()),
+                    fork: None,
+                },
             ],
             cli: Cli::Codex,
             worktree: Some(false),
@@ -1160,7 +1303,11 @@ mod tests {
         };
         assert_eq!(req.agent(), None);
         assert!(asked(&req, false).is_empty());
-        req.items = vec![Item::Agent { name: "ops".into(), role: Some("Deploy on merge".into()) }];
+        req.items = vec![Item::Agent {
+            name: "ops".into(),
+            role: Some("Deploy on merge".into()),
+            fork: None,
+        }];
         assert_eq!(req.agent(), Some(("ops", Some("Deploy on merge"))));
         assert_eq!(
             asked(&req, false)[0].text,
@@ -1392,7 +1539,7 @@ mod tests {
             from: None,
             items: vec![
                 Item::Ticket { key: "ENG-52".into(), title: String::new() },
-                Item::Agent { name: "reviewer".into(), role: None },
+                Item::Agent { name: "reviewer".into(), role: None, fork: None },
             ],
             cli: Cli::Claude,
             worktree: None,

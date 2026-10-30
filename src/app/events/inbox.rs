@@ -244,7 +244,11 @@ fn a_renamed_projects_agent_is_found_by_its_name() {
     let before = agents(&app);
     // Asked for again, it's open: the dialog says so, and only its role changes.
     let mut req = agent_request("Review the PRs");
-    req.items = vec![add::Item::Agent { name: "Lead".into(), role: Some("Review the PRs".into()) }];
+    req.items = vec![add::Item::Agent {
+        name: "Lead".into(),
+        role: Some("Review the PRs".into()),
+        fork: None,
+    }];
     ask(&mut app, req);
     let Mode::ConfirmAgent(asked) = &app.mode else { panic!("no dialog") };
     assert!(asked.open);

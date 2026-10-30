@@ -188,6 +188,7 @@ impl App {
             created_worktree: false,
             base: None,
             pending_worktree: None,
+            fork: None,
             extra: Default::default(),
         });
         if create {
@@ -307,6 +308,7 @@ impl App {
             created_worktree: false,
             base: None,
             pending_worktree: None,
+            fork: None,
             extra: Default::default(),
         };
         self.prefs.codex_explained |= !cli.is_default();

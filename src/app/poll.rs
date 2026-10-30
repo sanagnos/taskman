@@ -405,10 +405,12 @@ pub(super) fn take_leftover_status(
             remove_status_at(p);
         }
         if let Some(sid) = latest.and_then(|r| r.session_id)
-            && tickets[i].session_id.as_ref() != Some(&sid)
+            && (tickets[i].session_id.as_ref() != Some(&sid) || tickets[i].fork.is_some())
+            && !session_ids::forks_source(&tickets[i], &sid)
             && session_ids::claim(&*tickets, &tickets[i], &sid) == Claim::Adopt
         {
             tickets[i].session_id = Some(sid);
+            tickets[i].fork = None;
             changed = true;
         }
     }
@@ -492,8 +494,9 @@ impl App {
                 // A hook of an earlier start can write late (see `takes`): not this session's.
                 if let Some(mut rec) = record.filter(|rec| tv.takes(rec)) {
                     tv.status.hook_fired();
+                    // A fork's first report clears its `fork`, even with the id taskman chose.
                     if let Some(sid) = rec.session_id.take()
-                        && tv.t.session_id.as_deref() != Some(sid.as_str())
+                        && (tv.t.session_id.as_deref() != Some(sid.as_str()) || tv.t.fork.is_some())
                     {
                         reported.push((i, sid));
                     }
@@ -593,10 +596,14 @@ impl App {
             self.started_waiting(i);
         }
         for (i, sid) in reported {
+            if session_ids::forks_source(&self.tickets[i].t, &sid) {
+                continue;
+            }
             match session_ids::claim(self.tickets.iter().map(|tv| &tv.t), &self.tickets[i].t, &sid)
             {
                 Claim::Adopt => {
                     self.tickets[i].t.session_id = Some(sid);
+                    self.tickets[i].t.fork = None;
                     changed = true;
                 }
                 Claim::Conflict { other } if self.tickets[i].switched.as_ref() != Some(&sid) => {

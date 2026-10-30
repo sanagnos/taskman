@@ -518,6 +518,7 @@ impl App {
                 }
             }
             KeyCode::Char('t') if !self.tickets.is_empty() => self.hand_off(),
+            KeyCode::Char('f') if !self.tickets.is_empty() => self.open_fork_form(),
             KeyCode::Char('v') => self.open_history(),
             KeyCode::Char('l') => self.open_links(),
             KeyCode::Char('~') => self.open_log(),

@@ -214,6 +214,24 @@ pub struct Ticket {
     /// it's made or the user chooses the main checkout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_worktree: Option<PendingWorktree>,
+    /// An agent forked from another session that hasn't reported a conversation of its own yet:
+    /// its session starts as a fork of that one, until its hooks report its own id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork: Option<Fork>,
+    #[serde(flatten)]
+    pub extra: Extra,
+}
+
+/// Where a forked agent's conversation comes from (`Ticket::fork`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Fork {
+    /// The source's conversation id, as it was when the fork was asked for.
+    pub from: String,
+    /// The source's session name, which the fork's first message says it no longer is.
+    pub source: String,
+    /// Whether its CLI can be told not to record the system prompt (`ForkStart::snapshot_off`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub snapshot_off: bool,
     #[serde(flatten)]
     pub extra: Extra,
 }
