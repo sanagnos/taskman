@@ -409,9 +409,13 @@ pub(super) fn take_leftover_status(
             && !session_ids::forks_source(&tickets[i], &sid)
             && session_ids::claim(&*tickets, &tickets[i], &sid) == Claim::Adopt
         {
+            // A fork stays one until its own transcript is there (see `App::poll_status`).
+            let over = tickets[i].fork.is_some() && tickets[i].cli.has_conversation(&sid);
+            if over {
+                tickets[i].fork = None;
+            }
+            changed |= over || tickets[i].session_id.as_ref() != Some(&sid);
             tickets[i].session_id = Some(sid);
-            tickets[i].fork = None;
-            changed = true;
         }
     }
     changed
@@ -494,7 +498,7 @@ impl App {
                 // A hook of an earlier start can write late (see `takes`): not this session's.
                 if let Some(mut rec) = record.filter(|rec| tv.takes(rec)) {
                     tv.status.hook_fired();
-                    // A fork's first report clears its `fork`, even with the id taskman chose.
+                    // Even the id taskman chose, from a fork: it may end the fork (below).
                     if let Some(sid) = rec.session_id.take()
                         && (tv.t.session_id.as_deref() != Some(sid.as_str()) || tv.t.fork.is_some())
                     {
@@ -602,8 +606,13 @@ impl App {
             match session_ids::claim(self.tickets.iter().map(|tv| &tv.t), &self.tickets[i].t, &sid)
             {
                 Claim::Adopt => {
-                    self.tickets[i].t.session_id = Some(sid);
-                    self.tickets[i].t.fork = None;
+                    let t = &mut self.tickets[i].t;
+                    // Only once its transcript is there: a fork that ended before its CLI wrote
+                    // one has nothing to resume, so its next start forks again.
+                    if t.fork.is_some() && t.cli.has_conversation(&sid) {
+                        t.fork = None;
+                    }
+                    t.session_id = Some(sid);
                     changed = true;
                 }
                 Claim::Conflict { other } if self.tickets[i].switched.as_ref() != Some(&sid) => {

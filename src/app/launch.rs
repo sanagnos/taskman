@@ -161,8 +161,9 @@ fn fork_message(t: &Ticket, session: &str, fork: &Fork) -> String {
             store::tilde(worktree)
         );
     }
+    // On one line, so the message stays one paragraph.
     if let Some(role) = &t.role {
-        text += &format!(" Your role: {role}");
+        text += &format!(" Your role: {}", untrusted::line(role));
     }
     text += &format!(
         " Now say to the user, in one line: \"I'm {session}, a fork of {source}. What should I dig into?\" Then wait \
@@ -851,6 +852,11 @@ mod tests {
         let mut lead = fork_of("");
         lead.fork.as_mut().unwrap().worktree = None;
         assert!(!message(&app, &lead).unwrap().contains("You run in"));
+        // The role goes on one line, so the message stays one paragraph.
+        lead.role = Some("Dig into\n\nthe flaky tests".into());
+        let said = message(&app, &lead).unwrap();
+        assert!(said.contains(" Your role: Dig into the flaky tests Now say"), "{said}");
+        assert!(!said.contains('\n'), "{said}");
     }
 
     /// `taskman resume` on a fork that has no conversation of its own yet resumes nothing, never

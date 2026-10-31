@@ -47,7 +47,7 @@ pub(crate) fn offline(saved: Saved) -> App {
     app.notifier = Arc::new(|_, _| false);
     // As a CLI would answer that can fork, with no version known.
     app.probe_fork =
-        Arc::new(|_| crate::coding_cli::ForkProbe { version: None, snapshot_off: true });
+        Arc::new(|_| Ok(crate::coding_cli::ForkProbe { version: None, snapshot_off: true }));
     // As if the keychain check had found none; a test of the wait before it sets this back.
     app.keychain_probed = true;
     // As if the bug report's lookup had answered, so no test runs the CLIs.

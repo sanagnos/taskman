@@ -362,13 +362,31 @@ impl Cli {
         crate::util::parse_version(&out)
     }
 
-    /// What the installed CLI says about forking. Runs commands, so not on the UI thread.
-    pub fn probe_fork(self) -> ForkProbe {
+    /// What the installed CLI says about forking; Err when it doesn't say what a fork needs to
+    /// know. Runs commands, so not on the UI thread.
+    pub fn probe_fork(self) -> Result<ForkProbe, String> {
+        let help = self.snapshot_option().and_then(|_| self.run_with("--help"));
+        self.fork_probe(self.version(), help.as_deref())
+    }
+
+    /// What `probe_fork` makes of the CLI's `--version` and `--help`; `help` is None when it gave
+    /// no answer, or wasn't asked (a CLI that doesn't record its system prompt).
+    pub(crate) fn fork_probe(
+        self,
+        version: Option<String>,
+        help: Option<&str>,
+    ) -> Result<ForkProbe, String> {
         // Read from its help rather than guessed from a version: when the option came isn't known.
-        let snapshot_off = self
-            .snapshot_option()
-            .is_some_and(|o| self.run_with("--help").is_some_and(|help| help.contains(o)));
-        ForkProbe { version: self.version(), snapshot_off }
+        let snapshot_off = match (self.snapshot_option(), help.filter(|h| !h.trim().is_empty())) {
+            (None, _) => false,
+            (Some(option), Some(help)) => help.contains(option),
+            // A fork that went on recording would get the source's system prompt back when it
+            // restarts.
+            (Some(_), None) => {
+                return Err(format!("{} didn't answer --help in time; try again", self.product()));
+            }
+        };
+        Ok(ForkProbe { version, snapshot_off })
     }
 
     /// What the CLI prints for `arg`; None when it doesn't answer in time.
@@ -683,6 +701,24 @@ mod tests {
         // Not known: it's tried.
         assert_eq!(Cli::Claude.cant_fork(None), None);
         assert_eq!(Cli::Claude.cant_fork(Some("2.1")), None);
+    }
+
+    #[test]
+    fn a_fork_probe_needs_claudes_help() {
+        let help = "  --system-prompt-snapshot <on|off>   Record the system prompt";
+        let probe = |cli: Cli, help| cli.fork_probe(Some("1.0.0".into()), help);
+        let off = probe(Cli::Claude, Some(help)).unwrap();
+        assert_eq!(off, ForkProbe { version: Some("1.0.0".into()), snapshot_off: true });
+        assert!(!probe(Cli::Claude, Some("  --resume <id>")).unwrap().snapshot_off);
+        // No help text, so not known whether the fork could keep its own system prompt.
+        for none in [None, Some(""), Some("\n")] {
+            assert_eq!(
+                probe(Cli::Claude, none),
+                Err("Claude Code didn't answer --help in time; try again".into())
+            );
+        }
+        // Codex records no system prompt: nothing to ask.
+        assert!(!probe(Cli::Codex, None).unwrap().snapshot_off);
     }
 
     #[test]

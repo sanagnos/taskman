@@ -159,6 +159,9 @@ pub struct ClosedAgent {
     pub cli: Cli,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// A fork's `Ticket::prompt_snapshot_off`, which its conversation still needs when resumed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prompt_snapshot_off: bool,
     #[serde(flatten)]
     pub extra: Extra,
 }

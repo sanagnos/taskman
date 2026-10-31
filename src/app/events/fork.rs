@@ -112,6 +112,7 @@ fn a_fork_needs_a_name_of_its_own() {
         session_id: "sid-tester".into(),
         cli: Cli::Claude,
         role: None,
+        prompt_snapshot_off: false,
         extra: Default::default(),
     });
     prefix(&mut app, KeyCode::Char('f'));
@@ -126,7 +127,7 @@ fn a_fork_needs_a_name_of_its_own() {
 fn a_cli_too_old_to_fork_says_so_and_adds_nothing() {
     let mut app = acme_app();
     app.probe_fork =
-        Arc::new(|_| ForkProbe { version: Some("2.0.50".into()), snapshot_off: false });
+        Arc::new(|_| Ok(ForkProbe { version: Some("2.0.50".into()), snapshot_off: false }));
     has_conversation(&mut app, "ENG-52", "sid-52");
     let before = app.tickets.len();
     fork_with_key(&mut app, "ENG-52", "deep-dive");
@@ -134,6 +135,21 @@ fn a_cli_too_old_to_fork_says_so_and_adds_nothing() {
     assert!(logged_error(
         &app,
         "Forking needs Claude Code 2.0.73 or newer, and this is 2.0.50: update it, then fork again"
+    ));
+}
+
+/// Claude didn't answer `--help`: not known whether the fork could keep its own system prompt.
+#[test]
+fn a_claude_that_gives_no_help_adds_nothing() {
+    let mut app = acme_app();
+    app.probe_fork = Arc::new(|cli| cli.fork_probe(Some("2.1.314".into()), None));
+    has_conversation(&mut app, "acme-lead", "sid-lead");
+    let before = app.tickets.len();
+    fork_with_key(&mut app, "acme-lead", "deep-dive");
+    assert_eq!(app.tickets.len(), before);
+    assert!(logged_error(
+        &app,
+        "Couldn't fork ✦ deep-dive: Claude Code didn't answer --help in time; try again"
     ));
 }
 
@@ -165,6 +181,7 @@ fn a_codex_fork_takes_the_first_id_of_its_own_its_hooks_report() {
     assert_eq!(fork.t.session_id, None);
     assert!(fork.t.fork.is_some() && fork.switched.is_none());
     assert!(!toast(&app).is_some_and(|t| t.contains("switched")), "{:?}", toast(&app));
+    Cli::Codex.leave_transcript("sid-codex-dive");
     hooks_report(&mut app, "acme-codex-dive", "sid-codex-dive");
     let fork = &app.tickets[index(&app, "acme-codex-dive")].t;
     assert_eq!((fork.session_id.as_deref(), fork.fork.as_ref()), (Some("sid-codex-dive"), None));
@@ -175,7 +192,8 @@ fn a_codex_fork_takes_the_first_id_of_its_own_its_hooks_report() {
     assert_eq!((kept.session_id.as_deref(), kept.fork.as_ref()), (Some("sid-codex-dive"), None));
 }
 
-/// Claude's fork reports the id taskman chose for it, which ends its being a fork.
+/// Claude's fork reports the id taskman chose for it, which ends its being a fork once Claude has
+/// written that conversation down: until then, a start would have nothing to resume.
 #[test]
 fn a_claude_forks_first_report_makes_it_an_agent_like_any_other() {
     let mut app = acme_app();
@@ -190,9 +208,47 @@ fn a_claude_forks_first_report_makes_it_an_agent_like_any_other() {
     assert!(fork.t.fork.is_some() && fork.switched.is_none());
     hooks_report(&mut app, "acme-deep-dive", &id);
     let fork = &app.tickets[index(&app, "acme-deep-dive")].t;
+    assert_eq!(fork.session_id.as_deref(), Some(id.as_str()));
+    assert!(fork.fork.is_some(), "no transcript of its own yet");
+    assert!(saved().tickets.iter().find(|t| t.key == "acme-deep-dive").unwrap().fork.is_some());
+    Cli::Claude.leave_transcript(&id);
+    hooks_report(&mut app, "acme-deep-dive", &id);
+    let fork = &app.tickets[index(&app, "acme-deep-dive")].t;
     assert_eq!((fork.session_id.as_deref(), fork.fork.as_ref()), (Some(id.as_str()), None));
     // Its history still carries the source's recorded prompt: every start turns it off.
     assert!(fork.prompt_snapshot_off);
+}
+
+/// A fork closed and added again resumes its own conversation, which still carries the source's
+/// recorded system prompt: its starts still turn recording off.
+#[test]
+fn a_fork_added_again_still_keeps_its_own_system_prompt() {
+    let mut app = acme_app();
+    has_conversation(&mut app, "acme-lead", "sid-lead");
+    fork_with_key(&mut app, "acme-lead", "deep-dive");
+    let id = app.tickets[index(&app, "acme-deep-dive")].t.session_id.clone().unwrap();
+    attach(&mut app, "acme-deep-dive", "");
+    Cli::Claude.leave_transcript(&id);
+    hooks_report(&mut app, "acme-deep-dive", &id);
+    app.select(index(&app, "acme-deep-dive"));
+    prefix(&mut app, KeyCode::Char('x'));
+    app.on_key(key(KeyCode::Enter));
+    assert!(!app.tickets.iter().any(|tv| tv.t.key == "acme-deep-dive"));
+    assert!(saved().projects[0].closed_agents[0].prompt_snapshot_off);
+
+    let added = app.add_agent(0, "deep-dive", Cli::Claude, None, true);
+    assert!(matches!(added, Ok(crate::app::ticket::Added::New(_))));
+    let t = app.tickets[index(&app, "acme-deep-dive")].t.clone();
+    let argv: Vec<String> = app
+        .build_command(&t, "acme-deep-dive", "start")
+        .get_argv()
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let resumed = argv.iter().position(|a| a == "--resume").map(|i| &argv[i + 1]);
+    assert_eq!(resumed, Some(&id), "{argv:?}");
+    let off = argv.iter().position(|a| a == "--system-prompt-snapshot").map(|i| &argv[i + 1]);
+    assert_eq!(off.map(String::as_str), Some("off"), "{argv:?}");
 }
 
 /// The fork's id, chosen and saved before it starts, is the fork's: the source's hooks reporting
@@ -267,7 +323,8 @@ fn a_fork_whose_source_is_gone_starts_fresh_and_says_so() {
 }
 
 /// At startup, a status file a fork's last start left: the source's id isn't taken, the fork's
-/// own is, even the one taskman chose for it, and that ends its being a fork.
+/// own is, even the one taskman chose for it, and that ends its being a fork once its transcript
+/// is there.
 #[test]
 fn leftover_status_gives_a_fork_its_own_id_only() {
     let mut fork = crate::app::test_support::agent("deep-dive", Cli::Claude, None);
@@ -297,6 +354,10 @@ fn leftover_status_gives_a_fork_its_own_id_only() {
     assert!(!take(&mut tickets));
     assert_eq!(tickets[0].session_id.as_deref(), Some("sid-fork"));
     assert!(tickets[0].fork.is_some());
+    left("sid-fork");
+    assert!(!take(&mut tickets), "no transcript of its own yet");
+    assert!(tickets[0].fork.is_some());
+    Cli::Claude.leave_transcript("sid-fork");
     left("sid-fork");
     assert!(take(&mut tickets), "the same id, but the fork is over");
     assert_eq!(

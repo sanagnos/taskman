@@ -284,10 +284,12 @@ impl App {
             .position(|c| c.name == name)
             .map(|j| self.projects[p].closed_agents.remove(j));
         let role = role.or_else(|| resumed.as_ref().and_then(|c| c.role.clone()));
-        let session_id = resumed
+        // A fork's conversation still carries its source's recorded system prompt.
+        let (session_id, prompt_snapshot_off) = resumed
             .filter(|c| c.cli == cli)
-            .map(|c| c.session_id)
-            .filter(|sid| !sid.is_empty() && cli.has_conversation(sid));
+            .map(|c| (c.session_id, c.prompt_snapshot_off))
+            .filter(|(sid, _)| !sid.is_empty() && cli.has_conversation(sid))
+            .unzip();
         if session_id.is_some() {
             self.toast(format!("Resuming ✦ {name}'s earlier conversation"));
         }
@@ -310,7 +312,7 @@ impl App {
             base: None,
             pending_worktree: None,
             fork: None,
-            prompt_snapshot_off: false,
+            prompt_snapshot_off: prompt_snapshot_off.unwrap_or(false),
             extra: Default::default(),
         };
         self.prefs.codex_explained |= !cli.is_default();
@@ -436,6 +438,7 @@ impl App {
                 session_id,
                 cli: tv.t.cli,
                 role: tv.t.role.clone(),
+                prompt_snapshot_off: tv.t.prompt_snapshot_off,
                 extra: Default::default(),
             });
         }

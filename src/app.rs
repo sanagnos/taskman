@@ -74,6 +74,10 @@ pub use ticket::{Away, Blocked, TicketView};
 /// Stops a Claude background session by its id.
 type Stopper = dyn Fn(&str) -> Result<(), String> + Send + Sync;
 
+/// Asks the installed CLI what it can do for a fork.
+type ForkProber =
+    dyn Fn(crate::store::Cli) -> Result<crate::coding_cli::ForkProbe, String> + Send + Sync;
+
 /// Shows a notification with the setting's ways, returning whether it's left to the terminal.
 type Notifier = dyn Fn(crate::notify::Setting, &str) -> bool + Send + Sync;
 
@@ -254,7 +258,7 @@ pub struct App {
     stop_background: Arc<Stopper>,
     /// Asks the installed CLI what it can do for a fork (`Cli::probe_fork`, run on a thread);
     /// tests swap it so they never run the CLIs.
-    probe_fork: Arc<dyn Fn(crate::store::Cli) -> crate::coding_cli::ForkProbe + Send + Sync>,
+    probe_fork: Arc<ForkProber>,
     /// Opens a URL in the user's browser (`util::open_url`); tests swap it so they never open
     /// one, and record what would have.
     open_url: Arc<dyn Fn(&str) -> bool + Send + Sync>,

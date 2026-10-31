@@ -124,6 +124,8 @@ fn forks(cli: &str) {
     tui.send(b"\x01f");
     tui.wait_text("Fork of acme-lead, as of when the fork starts");
     tui.send(b"deep-dive\r");
+    // Shown for a few seconds only, and the session starts as it shows.
+    tui.wait_text("Forked acme-lead into ✦ deep-dive");
     let fork = args(&tui, 1);
     let message = fork.last().unwrap();
     assert!(
@@ -146,10 +148,11 @@ fn forks(cli: &str) {
             CODEX_FORK.to_string()
         }
     };
-    tui.wait_text("Forked acme-lead into ✦ deep-dive");
 
     // Its start may report the source's conversation first: not the fork's to take. Once the
     // TUI has read that report (the turn's end shows), the fork is still waiting for its own.
+    // Only that report can show it: a quiet session is taken as stopped only once it's working,
+    // which takes a hook, and none ran before.
     turn_ends(&dir, 1, SOURCE);
     tui.wait_until("the source's id not read", || {
         tui.text().lines().any(|l| l.contains("deep-dive") && l.contains("your turn"))
@@ -158,8 +161,8 @@ fn forks(cli: &str) {
     assert_eq!(pending["fork"]["from"], SOURCE, "{pending}");
     assert_ne!(pending["session_id"], SOURCE, "{pending}");
     assert!(!tui.text().contains("switched"), "{}", tui.text());
-    turn_ends(&dir, 1, &id);
     transcript(&dir, cli, &id);
+    turn_ends(&dir, 1, &id);
     tui.wait_until("the fork's id not saved", || {
         let t = saved(&dir, "acme-deep-dive");
         t["session_id"] == id.as_str() && t.get("fork").is_none()

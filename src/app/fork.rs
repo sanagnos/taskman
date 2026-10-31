@@ -93,7 +93,7 @@ impl App {
         let again = ask.clone();
         self.reporter().spawn(
             format!("asking {} about forking", cli.product()),
-            move || Msg::Forked(ask, Ok(probe(cli))),
+            move || Msg::Forked(ask, probe(cli)),
             move |e| Msg::Forked(again, Err(e)),
         );
         // Asking the CLI can take a few seconds.
