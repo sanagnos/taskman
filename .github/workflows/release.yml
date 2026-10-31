@@ -348,8 +348,9 @@ jobs:
       # lockfile at the tag, with the cargo-about version CI checks it with, and compared.
       # The Intel macOS build skips it: cargo-about publishes no binary for it, and building one
       # there takes about as long as the build. Nothing goes unchecked: the file comes out the same
-      # on every runner (about.toml names the targets), the other builds check it, and the
-      # binary's --licenses was compared with it above.
+      # on every runner (about.toml names the targets), and the other builds check it, as does CI's
+      # deny job (ci.yml) on every pull request and push to main: a release waits for CI to pass on
+      # its commit. The binary's --licenses was compared with it above.
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         if: ${{ !(runner.os == 'macOS' && runner.arch == 'X64') }}
         with:
