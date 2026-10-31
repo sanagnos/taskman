@@ -2,6 +2,10 @@
 
 What changed in each release; a release's notes on GitHub are its section here. What's merged but not released yet is in [changelog.d/](changelog.d/), a file for each change, which the release moves in here. Versions follow Cargo's rule for 0.x: the patch number (0.1.1) for anything compatible, fixes and new features alike, and the minor (0.2.0) for breaking changes, such as changed keys, config or saved-state format, or a removed command.
 
+## 0.1.36 - 2026-10-31
+
+- `ctrl+a f` forks a session into a new agent that starts with a copy of its conversation so far, in the same CLI, while the original carries on; sessions ask for one with `taskman add --agent NAME --fork KEY`, which waits for your approval.
+
 ## 0.1.35 - 2026-10-28
 
 - `ctrl+a Z` folds every project in the sidebar, or unfolds them all when they're all folded already.

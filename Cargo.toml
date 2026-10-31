@@ -1,6 +1,6 @@
 [package]
 name = "taskman-app"
-version = "0.1.35"
+version = "0.1.36"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "A terminal UI for working on several tickets at once, each with its own Claude Code or Codex session"

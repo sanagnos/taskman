@@ -1,1 +1,0 @@
-- `ctrl+a f` forks a session into a new agent that starts with a copy of its conversation so far, in the same CLI, while the original carries on; sessions ask for one with `taskman add --agent NAME --fork KEY`, which waits for your approval.
