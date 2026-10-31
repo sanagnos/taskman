@@ -217,8 +217,9 @@ pub struct Ticket {
     /// it's made or the user chooses the main checkout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_worktree: Option<PendingWorktree>,
-    /// An agent forked from another session that hasn't reported a conversation of its own yet:
-    /// its session starts as a fork of that one, until its hooks report its own id.
+    /// An agent forked from another session that has no saved conversation of its own yet: it
+    /// starts as a fork of that one until its hooks report its own id and that conversation's
+    /// transcript is there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fork: Option<Fork>,
     /// A fork whose CLI records its system prompt (Claude's `--system-prompt-snapshot`): its

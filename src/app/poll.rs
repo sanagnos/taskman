@@ -382,7 +382,8 @@ fn inferred_state(s: &Seen) -> Option<AgentState> {
 /// no longer running, so they go, but first each ticket takes the latest session id from them, in
 /// case its conversation changed after taskman last saved (a crash, say). A file at the old path,
 /// by key alone, is from a session an older taskman started; it's the ticket's only when no other
-/// project has that key. Returns whether a session id changed.
+/// project has that key. Returns whether a session id changed or a fork ended, either of which
+/// needs saving.
 pub(super) fn take_leftover_status(
     tickets: &mut [Ticket],
     status: impl Fn(&Ticket) -> PathBuf,
