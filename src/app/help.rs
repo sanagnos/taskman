@@ -5,7 +5,7 @@
 use super::sync::Msg;
 use super::{App, Field, Form, FormKind, Mode, SettingsItem};
 use crate::store::Cli;
-use crate::util;
+use crate::util::{self, parse_version};
 use std::process::Command;
 use std::time::Duration;
 
@@ -111,14 +111,6 @@ fn encode(s: &str) -> String {
     out
 }
 
-/// The version in what `--version` printed: its first word that starts with a digit
-/// (`2.1.3 (Claude Code)`, `codex-cli 0.50.0`).
-fn parse_version(out: &str) -> Option<String> {
-    let line = out.lines().next()?;
-    let word = line.split_whitespace().find(|w| w.starts_with(|c: char| c.is_ascii_digit()))?;
-    crate::untrusted::line(word).split(' ').next().map(String::from)
-}
-
 /// The OS from /etc/os-release's `PRETTY_NAME` (or `NAME`), as `Ubuntu 24.04.1 LTS`; under WSL,
 /// as the bug form's placeholder has it.
 fn linux_os(os_release: Option<&str>, wsl: bool) -> String {
@@ -178,11 +170,7 @@ fn terminal(var: impl Fn(&str) -> Option<String>) -> (Option<String>, Option<Str
 
 /// `cli`'s version, from its `--version`; None when it doesn't answer in time.
 fn cli_version(cli: Cli) -> Option<String> {
-    let mut cmd = Command::new(cli.program());
-    cmd.arg("--version");
-    let out = crate::proc::run(&mut cmd, Duration::from_secs(5)).ok()?;
-    let version = parse_version(&String::from_utf8_lossy(&out.stdout))?;
-    Some(format!("{} {version}", cli.product()))
+    cli.version().map(|v| format!("{} {v}", cli.product()))
 }
 
 fn os() -> String {
@@ -375,15 +363,6 @@ mod tests {
         assert_eq!(encode("a-Z_0.9~"), "a-Z_0.9~");
         assert_eq!(encode("a b&c=d#e?f/g+h%"), "a%20b%26c%3Dd%23e%3Ff%2Fg%2Bh%25");
         assert_eq!(encode("é ✦"), "%C3%A9%20%E2%9C%A6");
-    }
-
-    #[test]
-    fn reads_versions_as_the_clis_print_them() {
-        assert_eq!(parse_version("2.1.3 (Claude Code)\n").as_deref(), Some("2.1.3"));
-        assert_eq!(parse_version("codex-cli 0.50.0\n").as_deref(), Some("0.50.0"));
-        assert_eq!(parse_version("15.5\n").as_deref(), Some("15.5"));
-        assert_eq!(parse_version("command not found"), None);
-        assert_eq!(parse_version(""), None);
     }
 
     #[test]

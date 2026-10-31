@@ -697,7 +697,7 @@ pub(super) fn draw_prefix_menu(f: &mut Frame, footer: Rect) {
         ),
         ("This ticket", &[("{ }", "move"), ("e", "rename agent"), ("x", "close")]),
         ("Open", &[("o", "ticket"), ("p", "PR"), ("l", "links")]),
-        ("Session", &[("R", "restart"), ("t", "to a terminal")]),
+        ("Session", &[("R", "restart"), ("t", "to a terminal"), ("f", "fork")]),
         ("Look back", &[("d", "what it did"), ("v", "history in $EDITOR"), ("PgUp", "scroll")]),
         (
             "Panels",

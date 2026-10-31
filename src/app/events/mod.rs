@@ -17,6 +17,7 @@ use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEven
 mod accounts;
 mod add_form;
 mod find;
+mod fork;
 mod forms;
 mod help;
 mod inbox;

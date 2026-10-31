@@ -44,6 +44,12 @@ pub fn claim<'a>(
     }
 }
 
+/// Whether `id` is the conversation agent `who` is being forked from, before it has one of its
+/// own: never its to take, and no switch to report either, as the source runs on with it.
+pub fn forks_source(who: &Ticket, id: &str) -> bool {
+    who.fork.as_ref().is_some_and(|f| f.from == id)
+}
+
 /// `who`'s hooks reported `other`'s conversation: logs it and returns the toast.
 pub fn switched(who: &Ticket, other: &Ticket, id: &str) -> String {
     log(who, other, id);
@@ -106,6 +112,26 @@ mod tests {
             claim(&tickets, &elsewhere, "sid-tester"),
             Claim::Conflict { other: &tickets[1] }
         );
+    }
+
+    #[test]
+    fn a_fork_never_takes_its_sources_conversation() {
+        let lead = agent("/src/acme", "lead", Some("sid-lead"));
+        let mut fork = agent("/src/acme", "lead-2", None);
+        fork.fork = Some(
+            serde_json::from_value(
+                serde_json::json!({ "from": "sid-lead", "source": "acme-lead" }),
+            )
+            .unwrap(),
+        );
+        assert!(forks_source(&fork, "sid-lead"));
+        assert!(!forks_source(&fork, "sid-fork") && !forks_source(&lead, "sid-lead"));
+        // Its own id is its to take; once it has it, the source's is a switch like any other.
+        let tickets = [lead, fork.clone()];
+        assert_eq!(claim(&tickets, &fork, "sid-fork"), Claim::Adopt);
+        fork.fork = None;
+        assert!(!forks_source(&fork, "sid-lead"));
+        assert_eq!(claim(&tickets, &fork, "sid-lead"), Claim::Conflict { other: &tickets[0] });
     }
 
     #[test]

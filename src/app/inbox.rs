@@ -83,6 +83,10 @@ impl App {
                 }
                 continue;
             }
+            if let Err(e) = self.can_fork(&req) {
+                add::reply(&id, &req, &[add::Line::err(e)]);
+                continue;
+            }
             if req.agent().is_some() {
                 add::reply(&id, &req, &add::asked(&req, self.agent_open(&req)));
                 self.asking.push_back((id, req, closed));
@@ -483,6 +487,13 @@ impl App {
             self.toast(format!("Declined ✦ {name}{from}"));
             return;
         }
+        // Added once its CLI has answered (`forked`), which toasts then.
+        if let Some(fork) = super::fork::ForkAsk::of(req) {
+            if let Err(e) = self.fork_session(fork) {
+                self.error(format!("Couldn't fork ✦ {name}: {e}"));
+            }
+            return;
+        }
         let (lines, toast) = self.add_requested(req, ask.closed);
         match lines.iter().find(|l| !l.ok) {
             Some(err) => self.error(format!("✦ {name}: {}", untrusted::line(&err.text))),
@@ -544,7 +555,12 @@ impl App {
                         Err(e) => add::Line::err(e),
                     }
                 }
-                add::Item::Agent { name, role } => {
+                // Forked after the user approves (`answer_agent`); anything can write to the inbox.
+                add::Item::Agent { name, fork: Some(_), .. } => add::Line::err(format!(
+                    "✦ {} wasn't forked: a fork waits for the user's approval",
+                    store::slug(name)
+                )),
+                add::Item::Agent { name, role, fork: None } => {
                     match self.add_agent(p, name, req.cli, role.clone(), false) {
                         Ok(Added::Open(i)) => {
                             let tv = &self.tickets[i];

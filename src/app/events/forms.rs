@@ -273,6 +273,7 @@ fn a_rename_that_can_not_be_saved_changes_nothing() {
         session_id: "sid-planner".into(),
         cli: store::Cli::Claude,
         role: None,
+        prompt_snapshot_off: false,
         extra: Default::default(),
     };
     app.projects[0].closed_agents.push(closed);

@@ -159,6 +159,9 @@ pub struct ClosedAgent {
     pub cli: Cli,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// A fork's `Ticket::prompt_snapshot_off`, which its conversation still needs when resumed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prompt_snapshot_off: bool,
     #[serde(flatten)]
     pub extra: Extra,
 }
@@ -214,6 +217,34 @@ pub struct Ticket {
     /// it's made or the user chooses the main checkout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_worktree: Option<PendingWorktree>,
+    /// An agent forked from another session that has no saved conversation of its own yet: it
+    /// starts as a fork of that one until its hooks report its own id and that conversation's
+    /// transcript is there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork: Option<Fork>,
+    /// A fork whose CLI records its system prompt (Claude's `--system-prompt-snapshot`): its
+    /// history carries the source's record, which every resume would send again in place of its
+    /// own brief, so each of its starts turns recording off (`Cli::no_prompt_snapshot`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prompt_snapshot_off: bool,
+    #[serde(flatten)]
+    pub extra: Extra,
+}
+
+/// Where a forked agent's conversation comes from (`Ticket::fork`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Fork {
+    /// The source's conversation id. The fork's start copies that conversation as it is then, so
+    /// a start after a quit, before the fork had one of its own, copies it again.
+    pub from: String,
+    /// The source's session name, which the fork's first message says it no longer is.
+    pub source: String,
+    /// The source's worktree and branch, when it ran in one: the fork's history says it works
+    /// there, so its first message leaves them to the source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
     #[serde(flatten)]
     pub extra: Extra,
 }

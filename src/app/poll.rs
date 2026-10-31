@@ -382,7 +382,8 @@ fn inferred_state(s: &Seen) -> Option<AgentState> {
 /// no longer running, so they go, but first each ticket takes the latest session id from them, in
 /// case its conversation changed after taskman last saved (a crash, say). A file at the old path,
 /// by key alone, is from a session an older taskman started; it's the ticket's only when no other
-/// project has that key. Returns whether a session id changed.
+/// project has that key. Returns whether a session id changed or a fork ended, either of which
+/// needs saving.
 pub(super) fn take_leftover_status(
     tickets: &mut [Ticket],
     status: impl Fn(&Ticket) -> PathBuf,
@@ -405,11 +406,17 @@ pub(super) fn take_leftover_status(
             remove_status_at(p);
         }
         if let Some(sid) = latest.and_then(|r| r.session_id)
-            && tickets[i].session_id.as_ref() != Some(&sid)
+            && (tickets[i].session_id.as_ref() != Some(&sid) || tickets[i].fork.is_some())
+            && !session_ids::forks_source(&tickets[i], &sid)
             && session_ids::claim(&*tickets, &tickets[i], &sid) == Claim::Adopt
         {
+            // A fork stays one until its own transcript is there (see `App::poll_status`).
+            let over = tickets[i].fork.is_some() && tickets[i].cli.has_conversation(&sid);
+            if over {
+                tickets[i].fork = None;
+            }
+            changed |= over || tickets[i].session_id.as_ref() != Some(&sid);
             tickets[i].session_id = Some(sid);
-            changed = true;
         }
     }
     changed
@@ -492,8 +499,9 @@ impl App {
                 // A hook of an earlier start can write late (see `takes`): not this session's.
                 if let Some(mut rec) = record.filter(|rec| tv.takes(rec)) {
                     tv.status.hook_fired();
+                    // Even the id taskman chose, from a fork: it may end the fork (below).
                     if let Some(sid) = rec.session_id.take()
-                        && tv.t.session_id.as_deref() != Some(sid.as_str())
+                        && (tv.t.session_id.as_deref() != Some(sid.as_str()) || tv.t.fork.is_some())
                     {
                         reported.push((i, sid));
                     }
@@ -593,10 +601,19 @@ impl App {
             self.started_waiting(i);
         }
         for (i, sid) in reported {
+            if session_ids::forks_source(&self.tickets[i].t, &sid) {
+                continue;
+            }
             match session_ids::claim(self.tickets.iter().map(|tv| &tv.t), &self.tickets[i].t, &sid)
             {
                 Claim::Adopt => {
-                    self.tickets[i].t.session_id = Some(sid);
+                    let t = &mut self.tickets[i].t;
+                    // Only once its transcript is there: a fork that ended before its CLI wrote
+                    // one has nothing to resume, so its next start forks again.
+                    if t.fork.is_some() && t.cli.has_conversation(&sid) {
+                        t.fork = None;
+                    }
+                    t.session_id = Some(sid);
                     changed = true;
                 }
                 Claim::Conflict { other } if self.tickets[i].switched.as_ref() != Some(&sid) => {

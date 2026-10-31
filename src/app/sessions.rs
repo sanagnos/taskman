@@ -225,6 +225,7 @@ impl App {
             return;
         }
         let hold = hold.taskman();
+        self.fork_source_gone(i);
         let area = self.areas.claude;
         let name = self.qualified(&self.tickets[i].t);
         let launch = super::launch::launch_id();

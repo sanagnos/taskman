@@ -243,10 +243,56 @@ pub fn truncate_middle(s: &str, max: usize) -> String {
     format!("{start}…{}", tail(s, max - 1 - width(start)))
 }
 
+/// The version in what `--version` printed: its first word that starts with a digit
+/// (`2.1.3 (Claude Code)`, `codex-cli 0.50.0`).
+pub fn parse_version(out: &str) -> Option<String> {
+    let line = out.lines().next()?;
+    let word = line.split_whitespace().find(|w| w.starts_with(|c: char| c.is_ascii_digit()))?;
+    crate::untrusted::line(word).split(' ').next().map(String::from)
+}
+
+/// A random (version 4) UUID, as Claude Code takes for `--session-id`. From the system's random
+/// source: std has no stable way to it, and the format is simple enough not to need a crate.
+pub fn uuid_v4() -> std::io::Result<String> {
+    use std::io::Read;
+    let mut b = [0u8; 16];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut b)?;
+    Ok(uuid_from(b))
+}
+
+fn uuid_from(mut b: [u8; 16]) -> String {
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn reads_versions_as_the_clis_print_them() {
+        assert_eq!(parse_version("2.1.3 (Claude Code)\n").as_deref(), Some("2.1.3"));
+        assert_eq!(parse_version("codex-cli 0.50.0\n").as_deref(), Some("0.50.0"));
+        assert_eq!(parse_version("15.5\n").as_deref(), Some("15.5"));
+        assert_eq!(parse_version("command not found"), None);
+        assert_eq!(parse_version(""), None);
+    }
+
+    #[test]
+    fn makes_version_4_uuids() {
+        assert_eq!(uuid_from([0; 16]), "00000000-0000-4000-8000-000000000000");
+        assert_eq!(uuid_from([0xff; 16]), "ffffffff-ffff-4fff-bfff-ffffffffffff");
+        let (a, b) = (uuid_v4().unwrap(), uuid_v4().unwrap());
+        assert_ne!(a, b);
+        let parts: Vec<usize> = a.split('-').map(str::len).collect();
+        assert_eq!(parts, [8, 4, 4, 4, 12], "{a}");
+        assert!(a.chars().all(|c| c == '-' || c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert_eq!(&a[14..15], "4");
+        assert!("89ab".contains(&a[19..20]), "{a}");
+    }
 
     #[test]
     fn a_panic_caught_says_where_it_was_written() {

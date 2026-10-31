@@ -706,11 +706,18 @@ fn agent_ask_text(ask: &AgentAsk, width: usize) -> (String, Vec<Line<'static>>) 
         .from
         .as_deref()
         .map_or("taskman add".to_string(), |f| truncate(&untrusted::line(f), FROM_SHOWN));
-    let question = match (ask.open, role) {
-        (true, Some(_)) => format!("{from} asks to change ✦ {name}'s role"),
+    let source = ask.req.fork().map(|s| truncate(&untrusted::line(s), FROM_SHOWN));
+    let question = match (ask.open, role, &source) {
+        (_, _, Some(source)) => format!("{from} asks to fork {source} into agent ✦ {name}"),
+        (true, Some(_), None) => format!("{from} asks to change ✦ {name}'s role"),
         _ => format!("{from} asks to add agent ✦ {name}"),
     };
     let intro = match (ask.open, role) {
+        _ if source.is_some() => &format!(
+            "Its session starts once you approve, with a copy of {}'s conversation as of then, and anything that session has read{}",
+            source.as_deref().unwrap_or_default(),
+            if role.is_some() { ", and this role in its startup brief:" } else { "." }
+        ),
         (true, Some(_)) => "The role goes into its startup brief when its session next starts:",
         (true, None) => "It's open already, so this changes nothing.",
         (false, Some(_)) => "Its session starts at once, with this role in its startup brief:",
@@ -1707,6 +1714,7 @@ fn draw_help(f: &mut Frame, app: &mut App) {
             &[
                 ("R", "restart the session"),
                 ("t", "to a terminal: continue the session in another"),
+                ("f", "fork into a new agent, conversation and all"),
             ],
         ),
         (

@@ -226,6 +226,8 @@ pub enum FormKind {
     AccountSettings(usize),
     /// Renaming the agent at this ticket index.
     RenameAgent(usize),
+    /// Forking the session with this project and key into a new agent.
+    Fork(std::path::PathBuf, String),
     /// Settings that aren't about a project or an account.
     General,
     /// Links to the guide and the issue forms.
@@ -515,6 +517,10 @@ impl App {
             FormKind::RenameAgent(i) => {
                 let i = *i;
                 self.rename_agent(i, &form.value("Name"))
+            }
+            FormKind::Fork(repo, key) => {
+                let (repo, key) = (repo.clone(), key.clone());
+                self.submit_fork(&form, &repo, &key)
             }
             FormKind::General => self.submit_general(&form),
             // Enter on a link opens it (`form_key`).

@@ -7,6 +7,29 @@ use crate::store::{self, Cli};
 use crossterm::event::KeyCode;
 use std::path::{Path, PathBuf};
 
+/// A fork's first launch (`Cli::fork_args`): the conversation it copies, and what it starts with.
+pub struct ForkStart<'a> {
+    /// The source's conversation id.
+    pub source: &'a str,
+    /// The fork's own id, for a CLI that takes one up front (`Cli::chooses_fork_id`).
+    pub id: Option<&'a str>,
+    /// Its first message, which tells it who it is now.
+    pub message: &'a str,
+    pub cwd: &'a Path,
+    /// Record no system prompt, so the fork's own brief replaces the one the source recorded
+    /// (`Ticket::prompt_snapshot_off`).
+    pub snapshot_off: bool,
+}
+
+/// What the installed CLI says about forking (`Cli::probe_fork`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ForkProbe {
+    /// None when it didn't answer in time.
+    pub version: Option<String>,
+    /// Whether it can be told not to record the system prompt (`ForkStart::snapshot_off`).
+    pub snapshot_off: bool,
+}
+
 /// Who the screen shows answering an approval request (`Cli::approver`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Approver {
@@ -198,12 +221,62 @@ impl Cli {
         resume: Option<&str>,
         hooks: &[String],
     ) -> Vec<String> {
-        let mut args: Vec<String> = Vec::new();
+        let Some(sid) = resume else { return self.with(name, brief, hooks, vec![], vec![]) };
         match self {
             Cli::Claude => {
-                if let Some(sid) = resume {
-                    args.extend(["--resume".into(), sid.into()]);
+                self.with(name, brief, hooks, vec!["--resume".into(), sid.into()], vec![])
+            }
+            Cli::Codex => self.with(name, brief, hooks, vec![], vec!["resume".into(), sid.into()]),
+        }
+    }
+
+    /// Arguments for a fork's first launch (`ForkStart`), otherwise as `args`.
+    pub fn fork_args(
+        self,
+        name: &str,
+        brief: &str,
+        fork: &ForkStart,
+        hooks: &[String],
+    ) -> Vec<String> {
+        match self {
+            Cli::Claude => {
+                let mut before: Vec<String> =
+                    vec!["--resume".into(), fork.source.into(), "--fork-session".into()];
+                if let Some(id) = fork.id {
+                    before.extend(["--session-id".into(), id.into()]);
                 }
+                if fork.snapshot_off {
+                    before.extend(self.no_prompt_snapshot());
+                }
+                self.with(name, brief, hooks, before, vec![fork.message.into()])
+            }
+            // Without -C, a fork in another folder than the source's stops at a question about
+            // which folder to work in.
+            Cli::Codex => {
+                let after = vec![
+                    "fork".into(),
+                    fork.source.into(),
+                    "-C".into(),
+                    fork.cwd.to_string_lossy().into_owned(),
+                    fork.message.into(),
+                ];
+                self.with(name, brief, hooks, vec![], after)
+            }
+        }
+    }
+
+    /// The arguments every launch has, between `before` and `after`.
+    fn with(
+        self,
+        name: &str,
+        brief: &str,
+        hooks: &[String],
+        before: Vec<String>,
+        after: Vec<String>,
+    ) -> Vec<String> {
+        let mut args = before;
+        match self {
+            Cli::Claude => {
                 for h in hooks {
                     args.extend(["--settings".into(), h.clone()]);
                 }
@@ -227,12 +300,101 @@ impl Cli {
                     "-c".into(),
                     format!("developer_instructions={}", serde_json::Value::from(brief)),
                 ]);
-                if let Some(sid) = resume {
-                    args.extend(["resume".into(), sid.into()]);
-                }
             }
         }
+        args.extend(after);
         args
+    }
+
+    /// Whether a fork's id can be chosen up front (Claude's `--session-id`), so taskman knows it
+    /// before the fork's hooks report it. Codex makes its own, which the hooks then report.
+    pub fn chooses_fork_id(self) -> bool {
+        match self {
+            Cli::Claude => true,
+            Cli::Codex => false,
+        }
+    }
+
+    /// The oldest version that forks as `fork_args` asks: Claude Code's `--session-id` with
+    /// `--fork-session`, Codex's `fork` command.
+    pub fn min_fork_version(self) -> &'static str {
+        match self {
+            Cli::Claude => "2.0.73",
+            Cli::Codex => "0.81.0",
+        }
+    }
+
+    /// Why the CLI, at `version`, can't fork; None when it can, or its version isn't known.
+    pub fn cant_fork(self, version: Option<&str>) -> Option<String> {
+        let min = self.min_fork_version();
+        let older = matches!(
+            (version.and_then(crate::update::parse), crate::update::parse(min)),
+            (Some(v), Some(m)) if v < m
+        );
+        older.then(|| {
+            format!(
+                "Forking needs {} {min} or newer, and this is {}: update it, then fork again",
+                self.product(),
+                version.unwrap_or_default()
+            )
+        })
+    }
+
+    /// The option that turns off recording the system prompt (Claude's
+    /// `--system-prompt-snapshot`), which would keep a fork on the source's recorded prompt.
+    fn snapshot_option(self) -> Option<&'static str> {
+        match self {
+            Cli::Claude => Some("--system-prompt-snapshot"),
+            Cli::Codex => None,
+        }
+    }
+
+    /// Arguments that turn off recording the system prompt (`snapshot_option`); none for a CLI
+    /// that doesn't record it.
+    pub fn no_prompt_snapshot(self) -> Vec<String> {
+        self.snapshot_option().map_or_else(Vec::new, |o| vec![o.into(), "off".into()])
+    }
+
+    /// The installed version, from `--version`; None when it doesn't answer in time. Runs a
+    /// command, so not on the UI thread.
+    pub fn version(self) -> Option<String> {
+        let out = self.run_with("--version")?;
+        crate::util::parse_version(&out)
+    }
+
+    /// What the installed CLI says about forking; Err when it doesn't say what a fork needs to
+    /// know. Runs commands, so not on the UI thread.
+    pub fn probe_fork(self) -> Result<ForkProbe, String> {
+        let help = self.snapshot_option().and_then(|_| self.run_with("--help"));
+        self.fork_probe(self.version(), help.as_deref())
+    }
+
+    /// What `probe_fork` makes of the CLI's `--version` and `--help`; `help` is None when it gave
+    /// no answer, or wasn't asked (a CLI that doesn't record its system prompt).
+    pub(crate) fn fork_probe(
+        self,
+        version: Option<String>,
+        help: Option<&str>,
+    ) -> Result<ForkProbe, String> {
+        // Read from its help rather than guessed from a version: when the option came isn't known.
+        let snapshot_off = match (self.snapshot_option(), help.filter(|h| !h.trim().is_empty())) {
+            (None, _) => false,
+            (Some(option), Some(help)) => help.contains(option),
+            // A fork that went on recording would get the source's system prompt back when it
+            // restarts.
+            (Some(_), None) => {
+                return Err(format!("{} didn't answer --help in time; try again", self.product()));
+            }
+        };
+        Ok(ForkProbe { version, snapshot_off })
+    }
+
+    /// What the CLI prints for `arg`; None when it doesn't answer in time.
+    fn run_with(self, arg: &str) -> Option<String> {
+        let mut cmd = std::process::Command::new(self.program());
+        cmd.arg(arg);
+        let out = crate::proc::run(&mut cmd, std::time::Duration::from_secs(5)).ok()?;
+        Some(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
     /// Where it keeps its transcripts. Unit tests get a folder in their state folder, so they can
@@ -460,6 +622,103 @@ mod tests {
             ]
         );
         assert!(!Cli::Codex.args("ENG-52", "Brief", None, &[]).contains(&"resume".to_string()));
+    }
+
+    #[test]
+    fn builds_each_clis_fork_arguments() {
+        let fork = |id, snapshot_off| ForkStart {
+            source: "sid-src",
+            id,
+            message: "You're now ✦ tester",
+            cwd: Path::new("/src/acme"),
+            snapshot_off,
+        };
+        // Claude forks with the id taskman chose, and the source's recorded prompt left behind;
+        // the first message is the prompt, last.
+        assert_eq!(
+            Cli::Claude.fork_args(
+                "acme-tester",
+                "Brief",
+                &fork(Some("sid-new"), true),
+                &["{}".into()]
+            ),
+            [
+                "--resume",
+                "sid-src",
+                "--fork-session",
+                "--session-id",
+                "sid-new",
+                "--system-prompt-snapshot",
+                "off",
+                "--settings",
+                "{}",
+                "--name",
+                "acme-tester",
+                "--append-system-prompt",
+                "Brief",
+                "You're now ✦ tester"
+            ]
+        );
+        // A Claude that can't be told so gets neither option.
+        let older = Cli::Claude.fork_args("acme-tester", "Brief", &fork(None, false), &[]);
+        assert_eq!(older[..3], ["--resume", "sid-src", "--fork-session"]);
+        assert!(!older.iter().any(|a| a == "--session-id" || a == "--system-prompt-snapshot"));
+        // Codex's fork command, in the agent's folder, after the overrides.
+        assert_eq!(
+            Cli::Codex.fork_args(
+                "acme-tester",
+                "Brief",
+                &fork(None, false),
+                &["hooks.Stop=[]".into()]
+            ),
+            [
+                "-c",
+                "hooks.Stop=[]",
+                "-c",
+                r#"developer_instructions="Brief""#,
+                "fork",
+                "sid-src",
+                "-C",
+                "/src/acme",
+                "You're now ✦ tester"
+            ]
+        );
+        assert!(Cli::Claude.chooses_fork_id() && !Cli::Codex.chooses_fork_id());
+    }
+
+    #[test]
+    fn says_when_a_cli_is_too_old_to_fork() {
+        assert_eq!(
+            Cli::Claude.cant_fork(Some("2.0.72")).as_deref(),
+            Some(
+                "Forking needs Claude Code 2.0.73 or newer, and this is 2.0.72: update it, then fork again"
+            )
+        );
+        assert_eq!(Cli::Claude.cant_fork(Some("2.0.73")), None);
+        assert_eq!(Cli::Claude.cant_fork(Some("2.1.314")), None);
+        assert!(Cli::Codex.cant_fork(Some("0.80.9")).unwrap().contains("Codex 0.81.0 or newer"));
+        assert_eq!(Cli::Codex.cant_fork(Some("0.166.0")), None);
+        // Not known: it's tried.
+        assert_eq!(Cli::Claude.cant_fork(None), None);
+        assert_eq!(Cli::Claude.cant_fork(Some("2.1")), None);
+    }
+
+    #[test]
+    fn a_fork_probe_needs_claudes_help() {
+        let help = "  --system-prompt-snapshot <on|off>   Record the system prompt";
+        let probe = |cli: Cli, help| cli.fork_probe(Some("1.0.0".into()), help);
+        let off = probe(Cli::Claude, Some(help)).unwrap();
+        assert_eq!(off, ForkProbe { version: Some("1.0.0".into()), snapshot_off: true });
+        assert!(!probe(Cli::Claude, Some("  --resume <id>")).unwrap().snapshot_off);
+        // No help text, so not known whether the fork could keep its own system prompt.
+        for none in [None, Some(""), Some("\n")] {
+            assert_eq!(
+                probe(Cli::Claude, none),
+                Err("Claude Code didn't answer --help in time; try again".into())
+            );
+        }
+        // Codex records no system prompt: nothing to ask.
+        assert!(!probe(Cli::Codex, None).unwrap().snapshot_off);
     }
 
     #[test]
