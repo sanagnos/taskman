@@ -346,16 +346,17 @@ jobs:
       # LICENSE-THIRD-PARTY, the notices of the crates in the binary, goes in the archive and is
       # embedded in the binary, so it must be the committed file: generated again here from the
       # lockfile at the tag, with the cargo-about version CI checks it with, and compared.
+      # The Intel macOS build skips it: cargo-about publishes no binary for it, and building one
+      # there takes about as long as the build. Nothing goes unchecked: the file comes out the same
+      # on every runner (about.toml names the targets), and the other builds check it, as does CI's
+      # deny job (ci.yml) on every pull request and push to main: a release waits for CI to pass on
+      # its commit. The binary's --licenses was compared with it above.
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         if: ${{ !(runner.os == 'macOS' && runner.arch == 'X64') }}
         with:
           tool: cargo-about@0.9.2
-      # cargo-about publishes no Intel macOS binary, and install-action's fallback builds it without
-      # the cli feature, which installs nothing and still succeeds.
-      - name: Build cargo-about
-        if: ${{ runner.os == 'macOS' && runner.arch == 'X64' }}
-        run: cargo install --locked --features cli cargo-about@0.9.2
       - name: Check the third-party notices are current
+        if: ${{ !(runner.os == 'macOS' && runner.arch == 'X64') }}
         run: |
           cargo about generate --locked --fail about.hbs -o notices.txt
           if ! diff LICENSE-THIRD-PARTY notices.txt; then
