@@ -20,14 +20,17 @@ const SERVER_INFO_TIMEOUT: Duration = Duration::from_secs(5);
 /// repeats with every refresh, and each asking can send credentials.
 const ASK_AGAIN_AFTER: Duration = Duration::from_secs(600);
 
-/// What a client knows about which Jira it's talking to.
+/// What a client knows about which Jira it's talking to. It lasts as long as the client: a TUI's is
+/// kept across refreshes until its account changes (`tracker::Clients`), and each command has its
+/// own, so each run of one can send a login once.
 #[derive(Default)]
 struct Deployment {
     /// Whether it's Data Center or Server, once it has said.
     self_hosted: Option<bool>,
     /// When `serverInfo` was last asked.
     asked: Option<Instant>,
-    /// Jira wants a CAPTCHA solved before it takes another login, so no credentials should go.
+    /// Jira wants a CAPTCHA solved before it takes another login, so this client sends no
+    /// credentials: another failed login would only count towards locking the account.
     captcha: bool,
 }
 
@@ -59,7 +62,7 @@ impl JiraConfig {
 
     /// `get` with query parameters, encoded.
     fn get_with(&self, path: &str, query: &[(&str, &str)]) -> Result<Value, ureq::Error> {
-        self.unless_self_hosted()?;
+        self.unless_refused()?;
         net::retry_dropped(|| {
             let mut response = self
                 .agent
@@ -74,13 +77,23 @@ impl JiraConfig {
         })
     }
 
-    /// Refuses a request to a Jira known to be Data Center or Server, before it sends credentials
-    /// that can't work: a failure repeats with every refresh, and failed logins can lock an account.
-    /// The 403 only stands for that, as `failure` says what it means.
-    fn unless_self_hosted(&self) -> Result<(), ureq::Error> {
-        match self.deployment().self_hosted {
-            Some(true) => Err(ureq::Error::StatusCode(403)),
-            _ => Ok(()),
+    /// Refuses a request before it sends credentials that can't work, to a Jira known to be Data
+    /// Center or Server or waiting on a CAPTCHA: a failure repeats with every refresh, and failed
+    /// logins can lock an account. The 403 only stands for that, as `failure` says what it means.
+    fn unless_refused(&self) -> Result<(), ureq::Error> {
+        if self.refusing() { Err(ureq::Error::StatusCode(403)) } else { Ok(()) }
+    }
+
+    fn refusing(&self) -> bool {
+        let known = self.deployment();
+        known.self_hosted == Some(true) || known.captcha
+    }
+
+    /// Notes a response saying Jira wants a CAPTCHA solved.
+    fn note_captcha(&self, response: &Response<Body>) {
+        let denied = response.headers().get(DENIED_REASON).and_then(|v| v.to_str().ok());
+        if asks_for_captcha(denied) {
+            self.deployment().captcha = true;
         }
     }
 
@@ -94,13 +107,10 @@ impl JiraConfig {
         if status < 400 {
             return Ok(());
         }
-        let denied = response.headers().get(DENIED_REASON).and_then(|v| v.to_str().ok());
-        if asks_for_captcha(denied) {
-            self.deployment().captcha = true;
-        }
+        self.note_captcha(response);
         if status == 403
             && let Ok(body) = response.body_mut().read_to_string()
-            && self_hosted_by(403, &body) == Some(true)
+            && says_self_hosted(&self.base, &body)
         {
             self.deployment().self_hosted = Some(true);
         }
@@ -164,7 +174,7 @@ impl JiraConfig {
     /// `create`'s POST, answered whatever its status, as Jira says in the body why it refused.
     /// Never asked again: a request that dropped may have made the ticket.
     fn post(&self, path: &str, body: &Value) -> Result<(u16, Value), ureq::Error> {
-        self.unless_self_hosted()?;
+        self.unless_refused()?;
         let mut resp = self
             .agent
             .ready()
@@ -172,6 +182,7 @@ impl JiraConfig {
             .header("Authorization", &format!("Basic {}", self.auth))
             .header("Accept", "application/json")
             .send_json(body)?;
+        self.note_captcha(&resp);
         let status = resp.status().as_u16();
         Ok((status, resp.body_mut().read_json().unwrap_or(Value::Null)))
     }
@@ -206,7 +217,7 @@ impl JiraConfig {
         let place = format!("project {project} in Jira");
         let (status, v) =
             self.post("/rest/api/3/issue", &json!({ "fields": fields })).map_err(|e| {
-                let sent = !tracker::unsent(&e) && self.deployment().self_hosted != Some(true);
+                let sent = !tracker::unsent(&e) && !self.refusing();
                 let e = self.failure(e, "");
                 if sent { e.map(|e| tracker::maybe_created(&e, &place)) } else { e }
             })?;
@@ -228,6 +239,17 @@ impl JiraConfig {
 }
 
 impl JiraConfig {
+    /// Whether `other` signs in the same way to the same site, so what this one knows holds for it.
+    pub(crate) fn same_login(&self, other: &JiraConfig) -> bool {
+        (&self.base, &self.auth, &self.token) == (&other.base, &other.auth, &other.token)
+    }
+
+    /// Whether `other` is this client or a copy of it, knowing what it knows.
+    #[cfg(test)]
+    pub(crate) fn same_client(&self, other: &JiraConfig) -> bool {
+        Arc::ptr_eq(&self.deployment, &other.deployment)
+    }
+
     fn describe(&self, e: ureq::Error, key: &str) -> String {
         self.failure(e, key).into()
     }
@@ -237,6 +259,12 @@ impl JiraConfig {
         if self.self_hosted_after(&e) {
             return FetchError::Other(format!(
                 "{} is Jira Data Center or Server, which taskman doesn't support yet: it works with Jira Cloud only",
+                store::site_host(&self.base)
+            ));
+        }
+        if matches!(e, ureq::Error::StatusCode(401 | 403)) && self.deployment().captcha {
+            return FetchError::Auth(format!(
+                "Jira wants a CAPTCHA solved before it takes another login: log in to {} in a browser, then restart taskman",
                 store::site_host(&self.base)
             ));
         }
@@ -252,9 +280,10 @@ impl JiraConfig {
     }
 
     /// Whether a request that failed with `e` failed because this is Data Center or Server, which
-    /// taskman's Cloud API isn't on. The failure only says it's worth asking: Cloud answers a missing
-    /// ticket with a 404 and a wrong token with a 401 too, and Data Center answers `/rest/api/3` with
-    /// a 403, a 404 or a login page depending on its settings and the credentials.
+    /// taskman's Cloud API isn't on. The failure only says it's worth asking: Cloud answers a
+    /// missing ticket with a 404 and a wrong token with a 401 too, and Data Center answers
+    /// `/rest/api/3` with a 403, a 404 or a login page depending on its settings and the
+    /// credentials.
     fn self_hosted_after(&self, e: &ureq::Error) -> bool {
         use ureq::Error::{Json, StatusCode};
         let status = match e {
@@ -277,7 +306,7 @@ impl JiraConfig {
             known.asked = Some(now);
             credentials_to_try(status, known.captcha)
         };
-        // Not kept unless it told: a gateway's page or a timeout says nothing about the Jira behind.
+        // Not kept unless it told: a gateway's page or a timeout says nothing about the Jira.
         let told = credentials.into_iter().find_map(|credential| self.server_info(credential));
         self.deployment().self_hosted = told;
         told == Some(true)
@@ -304,10 +333,7 @@ impl JiraConfig {
             request = request.header("Authorization", &auth);
         }
         let mut response = request.call().ok()?;
-        let denied = response.headers().get(DENIED_REASON).and_then(|v| v.to_str().ok());
-        if asks_for_captcha(denied) {
-            self.deployment().captcha = true;
-        }
+        self.note_captcha(&response);
         let status = response.status().as_u16();
         self_hosted_by(status, &response.body_mut().read_to_string().ok()?)
     }
@@ -345,6 +371,12 @@ fn credentials_to_try(status: Option<u16>, captcha: bool) -> Vec<Credential> {
 /// Whether `serverInfo` may be asked again, having last been asked at `asked`.
 fn ask_due(asked: Option<Instant>, now: Instant) -> bool {
     asked.is_none_or(|asked| now.duration_since(asked) >= ASK_AGAIN_AFTER)
+}
+
+/// Whether a 403's `body` from the Jira at `base` says it's Data Center or Server. Atlassian's own
+/// domains are Cloud, whatever a page says.
+fn says_self_hosted(base: &str, body: &str) -> bool {
+    !cloud_site(base) && self_hosted_by(403, body) == Some(true)
 }
 
 /// A site under one of Atlassian's own domains is Cloud, so a failure there needs no asking.
@@ -910,6 +942,62 @@ mod tests {
         assert_eq!(credentials_to_try(Some(401), true), [Anonymous]);
     }
 
+    const CAPTCHA_FIRST: &str = "Jira wants a CAPTCHA solved before it takes another login";
+
+    /// Each failed login counts towards locking the account, so once Jira wants a CAPTCHA neither
+    /// a refresh nor a create sends another, and the message says what to do.
+    #[test]
+    fn a_captcha_stops_ordinary_requests() {
+        let denied = r#"{"errorMessages":[],"errors":{}}"#;
+        let server = replay::serve(vec![(replay::CAPTCHA, denied), (401, denied)]);
+        let cfg = JiraConfig::new(&server.url, "ana@example.com", "t");
+        for _ in 0..2 {
+            let e = cfg.whoami().unwrap_err();
+            assert!(e.starts_with(CAPTCHA_FIRST) && e.ends_with("then restart taskman"), "{e}");
+        }
+        let asked = server.requests();
+        assert_eq!(asked.len(), 2);
+        assert_eq!(asked[1].header("authorization"), None);
+
+        let e = String::from(cfg.create("ENG", "Fix login", "").unwrap_err());
+        assert!(e.starts_with(CAPTCHA_FIRST), "{e}");
+        assert!(!e.contains("may have been created"), "{e}");
+        assert!(cfg.post("/rest/api/3/issue", &json!({})).is_err());
+        assert_eq!(server.requests().len(), 0);
+    }
+
+    /// A CAPTCHA asked for while asking serverInfo stops the rest of the asking.
+    #[test]
+    fn a_captcha_while_asking_sends_no_more_credentials() {
+        let page = "<html>Forbidden</html>";
+        let denied = r#"{"errorMessages":[],"errors":{}}"#;
+        let server = replay::serve(vec![(403, page), (401, denied), (replay::CAPTCHA, denied)]);
+        let cfg = JiraConfig::new(&server.url, "ana@example.com", "t");
+        let e = cfg.whoami().unwrap_err();
+        assert!(e.starts_with(CAPTCHA_FIRST), "{e}");
+        let asked = server.requests();
+        assert_eq!(asked.len(), 3);
+        assert!(asked[2].header("authorization").unwrap().starts_with("Basic "));
+    }
+
+    /// A create that's answered with a CAPTCHA stops the next one.
+    #[test]
+    fn a_captcha_on_a_create_stops_the_next_request() {
+        let server = replay::serve(vec![(replay::CAPTCHA, "{}")]);
+        let cfg = JiraConfig::new(&server.url, "ana@example.com", "t");
+        assert_eq!(cfg.post("/rest/api/3/issue", &json!({})).unwrap().0, 401);
+        assert!(cfg.get("/rest/api/3/myself").is_err());
+        assert_eq!(server.requests().len(), 1);
+    }
+
+    #[test]
+    fn atlassians_own_domains_arent_told_self_hosted_by_a_page() {
+        let off = r#"{"message":"Basic Authentication has been disabled on this instance."}"#;
+        assert!(says_self_hosted("https://jira.example.com", off));
+        assert!(!says_self_hosted("https://example.atlassian.net", off));
+        assert!(!says_self_hosted("https://jira.example.com", "<html>Forbidden</html>"));
+    }
+
     #[test]
     fn knows_when_jira_wants_a_captcha() {
         let header = "CAPTCHA_CHALLENGE; login-url=https://jira.example.com/login.jsp";
@@ -953,7 +1041,8 @@ mod tests {
         let now = Instant::now();
         assert!(ask_due(None, now));
         assert!(!ask_due(Some(now), now));
-        assert!(!ask_due(Some(now), now + Duration::from_secs(1)));
+        let just_before = ASK_AGAIN_AFTER.saturating_sub(Duration::from_secs(1));
+        assert!(!ask_due(Some(now), now + just_before));
         assert!(ask_due(Some(now), now + ASK_AGAIN_AFTER));
     }
 

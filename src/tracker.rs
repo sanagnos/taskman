@@ -213,6 +213,15 @@ pub enum Client {
 }
 
 impl Client {
+    /// Whether `other` signs in the same way to the same site. Only Jira's client learns anything
+    /// worth keeping.
+    fn same_login(&self, other: &Client) -> bool {
+        match (self, other) {
+            (Client::Jira(a), Client::Jira(b)) => a.same_login(b),
+            _ => false,
+        }
+    }
+
     /// The client for `tracker` in the project folder `repo`, with the account and token it uses;
     /// None when it needs an account (`Provider::needs_account`) and has none.
     pub fn new(
@@ -610,9 +619,12 @@ impl Clients {
         self.tokens.remove(source);
     }
 
-    /// The clients for the tokens read so far.
+    /// The clients for the tokens read so far. One that signs in the same way as before is kept, as
+    /// a refresh comes here too, and what it knows stops logins that can't work: pressing refresh
+    /// on a self-hosted Jira or one waiting on a CAPTCHA mustn't send them again. An account saved
+    /// again forgets its token, so its client starts afresh once the token is read.
     fn build(&mut self, config: &Config, projects: &[Project]) {
-        self.clients.clear();
+        let old = std::mem::take(&mut self.clients);
         for p in projects {
             let Some(t) = &p.tracker else { continue };
             let Some(i) = config.account_for(t) else { continue };
@@ -620,7 +632,12 @@ impl Clients {
             if let Some(token) = self.token(&a.token)
                 && let Some(client) = Client::new(t, &p.repo, Some((a, token)))
             {
-                self.clients.insert((i, store::site_host(&t.site)), client);
+                let key = (i, store::site_host(&t.site));
+                let client = match old.get(&key) {
+                    Some(same) if same.same_login(&client) => same.clone(),
+                    _ => client,
+                };
+                self.clients.insert(key, client);
             }
         }
     }
@@ -1015,6 +1032,44 @@ impl Tracker {
 
 #[cfg(test)]
 mod tests {
+    /// A refresh rebuilds the clients: one with the same login keeps what it knows, and a new token
+    /// or an account saved again starts afresh.
+    #[test]
+    fn a_refresh_keeps_what_a_jira_client_knows() {
+        let source = "env:ACME_JIRA_TOKEN";
+        let config: Config = serde_json::from_value(serde_json::json!({ "accounts": [
+            { "id": "jira-1", "provider": "jira", "email": "ana@example.com", "token": source },
+        ]}))
+        .unwrap();
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "name": "acme",
+            "repo": "/src/acme",
+            "tracker": { "provider": "jira", "site": "https://jira.example.com", "key": "ENG",
+                         "account": "jira-1" },
+        }))
+        .unwrap();
+        let projects = [project];
+        let mut clients = Clients::default();
+        let jira = |clients: &Clients| match clients.access(&config, Some(&projects[0])) {
+            Access::Client(Client::Jira(c)) => c,
+            _ => panic!("no Jira client"),
+        };
+        clients.token_read(source, Ok("t".into()), &config, &projects);
+        let first = jira(&clients);
+
+        clients.rebuild(&config, &projects, |_| {});
+        assert!(jira(&clients).same_client(&first));
+
+        clients.token_read(source, Ok("t2".into()), &config, &projects);
+        let replaced = jira(&clients);
+        assert!(!replaced.same_client(&first));
+
+        clients.forget(source);
+        clients.rebuild(&config, &projects, |_| {});
+        clients.token_read(source, Ok("t2".into()), &config, &projects);
+        assert!(!jira(&clients).same_client(&replaced));
+    }
+
     use super::*;
     use proptest::prelude::*;
 
