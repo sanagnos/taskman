@@ -411,9 +411,11 @@ fn main() -> anyhow::Result<()> {
             );
             cli::out!("                            its project folder (--help for more)");
             cli::out!(
-                "       taskman title TEXT   set what a ticket's card shows under its key, in a session its"
+                "       taskman title TEXT   set what the session's ticket's card shows under its key; from a"
             );
-            cli::out!("                            own ticket's (--clear; --help for more)");
+            cli::out!(
+                "                            shell, taskman title KEY TEXT (--clear KEY; --help for more)"
+            );
             cli::out!(
                 "       taskman resume KEY   continue a ticket's or agent's session in this terminal, as"
             );

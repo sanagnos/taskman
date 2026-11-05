@@ -119,6 +119,9 @@ fn titles_a_ticket() {
     // The tracker's own stays where it was, and find goes by what the card shows.
     assert_eq!(app.tickets[i].jira.data.as_ref().unwrap().summary, tracker);
     assert_eq!(app.find_matches("login redirect"), [i]);
+    // By the tracker's words too: a title of its own doesn't hide the ticket from find.
+    let word = tracker.split_whitespace().last().unwrap();
+    assert!(app.find_matches(word).contains(&i), "{word}");
 
     // It opens on the title it has; emptied, the tracker's comes back.
     prefix(&mut app, KeyCode::Char('e'));
@@ -142,6 +145,45 @@ fn a_tickets_title_is_cleaned_of_what_a_paste_can_hide() {
     assert!(
         label.as_deref().is_some_and(|l| !l.contains('\x1b') && !l.contains('\u{200b}')),
         "{label:?}"
+    );
+}
+
+/// The card's hint leads to the form, so the form says why the tracker gave no title, and goes on
+/// saying so once the card has a title of its own and no longer shows the hint.
+#[test]
+fn the_title_form_says_why_the_tracker_gave_none() {
+    let (mut app, _) = at_eng_52();
+    let note = |app: &App| match &app.mode {
+        Mode::Form(f) => f.note.clone().unwrap_or_default(),
+        _ => panic!("no form open"),
+    };
+    prefix(&mut app, KeyCode::Char('e'));
+    assert_eq!(note(&app), "Kept in taskman only: the tracker's title stays as it is.");
+    app.on_key(key(KeyCode::Esc));
+
+    let i = app.sel;
+    app.tickets[i].jira.data = None;
+    app.tickets[i].jira.error = Some("Linear rejected\n\x1b[31mthe API key\u{200b}".into());
+    assert!(app.tickets[i].missing_title(&app.access(&app.tickets[i].t)));
+    prefix(&mut app, KeyCode::Char('e'));
+    assert_eq!(note(&app), "⚠ Linear rejected [31mthe API key\nA title set here stays in taskman.");
+    type_text(&mut app, "Login redirect");
+    app.on_key(key(KeyCode::Enter));
+    assert!(!app.tickets[i].missing_title(&app.access(&app.tickets[i].t)));
+    prefix(&mut app, KeyCode::Char('e'));
+    assert!(note(&app).starts_with("⚠ Linear rejected"), "{}", note(&app));
+    app.on_key(key(KeyCode::Esc));
+
+    // No account: where to pick one, with the prefix in use.
+    app.config.accounts.clear();
+    prefix(&mut app, KeyCode::Char('e'));
+    assert_eq!(
+        note(&app),
+        format!(
+            "No Linear account is picked for this project: open its settings with {} , to pick \
+             one or add one.\nA title set here stays in taskman.",
+            crate::keys::prefix()
+        )
     );
 }
 

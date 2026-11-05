@@ -489,7 +489,11 @@ impl App {
                     "shown under its key; empty goes back to the tracker's",
                 )],
             );
-            form.note = Some("Kept in taskman only: the tracker's title stays as it is.".into());
+            // The hint on the card leads here, so this says why the tracker gave none.
+            form.note = Some(match tv.no_tracker_title(&self.access(&tv.t)) {
+                Some(why) => format!("{why}\nA title set here stays in taskman."),
+                None => "Kept in taskman only: the tracker's title stays as it is.".into(),
+            });
             self.mode = Mode::Form(Box::new(form));
             return;
         };

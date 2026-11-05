@@ -351,7 +351,7 @@ fn sidebar_rows(
                     }
                     row.push(Span::styled(truncate(&untrusted::line(title), room), title_style));
                     lines.push(Line::from(row));
-                } else if tv.missing_title(&app.access(&tv.t)) {
+                } else if !agent && tv.missing_title(&app.access(&tv.t)) {
                     let hint = Span::styled(no_title_hint(w.saturating_sub(3)), yellow());
                     lines.push(Line::from(vec![marker.clone(), Span::raw(" "), hint]));
                 }
@@ -407,7 +407,8 @@ fn sidebar_rows(
 }
 
 /// The title row of a card whose tracker gave it no title (`TicketView::missing_title`), `room`
-/// wide: says so, and how to give it one. The key goes first when the prefix is too long for both.
+/// wide: says so, and names the key whose form gives it one and says why it has none. The key goes
+/// first when the prefix is too long for both.
 fn no_title_hint(room: usize) -> String {
     let says = "⚠ no tracker title";
     let hint = format!("{says} · {} e", prefix().short());

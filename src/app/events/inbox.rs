@@ -509,6 +509,8 @@ fn refuses_a_title_it_cant_give() {
     assert_eq!(app.tickets[i].t.label.as_deref(), Some("Login"));
     let text = refused(titled(&mut app, "0005", "/src/gone", "ENG-52", "Fix"));
     assert!(text.contains("no longer in taskman"), "{text}");
+    // Its toast names the command that asked.
+    assert!(toast(&app).is_some_and(|t| t.starts_with("taskman title: the project in /src/gone")));
     // Asked to close instead, it closes nothing.
     request(
         "0006",
@@ -518,7 +520,9 @@ fn refuses_a_title_it_cant_give() {
         }),
     );
     app.take_inbox();
+    app.close_next();
     assert!(app.tickets.iter().any(|tv| tv.t.key == "ENG-52"));
+    assert_eq!(reply("0006"), [add::Line::ok("ENG-52 isn't open in acme")]);
 }
 
 /// A closed ticket takes its title with it: added again, it starts from the tracker's.

@@ -167,6 +167,11 @@ impl Request {
         self.items.iter().any(|i| matches!(i, Item::Title { .. }))
     }
 
+    /// The command that left it, for a message that isn't an answer to its items.
+    pub fn command(&self) -> &'static str {
+        if self.titles() { "taskman title" } else { "taskman add" }
+    }
+
     /// The tickets to create, each a title and description: the TUI asks the user before creating
     /// them.
     pub fn new_tickets(&self) -> Vec<(&str, &str)> {

@@ -10,7 +10,7 @@ use crate::status_file::Record;
 use crate::store::{self, Ticket};
 use crate::tracker::{Access, Issue};
 use crate::worktree;
-use crate::{resume, untrusted, util};
+use crate::{keys, resume, untrusted, util};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime};
@@ -500,25 +500,51 @@ impl TicketView {
         strip_folder(&raw, &dir).to_string()
     }
 
-    /// Whether the card should say its tracker gave it no title, for `access`, the ticket's
-    /// (`App::access`). Otherwise a tracker that can't be reached leaves a card with its key alone,
-    /// and only the tracker panel, which may be hidden, says why. Quiet with no tracker to ask,
-    /// and until the first answer.
-    pub fn missing_title(&self, access: &Access) -> bool {
-        if self.t.agent.is_some() || self.title().is_some() {
-            return false;
+    /// Why the tracker gave this ticket no title, and what to do about it, for `access`, the
+    /// ticket's (`App::access`), whatever title the card shows instead. None when it gave one, with
+    /// no tracker to ask, and until the first answer. What the tracker said is others' text, so
+    /// it's cleaned, and cut short of filling the form it's shown in.
+    pub fn no_tracker_title(&self, access: &Access) -> Option<String> {
+        let titled = self.jira.data.as_ref().is_some_and(|i| !i.summary.trim().is_empty());
+        if self.t.agent.is_some() || titled {
+            return None;
         }
+        let said = |e: &str| util::truncate(&untrusted::line(e), REASON_WIDTH);
+        let prefix = keys::prefix();
         match access {
-            Access::NoTracker | Access::Reading => false,
-            Access::NoAccount(..) | Access::Failed(_) => true,
-            Access::Client(_) => self.jira.error.is_some() || self.jira.data.is_some(),
+            Access::NoTracker | Access::Reading => None,
+            Access::NoAccount(provider, _) => Some(format!(
+                "No {} account is picked for this project: open its settings with {prefix} , to \
+                 pick one or add one.",
+                provider.label()
+            )),
+            Access::Failed(e) => Some(format!(
+                "⚠ {}\nCheck the account's token, or pick another in the project's settings \
+                 ({prefix} ,).",
+                said(e)
+            )),
+            Access::Client(_) => match (&self.jira.error, &self.jira.data) {
+                (Some(e), _) => Some(format!("⚠ {}", said(e))),
+                (None, Some(_)) => Some("The tracker's answer has no title.".into()),
+                (None, None) => None,
+            },
         }
+    }
+
+    /// Whether the card should say its tracker gave it no title. Otherwise a tracker that can't be
+    /// reached leaves a card with its key alone, and nothing says why while the tracker panel is
+    /// hidden. A title from anywhere ends it: the title form still says why (`no_tracker_title`).
+    pub fn missing_title(&self, access: &Access) -> bool {
+        self.title().is_none() && self.no_tracker_title(access).is_some()
     }
 }
 
 /// The most columns a ticket's own title keeps: a card shows far fewer, and the find picker and an
 /// agent's board a little more.
 const LABEL_WIDTH: usize = 200;
+
+/// The most columns of a tracker's error the title form shows; the tracker panel has it whole.
+const REASON_WIDTH: usize = 300;
 
 /// `text` as a ticket's own title (`Ticket::label`): on one line, without what hides text from a
 /// reader, and cut to `LABEL_WIDTH`. None when that leaves nothing. A session can write it, so it
@@ -637,12 +663,24 @@ mod tests {
         assert!(!tv.missing_title(&Access::Reading), "still reading the token after a failure");
         tv.jira.finish(Ok(issue("  ")));
         assert!(tv.missing_title(&client()));
+        assert_eq!(
+            tv.no_tracker_title(&client()).as_deref(),
+            Some("The tracker's answer has no title.")
+        );
         // A title from anywhere ends it.
         tv.jira.finish(Ok(issue("From the tracker")));
         assert!(!tv.missing_title(&client()));
+        assert_eq!(tv.no_tracker_title(&failed), None);
         let mut own = viewed();
         own.t.label = Some("Mine".into());
         assert!(!own.missing_title(&failed));
+        // The card's quiet then, but the form still has the reason, cleaned and cut.
+        let why = own.no_tracker_title(&failed).unwrap();
+        assert!(why.starts_with("⚠ the token command failed\nCheck the account's token"), "{why}");
+        let long = Access::Failed(format!("\x1b]0;{}", "x".repeat(2000)));
+        let why = own.no_tracker_title(&long).unwrap();
+        let first = why.lines().next().unwrap();
+        assert!(util::width(first) <= REASON_WIDTH + 2 && !first.contains('\x1b'), "{first}");
         // An agent has its name.
         let agent = crate::app::test_support::agent("lead", store::Cli::Claude, None);
         assert!(!TicketView::new(agent).missing_title(&failed));

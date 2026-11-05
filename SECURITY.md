@@ -32,7 +32,7 @@ taskman gives Claude sessions permission (through `--settings`, for that session
 
 Another project's ticket, board or repository is refused in a session, by `--project` or by the key's prefix, so text a session read in a public project can't have it read a private project's tracker with that project's account, or open sessions there, without asking you. Claude's rules match a command's text and can't tell its arguments apart, so taskman checks this itself, by the project in the session's `TASKMAN_REPO`. To go beyond it, the session runs the command with `env -u TASKMAN_REPO` in front, which no rule allows, so Claude asks you first; from your own shell any project works as before.
 
-`taskman close` is deliberately not allowed: a session asks you before closing tickets or removing worktrees. Codex sessions get no allowances; Codex's own sandbox asks. The project check applies in Codex too, in case you let a command through for good.
+`taskman close` and `taskman title` are deliberately not allowed: a session asks you before closing tickets or removing worktrees, or before setting what its ticket's card shows. Codex sessions get no allowances; Codex's own sandbox asks. The project check applies in Codex too, in case you let a command through for good.
 
 ### Tokens are never stored
 

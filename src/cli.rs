@@ -59,12 +59,14 @@ pub(crate) struct Lexer<'a> {
     option: &'a str,
     /// The value it came with after `=`, until `value` takes it.
     inline: Option<&'a str>,
+    /// `--` was read: the rest are words, whatever they look like.
+    words_only: bool,
 }
 
 impl<'a> Lexer<'a> {
     /// `usage` goes with the error for an unknown option.
     pub fn new(args: &'a [String], usage: &'a str) -> Self {
-        Self { args: args.iter(), usage, option: "", inline: None }
+        Self { args: args.iter(), usage, option: "", inline: None, words_only: false }
     }
 
     pub fn next(&mut self) -> Result<Option<Arg<'a>>, String> {
@@ -72,8 +74,13 @@ impl<'a> Lexer<'a> {
         if self.inline.take().is_some() {
             return Err(format!("{} takes no value", self.option));
         }
-        let Some(arg) = self.args.next() else { return Ok(None) };
-        if !arg.starts_with('-') {
+        let Some(mut arg) = self.args.next() else { return Ok(None) };
+        if !self.words_only && arg == "--" {
+            self.words_only = true;
+            let Some(next) = self.args.next() else { return Ok(None) };
+            arg = next;
+        }
+        if self.words_only || !arg.starts_with('-') {
             return Ok(Some(Arg::Word(arg)));
         }
         (self.option, self.inline) = match arg.split_once('=') {
@@ -190,7 +197,7 @@ pub(crate) fn context(me: Option<&Ticket>, saved: &Saved, here: Option<&Here>) -
 
 /// What lifts `confine`. The CLI asks the user before it runs a command written this way, as it
 /// matches no rule of the allow-list.
-pub(crate) const WIDER: &str =
+const WIDER: &str =
     "run the same command with `env -u TASKMAN_REPO` in front, which asks the user first";
 
 /// The project of the session taskman started that the command runs in, by `TASKMAN_REPO`; None
@@ -397,6 +404,14 @@ pub(crate) mod tests {
             lexed(&["--frce=yes"]),
             Err("unknown option --frce\n\nUsage: taskman test".into())
         );
+        // After `--`, words, whatever they look like; the first `--` only.
+        assert_eq!(
+            lexed(&["--json", "--", "--project", "--", "-x", "--jsn=1"]),
+            ok(&["json", "--project", "--", "-x", "--jsn=1"])
+        );
+        assert_eq!(lexed(&["--"]), ok(&[]));
+        // As an option's value it's only that.
+        assert_eq!(lexed(&["--project", "--", "--json"]), ok(&["project --", "json"]));
         // A single dash is never split at `=`.
         assert_eq!(lexed(&["-p=web"]), Err("unknown option -p=web\n\nUsage: taskman test".into()));
         assert_eq!(lexed(&["-"]), Err("unknown option -\n\nUsage: taskman test".into()));

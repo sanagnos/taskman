@@ -8,12 +8,12 @@ use crate::add::{self, Item, Line, Request};
 use crate::cli::{self, Arg, Lexer};
 use crate::status::{self, Here};
 use crate::store::{self, Cli, Saved, Ticket};
-use crate::untrusted;
+use crate::{ticket_key, untrusted};
 use std::time::Duration;
 
-const USAGE: &str = "Usage: taskman title TEXT
-       taskman title KEY TEXT [--project NAME]
-       taskman title --clear [KEY] [--project NAME]
+const USAGE: &str = "Usage: taskman title [--] TEXT
+       taskman title [--project NAME] [--] KEY TEXT
+       taskman title --clear KEY [--project NAME]
 
 Sets what a ticket's card in taskman shows under its key, in place of the tracker's title: the
 same title you can set in taskman, and the last one set wins. It stays in taskman: the tracker's
@@ -21,10 +21,13 @@ title doesn't change, and this one doesn't follow it. If taskman isn't running, 
 starts.
 
   TEXT            the title, in quotes if it has spaces; on one line, cleaned of control
-                  characters, and kept to 200 columns
+                  characters, and kept to 200 columns. Alone, it means the session's own ticket,
+                  and it can't be a ticket's number or key
   KEY             a ticket number (52), key (ENG-52) or link. In a session taskman started, only
-                  the session's own ticket, which is what TEXT alone means there
-  --clear         drop the title, so the card shows the tracker's again
+                  the session's own ticket
+  --              what follows isn't an option: use it before text from a script, which may
+                  start with a dash
+  --clear KEY     drop the ticket's title, so its card shows the tracker's again
   --project NAME  the project, when the folder doesn't say which";
 
 /// How long the command waits for the reply.
@@ -42,7 +45,8 @@ fn title(args: &[String]) -> Result<bool, String> {
     let me = session
         .as_deref()
         .and_then(|s| store::session_ticket(&saved.tickets, s, session_repo.as_deref()));
-    let own = cli::session_project(&saved, session_repo.as_deref())?;
+    let own = cli::session_project(&saved, session_repo.as_deref())
+        .map_err(|_| "this session's project is no longer in taskman".to_string())?;
     let (p, key) = target(&a, &saved, me, own, Here::current().as_ref())?;
     let codex = std::env::var(status::CODEX_NO_NETWORK).is_ok_and(|v| v == "1");
     let req = Request {
@@ -89,37 +93,54 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut lex = Lexer::new(args, USAGE);
     while let Some(arg) = lex.next()? {
         match arg {
-            Arg::Option("--clear") => clear = true,
+            // Takes the ticket as its value, so `taskman title "$TITLE"` or `taskman title KEY
+            // "$TITLE"` with `--clear` in the variable is refused for want of one, rather than
+            // losing the title.
+            Arg::Option("--clear") => {
+                clear = true;
+                a.input = Some(lex.value()?.to_string());
+            }
             Arg::Option("--project") => a.project = Some(lex.value()?.to_string()),
             Arg::Option(_) => return Err(lex.unknown()),
             Arg::Word(w) => words.push(w.to_string()),
         }
     }
+    if clear {
+        return if words.is_empty() {
+            Ok(a)
+        } else {
+            Err("--clear takes the ticket, and no title".into())
+        };
+    }
     let mut words = words.into_iter();
-    match (clear, words.len()) {
-        (true, 0) => {}
-        (true, 1) => a.input = words.next(),
-        (true, _) => return Err("--clear takes at most a ticket, not a title".into()),
-        (false, 0) => {
+    match words.len() {
+        0 => {
             return Err(format!(
                 "give the title, like taskman title \"Fix the login redirect\"\n\n{USAGE}"
             ));
         }
-        (false, 1) => a.text = words.next().unwrap_or_default(),
-        (false, 2) => (a.input, a.text) = (words.next(), words.next().unwrap_or_default()),
-        (false, _) => return Err("put the title in quotes, as one argument".into()),
+        1 => a.text = words.next().unwrap_or_default(),
+        2 => (a.input, a.text) = (words.next(), words.next().unwrap_or_default()),
+        _ => return Err("put the title in quotes, as one argument".into()),
+    }
+    // Someone naming a ticket and forgetting the title shouldn't title their own ticket with it.
+    if a.input.is_none() && (ticket_key::is_number(&a.text) || ticket_key::parse(&a.text).is_some())
+    {
+        return Err(format!(
+            "{0} looks like a ticket, not a title: give both, like taskman title {0} \"Fix the login redirect\"",
+            a.text
+        ));
     }
     // `"$TITLE"` with nothing in it isn't asking to lose the title.
-    if !clear && a.text.trim().is_empty() {
-        return Err("the title is empty; to drop the one it has, pass --clear".into());
+    if a.text.trim().is_empty() {
+        return Err("the title is empty; to drop the one it has, pass --clear KEY".into());
     }
     Ok(a)
 }
 
 /// The project and key of the ticket to title. A session asks the user before running this (it's
 /// not on `hook::settings_json`'s allow-list), but a user can allow it for good, and text the
-/// session read shouldn't then be able to relabel any card: it reaches its own ticket only, and
-/// only a command that leaves its environment goes wider.
+/// session read shouldn't then be able to relabel any card: it reaches its own ticket only.
 fn target(
     a: &Args,
     saved: &Saved,
@@ -149,13 +170,10 @@ fn target(
         .iter()
         .position(|p| p.repo == t.repo)
         .ok_or_else(|| format!("{}'s project is no longer in taskman", t.key))?;
-    cli::confine(p, own, saved)?;
+    // Narrower than `cli::confine`, which keeps a session to its project, and with no way wider to
+    // offer: a card's title gives no reason for one.
     if own.is_some() && !me.is_some_and(|m| m.is(&t.repo, &t.key)) {
-        return Err(format!(
-            "that's {}, and a session sets only its own ticket's title. To go ahead, {}.",
-            t.key,
-            cli::WIDER
-        ));
+        return Err(format!("that's {}, and a session sets only its own ticket's title", t.key));
     }
     Ok((p, t.key.clone()))
 }
@@ -177,7 +195,6 @@ mod tests {
             args(&["ENG-52", "Fix login"]),
             Ok(Args { input: Some("ENG-52".into()), ..text("Fix login") })
         );
-        assert_eq!(args(&["--clear"]), Ok(Args::default()));
         assert_eq!(
             args(&["--clear", "52", "--project=acme"]),
             Ok(Args {
@@ -186,12 +203,32 @@ mod tests {
                 ..Default::default()
             })
         );
+        assert_eq!(args(&["--clear=52"]).unwrap().input.as_deref(), Some("52"));
         assert!(args(&[]).unwrap_err().starts_with("give the title"));
         assert!(args(&["a", "b", "c"]).unwrap_err().contains("in quotes"));
-        assert!(args(&["--clear", "52", "Fix"]).unwrap_err().contains("--clear takes at most"));
+        assert!(args(&["--clear", "52", "Fix"]).unwrap_err().contains("--clear takes the ticket"));
+        // A lone word that's a ticket isn't its title; given both, or as the title, it can be.
+        for lone in ["ENG-53", "eng-53", "53", "https://linear.app/acme/issue/ENG-53/fix"] {
+            let e = args(&[lone]).unwrap_err();
+            assert!(e.contains("looks like a ticket, not a title"), "{e}");
+            assert!(args(&["--", lone]).unwrap_err().contains("looks like a ticket"));
+        }
+        assert_eq!(args(&["ENG-52", "ENG-53"]).unwrap().text, "ENG-53");
+        // A script's text starting with a dash, after `--`; without it, it's refused.
+        assert_eq!(args(&["--", "-v is broken"]), Ok(text("-v is broken")));
+        assert_eq!(
+            args(&["--", "ENG-52", "--flag"]),
+            Ok(Args { input: Some("ENG-52".into()), ..text("--flag") })
+        );
+        assert!(args(&["-v is broken"]).unwrap_err().starts_with("unknown option -v is broken"));
+        // `--clear` in a script's variable loses nothing, however it's passed; after `--`, it's
+        // only text.
+        assert_eq!(args(&["--clear"]), Err("--clear needs a value".into()));
+        assert_eq!(args(&["ENG-52", "--clear"]), Err("--clear needs a value".into()));
+        assert_eq!(args(&["--", "--clear"]), Ok(text("--clear")));
         // An empty variable doesn't clear what's there.
         for empty in [&[""][..], &["  "], &["ENG-52", ""]] {
-            assert!(args(empty).unwrap_err().contains("pass --clear"), "{empty:?}");
+            assert!(args(empty).unwrap_err().contains("pass --clear KEY"), "{empty:?}");
         }
         assert!(args(&["--force"]).unwrap_err().starts_with("unknown option --force"));
         assert_eq!(args(&["x", "--project="]), Err("--project needs a value".into()));
@@ -224,22 +261,26 @@ mod tests {
         let (me, own) = session(&s, "ENG-52", "/src/acme-web");
         let of = |a: &[&str]| target(&args(a).unwrap(), &s, me, own, None);
         // Its own, with the key or without, however it's written.
-        for a in
-            [&["Fix"][..], &["ENG-52", "Fix"], &["eng-52", "Fix"], &["52", "Fix"], &["--clear"]]
-        {
+        for a in [
+            &["Fix"][..],
+            &["ENG-52", "Fix"],
+            &["eng-52", "Fix"],
+            &["52", "Fix"],
+            &["--clear", "52"],
+        ] {
             assert_eq!(of(a), Ok((0, "ENG-52".into())), "{a:?}");
         }
-        // Another ticket of its project: how to go ahead, which asks the user.
-        let e = of(&["ENG-53", "Fix"]).unwrap_err();
-        assert!(
-            e.contains("a session sets only its own") && e.contains("env -u TASKMAN_REPO"),
-            "{e}"
+        // Another ticket of its project, or another project's by its prefix or by name: refused,
+        // with no way around it offered.
+        let refused = "and a session sets only its own ticket's title";
+        assert_eq!(of(&["ENG-53", "Fix"]), Err(format!("that's ENG-53, {refused}")));
+        assert_eq!(of(&["53", "Fix"]), Err(format!("that's ENG-53, {refused}")));
+        assert_eq!(of(&["--clear", "53"]), Err(format!("that's ENG-53, {refused}")));
+        assert_eq!(of(&["API-7", "Fix"]), Err(format!("that's API-7, {refused}")));
+        assert_eq!(
+            of(&["API-7", "Fix", "--project", "acme-api"]),
+            Err(format!("that's API-7, {refused}"))
         );
-        assert!(of(&["53", "Fix"]).unwrap_err().contains("only its own"));
-        // Another project's, by its prefix or by name.
-        assert!(of(&["API-7", "Fix"]).is_err());
-        let e = of(&["API-7", "Fix", "--project", "acme-api"]).unwrap_err();
-        assert!(e.contains("that's project acme-api"), "{e}");
     }
 
     #[test]

@@ -7,10 +7,11 @@ mod common;
 
 use std::path::Path;
 use std::process::{Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-/// `taskman title ARGS` in `session`'s environment as taskman sets it, in `repo`; no session outside
-/// one.
+/// `taskman title ARGS` in `session`'s environment as taskman sets it, in `repo`; no session
+/// outside one.
 fn run(dir: &Path, repo: &Path, session: Option<&str>, args: &[&str]) -> (bool, String, String) {
     let mut cmd = common::taskman(dir);
     if let Some(s) = session {
@@ -57,10 +58,9 @@ fn sets_a_title_on_a_running_taskman() {
     tui.step("not another ticket");
     let (ok, _, err) = run(&dir, &repo, Some("ENG-1"), &["ENG-2", "Other"]);
     assert!(!ok);
-    assert!(
-        err.contains("a session sets only its own ticket's title")
-            && err.contains("env -u TASKMAN_REPO"),
-        "{err}"
+    assert_eq!(
+        err,
+        "taskman title: that's ENG-2, and a session sets only its own ticket's title\n"
     );
     assert_eq!(saved_label(&dir, "ENG-2"), None);
 
@@ -73,6 +73,13 @@ fn sets_a_title_on_a_running_taskman() {
         .unwrap();
     let status = String::from_utf8_lossy(&out.stdout);
     assert!(status.contains("ENG-1 test") && !status.contains("redirect"), "{status}");
+
+    tui.step("a title that starts with a dash, after --");
+    let (ok, out, err) = run(&dir, &repo, Some("ENG-1"), &["--", "--clear"]);
+    assert!(ok, "{out}\n{err}");
+    tui.wait_until("the text to be saved", || {
+        saved_label(&dir, "ENG-1").as_deref() == Some("--clear")
+    });
 
     tui.step("a shell clears it");
     let (ok, out, err) = run(&dir, &repo, None, &["--clear", "ENG-1"]);
@@ -105,15 +112,33 @@ fn a_title_waits_for_taskman_to_start() {
 fn an_older_taskman_is_told_apart() {
     let dir = common::scratch_dir("title-older");
     let repo = common::project(&dir, &["ENG-1"]);
-    // A heartbeat from a running taskman of the inbox format before this one: this test's process
-    // stands in for it, so the pid is alive.
+    // The heartbeat of a running taskman of the inbox format before this one, kept fresh for as
+    // long as the command takes, as a slow machine could otherwise see it go stale and queue the
+    // request. This test's process stands in for it, so the pid is alive.
     let inbox = dir.join("state/taskman/inbox");
     std::fs::create_dir_all(&inbox).unwrap();
     let alive = serde_json::json!({
         "version": "0.1.36", "inbox": 6, "lock": true, "pid": std::process::id(),
     });
-    std::fs::write(inbox.join("alive"), alive.to_string()).unwrap();
-    let (ok, out, err) = run(&dir, &repo, None, &["ENG-1", "Fix"]);
+    let (file, done) = (inbox.join("alive"), AtomicBool::new(false));
+    // Whole, and renamed into place as a taskman writes it, so the command never reads it cut short.
+    let beat = || {
+        let next = inbox.join("alive.next");
+        std::fs::write(&next, alive.to_string()).unwrap();
+        std::fs::rename(&next, &file).unwrap();
+    };
+    beat();
+    let (ok, out, err) = std::thread::scope(|s| {
+        s.spawn(|| {
+            while !done.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(200));
+                beat();
+            }
+        });
+        let said = run(&dir, &repo, None, &["ENG-1", "Fix"]);
+        done.store(true, Ordering::Relaxed);
+        said
+    });
     assert!(!ok, "{out}");
     assert!(
         err.starts_with(
@@ -139,6 +164,10 @@ fn refuses_what_it_cant_mean() {
         (&["ENG-1", ""], "taskman title: the title is empty"),
         (&["ENG-9", "Fix"], "taskman title: ENG-9 isn't open in acme"),
         (&["a", "b", "c"], "taskman title: put the title in quotes"),
+        (&["--clear"], "taskman title: --clear needs a value"),
+        (&["ENG-1", "--clear"], "taskman title: --clear needs a value"),
+        (&["ENG-1"], "taskman title: ENG-1 looks like a ticket"),
+        (&["-v broken"], "taskman title: unknown option -v broken"),
         (&["--project="], "taskman title: --project needs a value"),
     ] {
         let (ok, out, err) = run(&dir, &repo, None, args);

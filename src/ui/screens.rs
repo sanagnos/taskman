@@ -106,7 +106,7 @@ fn ticket_without_a_tracker_title() {
     select(&mut app, "ENG-70");
     let tv = app.tickets.iter_mut().find(|tv| tv.t.key == "ENG-70").unwrap();
     tv.jira.data = None;
-    tv.jira.error = Some("Jira rejected the credentials (check the email and API token)".into());
+    tv.jira.error = Some("Linear rejected the API key".into());
     assert_snapshot!(draw(&mut app, 160, 40));
 }
 
@@ -122,6 +122,19 @@ fn ticket_with_a_title_of_its_own() {
 #[test]
 fn ticket_title_form() {
     let mut app = acme_app();
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(KeyCode::Char('e')));
+    assert_snapshot!(draw(&mut app, 100, 30));
+}
+
+/// The hint's key leads here, so the form says why there's no title.
+#[test]
+fn ticket_title_form_saying_why_the_tracker_gave_none() {
+    let mut app = acme_app();
+    select(&mut app, "ENG-70");
+    let tv = app.tickets.iter_mut().find(|tv| tv.t.key == "ENG-70").unwrap();
+    tv.jira.data = None;
+    tv.jira.error = Some("Couldn't reach Linear at api.linear.app: the connection timed out; taskman tries again on the next refresh".into());
     app.on_key(crate::app::test_support::ctrl('a'));
     app.on_key(crate::app::test_support::key(KeyCode::Char('e')));
     assert_snapshot!(draw(&mut app, 100, 30));

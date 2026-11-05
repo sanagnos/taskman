@@ -518,7 +518,7 @@ impl App {
             let e = format!("the project in {} is no longer in taskman", store::tilde(&req.repo));
             return (
                 req.items.iter().map(|_| add::Line::err(e.clone())).collect(),
-                Some(format!("taskman add: {e}")),
+                Some(format!("{}: {e}", req.command())),
             );
         };
         let mut added = Vec::new();
@@ -528,7 +528,7 @@ impl App {
             Err(e) => {
                 return (
                     req.items.iter().map(|_| add::Line::err(e.clone())).collect(),
-                    Some(format!("taskman add: {e}")),
+                    Some(format!("{}: {e}", req.command())),
                 );
             }
         };

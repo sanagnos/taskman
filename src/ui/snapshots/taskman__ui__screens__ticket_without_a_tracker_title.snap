@@ -3,8 +3,8 @@ source: src/ui/screens.rs
 expression: "draw(&mut app, 160, 40)"
 ---
 " taskman v0.0.0              │  ENG-70                                     /src/acme-ENG-70 eng-70-work    ╭ Linear ENG-70 ────────────────── updated just now ╮"
-"                             │                                                                             │ ⚠ Jira rejected the credentials (check the email  │"
-"▾ acme                       │                  The Claude session for ENG-70 has ended.                   │ and API token)                                    │"
+"                             │                                                                             │ ⚠ Linear rejected the API key                     │"
+"▾ acme                       │                  The Claude session for ENG-70 has ended.                   │                                                   │"
 " ─────────────────────────── │                                                                             │                                                   │"
 "  ✦ lead         ● your turn │         Press Enter to resume it, or ctrl+a x to close the ticket.          │                                                   │"
 "                             │                                                                             │                                                   │"
