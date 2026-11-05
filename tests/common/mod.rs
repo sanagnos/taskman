@@ -36,6 +36,9 @@ pub fn taskman(dir: &Path) -> Command {
                     "SSH_TTY",
                     "TERM_PROGRAM",
                     "KITTY_WINDOW_ID",
+                    // What a tracker's connection trusts (`net::trusted`).
+                    "SSL_CERT_FILE",
+                    "SSL_CERT_DIR",
                 ]
                 .contains(&k)
         }) {
