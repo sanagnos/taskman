@@ -23,7 +23,7 @@ impl LinearConfig {
 
     /// A client for the API at `endpoint`: Linear's, or a test's recorded responses.
     pub(crate) fn at(endpoint: &str, key: &str) -> Self {
-        let agent = net::TrackerAgent::new(net::TRACKER_TIMEOUT, false);
+        let agent = net::TrackerAgent::new(net::TRACKER_TIMEOUT);
         Self { endpoint: endpoint.to_string(), key: key.to_string(), agent }
     }
 

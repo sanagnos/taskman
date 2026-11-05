@@ -8,11 +8,28 @@ use crate::tracker::{
 use crate::util::parse_ts;
 use base64::Engine;
 use serde_json::{Value, json};
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
+use ureq::Body;
+use ureq::http::Response;
 
 /// How long each question to `serverInfo` may take: it's asked after a request has already failed.
 const SERVER_INFO_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long after asking `serverInfo` and getting no clear answer it may be asked again: a failure
+/// repeats with every refresh, and each asking can send credentials.
+const ASK_AGAIN_AFTER: Duration = Duration::from_secs(600);
+
+/// What a client knows about which Jira it's talking to.
+#[derive(Default)]
+struct Deployment {
+    /// Whether it's Data Center or Server, once it has said.
+    self_hosted: Option<bool>,
+    /// When `serverInfo` was last asked.
+    asked: Option<Instant>,
+    /// Jira wants a CAPTCHA solved before it takes another login, so no credentials should go.
+    captcha: bool,
+}
 
 #[derive(Clone)]
 pub struct JiraConfig {
@@ -20,20 +37,19 @@ pub struct JiraConfig {
     auth: String,
     token: String,
     agent: net::TrackerAgent,
-    /// Whether this Jira is Data Center or Server, once a failed request made taskman ask.
-    self_hosted: Arc<OnceLock<bool>>,
+    deployment: Arc<Mutex<Deployment>>,
 }
 
 impl JiraConfig {
     pub fn new(base: &str, email: &str, token: &str) -> Self {
         let auth = base64::engine::general_purpose::STANDARD.encode(format!("{email}:{token}"));
-        let agent = net::TrackerAgent::new(net::TRACKER_TIMEOUT, true);
+        let agent = net::TrackerAgent::new(net::TRACKER_TIMEOUT);
         Self {
             base: base.trim_end_matches('/').to_string(),
             auth,
             token: token.to_string(),
             agent,
-            self_hosted: Arc::default(),
+            deployment: Arc::default(),
         }
     }
 
@@ -43,17 +59,52 @@ impl JiraConfig {
 
     /// `get` with query parameters, encoded.
     fn get_with(&self, path: &str, query: &[(&str, &str)]) -> Result<Value, ureq::Error> {
+        self.unless_self_hosted()?;
         net::retry_dropped(|| {
-            self.agent
+            let mut response = self
+                .agent
                 .ready()
                 .get(&format!("{}{path}", self.base))
                 .query_pairs(query.iter().copied())
                 .header("Authorization", &format!("Basic {}", self.auth))
                 .header("Accept", "application/json")
-                .call()?
-                .body_mut()
-                .read_json()
+                .call()?;
+            self.status_of(&mut response)?;
+            response.body_mut().read_json()
         })
+    }
+
+    /// Refuses a request to a Jira known to be Data Center or Server, before it sends credentials
+    /// that can't work: a failure repeats with every refresh, and failed logins can lock an account.
+    /// The 403 only stands for that, as `failure` says what it means.
+    fn unless_self_hosted(&self) -> Result<(), ureq::Error> {
+        match self.deployment().self_hosted {
+            Some(true) => Err(ureq::Error::StatusCode(403)),
+            _ => Ok(()),
+        }
+    }
+
+    fn deployment(&self) -> MutexGuard<'_, Deployment> {
+        self.deployment.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// An error status as ureq's error, keeping what its body and headers say about this Jira.
+    fn status_of(&self, response: &mut Response<Body>) -> Result<(), ureq::Error> {
+        let status = response.status().as_u16();
+        if status < 400 {
+            return Ok(());
+        }
+        let denied = response.headers().get(DENIED_REASON).and_then(|v| v.to_str().ok());
+        if asks_for_captcha(denied) {
+            self.deployment().captcha = true;
+        }
+        if status == 403
+            && let Ok(body) = response.body_mut().read_to_string()
+            && self_hosted_by(403, &body) == Some(true)
+        {
+            self.deployment().self_hosted = Some(true);
+        }
+        Err(ureq::Error::StatusCode(status))
     }
 
     /// Whether a Jira project with this key exists and is visible to the account. Errors other
@@ -113,13 +164,11 @@ impl JiraConfig {
     /// `create`'s POST, answered whatever its status, as Jira says in the body why it refused.
     /// Never asked again: a request that dropped may have made the ticket.
     fn post(&self, path: &str, body: &Value) -> Result<(u16, Value), ureq::Error> {
+        self.unless_self_hosted()?;
         let mut resp = self
             .agent
             .ready()
             .post(&format!("{}{path}", self.base))
-            .config()
-            .http_status_as_error(false)
-            .build()
             .header("Authorization", &format!("Basic {}", self.auth))
             .header("Accept", "application/json")
             .send_json(body)?;
@@ -157,7 +206,7 @@ impl JiraConfig {
         let place = format!("project {project} in Jira");
         let (status, v) =
             self.post("/rest/api/3/issue", &json!({ "fields": fields })).map_err(|e| {
-                let sent = !tracker::unsent(&e);
+                let sent = !tracker::unsent(&e) && self.deployment().self_hosted != Some(true);
                 let e = self.failure(e, "");
                 if sent { e.map(|e| tracker::maybe_created(&e, &place)) } else { e }
             })?;
@@ -203,43 +252,99 @@ impl JiraConfig {
     }
 
     /// Whether a request that failed with `e` failed because this is Data Center or Server, which
-    /// taskman's Cloud API isn't on. The failure only says it's worth asking: Cloud answers a
-    /// missing ticket with a 404 and a wrong token with a 401 too, and Data Center answers `/rest/api/3`
-    /// with a 403, a 404 or a login page depending on its settings and the credentials.
+    /// taskman's Cloud API isn't on. The failure only says it's worth asking: Cloud answers a missing
+    /// ticket with a 404 and a wrong token with a 401 too, and Data Center answers `/rest/api/3` with
+    /// a 403, a 404 or a login page depending on its settings and the credentials.
     fn self_hosted_after(&self, e: &ureq::Error) -> bool {
         use ureq::Error::{Json, StatusCode};
-        matches!(e, StatusCode(401 | 403 | 404) | Json(_))
-            && !cloud_site(&self.base)
-            && *self.self_hosted.get_or_init(|| self.ask_self_hosted())
+        let status = match e {
+            StatusCode(status @ (401 | 403 | 404)) => Some(*status),
+            Json(_) => None,
+            _ => return false,
+        };
+        if cloud_site(&self.base) {
+            return false;
+        }
+        let credentials = {
+            let mut known = self.deployment();
+            if let Some(self_hosted) = known.self_hosted {
+                return self_hosted;
+            }
+            let now = Instant::now();
+            if !ask_due(known.asked, now) {
+                return false;
+            }
+            known.asked = Some(now);
+            credentials_to_try(status, known.captcha)
+        };
+        // Not kept unless it told: a gateway's page or a timeout says nothing about the Jira behind.
+        let told = credentials.into_iter().find_map(|credential| self.server_info(credential));
+        self.deployment().self_hosted = told;
+        told == Some(true)
     }
 
-    /// Asks `serverInfo` with no credentials, then with the account's as they're sent to Cloud, then
-    /// as a Data Center personal access token, as which of them answers depends on how that Jira is
-    /// set up. They all go to the site the token is for. An answer that doesn't tell is taken for
-    /// Cloud, which leaves the failure as it was.
-    fn ask_self_hosted(&self) -> bool {
-        let credentials =
-            [None, Some(format!("Basic {}", self.auth)), Some(format!("Bearer {}", self.token))];
-        credentials.into_iter().find_map(|auth| self.server_info(auth.as_deref())).unwrap_or(false)
-    }
-
-    fn server_info(&self, auth: Option<&str>) -> Option<bool> {
+    /// What `serverInfo` says when asked with `credential`. All of them go to the site the token is
+    /// for. None when it doesn't tell, or Jira has asked for a CAPTCHA since.
+    fn server_info(&self, credential: Credential) -> Option<bool> {
+        let auth = match credential {
+            Credential::Anonymous => None,
+            _ if self.deployment().captcha => return None,
+            Credential::Basic => Some(format!("Basic {}", self.auth)),
+            Credential::Bearer => Some(format!("Bearer {}", self.token)),
+        };
         let mut request = self
             .agent
             .ready()
             .get(&format!("{}/rest/api/2/serverInfo", self.base))
             .config()
-            .http_status_as_error(false)
             .timeout_global(Some(SERVER_INFO_TIMEOUT))
             .build()
             .header("Accept", "application/json");
         if let Some(auth) = auth {
-            request = request.header("Authorization", auth);
+            request = request.header("Authorization", &auth);
         }
         let mut response = request.call().ok()?;
+        let denied = response.headers().get(DENIED_REASON).and_then(|v| v.to_str().ok());
+        if asks_for_captcha(denied) {
+            self.deployment().captcha = true;
+        }
         let status = response.status().as_u16();
         self_hosted_by(status, &response.body_mut().read_to_string().ok()?)
     }
+}
+
+/// The header Jira says why it refused a login in.
+const DENIED_REASON: &str = "X-Authentication-Denied-Reason";
+
+fn asks_for_captcha(denied: Option<&str>) -> bool {
+    denied.is_some_and(|reason| reason.contains("CAPTCHA"))
+}
+
+/// A way to ask `serverInfo`, as which of them answers depends on how that Jira is set up.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Credential {
+    Anonymous,
+    /// The account's, as they're sent to Cloud.
+    Basic,
+    /// The token as a Data Center personal access token.
+    Bearer,
+}
+
+/// How to ask after a request failed with `status` (None for an answer that wasn't JSON). A 401 has
+/// just refused the Basic login, so it isn't sent again, as failed logins add up to a CAPTCHA or a
+/// lock. Once Jira wants a CAPTCHA, no credentials go at all.
+fn credentials_to_try(status: Option<u16>, captcha: bool) -> Vec<Credential> {
+    use Credential::*;
+    match (captcha, status) {
+        (true, _) => vec![Anonymous],
+        (false, Some(401)) => vec![Anonymous, Bearer],
+        (false, _) => vec![Anonymous, Basic, Bearer],
+    }
+}
+
+/// Whether `serverInfo` may be asked again, having last been asked at `asked`.
+fn ask_due(asked: Option<Instant>, now: Instant) -> bool {
+    asked.is_none_or(|asked| now.duration_since(asked) >= ASK_AGAIN_AFTER)
 }
 
 /// A site under one of Atlassian's own domains is Cloud, so a failure there needs no asking.
@@ -252,14 +357,16 @@ fn cloud_site(base: &str) -> bool {
 /// What an answer from `/rest/api/2/serverInfo` says about the Jira: `deploymentType` is `Cloud` on
 /// Cloud and `Server` on Data Center. Turning Basic authentication off, Data Center's default from
 /// Jira 11, answers every request with a 403 saying so, and is something only Data Center and
-/// Server can do. None for an answer that doesn't tell.
+/// Server can do. None for an answer that doesn't tell, a type it doesn't know included: telling a
+/// Cloud user they're self-hosted would send them the wrong way, and the failure stands as it was.
 fn self_hosted_by(status: u16, body: &str) -> Option<bool> {
     let v: Value = serde_json::from_str(body).ok()?;
     match status {
-        200 => {
-            let deployment = v["deploymentType"].as_str().filter(|d| !d.is_empty())?;
-            Some(!deployment.eq_ignore_ascii_case("cloud"))
-        }
+        200 => match v["deploymentType"].as_str()?.to_ascii_lowercase().as_str() {
+            "cloud" => Some(false),
+            "server" | "datacenter" => Some(true),
+            _ => None,
+        },
         403 => v["message"]
             .as_str()
             .is_some_and(|m| m.contains("Basic Authentication has been disabled"))
@@ -706,7 +813,7 @@ mod tests {
     #[test]
     fn says_when_jira_doesnt_answer_in_time() {
         let server = replay::serve(vec![(replay::HANG, "")]);
-        let quick = net::TrackerAgent::new(std::time::Duration::from_millis(300), true);
+        let quick = net::TrackerAgent::new(std::time::Duration::from_millis(300));
         let cfg =
             JiraConfig { agent: quick, ..JiraConfig::new(&server.url, "ana@example.com", "t") };
         let host = server.url.trim_start_matches("http://");
@@ -720,23 +827,37 @@ mod tests {
 
     const SELF_HOSTED: &str = "is Jira Data Center or Server, which taskman doesn't support yet: it works with Jira Cloud only";
 
-    /// How Jira 11 answers by default: Basic is off, for every path, and serverInfo tells nobody
-    /// without credentials.
+    /// How Jira 11 answers by default: Basic is off, for every path. The 403 says so itself, so
+    /// nothing else needs asking, and no more logins are sent once it has.
     #[test]
     fn says_so_when_basic_authentication_is_off_on_data_center() {
         let off = r#"{"message":"Basic Authentication has been disabled on this instance."}"#;
-        let server = replay::serve(vec![
-            (403, off),
-            (401, r#"{"errorMessages":[],"errors":{}}"#),
-            (403, off),
-        ]);
-        let e = client(&server).fetch("ENG-52", Text::Plain).unwrap_err();
-        assert!(String::from(e).ends_with(SELF_HOSTED));
-        let asked = server.requests();
-        assert_eq!(asked.len(), 3);
-        assert!(asked[1].line.starts_with("GET /rest/api/2/serverInfo "), "{}", asked[1].line);
-        assert_eq!(asked[1].header("authorization"), None);
-        assert!(asked[2].header("authorization").unwrap().starts_with("Basic "));
+        let server = replay::serve(vec![(403, off)]);
+        let c = client(&server);
+        for _ in 0..3 {
+            let e = c.fetch("ENG-52", Text::Plain).unwrap_err();
+            assert!(String::from(e).ends_with(SELF_HOSTED));
+        }
+        assert_eq!(server.requests().len(), 1);
+    }
+
+    /// Once known, neither reading nor creating sends the login again.
+    #[test]
+    fn known_self_hosted_sends_no_more_credentials() {
+        let info = r#"{"deploymentType":"Server"}"#;
+        let server = replay::serve(vec![(404, "<html></html>"), (401, "{}"), (200, info)]);
+        let cfg = JiraConfig::new(&server.url, "ana@example.com", "t");
+        for _ in 0..2 {
+            let e = cfg.whoami().unwrap_err();
+            assert!(e.ends_with(SELF_HOSTED), "{e}");
+        }
+        let e = cfg.create("ENG", "Fix login", "").unwrap_err();
+        let said = String::from(e);
+        assert!(said.ends_with(SELF_HOSTED), "{said}");
+        assert!(!said.contains("may have been created"), "{said}");
+        assert_eq!(server.requests().len(), 3);
+        assert!(cfg.post("/rest/api/3/issue", &json!({})).is_err());
+        assert_eq!(server.requests().len(), 0);
     }
 
     /// With Basic on and credentials that work, /rest/api/3 is a 404 page, which mustn't read as a
@@ -760,12 +881,12 @@ mod tests {
         assert!(e.ends_with(SELF_HOSTED), "{e}");
     }
 
-    /// A personal access token answers as Bearer only.
+    /// A personal access token answers as Bearer only. The 401 has just refused the login, so it
+    /// isn't sent again.
     #[test]
     fn asks_with_a_personal_access_token_last() {
         let denied = r#"{"errorMessages":[],"errors":{}}"#;
         let server = replay::serve(vec![
-            (401, denied),
             (401, denied),
             (401, denied),
             (200, r#"{"deploymentType":"Server"}"#),
@@ -773,7 +894,67 @@ mod tests {
         let e = client(&server).fetch("ENG-52", Text::Plain).unwrap_err();
         assert!(String::from(e).ends_with(SELF_HOSTED));
         let asked = server.requests();
-        assert_eq!(asked[3].header("authorization"), Some("Bearer token-1"));
+        assert_eq!(asked.len(), 3);
+        assert_eq!(asked[1].header("authorization"), None);
+        assert_eq!(asked[2].header("authorization"), Some("Bearer token-1"));
+    }
+
+    #[test]
+    fn asks_without_credentials_jira_just_refused() {
+        use Credential::*;
+        assert_eq!(credentials_to_try(Some(401), false), [Anonymous, Bearer]);
+        for status in [Some(403), Some(404), None] {
+            assert_eq!(credentials_to_try(status, false), [Anonymous, Basic, Bearer]);
+            assert_eq!(credentials_to_try(status, true), [Anonymous]);
+        }
+        assert_eq!(credentials_to_try(Some(401), true), [Anonymous]);
+    }
+
+    #[test]
+    fn knows_when_jira_wants_a_captcha() {
+        let header = "CAPTCHA_CHALLENGE; login-url=https://jira.example.com/login.jsp";
+        assert!(asks_for_captcha(Some(header)));
+        assert!(!asks_for_captcha(Some("AUTHENTICATION_DENIED")));
+        assert!(!asks_for_captcha(None));
+    }
+
+    /// A gateway's page with the VPN off says nothing about the Jira behind it, so it isn't kept:
+    /// asked again once it's due, Jira answers. Until then, nothing more is sent.
+    #[test]
+    fn an_answer_that_doesnt_tell_isnt_kept() {
+        let page = "<html>Forbidden</html>";
+        let info = r#"{"deploymentType":"Server"}"#;
+        let server = replay::serve(vec![
+            (403, page),
+            (403, page),
+            (403, page),
+            (403, page),
+            (403, page),
+            (404, page),
+            (200, info),
+        ]);
+        let c = client(&server);
+        let Client::Jira(jira) = &c else { unreachable!() };
+        let rejected = "Jira rejected the credentials (check the email and API token)";
+        for _ in 0..2 {
+            let e = c.fetch("ENG-52", Text::Plain).unwrap_err();
+            assert_eq!(e, Auth(rejected.into()));
+        }
+        assert_eq!(jira.deployment().self_hosted, None);
+        assert_eq!(server.requests().len(), 5);
+        jira.deployment().asked = None;
+        let e = c.fetch("ENG-52", Text::Plain).unwrap_err();
+        assert!(String::from(e).ends_with(SELF_HOSTED));
+        assert_eq!(server.requests().len(), 2);
+    }
+
+    #[test]
+    fn asks_again_only_once_its_due() {
+        let now = Instant::now();
+        assert!(ask_due(None, now));
+        assert!(!ask_due(Some(now), now));
+        assert!(!ask_due(Some(now), now + ASK_AGAIN_AFTER - Duration::from_secs(1)));
+        assert!(ask_due(Some(now), now + ASK_AGAIN_AFTER));
     }
 
     /// A Cloud site on a domain of its own keeps Cloud's words, and asks once.
@@ -805,6 +986,7 @@ mod tests {
         assert_eq!(self_hosted_by(200, r#"{"deploymentType":"Server"}"#), Some(true));
         assert_eq!(self_hosted_by(200, r#"{"deploymentType":"DataCenter"}"#), Some(true));
         assert_eq!(self_hosted_by(200, r#"{"deploymentType":"Cloud"}"#), Some(false));
+        assert_eq!(self_hosted_by(200, r#"{"deploymentType":"Something new"}"#), None);
         let off = r#"{"message":"Basic Authentication has been disabled on this instance."}"#;
         assert_eq!(self_hosted_by(403, off), Some(true));
         for (status, body) in [

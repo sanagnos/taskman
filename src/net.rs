@@ -38,19 +38,19 @@ fn loopback_only(
 #[derive(Clone)]
 pub struct TrackerAgent {
     timeout: Duration,
-    http_status_as_error: bool,
     agent: Arc<OnceLock<ureq::Agent>>,
 }
 
 impl TrackerAgent {
-    /// An agent limiting each request to `timeout`; `http_status_as_error` as in ureq's config.
-    pub fn new(timeout: Duration, http_status_as_error: bool) -> Self {
-        Self { timeout, http_status_as_error, agent: Arc::default() }
+    /// An agent limiting each request to `timeout` and answering whatever the status: a tracker
+    /// says in the body why it refused.
+    pub fn new(timeout: Duration) -> Self {
+        Self { timeout, agent: Arc::default() }
     }
 
     pub fn ready(&self) -> &ureq::Agent {
         self.agent.get_or_init(|| {
-            let config = config(self.timeout).http_status_as_error(self.http_status_as_error);
+            let config = config(self.timeout).http_status_as_error(false);
             // Unit tests stay on `replay`'s plain HTTP, and away from this machine's certificates.
             if cfg!(test) {
                 return config.build().into();
@@ -209,7 +209,7 @@ mod tests {
     #[test]
     fn unit_tests_reach_only_the_local_server() {
         let plain: ureq::Agent = config(TRACKER_TIMEOUT).build().into();
-        let tracker = TrackerAgent::new(TRACKER_TIMEOUT, true);
+        let tracker = TrackerAgent::new(TRACKER_TIMEOUT);
         for agent in [&plain, tracker.ready()] {
             for url in ["https://example.atlassian.net/rest/api/3/myself", "http://localhost:1/"] {
                 let got = agent.get(url).call();
