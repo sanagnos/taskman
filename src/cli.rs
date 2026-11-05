@@ -54,7 +54,8 @@ pub(crate) enum Arg<'a> {
 /// `--x=VALUE` and refuses an empty value, a value given to an option that takes none and an
 /// unknown option alike. Each command matches only the options it knows. A first `--` ends the
 /// options: what follows is words, for text from a script that may start with a dash. An option
-/// taking a value takes the next argument whatever it is, `--` too.
+/// taking a value takes the next argument as its value, `--` included. That's the lexer only:
+/// `cli::run` looks for `-h` and `--help` first, in everything before a `--`, a value too.
 pub(crate) struct Lexer<'a> {
     args: std::slice::Iter<'a, String>,
     usage: &'a str,

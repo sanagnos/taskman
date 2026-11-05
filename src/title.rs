@@ -22,7 +22,8 @@ starts.
 
   TEXT            the title, in quotes if it has spaces; on one line, cleaned of control
                   characters, and kept to 200 columns. Alone, it means the session's own ticket,
-                  and it can't be a ticket's number or key
+                  and it can't be one word that reads as a ticket's number or key; to use one
+                  as the title, name the ticket first: taskman title ENG-52 sha-256
   KEY             a ticket number (52), key (ENG-52) or link. In a session taskman started, only
                   the session's own ticket
   --              what follows isn't an option: use it before text from a script, which may
@@ -135,8 +136,8 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         && (ticket_key::is_number(word) || ticket_key::parse(word).is_some())
     {
         return Err(format!(
-            "{word} looks like a ticket, not a title: give both, like taskman title {word} \
-             \"Fix the login redirect\""
+            "{word} looks like a ticket, not a title. To use it as the title, name the ticket \
+             first, like taskman title ENG-52 {word}"
         ));
     }
     // `"$TITLE"` with nothing in it isn't asking to lose the title.
@@ -226,6 +227,7 @@ mod tests {
         for lone in ["ENG-53", "eng-53", "53", "https://linear.app/acme/issue/ENG-53/fix"] {
             let e = args(&[lone]).unwrap_err();
             assert!(e.contains("looks like a ticket, not a title"), "{e}");
+            assert!(e.ends_with(&format!("like taskman title ENG-52 {lone}")), "{e}");
             assert!(args(&["--", lone]).unwrap_err().contains("looks like a ticket"));
         }
         assert_eq!(args(&["ENG-52", "ENG-53"]).unwrap().text, "ENG-53");

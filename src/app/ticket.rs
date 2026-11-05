@@ -520,7 +520,8 @@ impl TicketView {
             )),
             // The reason last, as a form too tall for its window scrolls from the top.
             Access::Failed(e) => Some(format!(
-                "Check the account's token, or pick another in the project's settings ({prefix} ,).\n\
+                "Check the account's token, or pick another in the project's settings \
+                 ({prefix} ,).\n\
                  ⚠ {}",
                 said(e)
             )),
