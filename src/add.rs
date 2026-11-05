@@ -1277,6 +1277,17 @@ mod tests {
         );
     }
 
+    /// `--new` takes the next argument whatever it is, so a title that's `--` stays one, rather
+    /// than ending the options and leaving `--new` without a value.
+    #[test]
+    fn a_new_tickets_title_can_be_two_dashes() {
+        let args = |v: &[&str]| parse_args(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(args(&["--new", "--"]).unwrap().new, ["--"]);
+        assert_eq!(args(&["--new=--"]).unwrap().new, ["--"]);
+        // After `--`, what would be an option is a word, which the key check then refuses.
+        assert_eq!(args(&["--", "--new"]).unwrap().inputs, ["--new"]);
+    }
+
     #[test]
     fn takes_a_role_only_for_an_agent() {
         let a = parse_args(&[

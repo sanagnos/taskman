@@ -486,14 +486,13 @@ impl App {
                 vec![Field::text(
                     "Title",
                     tv.t.label.clone().unwrap_or_default(),
-                    "shown under its key; empty goes back to the tracker's",
+                    "kept in taskman, under its key; empty goes back to the tracker's",
                 )],
             );
-            // The hint on the card leads here, so this says why the tracker gave none.
-            form.note = Some(match tv.no_tracker_title(&self.access(&tv.t)) {
-                Some(why) => format!("{why}\nA title set here stays in taskman."),
-                None => "Kept in taskman only: the tracker's title stays as it is.".into(),
-            });
+            // The hint on the card leads here, so this says why the tracker gave none. On its own
+            // above the field: a form too tall for the window loses its top rows first, and one
+            // field has no keys to scroll them back.
+            form.note = tv.no_tracker_title(&self.access(&tv.t));
             self.mode = Mode::Form(Box::new(form));
             return;
         };

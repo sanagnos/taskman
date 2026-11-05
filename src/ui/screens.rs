@@ -127,6 +127,37 @@ fn ticket_title_form() {
     assert_snapshot!(draw(&mut app, 100, 30));
 }
 
+const UNREACHABLE: &str = "Couldn't reach Linear at api.linear.app: the connection timed out; \
+     taskman tries again on the next refresh";
+
+/// One field has no keys to scroll with, so a window too short for the form loses its top rows
+/// for good: the advice on a failed token, with the reason kept right above the field.
+#[test]
+fn a_short_window_keeps_the_reason_above_the_title_field() {
+    let mut app = acme_app();
+    select(&mut app, "ENG-70");
+    let why = "the token command failed: op: the vault is locked; unlock it and start afresh";
+    crate::app::test_support::token_failed(&mut app, why);
+    let tv = app.tickets.iter_mut().find(|tv| tv.t.key == "ENG-70").unwrap();
+    tv.jira.data = None;
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(KeyCode::Char('e')));
+    let (advice, reason) = ("Check the account's token", "afresh");
+    // Shrunk a row at a time from a window it fits in, as the form's view moves only when it must.
+    let screens: Vec<(u16, String)> =
+        (12..=30).rev().map(|h| (h, draw(&mut app, 100, h))).collect();
+    let (whole, screen) = screens.iter().rfind(|(_, s)| s.contains(advice)).unwrap();
+    assert!(screen.contains(reason), "{whole} rows:\n{screen}");
+    // Short of that, the advice goes first, and the reason, the field and the keys stay.
+    let (_, screen) = &screens[screens.iter().position(|(h, _)| h == whole).unwrap() + 1];
+    assert!(!screen.contains(advice) && screen.contains("⚠ the token command"), "{screen}");
+    assert!(screen.contains(reason) && screen.contains("Enter save"), "{screen}");
+    // On any window the form still works in, the field and the keys are there.
+    for (h, screen) in &screens {
+        assert!(screen.contains("Title") && screen.contains("Enter save"), "{h} rows:\n{screen}");
+    }
+}
+
 /// The hint's key leads here, so the form says why there's no title.
 #[test]
 fn ticket_title_form_saying_why_the_tracker_gave_none() {
@@ -134,7 +165,7 @@ fn ticket_title_form_saying_why_the_tracker_gave_none() {
     select(&mut app, "ENG-70");
     let tv = app.tickets.iter_mut().find(|tv| tv.t.key == "ENG-70").unwrap();
     tv.jira.data = None;
-    tv.jira.error = Some("Couldn't reach Linear at api.linear.app: the connection timed out; taskman tries again on the next refresh".into());
+    tv.jira.error = Some(UNREACHABLE.into());
     app.on_key(crate::app::test_support::ctrl('a'));
     app.on_key(crate::app::test_support::key(KeyCode::Char('e')));
     assert_snapshot!(draw(&mut app, 100, 30));

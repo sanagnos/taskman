@@ -32,6 +32,15 @@ fn saved_label(dir: &Path, key: &str) -> Option<String> {
     t["label"].as_str().map(String::from)
 }
 
+/// Sets its flag as it's dropped, however the scope it's in ends.
+struct Stop<'a>(&'a AtomicBool);
+
+impl Drop for Stop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
 #[test]
 fn sets_a_title_on_a_running_taskman() {
     let dir = common::scratch_dir("title-running");
@@ -121,7 +130,8 @@ fn an_older_taskman_is_told_apart() {
         "version": "0.1.36", "inbox": 6, "lock": true, "pid": std::process::id(),
     });
     let (file, done) = (inbox.join("alive"), AtomicBool::new(false));
-    // Whole, and renamed into place as a taskman writes it, so the command never reads it cut short.
+    // Whole, and renamed into place as a taskman writes it, so the command never reads it cut
+    // short.
     let beat = || {
         let next = inbox.join("alive.next");
         std::fs::write(&next, alive.to_string()).unwrap();
@@ -135,9 +145,9 @@ fn an_older_taskman_is_told_apart() {
                 beat();
             }
         });
-        let said = run(&dir, &repo, None, &["ENG-1", "Fix"]);
-        done.store(true, Ordering::Relaxed);
-        said
+        // Set by a guard: the scope joins that thread, so a panic here would otherwise hang it.
+        let _stop = Stop(&done);
+        run(&dir, &repo, None, &["ENG-1", "Fix"])
     });
     assert!(!ok, "{out}");
     assert!(
@@ -164,8 +174,8 @@ fn refuses_what_it_cant_mean() {
         (&["ENG-1", ""], "taskman title: the title is empty"),
         (&["ENG-9", "Fix"], "taskman title: ENG-9 isn't open in acme"),
         (&["a", "b", "c"], "taskman title: put the title in quotes"),
-        (&["--clear"], "taskman title: --clear needs a value"),
-        (&["ENG-1", "--clear"], "taskman title: --clear needs a value"),
+        (&["--clear"], "taskman title: --clear needs the ticket"),
+        (&["ENG-1", "--clear"], "taskman title: --clear needs the ticket"),
         (&["ENG-1"], "taskman title: ENG-1 looks like a ticket"),
         (&["-v broken"], "taskman title: unknown option -v broken"),
         (&["--project="], "taskman title: --project needs a value"),
@@ -176,4 +186,42 @@ fn refuses_what_it_cant_mean() {
     }
     let inbox = dir.join("state/taskman/inbox");
     assert!(!inbox.exists() || std::fs::read_dir(&inbox).unwrap().next().is_none());
+}
+
+/// What a script passes after `--` is its text, also when it reads as help: printing the usage and
+/// exiting 0 would look to the script as if the title were set.
+#[test]
+fn after_dashes_help_is_only_text() {
+    let dir = common::scratch_dir("title-dashes");
+    let repo = common::project(&dir, &["ENG-1"]);
+    let requests = || -> String {
+        std::fs::read_dir(dir.join("state/taskman/inbox"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
+            .collect()
+    };
+    for help in ["--help", "-h"] {
+        let (ok, out, err) = run(&dir, &repo, Some("ENG-1"), &["--", help]);
+        assert!(ok, "{out}\n{err}");
+        assert_eq!(out, "taskman isn't running; ENG-1's title is set when it starts.\n");
+        assert!(requests().contains(&format!("\"text\": \"{help}\"")), "{}", requests());
+    }
+    // Before `--` it's still help, and leaves nothing.
+    let before = requests();
+    let (ok, out, _) = run(&dir, &repo, Some("ENG-1"), &["--help", "--", "Fix"]);
+    assert!(ok && out.starts_with("Usage: taskman title"), "{out}");
+    assert_eq!(requests(), before);
+}
+
+/// A title that has a ticket's key in it is still a title, in a session's own words.
+#[test]
+fn a_phrase_with_a_key_in_it_is_a_title() {
+    let dir = common::scratch_dir("title-phrase");
+    let repo = common::project(&dir, &["ENG-1"]);
+    let (ok, out, err) = run(&dir, &repo, Some("ENG-1"), &["Fix ENG-53 fallout"]);
+    assert!(ok, "{out}\n{err}");
+    let (ok, _, err) = run(&dir, &repo, Some("ENG-1"), &["ENG-53"]);
+    assert!(!ok && err.contains("looks like a ticket, not a title"), "{err}");
 }

@@ -518,9 +518,10 @@ impl TicketView {
                  pick one or add one.",
                 provider.label()
             )),
+            // The reason last, as a form too tall for its window scrolls from the top.
             Access::Failed(e) => Some(format!(
-                "⚠ {}\nCheck the account's token, or pick another in the project's settings \
-                 ({prefix} ,).",
+                "Check the account's token, or pick another in the project's settings ({prefix} ,).\n\
+                 ⚠ {}",
                 said(e)
             )),
             Access::Client(_) => match (&self.jira.error, &self.jira.data) {
@@ -544,7 +545,7 @@ impl TicketView {
 const LABEL_WIDTH: usize = 200;
 
 /// The most columns of a tracker's error the title form shows; the tracker panel has it whole.
-const REASON_WIDTH: usize = 300;
+const REASON_WIDTH: usize = 160;
 
 /// `text` as a ticket's own title (`Ticket::label`): on one line, without what hides text from a
 /// reader, and cut to `LABEL_WIDTH`. None when that leaves nothing. A session can write it, so it
@@ -676,11 +677,12 @@ mod tests {
         assert!(!own.missing_title(&failed));
         // The card's quiet then, but the form still has the reason, cleaned and cut.
         let why = own.no_tracker_title(&failed).unwrap();
-        assert!(why.starts_with("⚠ the token command failed\nCheck the account's token"), "{why}");
+        assert!(why.starts_with("Check the account's token"), "{why}");
+        assert!(why.ends_with("\n⚠ the token command failed"), "{why}");
         let long = Access::Failed(format!("\x1b]0;{}", "x".repeat(2000)));
         let why = own.no_tracker_title(&long).unwrap();
-        let first = why.lines().next().unwrap();
-        assert!(util::width(first) <= REASON_WIDTH + 2 && !first.contains('\x1b'), "{first}");
+        let reason = why.lines().last().unwrap();
+        assert!(util::width(reason) <= REASON_WIDTH + 2 && !reason.contains('\x1b'), "{reason}");
         // An agent has its name.
         let agent = crate::app::test_support::agent("lead", store::Cli::Claude, None);
         assert!(!TicketView::new(agent).missing_title(&failed));

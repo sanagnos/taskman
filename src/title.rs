@@ -98,7 +98,10 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             // losing the title.
             Arg::Option("--clear") => {
                 clear = true;
-                a.input = Some(lex.value()?.to_string());
+                let ticket = lex.value().map_err(|_| {
+                    "--clear needs the ticket, like taskman title --clear ENG-52".to_string()
+                })?;
+                a.input = Some(ticket.to_string());
             }
             Arg::Option("--project") => a.project = Some(lex.value()?.to_string()),
             Arg::Option(_) => return Err(lex.unknown()),
@@ -124,11 +127,16 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         _ => return Err("put the title in quotes, as one argument".into()),
     }
     // Someone naming a ticket and forgetting the title shouldn't title their own ticket with it.
-    if a.input.is_none() && (ticket_key::is_number(&a.text) || ticket_key::parse(&a.text).is_some())
+    // One word only: `ticket_key::parse` finds a key inside a phrase, and "Move to sha-256" is a
+    // title.
+    let word = a.text.trim();
+    if a.input.is_none()
+        && !word.contains(char::is_whitespace)
+        && (ticket_key::is_number(word) || ticket_key::parse(word).is_some())
     {
         return Err(format!(
-            "{0} looks like a ticket, not a title: give both, like taskman title {0} \"Fix the login redirect\"",
-            a.text
+            "{word} looks like a ticket, not a title: give both, like taskman title {word} \
+             \"Fix the login redirect\""
         ));
     }
     // `"$TITLE"` with nothing in it isn't asking to lose the title.
@@ -170,8 +178,9 @@ fn target(
         .iter()
         .position(|p| p.repo == t.repo)
         .ok_or_else(|| format!("{}'s project is no longer in taskman", t.key))?;
-    // Narrower than `cli::confine`, which keeps a session to its project, and with no way wider to
-    // offer: a card's title gives no reason for one.
+    // Narrower than `cli::confine`, which keeps a session to its project, and the refusal
+    // deliberately doesn't say how to go wider, as `confine`'s does: a card's title gives no reason
+    // to.
     if own.is_some() && !me.is_some_and(|m| m.is(&t.repo, &t.key)) {
         return Err(format!("that's {}, and a session sets only its own ticket's title", t.key));
     }
@@ -207,6 +216,12 @@ mod tests {
         assert!(args(&[]).unwrap_err().starts_with("give the title"));
         assert!(args(&["a", "b", "c"]).unwrap_err().contains("in quotes"));
         assert!(args(&["--clear", "52", "Fix"]).unwrap_err().contains("--clear takes the ticket"));
+        // A phrase is a title whatever's in it, with `--` or without.
+        for phrase in ["Fix ENG-53 fallout", "Handle utf-8 names", "Move to sha-256", "Fix 52 now"]
+        {
+            assert_eq!(args(&[phrase]), Ok(text(phrase)));
+            assert_eq!(args(&["--", phrase]), Ok(text(phrase)));
+        }
         // A lone word that's a ticket isn't its title; given both, or as the title, it can be.
         for lone in ["ENG-53", "eng-53", "53", "https://linear.app/acme/issue/ENG-53/fix"] {
             let e = args(&[lone]).unwrap_err();
@@ -223,8 +238,10 @@ mod tests {
         assert!(args(&["-v is broken"]).unwrap_err().starts_with("unknown option -v is broken"));
         // `--clear` in a script's variable loses nothing, however it's passed; after `--`, it's
         // only text.
-        assert_eq!(args(&["--clear"]), Err("--clear needs a value".into()));
-        assert_eq!(args(&["ENG-52", "--clear"]), Err("--clear needs a value".into()));
+        let needs = "--clear needs the ticket, like taskman title --clear ENG-52";
+        assert_eq!(args(&["--clear"]), Err(needs.into()));
+        assert_eq!(args(&["ENG-52", "--clear"]), Err(needs.into()));
+        assert_eq!(args(&["--clear="]), Err(needs.into()));
         assert_eq!(args(&["--", "--clear"]), Ok(text("--clear")));
         // An empty variable doesn't clear what's there.
         for empty in [&[""][..], &["  "], &["ENG-52", ""]] {

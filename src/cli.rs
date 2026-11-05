@@ -19,15 +19,16 @@ macro_rules! out {
 }
 pub(crate) use out;
 
-/// Runs `taskman NAME`: prints `usage` for `-h` or `--help` anywhere in `args`, before anything is
-/// read or fetched, else returns the exit code `command` gives, or prints its error and returns 1.
+/// Runs `taskman NAME`: prints `usage` for `-h` or `--help` anywhere in `args` before a `--`, whose
+/// followers are words (`Lexer`), before anything is read or fetched, else returns the exit code
+/// `command` gives, or prints its error and returns 1.
 pub(crate) fn run(
     name: &str,
     usage: &str,
     args: &[String],
     command: impl FnOnce(&[String]) -> Result<i32, String>,
 ) -> i32 {
-    if args.iter().any(|a| a == "-h" || a == "--help") {
+    if args.iter().take_while(|a| *a != "--").any(|a| a == "-h" || a == "--help") {
         out!("{usage}");
         return 0;
     }
@@ -51,7 +52,9 @@ pub(crate) enum Arg<'a> {
 
 /// Reads a command's arguments one at a time, so every command takes `--x`, `--x VALUE` and
 /// `--x=VALUE` and refuses an empty value, a value given to an option that takes none and an
-/// unknown option alike. Each command matches only the options it knows.
+/// unknown option alike. Each command matches only the options it knows. A first `--` ends the
+/// options: what follows is words, for text from a script that may start with a dash. An option
+/// taking a value takes the next argument whatever it is, `--` too.
 pub(crate) struct Lexer<'a> {
     args: std::slice::Iter<'a, String>,
     usage: &'a str,
