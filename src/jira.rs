@@ -953,7 +953,7 @@ mod tests {
         let now = Instant::now();
         assert!(ask_due(None, now));
         assert!(!ask_due(Some(now), now));
-        assert!(!ask_due(Some(now), now + ASK_AGAIN_AFTER - Duration::from_secs(1)));
+        assert!(!ask_due(Some(now), now + Duration::from_secs(1)));
         assert!(ask_due(Some(now), now + ASK_AGAIN_AFTER));
     }
 

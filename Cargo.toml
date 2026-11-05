@@ -44,9 +44,12 @@ unicode-width = "0.2.2"
 ureq = { version = "3.4.2", features = ["json"] }
 vt100 = "0.18"
 # What a tracker's connection trusts: the system's certificates and these, the same as ureq's own
-# bundled ones but whole, so the two lists can be one (src/net.rs).
+# bundled ones (webpki-roots) but whole, so the two lists can be one. webpki-roots says which of
+# them are limited to some names, which whole certificates don't carry (src/net.rs), so the two
+# stay at one version.
 rustls-native-certs = "0.8.5"
 webpki-root-certs = "1.0.11"
+webpki-roots = "1.0.11"
 
 [lints.clippy]
 cast_possible_truncation = "warn"

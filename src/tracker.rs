@@ -1052,7 +1052,7 @@ mod tests {
         assert_eq!(
             said,
             FetchError::Other(
-                "jira.example.com's certificate comes from a CA this machine doesn't trust: add the CA to the system's certificate store, or set SSL_CERT_FILE to a file holding it".into()
+                "jira.example.com's certificate comes from a CA this machine doesn't trust: add the CA to the system's certificate store, or set SSL_CERT_FILE to a file holding it, then restart taskman".into()
             )
         );
     }

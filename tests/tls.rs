@@ -3,7 +3,7 @@
 
 mod common;
 
-use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair, KeyUsagePurpose};
+use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, KeyUsagePurpose};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use std::io::{BufRead, BufReader, Write};
@@ -15,9 +15,11 @@ use std::sync::Arc;
 const ISSUE: &str = r#"{"key": "ENG-52", "fields": {"summary": "Fix login", "status": {"name": "To Do"},
     "issuetype": {"name": "Task"}, "comment": {"comments": [], "total": 0}}}"#;
 
-/// A CA of its own: its certificate as PEM, and what signs with it.
-fn ca() -> (String, Issuer<'static, KeyPair>) {
+/// A CA called `name`: its certificate as PEM, and what signs with it. Two with one name would read
+/// as one CA whose signature is wrong, rather than as one that isn't trusted.
+fn ca(name: &str) -> (String, Issuer<'static, KeyPair>) {
     let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+    params.distinguished_name.push(DnType::CommonName, name);
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     params.key_usages = vec![KeyUsagePurpose::KeyCertSign];
     let key = KeyPair::generate().unwrap();
@@ -105,7 +107,7 @@ fn stdout(out: &Output) -> String {
 /// certificate.
 fn behind_a_private_ca(name: &str) -> (PathBuf, PathBuf) {
     let dir = common::scratch_dir(name);
-    let (pem, issuer) = ca();
+    let (pem, issuer) = ca("Mock Private CA");
     let ca_file = dir.join("ca.pem");
     std::fs::write(&ca_file, pem).unwrap();
     jira_project(&dir, serve(&issuer, "127.0.0.1"));
@@ -140,7 +142,32 @@ fn says_what_to_do_about_a_ca_it_doesnt_trust() {
     let said = stdout(&out);
     assert!(said.contains("certificate comes from a CA this machine doesn't trust"), "{said}");
     assert!(said.contains("set SSL_CERT_FILE"), "{said}");
-    assert!(!said.contains("tries again"), "{said}");
+    assert!(said.contains("then restart taskman"), "{said}");
+}
+
+/// A variable that's set is read in place of the store, so that's what the message points at.
+#[test]
+fn says_when_a_variable_is_read_instead_of_the_store() {
+    let (dir, _) = behind_a_private_ca("tls-other-ca");
+    let other = dir.join("other.pem");
+    std::fs::write(&other, ca("Another Mock CA").0).unwrap();
+    let said = stdout(&status(&dir, &[("SSL_CERT_FILE", &other)]));
+    assert!(
+        said.contains("SSL_CERT_FILE is set and is read instead of the system's store"),
+        "{said}"
+    );
+    assert!(said.contains("then restart taskman"), "{said}");
+}
+
+/// A FIFO would block the reader for good, and every tracker request with it.
+#[test]
+fn doesnt_read_an_ssl_cert_file_that_isnt_a_file() {
+    let (dir, _) = behind_a_private_ca("tls-fifo");
+    let fifo = dir.join("certs.fifo");
+    assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    let said = stdout(&status(&dir, &[("SSL_CERT_FILE", &fifo)]));
+    assert!(said.contains("this machine doesn't trust"), "{said}");
+    assert!(said.contains("SSL_CERT_FILE isn't a regular file"), "{said}");
 }
 
 #[test]
@@ -157,7 +184,7 @@ fn says_when_ssl_cert_file_cant_be_read() {
 #[test]
 fn refuses_a_certificate_for_another_name() {
     let dir = common::scratch_dir("tls-name");
-    let (pem, issuer) = ca();
+    let (pem, issuer) = ca("Mock Private CA");
     let ca_file = dir.join("ca.pem");
     std::fs::write(&ca_file, pem).unwrap();
     jira_project(&dir, serve(&issuer, "elsewhere.example.com"));
