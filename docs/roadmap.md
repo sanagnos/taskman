@@ -4,6 +4,8 @@ Ideas discussed but not built yet, with the reasoning behind them, and what hasn
 
 ## Ideas
 
+- **Jira Data Center, reading first:** taskman says it isn't supported. Checked against a local Jira 11.3 with `/rest/api/3` rewritten to `/rest/api/2` and Basic to Bearer: a ticket's title, status, description, comments and `taskman add --new` without a description all work as they are, so reading tickets is mostly the path and the credentials (a personal access token as Bearer, with no email). Beyond that: `/rest/api/2/search` for `/search/jql`, the plain list at `/rest/api/2/project` for `project/search` (a 404 there), the assignee's `name` for `accountId`, and a string rather than ADF in a created ticket's description (`Operation value must be a string`). Descriptions and comments would show their wiki markup as it's written.
+
 - **Sleep by memory use:** sleeping is by time and an optional count of sessions. Reading the CLIs' resident memory (and the machine's free memory) could pick sessions by what they cost, or sleep earlier when memory is short; it needs a per-platform read and a rule for "short".
 
 - **GitHub behind an interface,** as the trackers are (`tracker::Client`, tested against recorded responses in `tests/fixtures/`): the `gh` lookups (PR, checks, reviews) behind one interface with a fixture-backed implementation, so the PR fetching and refresh logic get unit tests, and the demo can run on recorded data with no special mode.

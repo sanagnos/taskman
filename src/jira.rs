@@ -1,25 +1,40 @@
 //! Jira Cloud REST client: one issue with its comments, rendered to plain text.
 
 use crate::net;
+use crate::store;
 use crate::tracker::{
     self, CHOICE_PAGES, COMMENTS, Choice, Comment, Created, FetchError, Issue, Listed,
 };
 use crate::util::parse_ts;
 use base64::Engine;
 use serde_json::{Value, json};
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+
+/// How long each question to `serverInfo` may take: it's asked after a request has already failed.
+const SERVER_INFO_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub struct JiraConfig {
     pub base: String,
     auth: String,
-    agent: ureq::Agent,
+    token: String,
+    agent: net::TrackerAgent,
+    /// Whether this Jira is Data Center or Server, once a failed request made taskman ask.
+    self_hosted: Arc<OnceLock<bool>>,
 }
 
 impl JiraConfig {
     pub fn new(base: &str, email: &str, token: &str) -> Self {
         let auth = base64::engine::general_purpose::STANDARD.encode(format!("{email}:{token}"));
-        let agent = net::config(net::TRACKER_TIMEOUT).build().into();
-        Self { base: base.trim_end_matches('/').to_string(), auth, agent }
+        let agent = net::TrackerAgent::new(net::TRACKER_TIMEOUT, true);
+        Self {
+            base: base.trim_end_matches('/').to_string(),
+            auth,
+            token: token.to_string(),
+            agent,
+            self_hosted: Arc::default(),
+        }
     }
 
     fn get(&self, path: &str) -> Result<Value, ureq::Error> {
@@ -30,6 +45,7 @@ impl JiraConfig {
     fn get_with(&self, path: &str, query: &[(&str, &str)]) -> Result<Value, ureq::Error> {
         net::retry_dropped(|| {
             self.agent
+                .ready()
                 .get(&format!("{}{path}", self.base))
                 .query_pairs(query.iter().copied())
                 .header("Authorization", &format!("Basic {}", self.auth))
@@ -45,7 +61,7 @@ impl JiraConfig {
     pub fn project_exists(&self, key: &str) -> Result<bool, String> {
         match self.get(&format!("/rest/api/3/project/{key}")) {
             Ok(_) => Ok(true),
-            Err(ureq::Error::StatusCode(404)) => Ok(false),
+            Err(e @ ureq::Error::StatusCode(404)) if !self.self_hosted_after(&e) => Ok(false),
             Err(e) => Err(self.describe(e, "")),
         }
     }
@@ -99,6 +115,7 @@ impl JiraConfig {
     fn post(&self, path: &str, body: &Value) -> Result<(u16, Value), ureq::Error> {
         let mut resp = self
             .agent
+            .ready()
             .post(&format!("{}{path}", self.base))
             .config()
             .http_status_as_error(false)
@@ -121,9 +138,9 @@ impl JiraConfig {
     ) -> Result<Created, FetchError> {
         let project = prefix.to_uppercase();
         let v = self.get(&format!("/rest/api/3/project/{project}")).map_err(|e| match e {
-            ureq::Error::StatusCode(404) => FetchError::Other(format!(
-                "Jira has no project {project}, or this account can't see it"
-            )),
+            ureq::Error::StatusCode(404) if !self.self_hosted_after(&e) => FetchError::Other(
+                format!("Jira has no project {project}, or this account can't see it"),
+            ),
             e => self.failure(e, ""),
         })?;
         let Some((type_id, type_name)) = issue_type(&v) else {
@@ -168,6 +185,12 @@ impl JiraConfig {
 
     /// What a request about `key` (empty for none) that failed with `e` means.
     fn failure(&self, e: ureq::Error, key: &str) -> FetchError {
+        if self.self_hosted_after(&e) {
+            return FetchError::Other(format!(
+                "{} is Jira Data Center or Server, which taskman doesn't support yet: it works with Jira Cloud only",
+                store::site_host(&self.base)
+            ));
+        }
         match e {
             ureq::Error::StatusCode(401 | 403) => FetchError::Auth(
                 "Jira rejected the credentials (check the email and API token)".to_string(),
@@ -177,6 +200,71 @@ impl JiraConfig {
             }
             other => tracker::request_failed(&other, "Jira", &self.base),
         }
+    }
+
+    /// Whether a request that failed with `e` failed because this is Data Center or Server, which
+    /// taskman's Cloud API isn't on. The failure only says it's worth asking: Cloud answers a
+    /// missing ticket with a 404 and a wrong token with a 401 too, and Data Center answers `/rest/api/3`
+    /// with a 403, a 404 or a login page depending on its settings and the credentials.
+    fn self_hosted_after(&self, e: &ureq::Error) -> bool {
+        use ureq::Error::{Json, StatusCode};
+        matches!(e, StatusCode(401 | 403 | 404) | Json(_))
+            && !cloud_site(&self.base)
+            && *self.self_hosted.get_or_init(|| self.ask_self_hosted())
+    }
+
+    /// Asks `serverInfo` with no credentials, then with the account's as they're sent to Cloud, then
+    /// as a Data Center personal access token, as which of them answers depends on how that Jira is
+    /// set up. They all go to the site the token is for. An answer that doesn't tell is taken for
+    /// Cloud, which leaves the failure as it was.
+    fn ask_self_hosted(&self) -> bool {
+        let credentials =
+            [None, Some(format!("Basic {}", self.auth)), Some(format!("Bearer {}", self.token))];
+        credentials.into_iter().find_map(|auth| self.server_info(auth.as_deref())).unwrap_or(false)
+    }
+
+    fn server_info(&self, auth: Option<&str>) -> Option<bool> {
+        let mut request = self
+            .agent
+            .ready()
+            .get(&format!("{}/rest/api/2/serverInfo", self.base))
+            .config()
+            .http_status_as_error(false)
+            .timeout_global(Some(SERVER_INFO_TIMEOUT))
+            .build()
+            .header("Accept", "application/json");
+        if let Some(auth) = auth {
+            request = request.header("Authorization", auth);
+        }
+        let mut response = request.call().ok()?;
+        let status = response.status().as_u16();
+        self_hosted_by(status, &response.body_mut().read_to_string().ok()?)
+    }
+}
+
+/// A site under one of Atlassian's own domains is Cloud, so a failure there needs no asking.
+fn cloud_site(base: &str) -> bool {
+    let host = store::site_host(base).to_ascii_lowercase();
+    let host = host.split(':').next().unwrap_or_default();
+    [".atlassian.net", ".jira.com"].iter().any(|domain| host.ends_with(domain))
+}
+
+/// What an answer from `/rest/api/2/serverInfo` says about the Jira: `deploymentType` is `Cloud` on
+/// Cloud and `Server` on Data Center. Turning Basic authentication off, Data Center's default from
+/// Jira 11, answers every request with a 403 saying so, and is something only Data Center and
+/// Server can do. None for an answer that doesn't tell.
+fn self_hosted_by(status: u16, body: &str) -> Option<bool> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    match status {
+        200 => {
+            let deployment = v["deploymentType"].as_str().filter(|d| !d.is_empty())?;
+            Some(!deployment.eq_ignore_ascii_case("cloud"))
+        }
+        403 => v["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("Basic Authentication has been disabled"))
+            .then_some(true),
+        _ => None,
     }
 }
 
@@ -618,7 +706,7 @@ mod tests {
     #[test]
     fn says_when_jira_doesnt_answer_in_time() {
         let server = replay::serve(vec![(replay::HANG, "")]);
-        let quick = net::config(std::time::Duration::from_millis(300)).build().into();
+        let quick = net::TrackerAgent::new(std::time::Duration::from_millis(300), true);
         let cfg =
             JiraConfig { agent: quick, ..JiraConfig::new(&server.url, "ana@example.com", "t") };
         let host = server.url.trim_start_matches("http://");
@@ -628,6 +716,108 @@ mod tests {
         assert_eq!(e, Unreachable(said));
         // The TUI tries again by itself, and says so.
         assert!(e.repeated().ends_with("; taskman tries again on the next refresh"));
+    }
+
+    const SELF_HOSTED: &str = "is Jira Data Center or Server, which taskman doesn't support yet: it works with Jira Cloud only";
+
+    /// How Jira 11 answers by default: Basic is off, for every path, and serverInfo tells nobody
+    /// without credentials.
+    #[test]
+    fn says_so_when_basic_authentication_is_off_on_data_center() {
+        let off = r#"{"message":"Basic Authentication has been disabled on this instance."}"#;
+        let server = replay::serve(vec![
+            (403, off),
+            (401, r#"{"errorMessages":[],"errors":{}}"#),
+            (403, off),
+        ]);
+        let e = client(&server).fetch("ENG-52", Text::Plain).unwrap_err();
+        assert!(String::from(e).ends_with(SELF_HOSTED));
+        let asked = server.requests();
+        assert_eq!(asked.len(), 3);
+        assert!(asked[1].line.starts_with("GET /rest/api/2/serverInfo "), "{}", asked[1].line);
+        assert_eq!(asked[1].header("authorization"), None);
+        assert!(asked[2].header("authorization").unwrap().starts_with("Basic "));
+    }
+
+    /// With Basic on and credentials that work, /rest/api/3 is a 404 page, which mustn't read as a
+    /// ticket or project that isn't there.
+    #[test]
+    fn a_404_from_data_center_isnt_a_missing_ticket() {
+        let page = "<!DOCTYPE html><html></html>";
+        let info = r#"{"version":"11.3.13","deploymentType":"Server"}"#;
+        let server = replay::serve(vec![(404, page), (200, info)]);
+        let e = client(&server).fetch("ENG-52", Text::Plain).unwrap_err();
+        assert!(String::from(e).ends_with(SELF_HOSTED));
+
+        let server = replay::serve(vec![(404, page), (200, info)]);
+        let cfg = JiraConfig::new(&server.url, "ana@example.com", "t");
+        let e = cfg.create("ENG", "Fix login", "").unwrap_err();
+        assert!(String::from(e).ends_with(SELF_HOSTED));
+
+        let server = replay::serve(vec![(404, page), (200, info)]);
+        let cfg = JiraConfig::new(&server.url, "ana@example.com", "t");
+        let e = cfg.project_exists("ENG").unwrap_err();
+        assert!(e.ends_with(SELF_HOSTED), "{e}");
+    }
+
+    /// A personal access token answers as Bearer only.
+    #[test]
+    fn asks_with_a_personal_access_token_last() {
+        let denied = r#"{"errorMessages":[],"errors":{}}"#;
+        let server = replay::serve(vec![
+            (401, denied),
+            (401, denied),
+            (401, denied),
+            (200, r#"{"deploymentType":"Server"}"#),
+        ]);
+        let e = client(&server).fetch("ENG-52", Text::Plain).unwrap_err();
+        assert!(String::from(e).ends_with(SELF_HOSTED));
+        let asked = server.requests();
+        assert_eq!(asked[3].header("authorization"), Some("Bearer token-1"));
+    }
+
+    /// A Cloud site on a domain of its own keeps Cloud's words, and asks once.
+    #[test]
+    fn a_failure_on_cloud_stays_what_it_was() {
+        let cloud = r#"{"deploymentType":"Cloud"}"#;
+        let server = replay::serve(vec![(404, "{}"), (200, cloud), (404, "{}")]);
+        let c = client(&server);
+        for _ in 0..2 {
+            assert_eq!(
+                c.fetch("ENG-52", Text::Plain).unwrap_err(),
+                NotFound("ENG-52 not found, or not visible to this account".into())
+            );
+        }
+        assert_eq!(server.requests().len(), 3);
+    }
+
+    #[test]
+    fn atlassians_own_domains_arent_asked() {
+        assert!(cloud_site("https://example.atlassian.net"));
+        assert!(cloud_site("https://EXAMPLE.atlassian.net:443"));
+        assert!(cloud_site("https://example.jira.com"));
+        assert!(!cloud_site("https://jira.example.com"));
+        assert!(!cloud_site("https://atlassian.net.example.com"));
+    }
+
+    #[test]
+    fn server_info_tells_cloud_from_self_hosted() {
+        assert_eq!(self_hosted_by(200, r#"{"deploymentType":"Server"}"#), Some(true));
+        assert_eq!(self_hosted_by(200, r#"{"deploymentType":"DataCenter"}"#), Some(true));
+        assert_eq!(self_hosted_by(200, r#"{"deploymentType":"Cloud"}"#), Some(false));
+        let off = r#"{"message":"Basic Authentication has been disabled on this instance."}"#;
+        assert_eq!(self_hosted_by(403, off), Some(true));
+        for (status, body) in [
+            (200, "{}"),
+            (200, r#"{"deploymentType":""}"#),
+            (200, "<html></html>"),
+            (401, r#"{"deploymentType":"Server"}"#),
+            (403, r#"{"message":"Forbidden"}"#),
+            (403, "<html>Forbidden (403)</html>"),
+            (404, "{}"),
+        ] {
+            assert_eq!(self_hosted_by(status, body), None, "{status} {body}");
+        }
     }
 
     #[test]
@@ -790,6 +980,7 @@ mod tests {
         let server = replay::serve(vec![
             (200, r#"{"key":"ENG","name":"Engineering"}"#),
             (404, include_str!("../tests/fixtures/jira/not-found.json")),
+            (200, r#"{"deploymentType":"Cloud"}"#),
             (200, r#"{"accountId":"000000:0000-ana","displayName":"Ana Example"}"#),
         ]);
         let Client::Jira(jira) = client(&server) else { unreachable!() };
@@ -802,6 +993,7 @@ mod tests {
             [
                 "GET /rest/api/3/project/ENG HTTP/1.1",
                 "GET /rest/api/3/project/OPS HTTP/1.1",
+                "GET /rest/api/2/serverInfo HTTP/1.1",
                 "GET /rest/api/3/myself HTTP/1.1"
             ]
         );
@@ -959,6 +1151,15 @@ mod tests {
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// Only a 200 with a type, or the 403 saying Basic is off, tells anything.
+        #[test]
+        fn server_info_tells_only_when_it_says(status in 100u16..600, body in ".{0,40}") {
+            let told = self_hosted_by(status, &body);
+            if status != 200 && status != 403 {
+                prop_assert_eq!(told, None);
+            }
+        }
 
         #[test]
         fn rendering_keeps_every_word(blocks in prop::collection::vec(block(), 0..6)) {

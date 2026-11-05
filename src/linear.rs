@@ -12,7 +12,7 @@ const ENDPOINT: &str = "https://api.linear.app/graphql";
 pub struct LinearConfig {
     endpoint: String,
     key: String,
-    agent: ureq::Agent,
+    agent: net::TrackerAgent,
 }
 
 impl LinearConfig {
@@ -23,7 +23,7 @@ impl LinearConfig {
 
     /// A client for the API at `endpoint`: Linear's, or a test's recorded responses.
     pub(crate) fn at(endpoint: &str, key: &str) -> Self {
-        let agent = net::config(net::TRACKER_TIMEOUT).http_status_as_error(false).build().into();
+        let agent = net::TrackerAgent::new(net::TRACKER_TIMEOUT, false);
         Self { endpoint: endpoint.to_string(), key: key.to_string(), agent }
     }
 
@@ -39,6 +39,7 @@ impl LinearConfig {
     fn send(&self, query: &str, variables: &Value) -> Result<(u16, Value), ureq::Error> {
         let mut resp = self
             .agent
+            .ready()
             .post(&self.endpoint)
             // Personal API keys go in as-is; only OAuth tokens take "Bearer".
             .header("Authorization", &self.key)

@@ -157,6 +157,21 @@ Without a keychain (WSL, a server), the form used to offer only a variable or a 
 - **Safer than a variable, no safer than the user.** The token isn't in any process's environment and is in no startup file, but a session runs as the user and could `cat` the file, as it could run any `cmd:` or read the keychain item.
 - **Not deleted with the account.** Deleting an account leaves its file; the guide says where it is and how to remove it. Recognising the file from the command is enough to offer that later.
 
+### Certificates: the system's and the bundled ones
+
+A tracker's connection trusts the system's certificates (`rustls-native-certs`: the distribution's file on Linux, the keychains' trust settings on macOS, or `SSL_CERT_FILE` and `SSL_CERT_DIR` in their place) and a bundled copy of Mozilla's list (`webpki-root-certs`) together. Most tools pick one or the other, so this looks simplifiable, and isn't:
+
+- `RootCerts::PlatformVerifier`, one line in ureq, has no bundled list to fall back on. Tried: with no CA files on the machine, or an `SSL_CERT_FILE` that's missing or names only a private CA, it fails public sites that work with the bundled list, and the static musl builds are for just such machines. On macOS, from its source and others' reports rather than tried here, it ignores `SSL_CERT_FILE` and applies Apple's rules, which are reported to reject private certificates valid for more than 825 days.
+- Using the bundled list only when the system has none breaks a machine with an old store, or a stray `SSL_CERT_FILE`.
+
+Both lists together means whatever connected before still connects. The price is that trust only ever widens: `SSL_CERT_FILE` can't narrow it, and removing a bundled root from the system doesn't remove it here. taskman verifies with rustls either way, so it stays stricter than OpenSSL about some certificates, such as an intermediate with a critical policies extension, and no store changes that.
+
+The system's are read once, at a tracker's first request rather than when its client is made: clients are made on the UI thread, and macOS takes a noticeable moment. Unit tests don't read them at all. The updater stays on the bundled list: it replaces taskman's own binary, so a variable in the environment shouldn't widen what it trusts, and it falls back to `gh` where the bundled list doesn't do.
+
+### Jira Cloud only, and how Data Center is told apart
+
+taskman speaks Cloud's API: `/rest/api/3`, Basic `email:token`, descriptions in Atlassian Document Format. Data Center has only `/rest/api/2`, so it says so rather than leave a confusing failure. A failure can't tell by itself, as Jira 11.3 was seen answering `/rest/api/3` in three ways, and Cloud answers a wrong token or a missing ticket with the same statuses: a 403 with Basic off (its default from Jira 11), a 404 page to credentials that work with Basic on, and a redirect to a login page for a personal access token, or none. So a 401, a 403, a 404 or an answer that isn't JSON only says it's worth asking `/rest/api/2/serverInfo`, once per client, unless the site is under Atlassian's own domains. It's asked with no credentials, with the account's, then as a personal access token, as which of them answers depends on the Jira's settings: with Basic off, only the 403's own words or the token tells. `deploymentType` is `Cloud` or, on Data Center too, `Server`. An answer that doesn't tell leaves the failure as it was.
+
 ### Sign in first, then pick the project or team
 
 The project form used to ask for the ticket prefix before taskman had connected, then send a new user to a second form for the account, asking the provider and site again. The prefix is the Jira project or Linear team key, which a new user may not know, and which the tracker can tell once the account can sign in. So the form asks in the order the answers become knowable: tracker, site or workspace, the account (a new one's fields inline, in the same form), then the prefix, picked from a list.

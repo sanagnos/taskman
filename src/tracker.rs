@@ -128,6 +128,9 @@ pub(crate) fn request_failed(e: &ureq::Error, tracker: &str, url: &str) -> Fetch
     use ureq::Timeout;
     let host = url.split_once("://").map_or(url, |(_, rest)| rest);
     let host = host.split('/').next().unwrap_or(host);
+    if let Some(why) = crate::net::certificate_refused(e) {
+        return FetchError::Other(crate::net::certificate_failure(host, &why));
+    }
     let unreachable = |why: &str| FetchError::Unreachable(format!("can't reach {host}: {why}"));
     let no_name = "its name doesn't resolve (no network, or a DNS or VPN problem)";
     let no_route = "no connection (no network, or a VPN, proxy or firewall in the way)";
@@ -459,15 +462,16 @@ pub(crate) fn unsent(e: &ureq::Error) -> bool {
     use std::io::ErrorKind;
     use ureq::Timeout;
     if let ureq::Error::Io(io) = e {
-        return matches!(
-            io.kind(),
-            ErrorKind::ConnectionRefused
-                | ErrorKind::PermissionDenied
-                | ErrorKind::NetworkUnreachable
-                | ErrorKind::HostUnreachable
-                | ErrorKind::AddrNotAvailable
-                | ErrorKind::NetworkDown
-        );
+        return crate::net::certificate_refused(e).is_some()
+            || matches!(
+                io.kind(),
+                ErrorKind::ConnectionRefused
+                    | ErrorKind::PermissionDenied
+                    | ErrorKind::NetworkUnreachable
+                    | ErrorKind::HostUnreachable
+                    | ErrorKind::AddrNotAvailable
+                    | ErrorKind::NetworkDown
+            );
     }
     matches!(
         e,
@@ -791,7 +795,7 @@ impl Provider {
     /// What to type in the site field when it's empty.
     pub fn site_missing(self) -> &'static str {
         match self {
-            Provider::Jira => "Enter the Jira site, like your-site.atlassian.net",
+            Provider::Jira => "Enter the Jira Cloud site, like your-site.atlassian.net",
             Provider::Linear => "Enter the Linear workspace (the part after linear.app/)",
             Provider::Local | Provider::Github => "",
         }
@@ -860,7 +864,9 @@ impl Provider {
     /// The project form's hint under Site once this one is picked.
     pub fn site_hint(self) -> &'static str {
         match self {
-            Provider::Jira => "your Jira site, like your-site.atlassian.net",
+            Provider::Jira => {
+                "like your-site.atlassian.net. Jira Cloud only; Data Center isn't supported yet"
+            }
             Provider::Linear => "the part after linear.app/ in its address",
             Provider::Local | Provider::Github => "",
         }
@@ -870,7 +876,9 @@ impl Provider {
     /// against (Jira) or the one workspace its key belongs to (Linear).
     pub fn account_site_hint(self) -> &'static str {
         match self {
-            Provider::Jira => "where to test the token, like your-site.atlassian.net",
+            Provider::Jira => {
+                "where to test the token, like your-site.atlassian.net. Jira Cloud only"
+            }
             Provider::Linear => "workspace: the part after linear.app/",
             Provider::Local | Provider::Github => "",
         }
@@ -1033,6 +1041,22 @@ mod tests {
         assert!(e("e-1", "Fix it").starts_with("the project has no ticket prefix"));
     }
 
+    /// A refused certificate won't change by asking again, so it isn't worded as a network problem
+    /// that the next refresh may cure.
+    #[test]
+    fn a_refused_certificate_says_what_to_do_about_it() {
+        use std::io::{Error, ErrorKind};
+        let words = "invalid peer certificate: UnknownIssuer";
+        let e = ureq::Error::Io(Error::new(ErrorKind::InvalidData, words));
+        let said = request_failed(&e, "Jira", "https://jira.example.com/");
+        assert_eq!(
+            said,
+            FetchError::Other(
+                "jira.example.com's certificate comes from a CA this machine doesn't trust: add the CA to the system's certificate store, or set SSL_CERT_FILE to a file holding it".into()
+            )
+        );
+    }
+
     /// Each way a request gets no answer says where the problem is, rather than ureq's words, and
     /// counts as cut off (for Codex's sandbox, and `taskman add`).
     #[test]
@@ -1080,6 +1104,10 @@ mod tests {
             ureq::Error::Timeout(ureq::Timeout::Connect),
             ureq::Error::Io(Error::from(ErrorKind::ConnectionRefused)),
             ureq::Error::Io(Error::from(ErrorKind::PermissionDenied)),
+            ureq::Error::Io(Error::new(
+                ErrorKind::InvalidData,
+                "invalid peer certificate: UnknownIssuer",
+            )),
         ] {
             assert!(unsent(&e), "{e}");
         }

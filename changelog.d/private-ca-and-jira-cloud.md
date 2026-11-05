@@ -1,0 +1,2 @@
+- Jira and Linear connections now trust the system's certificate store as well as the bundled list, and `SSL_CERT_FILE` and `SSL_CERT_DIR`, so a tracker behind a private CA or a re-signing proxy works. A certificate that still isn't trusted says what to do about it, rather than `UnknownIssuer`.
+- Pointed at Jira Data Center or Server, taskman now says it works with Jira Cloud only, rather than that the ticket wasn't found or the credentials were rejected.

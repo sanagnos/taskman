@@ -43,6 +43,10 @@ unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
 ureq = { version = "3.4.2", features = ["json"] }
 vt100 = "0.18"
+# What a tracker's connection trusts: the system's certificates and these, the same as ureq's own
+# bundled ones but whole, so the two lists can be one (src/net.rs).
+rustls-native-certs = "0.8.5"
+webpki-root-certs = "1.0.11"
 
 [lints.clippy]
 cast_possible_truncation = "warn"
@@ -90,3 +94,6 @@ codegen-units = 1
 [dev-dependencies]
 insta = { version = "1.49.0", default-features = false }
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }
+# A local TLS server behind a private CA made per run (tests/tls.rs).
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }

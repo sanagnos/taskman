@@ -20,7 +20,7 @@ expression: screen
 " │                              │          listed once taskman can sign in; or│ "
 " │                              │          type its key (ENG for ENG-12)      │ "
 " │                              │                                             │ "
-" │                              │ Enter the Jira site, like                   │ "
+" │                              │ Enter the Jira Cloud site, like             │ "
 " │                              │ your-site.atlassian.net                     │ "
 " │                              │ Enter save   Tab next field                 │ "
 " │                              │ Esc back to list                            │ "
