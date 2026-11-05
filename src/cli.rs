@@ -278,17 +278,18 @@ fn tracker_key(
     if let Some(p) = place {
         return read(p).map(|key| key.map(|k| (k, p))).transpose();
     }
-    let (mut taken, mut refused) = (Vec::new(), None);
+    let (mut taken, mut refused) = (Vec::new(), false);
     for p in 0..saved.projects.len() {
         match read(p) {
             Some(Ok(key)) => taken.push((key, p)),
-            Some(Err(e)) => refused = refused.or(Some(e)),
+            Some(Err(_)) => refused = true,
             None => {}
         }
     }
     match (taken.len(), refused) {
-        (0, Some(e)) => Err(e),
-        (0, None) => Ok(None),
+        // Not a tracker's own refusal: each speaks of its own project, and none is meant here.
+        (0, true) => Err(format!("{input} isn't an issue of a project in taskman")),
+        (0, false) => Ok(None),
         (1, _) => Ok(taken.pop()),
         _ => {
             let names: Vec<&str> =
@@ -502,7 +503,7 @@ pub(crate) mod tests {
         }
         assert_eq!(
             key("https://github.com/acme/web/pull/45"),
-            Err("acme/web#45 is a pull request; add the issue it closes instead".into())
+            Err("acme/web#45 is a pull request; name the issue it closes instead".into())
         );
         assert_eq!(
             key("https://github.com/acme/api/issues/3"),
@@ -605,7 +606,9 @@ pub(crate) mod tests {
         for input in ["https://github.com/acme/api/issues/3", "https://github.com/acme/web/pull/4"]
         {
             assert!(key(input, Some(0), None).is_err(), "{input}");
-            assert!(key(input, None, None).is_err(), "{input}");
+            // With no project meant, it names none.
+            let e = key(input, None, None).unwrap_err();
+            assert_eq!(e, format!("{input} isn't an issue of a project in taskman"));
         }
         // Other trackers' links are nobody's here, and go on to the plain key.
         assert_eq!(

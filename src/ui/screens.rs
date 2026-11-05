@@ -151,6 +151,30 @@ fn a_short_window_keeps_the_reason_above_the_title_field() {
     }
 }
 
+/// A reason that takes two rows needs one row more.
+#[test]
+fn a_short_window_keeps_a_two_row_reason() {
+    let mut app = acme_app();
+    select(&mut app, "ENG-70");
+    let tv = app.tickets.iter_mut().find(|tv| tv.t.key == "ENG-70").unwrap();
+    tv.jira.data = None;
+    tv.jira.error = Some(SSO.into());
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(KeyCode::Char('e')));
+    let (start, end) = ("⚠  acme/web's organization", "Check settings");
+    for h in (14..=30).rev() {
+        let screen = draw(&mut app, 100, h);
+        assert!(screen.contains(start) && screen.contains(end), "{h} rows:\n{screen}");
+    }
+    // A row short, the form scrolls it out of view: its top row and the edge row's, both of it.
+    let screen = draw(&mut app, 100, 13);
+    assert!(!screen.contains(start) && !screen.contains(end), "13 rows:\n{screen}");
+    assert!(screen.contains("Title") && screen.contains("Enter save"), "13 rows:\n{screen}");
+}
+
+const SSO: &str = "acme/web's organization needs gh's token authorized for its single sign-on; \
+     run gh auth refresh -h github.com";
+
 /// A chord in the reason stays whole on any width it's wrapped at.
 #[test]
 fn the_title_forms_reason_never_splits_its_key() {

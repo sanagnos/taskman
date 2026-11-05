@@ -474,7 +474,7 @@ impl TicketView {
     /// Claude's window title without its status glyph. None when there's only something generic
     /// like "Claude Code".
     pub fn title(&self) -> Option<String> {
-        if let Some(label) = self.t.label.as_deref().filter(|l| !l.trim().is_empty()) {
+        if let Some(label) = self.t.label.as_deref().filter(|l| !util::blank(l)) {
             return Some(label.to_string());
         }
         if let Some(i) = &self.jira.data
@@ -546,16 +546,17 @@ const LABEL_WIDTH: usize = 200;
 const LABEL_BYTES: usize = 800;
 
 /// The most columns of what went wrong the title form shows.
-const REASON_WIDTH: usize = 100;
+const REASON_WIDTH: usize = 120;
 
 /// Before a reason in the title form. Two spaces: the sign is one column wide, but a terminal that
 /// draws it wider covers the first.
 const WARNING: &str = "⚠  ";
 
 /// What went wrong, in short, from a tracker's or token's error, which is others' text: on one
-/// line, up to where it goes on to explain. A following "run …" or "get …" is kept, as it's the fix,
-/// and what's after a colon too, as what comes before one may be no more than the command's name
-/// (`gh api graphql: timed out`). Where a variable wasn't set, and the rest, stay in the panel.
+/// line, up to where it goes on to explain. A following "run …" or "get …" is kept, as it's the
+/// fix, and what's after a colon too, as what comes before one may be no more than the command's
+/// name (`gh api graphql: timed out`). Where a variable wasn't set, and the rest, stay in the
+/// panel.
 fn short_reason(error: &str) -> String {
     let line = untrusted::line(error);
     let ends = |at: &(usize, &str)| {
@@ -565,7 +566,7 @@ fn short_reason(error: &str) -> String {
     let clause_end = line.match_indices("; ").find(ends).map(|(at, _)| at);
     let cuts = [store::NOT_IN_THE_SHELL, " (", ". "].map(|p| line.find(p));
     let cut = cuts.into_iter().flatten().chain(clause_end).min();
-    let clause = line[..cut.unwrap_or(line.len())].trim_end_matches('.');
+    let clause = line[..cut.unwrap_or(line.len())].trim_end_matches(['.', ':']);
     match util::truncate(clause, REASON_WIDTH) {
         short if short.is_empty() => "The tracker's answer was an error".to_string(),
         short => short,
@@ -573,15 +574,16 @@ fn short_reason(error: &str) -> String {
 }
 
 /// `text` as a ticket's own title (`Ticket::label`): on one line, without what hides text from a
-/// reader, and cut to `LABEL_WIDTH` and `LABEL_BYTES`. None when that leaves nothing. A session can write it, so it
-/// counts as untrusted however it came.
+/// reader, and cut to `LABEL_WIDTH` and `LABEL_BYTES`. None when that leaves nothing to see. A
+/// session can write it, so it counts as untrusted however it came.
 pub(super) fn clean_label(text: &str) -> Option<String> {
     let label = util::truncate(&untrusted::line(text), LABEL_WIDTH);
     let mut end = label.len().min(LABEL_BYTES);
     while !label.is_char_boundary(end) {
         end -= 1;
     }
-    Some(label[..end].trim_end().to_string()).filter(|l| !l.is_empty())
+    // Cleaned again: the cut can leave a joiner or a space at its end.
+    Some(untrusted::line(&label[..end])).filter(|l| !util::blank(l))
 }
 
 /// Whether `id` arrived after `seen` was first filled; nothing is new before the first fetch.
@@ -770,6 +772,10 @@ mod tests {
                 "gh isn't installed; get it from https://cli.github.com; or skip it",
                 "gh isn't installed; get it from https://cli.github.com",
             ),
+            (
+                "acme/web's organization needs gh's token authorized for its single sign-on; run gh auth refresh -h github.com",
+                "acme/web's organization needs gh's token authorized for its single sign-on; run gh auth refresh -h github.com",
+            ),
             // Never cut down to the name of what failed.
             (
                 "gh api graphql: timed out after 30s; the next refresh tries again",
@@ -783,6 +789,8 @@ mod tests {
                 "ENG-1 not found: no ENG-1-….md in ~/acme/workplan",
                 "ENG-1 not found: no ENG-1-….md in ~/acme/workplan",
             ),
+            // Nothing left hanging where it's cut.
+            ("the token command failed: (1) locked", "the token command failed"),
             // Others' text, on one line and clean.
             ("Fix\x1b[31m\nthe\u{200b} token; more", "Fix [31m the token"),
             ("", "The tracker's answer was an error"),
@@ -799,6 +807,7 @@ mod tests {
         for error in [
             "JIRA_API_TOKEN isn't set in the shell taskman started from: add export",
             "gh isn't logged in; run gh auth login",
+            "acme/web's organization needs gh's token authorized for its single sign-on; run gh auth refresh -h github.com",
             "gh api graphql: timed out after 30s; the next refresh tries again",
             "GraphQL: API rate limit exceeded for user ID 1. (Try again later)",
             "can't reach example.atlassian.net: no connection (no network); tries again",
@@ -822,6 +831,15 @@ mod tests {
         let marks = format!("a{}", "\u{301}".repeat(100_000));
         let label = clean_label(&marks).unwrap();
         assert!(label.len() <= LABEL_BYTES && label.starts_with('a'), "{}", label.len());
+        // Nothing to see, whatever it's made of.
+        for blank in ["\u{200e}", "\u{301}", "\u{200e}\u{301} \u{200e}"] {
+            assert_eq!(clean_label(blank), None, "{blank:?}");
+        }
+        // The byte cut lands after a joiner here, which cleaning again takes off.
+        let joined = "👍\u{200d}".repeat(200);
+        let label = clean_label(&joined).unwrap();
+        assert!(label.len() <= LABEL_BYTES && !label.ends_with('\u{200d}'), "{label:?}");
+        assert_eq!(clean_label(&label), Some(label));
     }
 
     mod labels {
@@ -848,6 +866,7 @@ mod tests {
                     prop_assert!(!label.is_empty() && !label.contains(char::is_control));
                     prop_assert!(util::width(&label) <= LABEL_WIDTH);
                     prop_assert!(label.len() <= LABEL_BYTES);
+                    prop_assert!(!util::blank(&label));
                     prop_assert_eq!(clean_label(&label), Some(label.clone()));
                 }
             }

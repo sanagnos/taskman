@@ -8,7 +8,7 @@ use crate::add::{self, Item, Line, Request};
 use crate::cli::{self, Arg, Lexer};
 use crate::status::{self, Here};
 use crate::store::{self, Cli, Saved, Ticket};
-use crate::{ticket_key, untrusted};
+use crate::{ticket_key, untrusted, util};
 use std::time::Duration;
 
 const USAGE: &str = "Usage: taskman title [--] TEXT
@@ -143,7 +143,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     }
     // `"$TITLE"` with nothing in it isn't asking to lose the title, and nor is text with nothing
     // left once it's cleaned, which the TUI would only refuse after the command said it was set.
-    if untrusted::line(&a.text).is_empty() {
+    if util::blank(&untrusted::line(&a.text)) {
         return Err("the title is empty; to drop the one it has, pass --clear KEY".into());
     }
     Ok(a)
@@ -177,11 +177,15 @@ fn target(
             let me = me.ok_or_else(|| {
                 "name the ticket, like taskman title ENG-52 \"Fix the login redirect\"".to_string()
             })?;
-            // What only its tracker reads as a ticket, like GitHub's `#52`.
+            // One word that only its tracker reads as a ticket, like GitHub's `#52`. A phrase is a
+            // title, whatever a tracker would make of it.
             let project = saved.projects.iter().find(|p| p.repo == me.repo);
             let tracker = project.and_then(|p| p.tracker.as_ref());
-            if tracker.and_then(|t| t.key_from_input(&a.text)).is_some() {
-                return Err(not_a_title(a.text.trim()));
+            let word = a.text.trim();
+            if !word.contains(char::is_whitespace)
+                && tracker.and_then(|t| t.key_from_input(word)).is_some()
+            {
+                return Err(not_a_title(word));
             }
             me
         }
@@ -266,7 +270,9 @@ mod tests {
         // `--project` has nothing to name without a ticket.
         assert!(args(&["Fix", "--project", "acme"]).unwrap_err().contains("goes with a ticket"));
         // Nothing left once it's cleaned: refused here, rather than said to be set.
-        for hidden in ["\u{200b}", "\x1b", "\u{202e} \u{200b}"] {
+        for hidden in
+            ["\u{200b}", "\x1b", "\u{202e} \u{200b}", "\u{200e}", "\u{301}", "\u{200e} \u{301}"]
+        {
             let e = args(&["ENG-52", hidden]).unwrap_err();
             assert!(e.contains("pass --clear KEY"), "{hidden:?}: {e}");
         }
@@ -362,7 +368,13 @@ mod tests {
             let e = of(&[lone]).unwrap_err();
             assert!(e.contains("looks like a ticket, not a title"), "{e}");
         }
-        assert_eq!(of(&["#53 broke the login"]), Ok((0, "ENG-52".into())));
+        for phrase in [
+            "#53 broke the login",
+            "Port the fix from acme/web#12",
+            "Follow up https://github.com/acme/web/issues/12",
+        ] {
+            assert_eq!(of(&[phrase]), Ok((0, "ENG-52".into())), "{phrase}");
+        }
         assert_eq!(of(&["#52", "#53"]), Ok((0, "ENG-52".into())));
         // Elsewhere `#53` means nothing, and can be a title.
         let plain = tickets();
