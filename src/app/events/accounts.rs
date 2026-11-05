@@ -17,6 +17,72 @@ fn saving_an_account_keeps_fields_this_build_doesnt_know() {
     );
 }
 
+/// A client that knows Jira wants a CAPTCHA refuses until it's replaced. A refresh keeps it, so
+/// saving the account, having solved the CAPTCHA in a browser, must not, though its token and
+/// login haven't changed.
+#[test]
+fn saving_a_jira_account_again_starts_its_client_afresh() {
+    use crate::tracker::{Access, Client};
+    let mut app = acme_app();
+    let source = "cmd:printf %s mock";
+    let account = serde_json::json!({ "id": "jira-1", "provider": "jira",
+        "site": "https://jira.example.com", "email": "ana@example.com", "token": source });
+    app.config.accounts.push(serde_json::from_value(account).unwrap());
+    let project = serde_json::json!({ "name": "widgets", "repo": "/src/widgets",
+        "tracker": { "provider": "jira", "site": "https://jira.example.com", "key": "ENG",
+                     "account": "jira-1" } });
+    app.projects.push(serde_json::from_value(project).unwrap());
+    app.trackers.token_read(source, Ok("mock".into()), &app.config, &app.projects);
+    let jira = |app: &App| match app.trackers.access(&app.config, app.projects.last()) {
+        Access::Client(Client::Jira(c)) => c,
+        _ => panic!("no Jira client"),
+    };
+    let before = jira(&app);
+    app.rebuild_clients();
+    assert!(jira(&app).same_client(&before), "a refresh drops what the client knows");
+
+    app.open_settings(crate::app::SettingsItem::Account(1), false);
+    app.on_key(key(KeyCode::Enter));
+    app.on_key(key(KeyCode::Enter));
+    answer_check(&mut app, Ok(("Ana Example", "")));
+    assert_eq!(toast(&app), Some("✓ Connected to jira.example.com as Ana Example"));
+    let after = jira(&app);
+    assert!(after.same_login(&before), "the login didn't change");
+    assert!(!after.same_client(&before), "saving kept what the old client knew");
+}
+
+/// Deleting one account moves the ones after it up the list. A client knowing Jira wants a CAPTCHA
+/// must survive that, or the next refresh sends a login that could lock the account.
+#[test]
+fn deleting_another_account_keeps_what_a_client_knows() {
+    use crate::tracker::{Access, Client};
+    let mut app = acme_app();
+    let unused = serde_json::json!({ "id": "jira-2", "provider": "jira",
+        "site": "https://other.example.com", "email": "you@example.com", "token": "env:UNUSED" });
+    app.config.accounts.push(serde_json::from_value(unused).unwrap());
+    let source = "cmd:printf %s mock";
+    let account = serde_json::json!({ "id": "jira-1", "provider": "jira",
+        "site": "https://jira.example.com", "email": "ana@example.com", "token": source });
+    app.config.accounts.push(serde_json::from_value(account).unwrap());
+    let project = serde_json::json!({ "name": "widgets", "repo": "/src/widgets",
+        "tracker": { "provider": "jira", "site": "https://jira.example.com", "key": "ENG",
+                     "account": "jira-1" } });
+    app.projects.push(serde_json::from_value(project).unwrap());
+    app.trackers.token_read(source, Ok("mock".into()), &app.config, &app.projects);
+    let jira = |app: &App| match app.trackers.access(&app.config, app.projects.last()) {
+        Access::Client(Client::Jira(c)) => c,
+        _ => panic!("no Jira client"),
+    };
+    let before = jira(&app);
+
+    app.open_settings(crate::app::SettingsItem::Account(1), false);
+    app.on_key(ctrl('d'));
+    assert!(matches!(app.mode, Mode::ConfirmDeleteAccount(1)));
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(app.config.accounts.len(), 2);
+    assert!(jira(&app).same_client(&before), "deleting another account lost what it knew");
+}
+
 #[test]
 fn adds_a_jira_account_and_saves_where_its_token_comes_from_not_the_token() {
     let mut app = acme_app();

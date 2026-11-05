@@ -1127,7 +1127,7 @@ fn first_run_without_a_site(w: u16, h: u16) -> String {
 #[test]
 fn first_run_without_a_site_at_80x24() {
     let screen = first_run_without_a_site(80, 24);
-    for want in ["Project  xyz", "Enter the Jira site", "Esc back to list"] {
+    for want in ["Project  xyz", "Enter the Jira Cloud site", "Esc back to list"] {
         assert!(screen.contains(want), "{want:?} not shown:\n{screen}");
     }
     assert_snapshot!(screen);
@@ -1137,7 +1137,7 @@ fn first_run_without_a_site_at_80x24() {
 #[test]
 fn first_run_without_a_site_at_60x20() {
     let screen = first_run_without_a_site(60, 20);
-    for want in ["xyz", "Enter the Jira site", "Esc back to list"] {
+    for want in ["xyz", "Enter the Jira Cloud site", "Esc back to list"] {
         assert!(screen.contains(want), "{want:?} not shown:\n{screen}");
     }
     assert_snapshot!(screen);

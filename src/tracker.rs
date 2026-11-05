@@ -128,6 +128,9 @@ pub(crate) fn request_failed(e: &ureq::Error, tracker: &str, url: &str) -> Fetch
     use ureq::Timeout;
     let host = url.split_once("://").map_or(url, |(_, rest)| rest);
     let host = host.split('/').next().unwrap_or(host);
+    if let Some(why) = crate::net::certificate_refused(e) {
+        return FetchError::Other(crate::net::certificate_failure(host, &why));
+    }
     let unreachable = |why: &str| FetchError::Unreachable(format!("can't reach {host}: {why}"));
     let no_name = "its name doesn't resolve (no network, or a DNS or VPN problem)";
     let no_route = "no connection (no network, or a VPN, proxy or firewall in the way)";
@@ -217,6 +220,15 @@ impl Client {
             Client::Linear(_) => Provider::Linear,
             Client::Local(_) => Provider::Local,
             Client::Github(_) => Provider::Github,
+        }
+    }
+
+    /// Whether `other` signs in the same way to the same site. Only Jira's client learns anything
+    /// worth keeping.
+    fn same_login(&self, other: &Client) -> bool {
+        match (self, other) {
+            (Client::Jira(a), Client::Jira(b)) => a.same_login(b),
+            _ => false,
         }
     }
 
@@ -469,15 +481,16 @@ pub(crate) fn unsent(e: &ureq::Error) -> bool {
     use std::io::ErrorKind;
     use ureq::Timeout;
     if let ureq::Error::Io(io) = e {
-        return matches!(
-            io.kind(),
-            ErrorKind::ConnectionRefused
-                | ErrorKind::PermissionDenied
-                | ErrorKind::NetworkUnreachable
-                | ErrorKind::HostUnreachable
-                | ErrorKind::AddrNotAvailable
-                | ErrorKind::NetworkDown
-        );
+        return crate::net::certificate_refused(e).is_some()
+            || matches!(
+                io.kind(),
+                ErrorKind::ConnectionRefused
+                    | ErrorKind::PermissionDenied
+                    | ErrorKind::NetworkUnreachable
+                    | ErrorKind::HostUnreachable
+                    | ErrorKind::AddrNotAvailable
+                    | ErrorKind::NetworkDown
+            );
     }
     matches!(
         e,
@@ -551,6 +564,35 @@ impl Access {
     }
 }
 
+/// Which account and tracker a client is for. Not the account's place in the list, which deleting
+/// another one changes, and more than its id, which a hand-edited config may leave empty or repeat:
+/// two trackers must never share a client, as that signs in as the wrong account, or asks the wrong
+/// kind of tracker. The provider is the tracker's, as a tracker can name an account of another.
+#[derive(PartialEq, Eq, Hash)]
+struct ClientKey {
+    id: String,
+    email: String,
+    token: String,
+    provider: Provider,
+    host: String,
+}
+
+impl ClientKey {
+    fn new(account: &Account, tracker: &Tracker) -> Self {
+        Self {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            token: account.token.clone(),
+            provider: tracker.provider,
+            host: store::site_host(&tracker.site),
+        }
+    }
+
+    fn is_for(&self, account: &Account) -> bool {
+        (&self.id, &self.email, &self.token) == (&account.id, &account.email, &account.token)
+    }
+}
+
 /// The TUI's tokens, its clients built from them, and the Local files boards' listings.
 #[derive(Default)]
 pub struct Clients {
@@ -560,8 +602,8 @@ pub struct Clients {
     tokens: HashMap<String, Option<Result<String, String>>>,
     /// Threads waiting for a token being read, by source.
     waiters: HashMap<String, Vec<mpsc::Sender<Result<String, String>>>>,
-    /// Clients by (account index, site host), for every project whose tracker uses an account.
-    clients: HashMap<(usize, String), Client>,
+    /// Clients by account and site, for every project whose tracker uses an account.
+    clients: HashMap<ClientKey, Client>,
     /// Local files boards' listings, shared by the status poll and the Add form.
     boards: RefCell<HashMap<PathBuf, local::Cache>>,
 }
@@ -616,9 +658,18 @@ impl Clients {
         self.tokens.remove(source);
     }
 
-    /// The clients for the tokens read so far.
+    /// Drops `account`'s clients, and what they know: it was saved on purpose, perhaps having
+    /// solved a CAPTCHA in a browser.
+    pub fn start_afresh(&mut self, account: &Account) {
+        self.clients.retain(|key, _| !key.is_for(account));
+    }
+
+    /// The clients for the tokens read so far. One that signs in the same way as before is kept, as
+    /// a refresh comes here too, and what it knows stops logins that can't work: pressing refresh
+    /// on a self-hosted Jira or one waiting on a CAPTCHA mustn't send them again. Saving an account
+    /// is what starts its clients afresh (`start_afresh`).
     fn build(&mut self, config: &Config, projects: &[Project]) {
-        self.clients.clear();
+        let old = std::mem::take(&mut self.clients);
         for p in projects {
             let Some(t) = &p.tracker else { continue };
             let Some(i) = config.account_for(t) else { continue };
@@ -626,7 +677,12 @@ impl Clients {
             if let Some(token) = self.token(&a.token)
                 && let Some(client) = Client::new(t, &p.repo, Some((a, token)))
             {
-                self.clients.insert((i, store::site_host(&t.site)), client);
+                let key = ClientKey::new(a, t);
+                let client = match old.get(&key) {
+                    Some(same) if same.same_login(&client) => same.clone(),
+                    _ => client,
+                };
+                self.clients.insert(key, client);
             }
         }
     }
@@ -645,7 +701,8 @@ impl Clients {
             Some(Some(token)) => token,
             _ => return Access::Reading,
         };
-        match (token, self.clients.get(&(i, store::site_host(&tracker.site)))) {
+        let key = ClientKey::new(&config.accounts[i], tracker);
+        match (token, self.clients.get(&key)) {
             (Err(e), _) => Access::Failed(e.clone()),
             (Ok(_), Some(c)) => Access::Client(c.clone()),
             (Ok(_), None) => {
@@ -683,7 +740,7 @@ impl Clients {
     pub(crate) fn serve(&mut self, config: &Config, project: &Project, client: Client) {
         let t = project.tracker.as_ref().expect("a project with a tracker");
         let i = config.account_for(t).expect("an account for the tracker");
-        self.clients.insert((i, store::site_host(&t.site)), client);
+        self.clients.insert(ClientKey::new(&config.accounts[i], t), client);
     }
 
     /// The board's files, from the cache: listed again only when one of its folders changed, so
@@ -801,7 +858,7 @@ impl Provider {
     /// What to type in the site field when it's empty.
     pub fn site_missing(self) -> &'static str {
         match self {
-            Provider::Jira => "Enter the Jira site, like your-site.atlassian.net",
+            Provider::Jira => "Enter the Jira Cloud site, like your-site.atlassian.net",
             Provider::Linear => "Enter the Linear workspace (the part after linear.app/)",
             Provider::Local | Provider::Github => "",
         }
@@ -870,7 +927,9 @@ impl Provider {
     /// The project form's hint under Site once this one is picked.
     pub fn site_hint(self) -> &'static str {
         match self {
-            Provider::Jira => "your Jira site, like your-site.atlassian.net",
+            Provider::Jira => {
+                "like your-site.atlassian.net. Jira Cloud only; Data Center isn't supported yet"
+            }
             Provider::Linear => "the part after linear.app/ in its address",
             Provider::Local | Provider::Github => "",
         }
@@ -880,7 +939,9 @@ impl Provider {
     /// against (Jira) or the one workspace its key belongs to (Linear).
     pub fn account_site_hint(self) -> &'static str {
         match self {
-            Provider::Jira => "where to test the token, like your-site.atlassian.net",
+            Provider::Jira => {
+                "where to test the token, like your-site.atlassian.net. Jira Cloud only"
+            }
             Provider::Linear => "workspace: the part after linear.app/",
             Provider::Local | Provider::Github => "",
         }
@@ -1017,6 +1078,142 @@ impl Tracker {
 
 #[cfg(test)]
 mod tests {
+    /// A hand-edited config can leave ids empty: two accounts sharing one on a host each keep a
+    /// client of their own, so neither signs in as the other, whichever else they differ in.
+    #[test]
+    fn accounts_with_the_same_id_dont_share_a_client() {
+        let site = "https://jira.example.com";
+        for ((email_a, token_a), (email_b, token_b)) in [
+            (("a@example.com", "env:T"), ("b@example.com", "env:T")),
+            (("a@example.com", "env:A"), ("a@example.com", "env:B")),
+        ] {
+            let config: Config = serde_json::from_value(serde_json::json!({ "accounts": [
+                { "provider": "jira", "site": "https://other.example.com", "email": email_a,
+                  "token": token_a },
+                { "provider": "jira", "site": site, "email": email_b, "token": token_b },
+            ]}))
+            .unwrap();
+            let project = |name: &str, account: serde_json::Value| -> Project {
+                serde_json::from_value(serde_json::json!({
+                    "name": name,
+                    "repo": format!("/src/{name}"),
+                    "tracker": { "provider": "jira", "site": site, "key": "ENG",
+                                 "account": account },
+                }))
+                .unwrap()
+            };
+            let projects =
+                [project("first", "".into()), project("second", serde_json::Value::Null)];
+            assert_eq!(config.account_for(projects[0].tracker.as_ref().unwrap()), Some(0));
+            assert_eq!(config.account_for(projects[1].tracker.as_ref().unwrap()), Some(1));
+            let mut clients = Clients::default();
+            clients.token_read(token_a, Ok("a".into()), &config, &projects);
+            clients.token_read(token_b, Ok("b".into()), &config, &projects);
+            let jira = |p: &Project| match clients.access(&config, Some(p)) {
+                Access::Client(Client::Jira(c)) => c,
+                _ => panic!("no Jira client"),
+            };
+            assert!(!jira(&projects[0]).same_login(&jira(&projects[1])), "{email_b} {token_b}");
+        }
+    }
+
+    /// A Jira and a Linear account, as a hand-edited config can have them, looking alike but for
+    /// their provider, on a site and a workspace of one name: each tracker gets its own kind.
+    #[test]
+    fn accounts_of_two_providers_dont_share_a_client() {
+        let config: Config = serde_json::from_value(serde_json::json!({ "accounts": [
+            { "provider": "jira", "site": "acme", "token": "env:T" },
+            { "provider": "linear", "site": "acme", "token": "env:T" },
+        ]}))
+        .unwrap();
+        let project = |provider: &str| -> Project {
+            serde_json::from_value(serde_json::json!({
+                "name": provider,
+                "repo": format!("/src/{provider}"),
+                "tracker": { "provider": provider, "site": "acme", "key": "ENG" },
+            }))
+            .unwrap()
+        };
+        let (jira, linear) = (project("jira"), project("linear"));
+        let projects = [jira, linear];
+        let mut clients = Clients::default();
+        clients.token_read("env:T", Ok("t".into()), &config, &projects);
+        assert!(matches!(
+            clients.access(&config, Some(&projects[0])),
+            Access::Client(Client::Jira(_))
+        ));
+        assert!(matches!(
+            clients.access(&config, Some(&projects[1])),
+            Access::Client(Client::Linear(_))
+        ));
+    }
+
+    /// A tracker can name an account of another provider, as nothing checks that it doesn't. Which
+    /// client it gets follows the tracker, however many trackers use the account.
+    #[test]
+    fn one_account_for_two_providers_doesnt_share_a_client() {
+        let config: Config = serde_json::from_value(serde_json::json!({ "accounts": [
+            { "id": "one", "provider": "jira", "site": "acme", "token": "env:T" },
+        ]}))
+        .unwrap();
+        let project = |provider: &str| -> Project {
+            serde_json::from_value(serde_json::json!({
+                "name": provider,
+                "repo": format!("/src/{provider}"),
+                "tracker": { "provider": provider, "site": "acme", "key": "ENG", "account": "one" },
+            }))
+            .unwrap()
+        };
+        let projects = [project("jira"), project("linear")];
+        let mut clients = Clients::default();
+        clients.token_read("env:T", Ok("t".into()), &config, &projects);
+        assert!(matches!(
+            clients.access(&config, Some(&projects[0])),
+            Access::Client(Client::Jira(_))
+        ));
+        assert!(matches!(
+            clients.access(&config, Some(&projects[1])),
+            Access::Client(Client::Linear(_))
+        ));
+    }
+
+    /// A refresh rebuilds the clients: one with the same login keeps what it knows, and a new token
+    /// starts afresh, as does saving the account (`events/accounts.rs`).
+    #[test]
+    fn a_refresh_keeps_what_a_jira_client_knows() {
+        let source = "env:ACME_JIRA_TOKEN";
+        let config: Config = serde_json::from_value(serde_json::json!({ "accounts": [
+            { "id": "jira-1", "provider": "jira", "email": "ana@example.com", "token": source },
+        ]}))
+        .unwrap();
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "name": "acme",
+            "repo": "/src/acme",
+            "tracker": { "provider": "jira", "site": "https://jira.example.com", "key": "ENG",
+                         "account": "jira-1" },
+        }))
+        .unwrap();
+        let projects = [project];
+        let mut clients = Clients::default();
+        let jira = |clients: &Clients| match clients.access(&config, Some(&projects[0])) {
+            Access::Client(Client::Jira(c)) => c,
+            _ => panic!("no Jira client"),
+        };
+        clients.token_read(source, Ok("t".into()), &config, &projects);
+        let first = jira(&clients);
+
+        clients.rebuild(&config, &projects, |_| {});
+        assert!(jira(&clients).same_client(&first));
+
+        clients.token_read(source, Ok("t2".into()), &config, &projects);
+        let replaced = jira(&clients);
+        assert!(!replaced.same_client(&first));
+
+        clients.start_afresh(&config.accounts[0]);
+        clients.rebuild(&config, &projects, |_| {});
+        assert!(!jira(&clients).same_client(&replaced));
+    }
+
     use super::*;
     use proptest::prelude::*;
 
@@ -1041,6 +1238,22 @@ mod tests {
         assert_eq!(e("ENG", "  "), "give the new ticket a title");
         assert!(e("", "Fix it").starts_with("the project has no ticket prefix"));
         assert!(e("e-1", "Fix it").starts_with("the project has no ticket prefix"));
+    }
+
+    /// A refused certificate won't change by asking again, so it isn't worded as a network problem
+    /// that the next refresh may cure.
+    #[test]
+    fn a_refused_certificate_says_what_to_do_about_it() {
+        use std::io::{Error, ErrorKind};
+        let words = "invalid peer certificate: UnknownIssuer";
+        let e = ureq::Error::Io(Error::new(ErrorKind::InvalidData, words));
+        let said = request_failed(&e, "Jira", "https://jira.example.com/");
+        assert_eq!(
+            said,
+            FetchError::Other(
+                "jira.example.com's certificate comes from a CA this machine doesn't trust: add the CA to the system's certificate store, or set SSL_CERT_FILE to a file holding it, then restart taskman".into()
+            )
+        );
     }
 
     /// Each way a request gets no answer says where the problem is, rather than ureq's words, and
@@ -1090,6 +1303,10 @@ mod tests {
             ureq::Error::Timeout(ureq::Timeout::Connect),
             ureq::Error::Io(Error::from(ErrorKind::ConnectionRefused)),
             ureq::Error::Io(Error::from(ErrorKind::PermissionDenied)),
+            ureq::Error::Io(Error::new(
+                ErrorKind::InvalidData,
+                "invalid peer certificate: UnknownIssuer",
+            )),
         ] {
             assert!(unsent(&e), "{e}");
         }
