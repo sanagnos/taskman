@@ -97,11 +97,70 @@ fn the_add_form_switches_to_a_ticket_already_open() {
     assert_eq!(app.tickets.len(), 7);
 }
 
+/// `prefix e` on a ticket sets what its card shows, and an empty value gives it back to the
+/// tracker. Unlike an agent's name it's only for the card: the session hears nothing.
+#[test]
+fn titles_a_ticket() {
+    let (mut app, sent) = at_eng_52();
+    let i = app.sel;
+    let tracker = app.tickets[i].title().unwrap();
+    prefix(&mut app, KeyCode::Char('e'));
+    assert_eq!(field(&app, "Title"), "");
+    type_text(&mut app, "Login redirect");
+    app.on_key(key(KeyCode::Enter));
+    assert!(matches!(app.mode, Mode::Normal));
+    assert_eq!(toast(&app), Some("ENG-52's title set"));
+    assert_eq!(app.tickets[i].title().as_deref(), Some("Login redirect"));
+    assert_eq!(
+        saved().tickets.iter().find(|t| t.key == "ENG-52").unwrap().label.as_deref(),
+        Some("Login redirect")
+    );
+    assert!(sent.bytes().is_empty(), "the session was sent something");
+    // The tracker's own stays where it was, and find goes by what the card shows.
+    assert_eq!(app.tickets[i].jira.data.as_ref().unwrap().summary, tracker);
+    assert_eq!(app.find_matches("login redirect"), [i]);
+
+    // It opens on the title it has; emptied, the tracker's comes back.
+    prefix(&mut app, KeyCode::Char('e'));
+    assert_eq!(field(&app, "Title"), "Login redirect");
+    app.on_key(ctrl('u'));
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(toast(&app), Some("ENG-52's title cleared"));
+    assert_eq!(app.tickets[i].title(), Some(tracker));
+    assert_eq!(saved().tickets.iter().find(|t| t.key == "ENG-52").unwrap().label, None);
+}
+
+#[test]
+fn a_tickets_title_is_cleaned_of_what_a_paste_can_hide() {
+    let (mut app, _) = at_eng_52();
+    prefix(&mut app, KeyCode::Char('e'));
+    app.on_paste("Fix\x1b[31m the\nlogin\u{200b}");
+    app.on_key(key(KeyCode::Enter));
+    assert!(matches!(app.mode, Mode::Normal));
+    let label = saved().tickets.iter().find(|t| t.key == "ENG-52").unwrap().label.clone();
+    assert_eq!(label.as_deref().map(crate::untrusted::line), label);
+    assert!(
+        label.as_deref().is_some_and(|l| !l.contains('\x1b') && !l.contains('\u{200b}')),
+        "{label:?}"
+    );
+}
+
+/// The form holds the ticket by its project and key, not its place in the list.
+#[test]
+fn a_ticket_closed_under_its_title_form_says_so() {
+    let (mut app, _) = at_eng_52();
+    prefix(&mut app, KeyCode::Char('e'));
+    type_text(&mut app, "Login redirect");
+    let i = index(&app, "ENG-52");
+    app.tickets.remove(i);
+    app.on_key(key(KeyCode::Enter));
+    let Mode::Form(form) = &app.mode else { panic!("the form closed") };
+    assert_eq!(form.error.as_deref(), Some("ENG-52 isn't open in taskman"));
+}
+
 #[test]
 fn renames_an_agent() {
     let mut app = acme_app();
-    prefix(&mut app, KeyCode::Char('e'));
-    assert_eq!(toast(&app), Some("Only agents can be renamed; a ticket is named by its key"));
     app.select(index(&app, "acme-lead"));
     prefix(&mut app, KeyCode::Char('e'));
     app.on_key(ctrl('u'));

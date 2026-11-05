@@ -351,6 +351,9 @@ fn sidebar_rows(
                     }
                     row.push(Span::styled(truncate(&untrusted::line(title), room), title_style));
                     lines.push(Line::from(row));
+                } else if tv.missing_title(&app.access(&tv.t)) {
+                    let hint = Span::styled(no_title_hint(w.saturating_sub(3)), yellow());
+                    lines.push(Line::from(vec![marker.clone(), Span::raw(" "), hint]));
                 }
                 // Agents have no PR line: a name, and a title when Claude has set one.
                 if !agent {
@@ -401,6 +404,14 @@ fn sidebar_rows(
         rows.pop();
     }
     rows
+}
+
+/// The title row of a card whose tracker gave it no title (`TicketView::missing_title`), `room`
+/// wide: says so, and how to give it one. The key goes first when the prefix is too long for both.
+fn no_title_hint(room: usize) -> String {
+    let says = "⚠ no tracker title";
+    let hint = format!("{says} · {} e", prefix().short());
+    truncate(if width(&hint) <= room { &hint } else { says }, room)
 }
 
 /// The rows a view `view_h` tall shows of `total`, from row `top`: an edge row with rows beyond
@@ -458,6 +469,34 @@ pub(super) fn more_line(arrow: &str, entries: usize, attention: bool, w: usize) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::test_support::{acme_app, lay_out};
+    use crate::util::line_width;
+    use proptest::prelude::*;
+
+    #[test]
+    fn the_no_title_hint_fits_or_drops_the_key() {
+        // A full-width card has 26 columns.
+        assert_eq!(no_title_hint(26), format!("⚠ no tracker title · {} e", prefix().short()));
+        assert_eq!(no_title_hint(19), "⚠ no tracker title");
+        assert_eq!(no_title_hint(10), "⚠ no trac…");
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        /// A title of any kind or length stays on its row, inside the card.
+        #[test]
+        fn a_title_never_widens_its_card(label in "(\\PC|[\\x00-\\x1f]|[界🦀]){0,80}") {
+            let mut app = acme_app();
+            lay_out(&mut app, 160, 40);
+            let i = app.tickets.iter().position(|tv| tv.t.key == "ENG-52").unwrap();
+            app.tickets[i].t.label = Some(label);
+            // The sidebar's width inside its border.
+            for row in sidebar_rows(&app, 29, false, None) {
+                prop_assert!(line_width(&row.line) <= 29, "{:?}", row.line);
+            }
+        }
+    }
 
     #[test]
     fn sidebar_edge_rows_stand_for_the_rows_hidden_past_them() {

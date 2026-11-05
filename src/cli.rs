@@ -1,6 +1,6 @@
 //! What the CLI commands share: how they run and read their arguments, the project a command
-//! means, and the ticket key an input names in it (`taskman add`, `move`, `close`, `status`,
-//! `resume` and `update`).
+//! means, and the ticket key an input names in it (`taskman add`, `move`, `close`, `title`,
+//! `status`, `resume` and `update`).
 
 use crate::status::{self, Here, real};
 use crate::store::{self, Project, Saved, Ticket};
@@ -190,7 +190,7 @@ pub(crate) fn context(me: Option<&Ticket>, saved: &Saved, here: Option<&Here>) -
 
 /// What lifts `confine`. The CLI asks the user before it runs a command written this way, as it
 /// matches no rule of the allow-list.
-const WIDER: &str =
+pub(crate) const WIDER: &str =
     "run the same command with `env -u TASKMAN_REPO` in front, which asks the user first";
 
 /// The project of the session taskman started that the command runs in, by `TASKMAN_REPO`; None
@@ -223,6 +223,29 @@ pub(crate) fn confine(p: usize, own: Option<usize>, saved: &Saved) -> Result<(),
         )),
         _ => Ok(()),
     }
+}
+
+/// The key `input` names and where it's open, as `taskman close` and `taskman title` read a ticket:
+/// a number takes the prefix of the project the command means, and a key or link goes by
+/// `status::locate`, so a key open in two projects needs the project. `named` is `project`'s index.
+pub(crate) fn locate_ticket<'a>(
+    input: &str,
+    project: Option<&str>,
+    named: Option<usize>,
+    me: Option<&Ticket>,
+    saved: &'a Saved,
+    here: Option<&Here>,
+) -> Result<(String, (Option<&'a Ticket>, &'a Project)), String> {
+    if ticket_key::is_number(input) {
+        let p = pick_project(project, &[], me, saved, here)?;
+        let key = resolve_key(input, p, &saved.projects)?;
+        let located = status::locate(&key, saved, status::Scope::Named(&saved.projects[p].repo))?;
+        return Ok((key, located));
+    }
+    let key = ticket_key::parse(input)
+        .ok_or_else(|| format!("{input} isn't a ticket number, key or link"))?;
+    let located = status::locate(&key, saved, status::scope(named, None, me, saved, here))?;
+    Ok((key, located))
 }
 
 fn has_prefix(p: &Project, prefix: &str) -> bool {
@@ -294,6 +317,7 @@ pub(crate) mod tests {
             seen_gh: None,
             agent: agent.map(String::from),
             role: None,
+            label: None,
             created_worktree: false,
             base: None,
             pending_worktree: None,

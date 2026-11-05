@@ -206,6 +206,12 @@ pub struct Ticket {
     /// as a message): what it's for, like "test PRs against their tickets".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// A title for the ticket's card in place of the tracker's (`TicketView::title`), set with
+    /// `prefix e` or `taskman title`, and cleaned on the way in (`ticket::clean_label`). A
+    /// snapshot: it doesn't follow the tracker. Stays in taskman: never sent to the tracker, and
+    /// kept out of briefs, branches and `taskman status`, as a session may have written it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// taskman created the worktree in `cwd`, so closing the ticket may offer to remove it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub created_worktree: bool,
@@ -1298,6 +1304,21 @@ mod tests {
       "sleep_after": null,
       "bell": "off"
     }"#;
+
+    /// Saved only when set, so a file from before it reads and writes back the same; an older
+    /// build keeps it (`extra`) rather than dropping it.
+    #[test]
+    fn a_tickets_label_round_trips() {
+        let plain = serde_json::json!({ "key": "ENG-52", "repo": "/src/acme", "cwd": "/src/acme" });
+        let t: Ticket = serde_json::from_value(plain).unwrap();
+        assert_eq!(t.label, None);
+        assert!(serde_json::to_value(&t).unwrap().get("label").is_none());
+        let titled = Ticket { label: Some("Login".into()), ..t };
+        let json = serde_json::to_value(&titled).unwrap();
+        assert_eq!(json["label"], "Login");
+        let back: Ticket = serde_json::from_value(json).unwrap();
+        assert_eq!(back.label.as_deref(), Some("Login"));
+    }
 
     #[test]
     fn keeps_fields_it_doesnt_know_through_a_load_and_a_save() {

@@ -8,9 +8,9 @@ use crate::github::{self, Pr, PrState};
 use crate::session::{End, Parser, Reaper, Session};
 use crate::status_file::Record;
 use crate::store::{self, Ticket};
-use crate::tracker::Issue;
+use crate::tracker::{Access, Issue};
 use crate::worktree;
-use crate::{resume, util};
+use crate::{resume, untrusted, util};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime};
@@ -470,9 +470,13 @@ impl TicketView {
         }
     }
 
-    /// A title worth showing: the tracker summary, or Claude's window title without its status
-    /// glyph. None when there's only something generic like "Claude Code".
+    /// A title worth showing: the ticket's own (`Ticket::label`), else the tracker summary, else
+    /// Claude's window title without its status glyph. None when there's only something generic
+    /// like "Claude Code".
     pub fn title(&self) -> Option<String> {
+        if let Some(label) = self.t.label.as_deref().filter(|l| !l.trim().is_empty()) {
+            return Some(label.to_string());
+        }
         if let Some(i) = &self.jira.data
             && !i.summary.trim().is_empty()
         {
@@ -495,6 +499,32 @@ impl TicketView {
             self.t.cwd.file_name().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
         strip_folder(&raw, &dir).to_string()
     }
+
+    /// Whether the card should say its tracker gave it no title, for `access`, the ticket's
+    /// (`App::access`). Otherwise a tracker that can't be reached leaves a card with its key alone,
+    /// and only the tracker panel, which may be hidden, says why. Quiet with no tracker to ask,
+    /// and until the first answer.
+    pub fn missing_title(&self, access: &Access) -> bool {
+        if self.t.agent.is_some() || self.title().is_some() {
+            return false;
+        }
+        match access {
+            Access::NoTracker | Access::Reading => false,
+            Access::NoAccount(..) | Access::Failed(_) => true,
+            Access::Client(_) => self.jira.error.is_some() || self.jira.data.is_some(),
+        }
+    }
+}
+
+/// The most columns a ticket's own title keeps: a card shows far fewer, and the find picker and an
+/// agent's board a little more.
+const LABEL_WIDTH: usize = 200;
+
+/// `text` as a ticket's own title (`Ticket::label`): on one line, without what hides text from a
+/// reader, and cut to `LABEL_WIDTH`. None when that leaves nothing. A session can write it, so it
+/// counts as untrusted however it came.
+pub(super) fn clean_label(text: &str) -> Option<String> {
+    Some(util::truncate(&untrusted::line(text), LABEL_WIDTH)).filter(|l| !l.is_empty())
 }
 
 /// Whether `id` arrived after `seen` was first filled; nothing is new before the first fetch.
@@ -557,6 +587,95 @@ mod tests {
     use crate::status_file::parse;
     use std::path::Path;
     use std::time::Duration;
+
+    fn viewed() -> TicketView {
+        TicketView::new(ticket())
+    }
+
+    fn issue(summary: &str) -> Issue {
+        Issue { summary: summary.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn a_tickets_own_title_wins_over_the_trackers() {
+        let mut tv = viewed();
+        assert_eq!(tv.title(), None);
+        tv.jira.finish(Ok(issue("From the tracker")));
+        assert_eq!(tv.title().as_deref(), Some("From the tracker"));
+        tv.t.label = Some("Mine".into());
+        assert_eq!(tv.title().as_deref(), Some("Mine"));
+        // tickets.json edited by hand: blank is no title.
+        tv.t.label = Some("  ".into());
+        assert_eq!(tv.title().as_deref(), Some("From the tracker"));
+    }
+
+    #[test]
+    fn says_when_the_tracker_gave_no_title() {
+        use crate::store::Provider;
+        let board = serde_json::from_value(
+            serde_json::json!({ "provider": "local", "site": "workplan", "key": "ENG" }),
+        )
+        .unwrap();
+        let client = || {
+            Access::Client(
+                crate::tracker::Client::new(&board, Path::new("/src/acme"), None).unwrap(),
+            )
+        };
+        let no_account = Access::NoAccount(Provider::Jira, "example".into());
+        let failed = Access::Failed("the token command failed".into());
+        let mut tv = viewed();
+        // Nothing to ask, or nothing heard yet: quiet.
+        assert!(!tv.missing_title(&Access::NoTracker));
+        assert!(!tv.missing_title(&Access::Reading));
+        assert!(!tv.missing_title(&client()));
+        // It can't ask.
+        assert!(tv.missing_title(&no_account));
+        assert!(tv.missing_title(&failed));
+        // It asked, and heard no title.
+        tv.jira.finish(Err("timed out".into()));
+        assert!(tv.missing_title(&client()));
+        assert!(!tv.missing_title(&Access::Reading), "still reading the token after a failure");
+        tv.jira.finish(Ok(issue("  ")));
+        assert!(tv.missing_title(&client()));
+        // A title from anywhere ends it.
+        tv.jira.finish(Ok(issue("From the tracker")));
+        assert!(!tv.missing_title(&client()));
+        let mut own = viewed();
+        own.t.label = Some("Mine".into());
+        assert!(!own.missing_title(&failed));
+        // An agent has its name.
+        let agent = crate::app::test_support::agent("lead", store::Cli::Claude, None);
+        assert!(!TicketView::new(agent).missing_title(&failed));
+    }
+
+    #[test]
+    fn cleans_a_label() {
+        assert_eq!(clean_label("  Fix  the\nlogin\t"), Some("Fix the login".into()));
+        assert_eq!(clean_label("\x1b]0;x\x07Fix\u{202e}"), Some("]0;x Fix".into()));
+        assert_eq!(clean_label(""), None);
+        assert_eq!(clean_label(" \x1b\u{200b}\n"), None);
+        assert_eq!(util::width(&clean_label(&"x".repeat(500)).unwrap()), LABEL_WIDTH);
+    }
+
+    mod labels {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(128))]
+
+            /// Whatever comes in, what's saved is one clean line of a bounded width, which
+            /// cleaning again leaves as it is.
+            #[test]
+            fn a_label_is_one_clean_line(text in "(\\PC|[\\x00-\\x1f\\u{200b}\\u{202e}\\u{e0001}]){0,300}") {
+                if let Some(label) = clean_label(&text) {
+                    prop_assert!(!label.is_empty() && !label.contains(char::is_control));
+                    prop_assert!(util::width(&label) <= LABEL_WIDTH);
+                    prop_assert_eq!(clean_label(&label), Some(label.clone()));
+                }
+            }
+        }
+    }
 
     #[test]
     fn strips_codex_folder_from_titles() {

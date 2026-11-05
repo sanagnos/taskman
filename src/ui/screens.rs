@@ -98,6 +98,35 @@ fn no_pr_after_a_failed_refresh() {
     assert_snapshot!(draw(&mut app, 160, 40));
 }
 
+/// The tracker didn't answer, so the card says it has no title, and how to give it one; the panel
+/// says why.
+#[test]
+fn ticket_without_a_tracker_title() {
+    let mut app = acme_app();
+    select(&mut app, "ENG-70");
+    let tv = app.tickets.iter_mut().find(|tv| tv.t.key == "ENG-70").unwrap();
+    tv.jira.data = None;
+    tv.jira.error = Some("Jira rejected the credentials (check the email and API token)".into());
+    assert_snapshot!(draw(&mut app, 160, 40));
+}
+
+/// A title of its own in place of the tracker's on the card; the panel keeps the tracker's.
+#[test]
+fn ticket_with_a_title_of_its_own() {
+    let mut app = acme_app();
+    app.tickets.iter_mut().find(|tv| tv.t.key == "ENG-52").unwrap().t.label =
+        Some("Login redirect".into());
+    assert_snapshot!(draw(&mut app, 160, 40));
+}
+
+#[test]
+fn ticket_title_form() {
+    let mut app = acme_app();
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(KeyCode::Char('e')));
+    assert_snapshot!(draw(&mut app, 100, 30));
+}
+
 #[test]
 fn agents_board() {
     let mut app = acme_app();

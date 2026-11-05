@@ -444,3 +444,99 @@ fn a_new_ticket_is_created_only_through_the_dialog() {
     assert!(!lines[0].ok && lines[0].text.contains("waits for the user's approval"), "{lines:?}");
     assert_eq!(toast, None);
 }
+
+// ---- `taskman title` through the inbox -----------------------------------------------------
+
+/// What `taskman title` leaves for ticket `key` in project `repo`, and the reply's one line.
+fn titled(app: &mut App, id: &str, repo: &str, key: &str, text: &str) -> add::Line {
+    request(
+        id,
+        &serde_json::json!({
+            "repo": repo, "from": "ENG-52", "reply_by": crate::util::now() + 60,
+            "items": [{ "kind": "title", "key": key, "text": text }],
+        }),
+    );
+    app.take_inbox();
+    reply(id).remove(0)
+}
+
+#[test]
+fn takes_a_title_from_the_inbox_and_replies() {
+    let (mut app, sent) = at_eng_52();
+    let i = index(&app, "ENG-52");
+    let line = titled(&mut app, "0001", "/src/acme", "ENG-52", "Fix\x1b[31m the\nlogin\u{200b}");
+    assert_eq!(line, add::Line::ok("ENG-52's title is now: Fix [31m the login"));
+    assert_eq!(app.tickets[i].title().as_deref(), Some("Fix [31m the login"));
+    let saved_label =
+        |key: &str| saved().tickets.iter().find(|t| t.key == key).unwrap().label.clone();
+    assert_eq!(saved_label("ENG-52").as_deref(), Some("Fix [31m the login"));
+    // No turn, no toast: only the card changes.
+    assert!(sent.bytes().is_empty());
+    assert_eq!(toast(&app), None);
+    assert!(took_dirty(&app));
+    // The last one set wins, whoever set it, and nothing else on the ticket moves.
+    let branch = app.tickets[i].t.branch.clone();
+    titled(&mut app, "0002", "/src/acme", "ENG-52", "Login");
+    assert_eq!(saved_label("ENG-52").as_deref(), Some("Login"));
+    assert_eq!(app.tickets[i].t.branch, branch);
+    // Empty clears it.
+    let line = titled(&mut app, "0003", "/src/acme", "ENG-52", "");
+    assert_eq!(line, add::Line::ok("ENG-52's title is cleared: its card shows the tracker's"));
+    assert_eq!(saved_label("ENG-52"), None);
+}
+
+/// The command checks these too, but anything can write to the inbox.
+#[test]
+fn refuses_a_title_it_cant_give() {
+    let mut app = acme_app();
+    let refused = |line: add::Line| {
+        assert!(!line.ok, "{line:?}");
+        line.text
+    };
+    let text = refused(titled(&mut app, "0001", "/src/acme", "ENG-99", "Fix"));
+    assert_eq!(text, "ENG-99 isn't open in taskman");
+    let text = refused(titled(&mut app, "0002", "/src/acme", "acme-lead", "Fix"));
+    assert_eq!(text, "acme-lead is an agent, which goes by its name");
+    // Nothing left to show isn't a way to clear it.
+    let i = index(&app, "ENG-52");
+    app.tickets[i].t.label = Some("Login".into());
+    let text = refused(titled(&mut app, "0003", "/src/acme", "ENG-52", "\x1b\u{200b}"));
+    assert_eq!(text, "ENG-52's title would be empty once cleaned");
+    assert_eq!(app.tickets[i].t.label.as_deref(), Some("Login"));
+    // A key is only unique within its project.
+    let text = refused(titled(&mut app, "0004", "/src/notes", "ENG-52", "Fix"));
+    assert_eq!(text, "ENG-52 isn't open in taskman");
+    assert_eq!(app.tickets[i].t.label.as_deref(), Some("Login"));
+    let text = refused(titled(&mut app, "0005", "/src/gone", "ENG-52", "Fix"));
+    assert!(text.contains("no longer in taskman"), "{text}");
+    // Asked to close instead, it closes nothing.
+    request(
+        "0006",
+        &serde_json::json!({
+            "repo": "/src/acme", "reply_by": crate::util::now() + 60, "close": {},
+            "items": [{ "kind": "title", "key": "ENG-52", "text": "Fix" }],
+        }),
+    );
+    app.take_inbox();
+    assert!(app.tickets.iter().any(|tv| tv.t.key == "ENG-52"));
+}
+
+/// A closed ticket takes its title with it: added again, it starts from the tracker's.
+#[test]
+fn a_ticket_added_again_has_no_title_of_its_own() {
+    let (mut app, _) = at_eng_52();
+    titled(&mut app, "0001", "/src/acme", "ENG-52", "Login");
+    prefix(&mut app, KeyCode::Char('x'));
+    assert!(matches!(app.mode, Mode::ConfirmClose));
+    app.on_key(key(KeyCode::Enter));
+    assert!(!app.tickets.iter().any(|tv| tv.t.key == "ENG-52"));
+    request(
+        "0002",
+        &serde_json::json!({
+            "repo": "/src/acme", "worktree": false, "reply_by": crate::util::now() + 60,
+            "items": [{ "kind": "ticket", "key": "ENG-52" }],
+        }),
+    );
+    app.take_inbox();
+    assert_eq!(app.tickets[index(&app, "ENG-52")].t.label, None);
+}

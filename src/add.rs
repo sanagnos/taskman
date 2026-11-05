@@ -69,8 +69,8 @@ const STALE_REPLY: Duration = Duration::from_secs(60);
 const MAX_REQUEST: u64 = 1024 * 1024;
 /// What requests the TUI understands, written in the `alive` file so a command run after an
 /// update doesn't ask an older TUI for something it would drop. 2 added `base`, 3 an agent's
-/// `role`, 4 `close`, 5 `new` items, 6 an agent's `fork`.
-const INBOX_FORMAT: u32 = 6;
+/// `role`, 4 `close`, 5 `new` items, 6 an agent's `fork`, 7 `title` items.
+const INBOX_FORMAT: u32 = 7;
 
 /// What the command asks the TUI to add, all to one project. Unknown fields are refused rather
 /// than dropped, so a TUI older than the command says so instead of half doing it.
@@ -137,6 +137,12 @@ pub enum Item {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         description: String,
     },
+    /// A title for an open ticket's card (`taskman title`); empty clears it.
+    Title {
+        key: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        text: String,
+    },
 }
 
 impl Request {
@@ -144,7 +150,7 @@ impl Request {
     pub fn agent(&self) -> Option<(&str, Option<&str>)> {
         self.items.iter().find_map(|i| match i {
             Item::Agent { name, role, .. } => Some((name.as_str(), role.as_deref())),
-            Item::Ticket { .. } | Item::New { .. } => None,
+            Item::Ticket { .. } | Item::New { .. } | Item::Title { .. } => None,
         })
     }
 
@@ -152,8 +158,13 @@ impl Request {
     pub fn fork(&self) -> Option<&str> {
         self.items.iter().find_map(|i| match i {
             Item::Agent { fork, .. } => fork.as_deref(),
-            Item::Ticket { .. } | Item::New { .. } => None,
+            Item::Ticket { .. } | Item::New { .. } | Item::Title { .. } => None,
         })
+    }
+
+    /// Whether it sets a ticket's title (`taskman title`).
+    fn titles(&self) -> bool {
+        self.items.iter().any(|i| matches!(i, Item::Title { .. }))
     }
 
     /// The tickets to create, each a title and description: the TUI asks the user before creating
@@ -163,7 +174,7 @@ impl Request {
             .iter()
             .filter_map(|i| match i {
                 Item::New { title, description } => Some((title.as_str(), description.as_str())),
-                Item::Ticket { .. } | Item::Agent { .. } => None,
+                Item::Ticket { .. } | Item::Agent { .. } | Item::Title { .. } => None,
             })
             .collect()
     }
@@ -317,7 +328,9 @@ fn read_alive() -> Option<Alive> {
 /// Why the running TUI can't take this request, if it can't: it's older than the command.
 fn too_old(req: &Request, alive: &Alive) -> Option<String> {
     let role = req.items.iter().any(|i| matches!(i, Item::Agent { role: Some(_), .. }));
-    let (needs, flag) = if req.fork().is_some() {
+    let (needs, flag) = if req.titles() {
+        (7, "taskman title")
+    } else if req.fork().is_some() {
         (6, "--fork")
     } else if !req.new_tickets().is_empty() {
         (5, "--new from a session")
@@ -336,7 +349,11 @@ fn too_old(req: &Request, alive: &Alive) -> Option<String> {
         } else {
             "an older taskman".into()
         };
-        let again = if req.close.is_some() { "close" } else { "add" };
+        let again = match (req.close.is_some(), req.titles()) {
+            (true, _) => "close",
+            (_, true) => "set it",
+            _ => "add",
+        };
         format!(
             "{v} is running, which doesn't know {flag} yet; restart it ({} q, then taskman) and {again} again",
             crate::keys::prefix()
@@ -894,7 +911,7 @@ fn send(req: &Request, codex: bool) -> Result<String, String> {
     let json = serde_json::to_vec_pretty(req).map_err(|e| e.to_string())?;
     store::write_atomic(&inbox().join(format!("{id}.json")), &json).map_err(|e| {
         let hint = if codex {
-            "; Codex's sandbox blocks writing there: run taskman add outside it"
+            "; Codex's sandbox blocks writing there: run the command outside it"
         } else {
             ""
         };
@@ -943,6 +960,7 @@ fn waiting_lines(req: &Request, alive: bool) -> Vec<Line> {
                     Item::Ticket { key, .. } => key.clone(),
                     Item::Agent { name, .. } => format!("✦ {name}"),
                     Item::New { title, .. } => untrusted::line(title),
+                    Item::Title { key, .. } => key.clone(),
                 };
                 waits(if c.merged {
                     format!("{name} closes if its PR has merged")
@@ -966,6 +984,10 @@ fn waiting_lines(req: &Request, alive: bool) -> Vec<Line> {
                     "it asks the user to approve creating \"{}\"",
                     untrusted::line(title)
                 )),
+                Item::Title { key, text } if text.is_empty() => {
+                    waits(format!("{key}'s title is cleared"))
+                }
+                Item::Title { key, .. } => waits(format!("{key}'s title is set")),
             })
             .collect(),
     }
@@ -1201,6 +1223,53 @@ mod tests {
         // An older taskman would add a plain agent: it's refused instead.
         assert!(too_old(&req, &alive("0.1.35", 5)).unwrap().contains("doesn't know --fork yet"));
         assert_eq!(too_old(&req, &alive("0.1.36", INBOX_FORMAT)), None);
+    }
+
+    /// An older TUI can't read the item, so a command refuses rather than leave it what it would
+    /// answer with an error it can't explain.
+    #[test]
+    fn taskman_title_needs_a_tui_that_knows_it() {
+        let item = Item::Title { key: "ENG-52".into(), text: "Fix".into() };
+        let req = Request {
+            repo: "/src/acme".into(),
+            from: None,
+            items: vec![item],
+            cli: Cli::Claude,
+            worktree: None,
+            base: None,
+            reply_by: 0,
+            close: None,
+        };
+        assert_eq!(
+            too_old(&req, &alive("0.1.36", 6)).unwrap(),
+            format!(
+                "taskman 0.1.36 is running, which doesn't know taskman title yet; restart it ({} q, then taskman) and set it again",
+                crate::keys::prefix()
+            )
+        );
+        assert_eq!(too_old(&req, &alive("0.1.37", INBOX_FORMAT)), None);
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(
+            json["items"][0],
+            serde_json::json!({ "kind": "title", "key": "ENG-52", "text": "Fix" })
+        );
+        assert_eq!(serde_json::from_value::<Request>(json).unwrap(), req);
+        // Nothing for the rest of the request's readers to act on.
+        assert_eq!((req.agent(), req.fork(), req.new_tickets().len()), (None, None, 0));
+        assert_eq!(
+            waiting_lines(&req, false),
+            [Line::ok("taskman isn't running; ENG-52's title is set when it starts.")]
+        );
+        let clear = Item::Title { key: "ENG-52".into(), text: String::new() };
+        let cleared = Request { items: vec![clear], ..req };
+        assert_eq!(
+            waiting_lines(&cleared, true),
+            [Line::ok("taskman didn't answer in time; ENG-52's title is cleared when it does.")]
+        );
+        assert_eq!(
+            serde_json::to_value(&cleared).unwrap()["items"][0],
+            serde_json::json!({ "kind": "title", "key": "ENG-52" })
+        );
     }
 
     #[test]

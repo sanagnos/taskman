@@ -1697,7 +1697,7 @@ fn draw_help(f: &mut Frame, app: &mut App) {
             "This ticket",
             &[
                 ("{ / }", "move: ↑/↓ go on, p moves the project, Enter ends"),
-                ("e", "rename agent"),
+                ("e", "rename the agent, or set the ticket's title"),
                 ("M", "run in the main checkout when the worktree failed"),
                 ("x", "close the ticket or agent"),
             ],

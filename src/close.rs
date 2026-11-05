@@ -7,9 +7,9 @@
 use crate::add::{self, Close, Item, Line, Request};
 use crate::cli::{self, Arg, Lexer};
 use crate::resume::Hold;
-use crate::status::{self, Here, Scope};
+use crate::status::{self, Here};
 use crate::store::{self, Cli, Saved, Ticket};
-use crate::{ticket_key, untrusted, worktree};
+use crate::{untrusted, worktree};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -181,21 +181,7 @@ fn plan(a: &Args, saved: &Saved, me: Option<&Ticket>, here: Option<&Here>) -> Re
         return Ok(plan);
     }
     for input in &a.inputs {
-        let located = if ticket_key::is_number(input) {
-            cli::pick_project(a.project.as_deref(), &[], me, saved, here)
-                .and_then(|p| cli::resolve_key(input, p, &saved.projects).map(|k| (k, p)))
-                .and_then(|(key, p)| {
-                    status::locate(&key, saved, Scope::Named(&saved.projects[p].repo))
-                        .map(|l| (key, l))
-                })
-        } else {
-            ticket_key::parse(input)
-                .ok_or_else(|| format!("{input} isn't a ticket number, key or link"))
-                .and_then(|key| {
-                    status::locate(&key, saved, status::scope(named, None, me, saved, here))
-                        .map(|l| (key, l))
-                })
-        };
+        let located = cli::locate_ticket(input, a.project.as_deref(), named, me, saved, here);
         match located {
             Err(e) => plan.lines.push(Line::err(e)),
             Ok((key, (None, project))) => {
@@ -404,6 +390,7 @@ mod tests {
             seen_gh: None,
             agent: agent.map(String::from),
             role: None,
+            label: None,
             created_worktree: false,
             base: None,
             pending_worktree: None,

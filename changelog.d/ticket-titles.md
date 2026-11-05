@@ -1,0 +1,2 @@
+- A ticket can have a title of your own: `ctrl+a e` sets what its card shows under the key, in place of the tracker's, and saving it empty goes back. It stays in taskman, and a session can set its own ticket's with `taskman title "..."`.
+- A ticket's card now says `⚠ no tracker title` when taskman can't get a title from the tracker, rather than showing nothing.

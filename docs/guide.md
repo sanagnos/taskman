@@ -8,7 +8,7 @@ Everything beyond the [README](../README.md)'s quick start: setting projects and
 - [Continuing a session in another terminal](#continuing-a-session-in-another-terminal-taskman-resume)
 - [Worktrees](#worktrees), [stacked tickets](#stacked-tickets) and [closing tickets](#closing-a-ticket)
 - [Agents](#agents)
-- Commands: [`taskman status`](#sessions-read-their-ticket-taskman-status), [`taskman add`](#adding-tickets-from-a-shell-or-a-session-taskman-add), [`taskman close`](#closing-tickets-from-a-shell-or-a-session-taskman-close)
+- Commands: [`taskman status`](#sessions-read-their-ticket-taskman-status), [`taskman add`](#adding-tickets-from-a-shell-or-a-session-taskman-add), [`taskman close`](#closing-tickets-from-a-shell-or-a-session-taskman-close), [`taskman title`](#setting-a-tickets-title-from-a-shell-or-a-session-taskman-title)
 - [Local files](#local-files-tickets-without-an-account), [GitHub Issues](#github-issues-the-repositorys-own-issues) and [Codex sessions](#codex-sessions)
 - [How it works](#how-it-works) and [when Claude Code or Codex changes](#when-claude-code-or-codex-changes)
 
@@ -171,7 +171,7 @@ Press `ctrl+a n` (just `n` while the list is empty) to add a ticket to the curre
 | `ctrl+a w` | list every session that needs you, oldest first, with how long, why and what it asks (see below) |
 | `ctrl+a /` | find a ticket, agent or project by typing (see below) |
 | `ctrl+a {` / `}` | move the selected agent or ticket up / down, then keep going (see [Sidebar](#sidebar)) |
-| `ctrl+a e` / `M` | rename the selected agent (see [Agents](#agents)) / run the session in the main checkout when its worktree couldn't be made (see [Worktrees](#worktrees)) |
+| `ctrl+a e` / `M` | rename the selected agent (see [Agents](#agents)), or set the selected ticket's title (see [Sidebar](#sidebar)) / run the session in the main checkout when its worktree couldn't be made (see [Worktrees](#worktrees)) |
 | `ctrl+a x` | close the selected ticket or agent |
 | `ctrl+a o` / `p` | open the ticket / PR in your browser (a Local files ticket opens in `$EDITOR`) |
 | `ctrl+a l` | the ticket's links (issue, PR, checks), then the session's, newest first: Enter opens one, `c` copies it |
@@ -248,6 +248,10 @@ The tracker panel shows for tickets in a project with a tracker, and the GitHub 
 ### Sidebar
 
 The sidebar lists each project's agents and tickets, each with its session's state beside its name; a folded project's header shows `●` when one of its tickets needs you or finished a turn, or ended, since you looked. A list longer than the screen scrolls: selecting a card out of view, by key or click, scrolls just enough to show it, and the mouse wheel over the sidebar scrolls the list without moving the selection; selecting the selected card again (from `ctrl+a /`, or a click on what shows of it) brings it back into view. The top and bottom rows then say what's hidden past them (`↑ 3 more`, `↓ 5 more`), with `●` when a hidden ticket needs you or finished a turn, or ended, since you looked.
+
+A ticket's card shows its key, then its title, then its PR (or its branch, without GitHub). The title is the tracker's, cut to fit. To tell tickets apart your own way, or when the tracker has none to give, `ctrl+a e` sets a title of your own in its place: it stays in taskman, the tracker's doesn't change, and this one doesn't follow it. Save it empty to go back to the tracker's. A session can set it too, with [`taskman title`](#setting-a-tickets-title-from-a-shell-or-a-session-taskman-title). The key stays on the card's first row, and a folded sidebar shows only the key.
+
+`⚠ no tracker title · ^a e` on a card means taskman has asked the tracker and got no title, or can't ask: a token it can't read, no account picked, or a tracker that refused or didn't answer. The tracker panel (`ctrl+a j`) says which.
 
 What the states mean, as `ctrl+a ?` lists them (a folded sidebar shows the symbol alone):
 
@@ -448,6 +452,22 @@ ENG-63's PR #88 isn't merged: not closed
 - **Not closed:** a ticket whose session you continued in another terminal with `taskman resume` ("quit it there first"), and with `--merged` one whose PR can't be looked up.
 - **taskman closed?** The tickets close when it starts. If a dialog is open in taskman, they close once it's answered.
 - **It asks first in a session.** Unlike `taskman add`, sessions aren't allowed to run it without your approval, so text a session read can't close your tickets unattended.
+
+## Setting a ticket's title from a shell or a session: `taskman title`
+
+`taskman title` sets the title `ctrl+a e` sets, so anything that knows a ticket's title can fill in its card when taskman can't get it from the tracker: a plugin of the session's, a script, or the session itself when you ask it to.
+
+```
+$ taskman title "Fix the login redirect"
+ENG-52's title is now: Fix the login redirect
+```
+
+- **What it takes:** in a session, the title alone means its own ticket. From a shell, name the ticket first: `taskman title ENG-52 "Fix the login redirect"`, with `--project NAME` if the folder doesn't say which. `--clear` drops the title, so the card shows the tracker's again.
+- **A session sets only its own ticket's title,** and an agent, which goes by its name, sets none. Going wider takes `env -u TASKMAN_REPO` in front of the command, as for [`taskman add`](#adding-tickets-from-a-shell-or-a-session-taskman-add).
+- **It asks first in a session.** It isn't on the sessions' allow-list, so Claude Code's permission prompt shows you the whole command, and you can allow it for good there. Codex's sandbox asks too, as the command writes to taskman's state folder.
+- **It's a snapshot, and stays in taskman.** It doesn't follow later changes in the tracker, and nothing is sent there. The last title set wins, whether you set it or a session did. It counts as untrusted: it's cleaned to one line of up to 200 columns, and stays out of sessions' startup instructions, branch names and `taskman status`. Closing the ticket drops it.
+- **taskman doesn't run this for you.** It never starts a turn or spends tokens to find a title.
+- **taskman closed?** The title is set when it starts.
 
 ## Local files: tickets without an account
 

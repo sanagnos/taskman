@@ -1,7 +1,7 @@
-//! The TUI's side of `taskman add` and `taskman close`: requests taken from the inbox folder on
-//! each status poll, agents and sessions' new tickets waiting for the user's approval, closes
-//! waiting until nothing refers to a ticket by its place in the list, and the replies (see `add.rs`
-//! and `close.rs` for the commands).
+//! The TUI's side of `taskman add`, `taskman close` and `taskman title`: requests taken from the
+//! inbox folder on each status poll, agents and sessions' new tickets waiting for the user's
+//! approval, closes waiting until nothing refers to a ticket by its place in the list, and the
+//! replies (see `add.rs`, `close.rs` and `title.rs` for the commands).
 
 use super::sync::Msg;
 use super::ticket::{Added, merged_head, own_worktree};
@@ -202,6 +202,8 @@ impl App {
                         (format!("✦ {}", store::slug(name)), key.map(|tv| tv.t.key.clone()))
                     }
                     add::Item::New { title, .. } => (untrusted::line(title), None),
+                    // The command never closes one, but anything can write to the inbox.
+                    add::Item::Title { key, .. } => (untrusted::line(key), None),
                 })
                 .collect()
         };
@@ -593,6 +595,13 @@ impl App {
                     "\"{}\" wasn't created: a new ticket waits for the user's approval",
                     untrusted::line(title)
                 )),
+                add::Item::Title { key, text } => match self.set_label(&req.repo, key, text) {
+                    Ok(Some(label)) => add::Line::ok(format!("{key}'s title is now: {label}")),
+                    Ok(None) => add::Line::ok(format!(
+                        "{key}'s title is cleared: its card shows the tracker's"
+                    )),
+                    Err(e) => add::Line::err(e),
+                },
             });
         }
         let toast = (!added.is_empty()).then(|| {
