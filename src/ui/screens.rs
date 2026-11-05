@@ -127,34 +127,41 @@ fn ticket_title_form() {
     assert_snapshot!(draw(&mut app, 100, 30));
 }
 
-const UNREACHABLE: &str = "Couldn't reach Linear at api.linear.app: the connection timed out; \
-     taskman tries again on the next refresh";
+const UNREACHABLE: &str = "can't reach api.linear.app: no connection (no network, or a VPN, proxy \
+     or firewall in the way); taskman tries again on the next refresh";
 
 /// One field has no keys to scroll with, so a window too short for the form loses its top rows
-/// for good: the advice on a failed token, with the reason kept right above the field.
+/// for good. The reason is short, so it goes only once the window is about the form's own height.
 #[test]
 fn a_short_window_keeps_the_reason_above_the_title_field() {
     let mut app = acme_app();
     select(&mut app, "ENG-70");
-    let why = "the token command failed: op: the vault is locked; unlock it and start afresh";
-    crate::app::test_support::token_failed(&mut app, why);
+    crate::app::test_support::token_failed(&mut app, "the token command failed: op: locked");
     let tv = app.tickets.iter_mut().find(|tv| tv.t.key == "ENG-70").unwrap();
     tv.jira.data = None;
     app.on_key(crate::app::test_support::ctrl('a'));
     app.on_key(crate::app::test_support::key(KeyCode::Char('e')));
-    let (advice, reason) = ("Check the account's token", "afresh");
-    // Shrunk a row at a time from a window it fits in, as the form's view moves only when it must.
-    let screens: Vec<(u16, String)> =
-        (12..=30).rev().map(|h| (h, draw(&mut app, 100, h))).collect();
-    let (whole, screen) = screens.iter().rfind(|(_, s)| s.contains(advice)).unwrap();
-    assert!(screen.contains(reason), "{whole} rows:\n{screen}");
-    // Short of that, the advice goes first, and the reason, the field and the keys stay.
-    let (_, screen) = &screens[screens.iter().position(|(h, _)| h == whole).unwrap() + 1];
-    assert!(!screen.contains(advice) && screen.contains("⚠ the token command"), "{screen}");
-    assert!(screen.contains(reason) && screen.contains("Enter save"), "{screen}");
-    // On any window the form still works in, the field and the keys are there.
-    for (h, screen) in &screens {
+    for h in (13..=30).rev() {
+        let screen = draw(&mut app, 100, h);
+        assert!(screen.contains("the token command failed. Fix it"), "{h} rows:\n{screen}");
         assert!(screen.contains("Title") && screen.contains("Enter save"), "{h} rows:\n{screen}");
+    }
+}
+
+/// A chord in the reason stays whole on any width it's wrapped at.
+#[test]
+fn the_title_forms_reason_never_splits_its_key() {
+    let mut app = acme_app();
+    select(&mut app, "ENG-70");
+    let tv = app.tickets.iter_mut().find(|tv| tv.t.key == "ENG-70").unwrap();
+    tv.jira.data = None;
+    tv.jira.error = Some(UNREACHABLE.into());
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(KeyCode::Char('e')));
+    for w in 40..=120 {
+        let screen = draw(&mut app, w, 30);
+        let chord = crate::keys::chord(",");
+        assert!(screen.contains(&format!("({chord})")), "{w} columns:\n{screen}");
     }
 }
 

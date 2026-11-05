@@ -500,37 +500,30 @@ impl TicketView {
         strip_folder(&raw, &dir).to_string()
     }
 
-    /// Why the tracker gave this ticket no title, and what to do about it, for `access`, the
-    /// ticket's (`App::access`), whatever title the card shows instead. None when it gave one, with
-    /// no tracker to ask, and until the first answer. What the tracker said is others' text, so
-    /// it's cleaned, and cut short of filling the form it's shown in.
+    /// Why the tracker gave this ticket no title and where to fix it, in a line or two for the
+    /// title form, for `access`, the ticket's (`App::access`), whatever title the card shows
+    /// instead. None when it gave one, with no tracker to ask, and until the first answer. The
+    /// tracker panel has the whole of what went wrong.
     pub fn no_tracker_title(&self, access: &Access) -> Option<String> {
         let titled = self.jira.data.as_ref().is_some_and(|i| !i.summary.trim().is_empty());
         if self.t.agent.is_some() || titled {
             return None;
         }
-        let said = |e: &str| util::truncate(&untrusted::line(e), REASON_WIDTH);
-        let prefix = keys::prefix();
-        match access {
-            Access::NoTracker | Access::Reading => None,
-            Access::NoAccount(provider, _) => Some(format!(
-                "No {} account is picked for this project: open its settings with {prefix} , to \
-                 pick one or add one.",
-                provider.label()
-            )),
-            // The reason last, as a form too tall for its window scrolls from the top.
-            Access::Failed(e) => Some(format!(
-                "Check the account's token, or pick another in the project's settings \
-                 ({prefix} ,).\n\
-                 ⚠ {}",
-                said(e)
-            )),
+        let settings = keys::chord(",");
+        let why = match access {
+            Access::NoTracker | Access::Reading => return None,
+            Access::NoAccount(provider, _) => {
+                format!("No {} account picked. Pick one in settings ({settings})", provider.label())
+            }
+            Access::Failed(e) => format!("{}. Fix it in settings ({settings})", short_reason(e)),
             Access::Client(_) => match (&self.jira.error, &self.jira.data) {
-                (Some(e), _) => Some(format!("⚠ {}", said(e))),
-                (None, Some(_)) => Some("The tracker's answer has no title.".into()),
-                (None, None) => None,
+                // Could be the network as well as the account, so it doesn't promise a fix.
+                (Some(e), _) => format!("{}. Check settings ({settings})", short_reason(e)),
+                (None, Some(_)) => "The tracker's answer has no title".to_string(),
+                (None, None) => return None,
             },
-        }
+        };
+        Some(format!("{WARNING}{why}"))
     }
 
     /// Whether the card should say its tracker gave it no title. Otherwise a tracker that can't be
@@ -545,8 +538,26 @@ impl TicketView {
 /// agent's board a little more.
 const LABEL_WIDTH: usize = 200;
 
-/// The most columns of a tracker's error the title form shows; the tracker panel has it whole.
-const REASON_WIDTH: usize = 160;
+/// The most columns of what went wrong the title form shows.
+const REASON_WIDTH: usize = 100;
+
+/// Before a reason in the title form. Two spaces: the sign is one column wide, but a terminal that
+/// draws it wider covers the first.
+const WARNING: &str = "⚠  ";
+
+/// What went wrong, in short, from a tracker's or token's error, which is others' text: its first
+/// clause, on one line, without where a variable wasn't set. The rest says what to do about it,
+/// and stays in the tracker panel.
+fn short_reason(error: &str) -> String {
+    let line = untrusted::line(error);
+    let cut = [": ", "; ", " (", ". "].iter().filter_map(|p| line.find(p)).min();
+    let clause = line[..cut.unwrap_or(line.len())].trim_end_matches('.');
+    let clause = clause.strip_suffix(store::NOT_IN_THE_SHELL).unwrap_or(clause);
+    match util::truncate(clause, REASON_WIDTH) {
+        short if short.is_empty() => "The tracker's answer was an error".to_string(),
+        short => short,
+    }
+}
 
 /// `text` as a ticket's own title (`Ticket::label`): on one line, without what hides text from a
 /// reader, and cut to `LABEL_WIDTH`. None when that leaves nothing. A session can write it, so it
@@ -667,7 +678,7 @@ mod tests {
         assert!(tv.missing_title(&client()));
         assert_eq!(
             tv.no_tracker_title(&client()).as_deref(),
-            Some("The tracker's answer has no title.")
+            Some("⚠  The tracker's answer has no title")
         );
         // A title from anywhere ends it.
         tv.jira.finish(Ok(issue("From the tracker")));
@@ -676,17 +687,61 @@ mod tests {
         let mut own = viewed();
         own.t.label = Some("Mine".into());
         assert!(!own.missing_title(&failed));
-        // The card's quiet then, but the form still has the reason, cleaned and cut.
-        let why = own.no_tracker_title(&failed).unwrap();
-        assert!(why.starts_with("Check the account's token"), "{why}");
-        assert!(why.ends_with("\n⚠ the token command failed"), "{why}");
-        let long = Access::Failed(format!("\x1b]0;{}", "x".repeat(2000)));
-        let why = own.no_tracker_title(&long).unwrap();
-        let reason = why.lines().last().unwrap();
-        assert!(util::width(reason) <= REASON_WIDTH + 2 && !reason.contains('\x1b'), "{reason}");
+        // The card's quiet then, but the form still has the reason, short, and where to fix it.
+        let settings = keys::chord(",");
+        assert_eq!(
+            own.no_tracker_title(&failed),
+            Some(format!("⚠  the token command failed. Fix it in settings ({settings})"))
+        );
+        assert_eq!(
+            own.no_tracker_title(&no_account),
+            Some(format!("⚠  No Jira account picked. Pick one in settings ({settings})"))
+        );
+        own.jira
+            .finish(Err("Jira rejected the credentials (check the email and API token)".into()));
+        assert_eq!(
+            own.no_tracker_title(&client()),
+            Some(format!("⚠  Jira rejected the credentials. Check settings ({settings})"))
+        );
         // An agent has its name.
         let agent = crate::app::test_support::agent("lead", store::Cli::Claude, None);
         assert!(!TicketView::new(agent).missing_title(&failed));
+    }
+
+    #[test]
+    fn shortens_a_reason_to_what_went_wrong() {
+        for (error, short) in [
+            (
+                "JIRA_API_TOKEN isn't set in the shell taskman started from: add export \
+                 JIRA_API_TOKEN=… to ~/.zshrc, then open a new terminal and start taskman there",
+                "JIRA_API_TOKEN isn't set",
+            ),
+            ("the token command failed: locked; see the guide", "the token command failed"),
+            (
+                "the token command printed no token; see the guide",
+                "the token command printed no token",
+            ),
+            (
+                "Jira rejected the credentials (check the email and API token)",
+                "Jira rejected the credentials",
+            ),
+            (
+                "ENG-52 not found, or not visible to this account",
+                "ENG-52 not found, or not visible to this account",
+            ),
+            (
+                "can't reach example.atlassian.net: no connection (no network); taskman tries again",
+                "can't reach example.atlassian.net",
+            ),
+            ("Linear rejected the API key.", "Linear rejected the API key"),
+            ("Jira answered HTTP 500. Try later", "Jira answered HTTP 500"),
+            // Others' text, on one line and clean.
+            ("Fix\x1b[31m\nthe\u{200b} token: more", "Fix [31m the token"),
+            ("", "The tracker's answer was an error"),
+            (": nothing before it", "The tracker's answer was an error"),
+        ] {
+            assert_eq!(short_reason(error), short, "{error}");
+        }
     }
 
     #[test]
@@ -704,6 +759,15 @@ mod tests {
 
         proptest! {
             #![proptest_config(ProptestConfig::with_cases(128))]
+
+            /// Whatever a tracker says, the form gets one clean line that says something, and the
+            /// reason never wraps past two rows at the form's width with what follows it.
+            #[test]
+            fn a_reason_is_one_short_clean_line(text in "(\\PC|[\\x00-\\x1f\\u{200b}\\u{202e}]){0,300}") {
+                let short = short_reason(&text);
+                prop_assert!(!short.is_empty() && !short.contains(char::is_control));
+                prop_assert!(util::width(&short) <= REASON_WIDTH);
+            }
 
             /// Whatever comes in, what's saved is one clean line of a bounded width, which
             /// cleaning again leaves as it is.

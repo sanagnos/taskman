@@ -954,6 +954,9 @@ fn resolve_token(source: &str, limit: std::time::Duration) -> Result<String, Str
 /// Where a failed token source sends the user.
 const SEE_GUIDE: &str = "see Storing a token in taskman's guide";
 
+/// Where a variable a token needs wasn't set, in that error; the title form leaves it out.
+pub(crate) const NOT_IN_THE_SHELL: &str = " in the shell taskman started from";
+
 /// Why the variable `var` gave no token, and what to do: set it where `shell` reads it at start,
 /// then start taskman from a new terminal, which has it. On macOS (`mac`), Terminal starts bash as
 /// a login shell, which reads ~/.bash_profile and not ~/.bashrc.
@@ -965,7 +968,7 @@ fn unset(var: &str, shell: &str, mac: bool) -> String {
         _ => format!("your shell's startup file (~/.zshrc for zsh, {bash} for bash)"),
     };
     format!(
-        "{var} isn't set in the shell taskman started from: add export {var}=… to {file}, then open a new terminal and start taskman there"
+        "{var} isn't set{NOT_IN_THE_SHELL}: add export {var}=… to {file}, then open a new terminal and start taskman there"
     )
 }
 

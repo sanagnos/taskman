@@ -486,7 +486,7 @@ impl App {
                 vec![Field::text(
                     "Title",
                     tv.t.label.clone().unwrap_or_default(),
-                    "shown under its key, kept in taskman; empty goes back to the tracker's",
+                    "shown under its key, kept in taskman",
                 )],
             );
             // The hint on the card leads here, so this says why the tracker gave none. On its own

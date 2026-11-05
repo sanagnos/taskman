@@ -61,6 +61,12 @@ impl Prefix {
         }
     }
 
+    /// `key` after this prefix, joined by a no-break space, so text wrapped around it never leaves
+    /// the prefix at the end of one line and the key on the next.
+    pub fn chord(self, key: &str) -> String {
+        format!("{self}\u{a0}{key}")
+    }
+
     /// What else uses the key, for Settings and the README.
     pub fn conflict(self) -> &'static str {
         match self {
@@ -126,6 +132,11 @@ impl<'de> Deserialize<'de> for Prefix {
 /// The prefix in use. Global rather than passed around, as hints far from the TUI name it too:
 /// `taskman status`, `taskman add` and error messages.
 static PREFIX: AtomicU8 = AtomicU8::new(0);
+
+/// `key` after the prefix in use, as prose says it (`Prefix::chord`).
+pub fn chord(key: &str) -> String {
+    prefix().chord(key)
+}
 
 pub fn prefix() -> Prefix {
     Prefix::ALL.get(PREFIX.load(Ordering::Relaxed) as usize).copied().unwrap_or_default()
@@ -235,6 +246,30 @@ fn ctrl_byte(c: char) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// However it's configured, and wherever the width falls, a chord stays on one line.
+    #[test]
+    fn a_chord_never_splits_when_wrapped() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::{Paragraph, Widget, Wrap};
+        for p in Prefix::ALL {
+            let name = p.to_string();
+            let text =
+                format!("⚠  JIRA_API_TOKEN isn't set. Fix it in settings ({})", p.chord(","));
+            // The chord's the longest word; narrower than it, it can't fit a line in any case.
+            for w in u16::try_from(name.len() + 4).unwrap()..80 {
+                let area = Rect::new(0, 0, w, 12);
+                let mut buf = Buffer::empty(area);
+                Paragraph::new(text.as_str()).wrap(Wrap { trim: false }).render(area, &mut buf);
+                let rows: Vec<String> = (0..12)
+                    .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>())
+                    .collect();
+                let chord = format!("({name}\u{a0},)");
+                assert!(rows.iter().any(|r| r.contains(&chord)), "{name} at {w}: {rows:#?}");
+            }
+        }
+    }
     use crossterm::event::KeyEvent;
     use proptest::prelude::*;
 

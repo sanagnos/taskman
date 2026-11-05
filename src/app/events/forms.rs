@@ -164,14 +164,16 @@ fn the_title_form_says_why_the_tracker_gave_none() {
     let i = app.sel;
     app.tickets[i].jira.data = None;
     app.tickets[i].jira.error = Some("Linear rejected\n\x1b[31mthe API key\u{200b}".into());
+    let says =
+        format!("⚠  Linear rejected [31mthe API key. Check settings ({})", crate::keys::chord(","));
     assert!(app.tickets[i].missing_title(&app.access(&app.tickets[i].t)));
     prefix(&mut app, KeyCode::Char('e'));
-    assert_eq!(note(&app), "⚠ Linear rejected [31mthe API key");
+    assert_eq!(note(&app), says);
     type_text(&mut app, "Login redirect");
     app.on_key(key(KeyCode::Enter));
     assert!(!app.tickets[i].missing_title(&app.access(&app.tickets[i].t)));
     prefix(&mut app, KeyCode::Char('e'));
-    assert_eq!(note(&app), "⚠ Linear rejected [31mthe API key");
+    assert_eq!(note(&app), says);
     app.on_key(key(KeyCode::Esc));
 
     // No account: where to pick one, with the prefix in use.
@@ -179,11 +181,7 @@ fn the_title_form_says_why_the_tracker_gave_none() {
     prefix(&mut app, KeyCode::Char('e'));
     assert_eq!(
         note(&app),
-        format!(
-            "No Linear account is picked for this project: open its settings with {} , to pick \
-             one or add one.",
-            crate::keys::prefix()
-        )
+        format!("⚠  No Linear account picked. Pick one in settings ({})", crate::keys::chord(","))
     );
 }
 
