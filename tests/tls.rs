@@ -168,6 +168,18 @@ fn doesnt_read_an_ssl_cert_file_that_isnt_a_file() {
     let said = stdout(&status(&dir, &[("SSL_CERT_FILE", &fifo)]));
     assert!(said.contains("this machine doesn't trust"), "{said}");
     assert!(said.contains("SSL_CERT_FILE isn't a regular file"), "{said}");
+    assert!(said.contains("so no certificates are trusted"), "{said}");
+}
+
+/// An empty file trusts nothing, rather than falling back on the bundled list unsaid.
+#[test]
+fn says_when_ssl_cert_file_holds_no_certificates() {
+    let (dir, _) = behind_a_private_ca("tls-empty");
+    let empty = dir.join("empty.pem");
+    std::fs::write(&empty, "").unwrap();
+    let said = stdout(&status(&dir, &[("SSL_CERT_FILE", &empty)]));
+    assert!(said.contains("SSL_CERT_FILE is set and is read instead"), "{said}");
+    assert!(said.contains("it holds no certificates, so none are trusted"), "{said}");
 }
 
 #[test]
@@ -177,6 +189,7 @@ fn says_when_ssl_cert_file_cant_be_read() {
     let said = stdout(&status(&dir, &[("SSL_CERT_FILE", &missing)]));
     assert!(said.contains("this machine doesn't trust"), "{said}");
     assert!(said.contains("no-such-file.pem"), "{said}");
+    assert!(said.contains("so no certificates are trusted"), "{said}");
 }
 
 /// A CA it trusts doesn't help a certificate for another name, and the message doesn't point at the

@@ -2,7 +2,8 @@
 //! keeps unit tests off the network, the certificates a tracker's connection trusts, and asking
 //! again when a connection drops. Each client keeps its own wording for errors.
 
-use std::sync::{Arc, OnceLock, mpsc};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use ureq::config::ConfigBuilder;
 use ureq::http::{Request, Response};
@@ -71,17 +72,30 @@ const READ_LIMIT: Duration = Duration::from_secs(5);
 /// What a tracker's connection trusts, read once for all its agents.
 struct Trusted {
     roots: RootCerts,
-    /// Why some of the system's certificates couldn't be read, such as an `SSL_CERT_FILE` that
-    /// doesn't exist: the first thing to know when a certificate is then refused.
+    /// Why some of the certificates couldn't be read, such as an `SSL_CERT_FILE` that doesn't
+    /// exist: the first thing to know when a certificate is then refused.
     unread: Option<String>,
 }
 
 fn trusted() -> &'static Trusted {
     static TRUSTED: OnceLock<Trusted> = OnceLock::new();
-    TRUSTED.get_or_init(|| {
-        let system = read_within(READ_LIMIT, read_system);
-        Trusted { roots: roots_for(system.certs), unread: system.unread }
-    })
+    TRUSTED.get_or_init(|| trust(set_variables().is_some(), read_within(READ_LIMIT, read_system)))
+}
+
+/// What's trusted, given what was read and whether a variable named it. A variable that yields
+/// nothing trusts nothing, and says why, rather than falling back on a list its user may have set
+/// it to get away from.
+fn trust(variable: bool, system: System) -> Trusted {
+    let none = system.certs.is_empty();
+    let unread = match (system.unread, variable && none) {
+        (Some(unread), true) => Some(format!("{unread}, so no certificates are trusted")),
+        (None, true) => Some("it holds no certificates, so none are trusted".to_string()),
+        (Some(unread), false) if none => {
+            Some(format!("{unread}, so only the bundled list is trusted"))
+        }
+        (unread, _) => unread,
+    };
+    Trusted { roots: roots_for(system.certs, variable), unread }
 }
 
 /// The system's certificates, as far as they could be read.
@@ -91,18 +105,20 @@ struct System {
 }
 
 /// `read`'s result, or none of the certificates when it takes longer than `limit`, as on a stale
-/// network path. Its thread is left to finish or hang by itself.
+/// network path, or dies. Its thread is left to finish or hang by itself.
 fn read_within(limit: Duration, read: impl FnOnce() -> System + Send + 'static) -> System {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(read());
     });
-    rx.recv_timeout(limit).unwrap_or_else(|_| System {
+    rx.recv_timeout(limit).unwrap_or_else(|e| System {
         certs: Vec::new(),
-        unread: Some(format!(
-            "reading the system's certificates took over {}s, so only the bundled list is trusted",
-            limit.as_secs()
-        )),
+        unread: Some(match e {
+            RecvTimeoutError::Timeout => {
+                format!("reading the certificates took over {}s", limit.as_secs())
+            }
+            RecvTimeoutError::Disconnected => "reading the certificates failed".to_string(),
+        }),
     })
 }
 
@@ -123,16 +139,22 @@ fn read_system() -> System {
     }
 }
 
-/// What's trusted, given the system's certificates. With none, ureq's own list, as only that keeps
-/// a bundled root's name constraints. With some, those and the bundled ones, so a machine with an
-/// old store, or an `SSL_CERT_FILE` that names only a private CA, still reaches public sites.
-fn roots_for(system: Vec<Certificate<'static>>) -> RootCerts {
-    if system.is_empty() { RootCerts::WebPki } else { with_bundled(system).into() }
+/// The roots for what was read. A variable's certificates replace everything, as in other tools
+/// that read these variables, as someone may have set one to narrow what's trusted. Without one,
+/// the system's and the bundled ones, so a machine with an old store still reaches public sites;
+/// and with no system certificates, ureq's own list, as only that keeps a root's name limit.
+fn roots_for(system: Vec<Certificate<'static>>, variable: bool) -> RootCerts {
+    match (variable, system.is_empty()) {
+        (true, _) => system.into(),
+        (false, true) => RootCerts::WebPki,
+        (false, false) => with_bundled(system).into(),
+    }
 }
 
 /// `system` and the bundled roots, but for those limited to some names: the list ureq takes holds
 /// only whole certificates, which don't carry the limit, so a root limited to one country's sites
-/// would be trusted for every site.
+/// would be trusted for every site. A system store that lists such a root, as most do, has it
+/// trusted without the limit all the same, as by other tools that read the store.
 fn with_bundled(system: Vec<Certificate<'static>>) -> Vec<Certificate<'static>> {
     let limited: Vec<&[u8]> = webpki_roots::TLS_SERVER_ROOTS
         .iter()
@@ -164,11 +186,14 @@ pub fn certificate_failure(host: &str, why: &str) -> String {
     if cfg!(test) {
         return certificate_words(host, why, None, None);
     }
-    let set = variables_set(
+    certificate_words(host, why, set_variables(), trusted().unread.as_deref())
+}
+
+fn set_variables() -> Option<&'static str> {
+    variables_set(
         std::env::var_os(CERT_FILE).is_some(),
         std::env::var_os(CERT_DIR).is_some_and(|dir| !dir.is_empty()),
-    );
-    certificate_words(host, why, set, trusted().unread.as_deref())
+    )
 }
 
 /// What to do given the variables read in place of the system's store, as `rustls-native-certs`
@@ -256,9 +281,10 @@ mod tests {
     /// Whole certificates can't carry a limit to some names, and only ureq's own list keeps one.
     #[test]
     fn a_bundled_roots_name_limit_survives() {
-        assert!(matches!(roots_for(Vec::new()), RootCerts::WebPki));
+        assert!(matches!(roots_for(Vec::new(), false), RootCerts::WebPki));
         let private = Certificate::from_der(b"a private CA").to_owned();
-        assert!(matches!(roots_for(vec![private]), RootCerts::Specific(_)));
+        let RootCerts::Specific(merged) = roots_for(vec![private], false) else { panic!() };
+        assert_eq!(merged.len(), with_bundled(Vec::new()).len() + 1);
 
         let limited: Vec<_> = webpki_roots::TLS_SERVER_ROOTS
             .iter()
@@ -292,6 +318,41 @@ mod tests {
         assert_eq!(both[0].der(), private);
     }
 
+    /// A variable replaces what's trusted: its certificates alone, with no bundled list, and no
+    /// fallback when it yields none.
+    #[test]
+    fn a_variable_replaces_what_is_trusted() {
+        let private = Certificate::from_der(b"a private CA").to_owned();
+        let RootCerts::Specific(only) = roots_for(vec![private.clone()], true) else { panic!() };
+        assert_eq!(only.len(), 1);
+        let RootCerts::Specific(none) = roots_for(Vec::new(), true) else { panic!() };
+        assert!(none.is_empty());
+
+        let read = |certs: Vec<Certificate<'static>>, unread: Option<&str>| System {
+            certs,
+            unread: unread.map(String::from),
+        };
+        let unread = |variable, system| trust(variable, system).unread;
+        assert_eq!(
+            unread(true, read(Vec::new(), None)).unwrap(),
+            "it holds no certificates, so none are trusted"
+        );
+        assert_eq!(
+            unread(true, read(Vec::new(), Some("no such file"))).unwrap(),
+            "no such file, so no certificates are trusted"
+        );
+        assert_eq!(
+            unread(false, read(Vec::new(), Some("too slow"))).unwrap(),
+            "too slow, so only the bundled list is trusted"
+        );
+        assert_eq!(unread(false, read(Vec::new(), None)), None);
+        assert_eq!(unread(true, read(vec![private.clone()], None)), None);
+        assert_eq!(
+            unread(true, read(vec![private], Some("one bad file"))).unwrap(),
+            "one bad file"
+        );
+    }
+
     #[test]
     fn gives_up_on_a_store_that_takes_too_long() {
         let private = Certificate::from_der(b"a private CA").to_owned();
@@ -306,7 +367,10 @@ mod tests {
             System { certs: Vec::new(), unread: None }
         });
         assert!(stalled.certs.is_empty());
-        assert!(stalled.unread.unwrap().contains("only the bundled list is trusted"));
+        assert_eq!(stalled.unread.unwrap(), "reading the certificates took over 0s");
+
+        let died = read_within(Duration::from_secs(30), || panic!("a reader that dies"));
+        assert_eq!(died.unread.unwrap(), "reading the certificates failed");
     }
 
     /// The updater's agent replaces taskman's own binary: nothing in the environment widens what it
