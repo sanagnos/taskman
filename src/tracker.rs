@@ -554,24 +554,27 @@ impl Access {
     }
 }
 
-/// Which account and site a client is for. Not the account's place in the list, which deleting
+/// Which account and tracker a client is for. Not the account's place in the list, which deleting
 /// another one changes, and more than its id, which a hand-edited config may leave empty or repeat:
-/// two accounts must never share a client, as that sends one's credentials for the other.
+/// two trackers must never share a client, as that signs in as the wrong account, or asks the wrong
+/// kind of tracker. The provider is the tracker's, as a tracker can name an account of another.
 #[derive(PartialEq, Eq, Hash)]
 struct ClientKey {
     id: String,
     email: String,
     token: String,
+    provider: Provider,
     host: String,
 }
 
 impl ClientKey {
-    fn new(account: &Account, site: &str) -> Self {
+    fn new(account: &Account, tracker: &Tracker) -> Self {
         Self {
             id: account.id.clone(),
             email: account.email.clone(),
             token: account.token.clone(),
-            host: store::site_host(site),
+            provider: tracker.provider,
+            host: store::site_host(&tracker.site),
         }
     }
 
@@ -664,7 +667,7 @@ impl Clients {
             if let Some(token) = self.token(&a.token)
                 && let Some(client) = Client::new(t, &p.repo, Some((a, token)))
             {
-                let key = ClientKey::new(a, &t.site);
+                let key = ClientKey::new(a, t);
                 let client = match old.get(&key) {
                     Some(same) if same.same_login(&client) => same.clone(),
                     _ => client,
@@ -688,7 +691,7 @@ impl Clients {
             Some(Some(token)) => token,
             _ => return Access::Reading,
         };
-        let key = ClientKey::new(&config.accounts[i], &tracker.site);
+        let key = ClientKey::new(&config.accounts[i], tracker);
         match (token, self.clients.get(&key)) {
             (Err(e), _) => Access::Failed(e.clone()),
             (Ok(_), Some(c)) => Access::Client(c.clone()),
@@ -727,7 +730,7 @@ impl Clients {
     pub(crate) fn serve(&mut self, config: &Config, project: &Project, client: Client) {
         let t = project.tracker.as_ref().expect("a project with a tracker");
         let i = config.account_for(t).expect("an account for the tracker");
-        self.clients.insert(ClientKey::new(&config.accounts[i], &t.site), client);
+        self.clients.insert(ClientKey::new(&config.accounts[i], t), client);
     }
 
     /// The board's files, from the cache: listed again only when one of its folders changed, so
@@ -1066,36 +1069,102 @@ impl Tracker {
 #[cfg(test)]
 mod tests {
     /// A hand-edited config can leave ids empty: two accounts sharing one on a host each keep a
-    /// client of their own, so neither signs in as the other.
+    /// client of their own, so neither signs in as the other, whichever else they differ in.
     #[test]
     fn accounts_with_the_same_id_dont_share_a_client() {
+        let site = "https://jira.example.com";
+        for ((email_a, token_a), (email_b, token_b)) in [
+            (("a@example.com", "env:T"), ("b@example.com", "env:T")),
+            (("a@example.com", "env:A"), ("a@example.com", "env:B")),
+        ] {
+            let config: Config = serde_json::from_value(serde_json::json!({ "accounts": [
+                { "provider": "jira", "site": "https://other.example.com", "email": email_a,
+                  "token": token_a },
+                { "provider": "jira", "site": site, "email": email_b, "token": token_b },
+            ]}))
+            .unwrap();
+            let project = |name: &str, account: serde_json::Value| -> Project {
+                serde_json::from_value(serde_json::json!({
+                    "name": name,
+                    "repo": format!("/src/{name}"),
+                    "tracker": { "provider": "jira", "site": site, "key": "ENG",
+                                 "account": account },
+                }))
+                .unwrap()
+            };
+            let projects =
+                [project("first", "".into()), project("second", serde_json::Value::Null)];
+            assert_eq!(config.account_for(projects[0].tracker.as_ref().unwrap()), Some(0));
+            assert_eq!(config.account_for(projects[1].tracker.as_ref().unwrap()), Some(1));
+            let mut clients = Clients::default();
+            clients.token_read(token_a, Ok("a".into()), &config, &projects);
+            clients.token_read(token_b, Ok("b".into()), &config, &projects);
+            let jira = |p: &Project| match clients.access(&config, Some(p)) {
+                Access::Client(Client::Jira(c)) => c,
+                _ => panic!("no Jira client"),
+            };
+            assert!(!jira(&projects[0]).same_login(&jira(&projects[1])), "{email_b} {token_b}");
+        }
+    }
+
+    /// A Jira and a Linear account, as a hand-edited config can have them, looking alike but for
+    /// their provider, on a site and a workspace of one name: each tracker gets its own kind.
+    #[test]
+    fn accounts_of_two_providers_dont_share_a_client() {
         let config: Config = serde_json::from_value(serde_json::json!({ "accounts": [
-            { "provider": "jira", "site": "https://other.example.com", "email": "a@example.com",
-              "token": "env:A" },
-            { "provider": "jira", "site": "https://jira.example.com", "email": "b@example.com",
-              "token": "env:B" },
+            { "provider": "jira", "site": "acme", "token": "env:T" },
+            { "provider": "linear", "site": "acme", "token": "env:T" },
         ]}))
         .unwrap();
-        let project = |name: &str, account: serde_json::Value| -> Project {
+        let project = |provider: &str| -> Project {
             serde_json::from_value(serde_json::json!({
-                "name": name,
-                "repo": format!("/src/{name}"),
-                "tracker": { "provider": "jira", "site": "https://jira.example.com", "key": "ENG",
-                             "account": account },
+                "name": provider,
+                "repo": format!("/src/{provider}"),
+                "tracker": { "provider": provider, "site": "acme", "key": "ENG" },
             }))
             .unwrap()
         };
-        let projects = [project("first", "".into()), project("second", serde_json::Value::Null)];
-        assert_eq!(config.account_for(projects[0].tracker.as_ref().unwrap()), Some(0));
-        assert_eq!(config.account_for(projects[1].tracker.as_ref().unwrap()), Some(1));
+        let (jira, linear) = (project("jira"), project("linear"));
+        let projects = [jira, linear];
         let mut clients = Clients::default();
-        clients.token_read("env:A", Ok("a".into()), &config, &projects);
-        clients.token_read("env:B", Ok("b".into()), &config, &projects);
-        let jira = |p: &Project| match clients.access(&config, Some(p)) {
-            Access::Client(Client::Jira(c)) => c,
-            _ => panic!("no Jira client"),
+        clients.token_read("env:T", Ok("t".into()), &config, &projects);
+        assert!(matches!(
+            clients.access(&config, Some(&projects[0])),
+            Access::Client(Client::Jira(_))
+        ));
+        assert!(matches!(
+            clients.access(&config, Some(&projects[1])),
+            Access::Client(Client::Linear(_))
+        ));
+    }
+
+    /// A tracker can name an account of another provider, as nothing checks that it doesn't. Which
+    /// client it gets follows the tracker, however many trackers use the account.
+    #[test]
+    fn one_account_for_two_providers_doesnt_share_a_client() {
+        let config: Config = serde_json::from_value(serde_json::json!({ "accounts": [
+            { "id": "one", "provider": "jira", "site": "acme", "token": "env:T" },
+        ]}))
+        .unwrap();
+        let project = |provider: &str| -> Project {
+            serde_json::from_value(serde_json::json!({
+                "name": provider,
+                "repo": format!("/src/{provider}"),
+                "tracker": { "provider": provider, "site": "acme", "key": "ENG", "account": "one" },
+            }))
+            .unwrap()
         };
-        assert!(!jira(&projects[0]).same_login(&jira(&projects[1])));
+        let projects = [project("jira"), project("linear")];
+        let mut clients = Clients::default();
+        clients.token_read("env:T", Ok("t".into()), &config, &projects);
+        assert!(matches!(
+            clients.access(&config, Some(&projects[0])),
+            Access::Client(Client::Jira(_))
+        ));
+        assert!(matches!(
+            clients.access(&config, Some(&projects[1])),
+            Access::Client(Client::Linear(_))
+        ));
     }
 
     /// A refresh rebuilds the clients: one with the same login keeps what it knows, and a new token
