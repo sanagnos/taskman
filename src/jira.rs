@@ -21,8 +21,8 @@ const SERVER_INFO_TIMEOUT: Duration = Duration::from_secs(5);
 const ASK_AGAIN_AFTER: Duration = Duration::from_secs(600);
 
 /// What a client knows about which Jira it's talking to. It lasts as long as the client: a TUI's is
-/// kept across refreshes until its account changes (`tracker::Clients`), and each command has its
-/// own, so each run of one can send a login once.
+/// kept across refreshes until its account is saved or its token changes (`tracker::Clients`), and
+/// each command has its own, so each run of one may send credentials while it finds out.
 #[derive(Default)]
 struct Deployment {
     /// Whether it's Data Center or Server, once it has said.
@@ -308,16 +308,19 @@ impl JiraConfig {
         };
         // Not kept unless it told: a gateway's page or a timeout says nothing about the Jira.
         let told = credentials.into_iter().find_map(|credential| self.server_info(credential));
-        self.deployment().self_hosted = told;
-        told == Some(true)
+        // Another request may have learned more meanwhile, and a clearer answer stands.
+        let mut known = self.deployment();
+        known.self_hosted = known.self_hosted.max(told);
+        known.self_hosted == Some(true)
     }
 
     /// What `serverInfo` says when asked with `credential`. All of them go to the site the token is
-    /// for. None when it doesn't tell, or Jira has asked for a CAPTCHA since.
+    /// for. None when it doesn't tell, or credentials shouldn't go any more: another request may
+    /// have just found the site self-hosted, or Jira may have asked for a CAPTCHA.
     fn server_info(&self, credential: Credential) -> Option<bool> {
         let auth = match credential {
             Credential::Anonymous => None,
-            _ if self.deployment().captcha => return None,
+            _ if self.refusing() => return None,
             Credential::Basic => Some(format!("Basic {}", self.auth)),
             Credential::Bearer => Some(format!("Bearer {}", self.token)),
         };
@@ -888,7 +891,10 @@ mod tests {
         assert!(said.ends_with(SELF_HOSTED), "{said}");
         assert!(!said.contains("may have been created"), "{said}");
         assert_eq!(server.requests().len(), 3);
-        assert!(cfg.post("/rest/api/3/issue", &json!({})).is_err());
+        assert!(matches!(
+            cfg.post("/rest/api/3/issue", &json!({})),
+            Err(ureq::Error::StatusCode(403))
+        ));
         assert_eq!(server.requests().len(), 0);
     }
 
@@ -962,8 +968,51 @@ mod tests {
         let e = String::from(cfg.create("ENG", "Fix login", "").unwrap_err());
         assert!(e.starts_with(CAPTCHA_FIRST), "{e}");
         assert!(!e.contains("may have been created"), "{e}");
-        assert!(cfg.post("/rest/api/3/issue", &json!({})).is_err());
+        assert!(matches!(
+            cfg.post("/rest/api/3/issue", &json!({})),
+            Err(ureq::Error::StatusCode(403))
+        ));
         assert_eq!(server.requests().len(), 0);
+    }
+
+    /// Another request finding the site self-hosted while this one waits on serverInfo: what's
+    /// confirmed stands, and this one sends no credentials after it.
+    #[test]
+    fn asking_doesnt_undo_or_ignore_what_another_request_found() {
+        use std::io::{Read, Write};
+        use std::sync::mpsc;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let cfg = JiraConfig::new(&url, "ana@example.com", "t");
+        let (asked_tx, asked) = mpsc::channel();
+        let (found_tx, found) = mpsc::channel::<()>();
+        let held = listener.try_clone().unwrap();
+        // Holds the first question, without credentials, until the other request has answered.
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = held.accept().unwrap();
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request).unwrap();
+            asked_tx.send(()).unwrap();
+            found.recv().unwrap();
+            let body = r#"{"errorMessages":[],"errors":{}}"#;
+            let _ = write!(
+                stream,
+                "HTTP/1.1 401 Recorded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        });
+        let first = cfg.clone();
+        let asking =
+            std::thread::spawn(move || first.self_hosted_after(&ureq::Error::StatusCode(403)));
+        asked.recv().unwrap();
+        cfg.deployment().self_hosted = Some(true);
+        found_tx.send(()).unwrap();
+        assert!(asking.join().unwrap());
+        server.join().unwrap();
+        assert_eq!(cfg.deployment().self_hosted, Some(true));
+        // Had it gone on to ask with the login, that request would be waiting here.
+        listener.set_nonblocking(true).unwrap();
+        assert!(listener.accept().is_err());
     }
 
     /// A CAPTCHA asked for while asking serverInfo stops the rest of the asking.
@@ -971,7 +1020,13 @@ mod tests {
     fn a_captcha_while_asking_sends_no_more_credentials() {
         let page = "<html>Forbidden</html>";
         let denied = r#"{"errorMessages":[],"errors":{}}"#;
-        let server = replay::serve(vec![(403, page), (401, denied), (replay::CAPTCHA, denied)]);
+        // The last is for a Bearer request that mustn't be sent, so one that is gets recorded.
+        let server = replay::serve(vec![
+            (403, page),
+            (401, denied),
+            (replay::CAPTCHA, denied),
+            (200, r#"{"deploymentType":"Server"}"#),
+        ]);
         let cfg = JiraConfig::new(&server.url, "ana@example.com", "t");
         let e = cfg.whoami().unwrap_err();
         assert!(e.starts_with(CAPTCHA_FIRST), "{e}");
@@ -986,7 +1041,7 @@ mod tests {
         let server = replay::serve(vec![(replay::CAPTCHA, "{}")]);
         let cfg = JiraConfig::new(&server.url, "ana@example.com", "t");
         assert_eq!(cfg.post("/rest/api/3/issue", &json!({})).unwrap().0, 401);
-        assert!(cfg.get("/rest/api/3/myself").is_err());
+        assert!(matches!(cfg.get("/rest/api/3/myself"), Err(ureq::Error::StatusCode(403))));
         assert_eq!(server.requests().len(), 1);
     }
 

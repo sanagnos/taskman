@@ -619,10 +619,16 @@ impl Clients {
         self.tokens.remove(source);
     }
 
+    /// Drops the clients of the account at index `account`, and what they know: it was saved on
+    /// purpose, perhaps having solved a CAPTCHA in a browser.
+    pub fn start_afresh(&mut self, account: usize) {
+        self.clients.retain(|(i, _), _| *i != account);
+    }
+
     /// The clients for the tokens read so far. One that signs in the same way as before is kept, as
     /// a refresh comes here too, and what it knows stops logins that can't work: pressing refresh
-    /// on a self-hosted Jira or one waiting on a CAPTCHA mustn't send them again. An account saved
-    /// again forgets its token, so its client starts afresh once the token is read.
+    /// on a self-hosted Jira or one waiting on a CAPTCHA mustn't send them again. Saving an account
+    /// is what starts its clients afresh (`start_afresh`).
     fn build(&mut self, config: &Config, projects: &[Project]) {
         let old = std::mem::take(&mut self.clients);
         for p in projects {
@@ -1033,7 +1039,7 @@ impl Tracker {
 #[cfg(test)]
 mod tests {
     /// A refresh rebuilds the clients: one with the same login keeps what it knows, and a new token
-    /// or an account saved again starts afresh.
+    /// starts afresh, as does saving the account (`events/accounts.rs`).
     #[test]
     fn a_refresh_keeps_what_a_jira_client_knows() {
         let source = "env:ACME_JIRA_TOKEN";
@@ -1064,9 +1070,8 @@ mod tests {
         let replaced = jira(&clients);
         assert!(!replaced.same_client(&first));
 
-        clients.forget(source);
+        clients.start_afresh(0);
         clients.rebuild(&config, &projects, |_| {});
-        clients.token_read(source, Ok("t2".into()), &config, &projects);
         assert!(!jira(&clients).same_client(&replaced));
     }
 

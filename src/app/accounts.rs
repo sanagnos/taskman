@@ -640,6 +640,7 @@ impl App {
                 }
             },
         };
+        self.trackers.start_afresh(index);
         self.rebuild_clients();
         for tv in &mut self.tickets {
             tv.jira.request(false);
