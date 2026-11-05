@@ -237,7 +237,8 @@ pub(crate) fn confine(p: usize, own: Option<usize>, saved: &Saved) -> Result<(),
 }
 
 /// The key `input` names and where it's open, as `taskman close` and `taskman title` read a ticket:
-/// a number takes the prefix of the project the command means, and a key or link goes by
+/// a number takes the prefix of the project the command means, the tracker's own way of writing one
+/// (GitHub's `#12` and issue links) is read by that tracker, and any other key or link goes by
 /// `status::locate`, so a key open in two projects needs the project. `named` is `project`'s index.
 pub(crate) fn locate_ticket<'a>(
     input: &str,
@@ -253,10 +254,48 @@ pub(crate) fn locate_ticket<'a>(
         let located = status::locate(&key, saved, status::Scope::Named(&saved.projects[p].repo))?;
         return Ok((key, located));
     }
+    // Before `ticket_key::parse`, which would take the name of a repository like acme/ENG-52 for
+    // the key in its issue's link.
+    let place = named.or_else(|| context(me, saved, here));
+    if let Some((key, p)) = tracker_key(input, place, saved)? {
+        let located = status::locate(&key, saved, status::Scope::Named(&saved.projects[p].repo))?;
+        return Ok((key, located));
+    }
     let key = ticket_key::parse(input)
         .ok_or_else(|| format!("{input} isn't a ticket number, key or link"))?;
     let located = status::locate(&key, saved, status::scope(named, None, me, saved, here))?;
     Ok((key, located))
+}
+
+/// The key and project of `input` when it's written a tracker's own way: `place`'s tracker's, or
+/// with no project to go by, the one tracker's that takes it. None when it isn't.
+fn tracker_key(
+    input: &str,
+    place: Option<usize>,
+    saved: &Saved,
+) -> Result<Option<(String, usize)>, String> {
+    let read = |p: usize| saved.projects[p].tracker.as_ref()?.key_from_input(input);
+    if let Some(p) = place {
+        return read(p).map(|key| key.map(|k| (k, p))).transpose();
+    }
+    let (mut taken, mut refused) = (Vec::new(), None);
+    for p in 0..saved.projects.len() {
+        match read(p) {
+            Some(Ok(key)) => taken.push((key, p)),
+            Some(Err(e)) => refused = refused.or(Some(e)),
+            None => {}
+        }
+    }
+    match (taken.len(), refused) {
+        (0, Some(e)) => Err(e),
+        (0, None) => Ok(None),
+        (1, _) => Ok(taken.pop()),
+        _ => {
+            let names: Vec<&str> =
+                taken.iter().map(|(_, p)| saved.projects[*p].name.as_str()).collect();
+            Err(format!("{input} could mean projects {}; pass --project", names.join(" or ")))
+        }
+    }
 }
 
 fn has_prefix(p: &Project, prefix: &str) -> bool {
@@ -519,6 +558,70 @@ pub(crate) mod tests {
                 .unwrap_err()
                 .contains("no projects yet")
         );
+    }
+
+    /// Project acme on GitHub's `repo`, with ENG-52 and ENG-88 open.
+    fn on_github(repo: &str) -> Saved {
+        let mut acme = project("acme", "/src/acme", "ENG");
+        let t = acme.tracker.as_mut().unwrap();
+        (t.provider, t.site) = (Provider::Github, repo.into());
+        Saved {
+            projects: vec![acme, project("notes", "/src/notes", "")],
+            tickets: vec![ticket("ENG-52", "/src/acme", None), ticket("ENG-88", "/src/acme", None)],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn reads_a_ticket_the_way_its_tracker_writes_it() {
+        // A repository named like a key: the issue's number decides, not the name.
+        let s = on_github("acme/ENG-52");
+        let key = |input: &str, named: Option<usize>, here: Option<&Here>| {
+            let project = named.map(|_| "acme");
+            locate_ticket(input, project, named, None, &s, here)
+                .map(|(k, (t, p))| (k, t.map(|t| t.key.clone()), p.name.clone()))
+        };
+        let open = |k: &str| Ok((k.to_string(), Some(k.to_string()), "acme".to_string()));
+        let url = "https://github.com/acme/ENG-52/issues/88";
+        assert_eq!(key(url, Some(0), None), open("ENG-88"));
+        assert_eq!(key(url, None, None), open("ENG-88"), "no project to go by");
+        assert_eq!(key(url, None, Some(&here("/src/acme"))), open("ENG-88"));
+
+        // The usual ways of writing one.
+        let s = on_github("acme/web");
+        let key = |input: &str, named: Option<usize>, here: Option<&Here>| {
+            let project = named.map(|_| "acme");
+            locate_ticket(input, project, named, None, &s, here)
+                .map(|(k, (t, p))| (k, t.map(|t| t.key.clone()), p.name.clone()))
+        };
+        for input in ["#88", "acme/web#88", "https://github.com/acme/web/issues/88", "88", "ENG-88"]
+        {
+            assert_eq!(key(input, Some(0), None), open("ENG-88"), "{input}");
+        }
+        assert_eq!(key("#88", None, None), open("ENG-88"));
+        // Not open, in the project it's named in.
+        assert_eq!(key("#9", Some(0), None), Ok(("ENG-9".to_string(), None, "acme".to_string())));
+        // Another repository's, or a pull request: what the tracker says.
+        for input in ["https://github.com/acme/api/issues/3", "https://github.com/acme/web/pull/4"]
+        {
+            assert!(key(input, Some(0), None).is_err(), "{input}");
+            assert!(key(input, None, None).is_err(), "{input}");
+        }
+        // Other trackers' links are nobody's here, and go on to the plain key.
+        assert_eq!(
+            key("https://example.atlassian.net/browse/ENG-88", Some(0), None),
+            open("ENG-88")
+        );
+        // Two GitHub projects that take it: which?
+        let mut two = on_github("acme/web");
+        two.projects[1] = {
+            let mut p = project("api", "/src/api", "API");
+            let t = p.tracker.as_mut().unwrap();
+            (t.provider, t.site) = (Provider::Github, "acme/api".into());
+            p
+        };
+        let e = locate_ticket("#88", None, None, None, &two, None).unwrap_err();
+        assert_eq!(e, "#88 could mean projects acme or api; pass --project");
     }
 
     #[test]

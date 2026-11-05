@@ -534,6 +534,18 @@ mod tests {
         assert_eq!(p.requests, vec![(2, vec![ticket_item("ENG-52")])]);
     }
 
+    /// Reads a ticket as its tracker writes it: a repository named like a key isn't the key.
+    #[test]
+    fn closes_the_issue_a_github_link_names() {
+        let mut s = saved();
+        let t = s.projects[0].tracker.as_mut().unwrap();
+        (t.provider, t.site, t.key) = (Provider::Github, "acme/ENG-52".into(), "ENG".into());
+        let of = |line: &str| plan(&args(line).unwrap(), &s, None, Some(&here("/src/acme-web")));
+        let link = "https://github.com/acme/ENG-52/issues/53";
+        assert_eq!(of(link).unwrap().requests, vec![(0, vec![ticket_item("ENG-53")])]);
+        assert_eq!(of("#53").unwrap().requests, vec![(0, vec![ticket_item("ENG-53")])]);
+    }
+
     #[test]
     fn plans_merged_and_agents() {
         let s = saved();

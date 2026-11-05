@@ -143,7 +143,10 @@ fn a_short_window_keeps_the_reason_above_the_title_field() {
     app.on_key(crate::app::test_support::key(KeyCode::Char('e')));
     for h in (13..=30).rev() {
         let screen = draw(&mut app, 100, h);
-        assert!(screen.contains("the token command failed. Fix it"), "{h} rows:\n{screen}");
+        assert!(
+            screen.contains("the token command failed: op: locked. Fix"),
+            "{h} rows:\n{screen}"
+        );
         assert!(screen.contains("Title") && screen.contains("Enter save"), "{h} rows:\n{screen}");
     }
 }

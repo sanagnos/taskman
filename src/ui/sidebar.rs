@@ -352,7 +352,10 @@ fn sidebar_rows(
                     row.push(Span::styled(truncate(&untrusted::line(title), room), title_style));
                     lines.push(Line::from(row));
                 } else if !agent && tv.missing_title(&app.access(&tv.t)) {
-                    let hint = Span::styled(no_title_hint(w.saturating_sub(3)), yellow());
+                    let hint = Span::styled(
+                        no_title_hint(w.saturating_sub(3), &prefix().short()),
+                        yellow(),
+                    );
                     lines.push(Line::from(vec![marker.clone(), Span::raw(" "), hint]));
                 }
                 // Agents have no PR line: a name, and a title when Claude has set one.
@@ -407,12 +410,15 @@ fn sidebar_rows(
 }
 
 /// The title row of a card whose tracker gave it no title (`TicketView::missing_title`), `room`
-/// wide: says so, and names the key whose form gives it one and says why it has none. The key goes
-/// first when the prefix is too long for both.
-fn no_title_hint(room: usize) -> String {
-    let says = "⚠ no tracker title";
-    let hint = format!("{says} · {} e", prefix().short());
-    truncate(if width(&hint) <= room { &hint } else { says }, room)
+/// wide, with `prefix` the prefix as hints write it: says so, and names the key whose form gives it
+/// one and says why it has none. Shorter for a longer prefix, as the key is the way on.
+fn no_title_hint(room: usize, prefix: &str) -> String {
+    let key = format!("{prefix} e");
+    let hints = [format!("⚠ no tracker title · {key}"), format!("⚠ no title · {key}")];
+    hints
+        .into_iter()
+        .find(|hint| width(hint) <= room)
+        .unwrap_or_else(|| truncate("⚠ no tracker title", room))
 }
 
 /// The rows a view `view_h` tall shows of `total`, from row `top`: an edge row with rows beyond
@@ -475,11 +481,17 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
-    fn the_no_title_hint_fits_or_drops_the_key() {
+    fn the_no_title_hint_fits_and_keeps_the_key() {
         // A full-width card has 26 columns.
-        assert_eq!(no_title_hint(26), format!("⚠ no tracker title · {} e", prefix().short()));
-        assert_eq!(no_title_hint(19), "⚠ no tracker title");
-        assert_eq!(no_title_hint(10), "⚠ no trac…");
+        assert_eq!(no_title_hint(26, "^a"), "⚠ no tracker title · ^a e");
+        // The longest prefix keeps its key.
+        assert_eq!(no_title_hint(26, "^space"), "⚠ no title · ^space e");
+        for p in crate::keys::Prefix::ALL {
+            let hint = no_title_hint(26, &p.short());
+            assert!(hint.ends_with(&format!("{} e", p.short())) && width(&hint) <= 26, "{hint}");
+        }
+        // Narrower than any of them, it says what it can.
+        assert_eq!(no_title_hint(10, "^a"), "⚠ no trac…");
     }
 
     proptest! {

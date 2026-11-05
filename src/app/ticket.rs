@@ -516,9 +516,13 @@ impl TicketView {
                 format!("No {} account picked. Pick one in settings ({settings})", provider.label())
             }
             Access::Failed(e) => format!("{}. Fix it in settings ({settings})", short_reason(e)),
-            Access::Client(_) => match (&self.jira.error, &self.jira.data) {
+            Access::Client(client) => match (&self.jira.error, &self.jira.data) {
                 // Could be the network as well as the account, so it doesn't promise a fix.
-                (Some(e), _) => format!("{}. Check settings ({settings})", short_reason(e)),
+                (Some(e), _) if client.provider().needs_account() => {
+                    format!("{}. Check settings ({settings})", short_reason(e))
+                }
+                // No account to change: the error says what to do, as `gh auth login`.
+                (Some(e), _) => short_reason(e),
                 (None, Some(_)) => "The tracker's answer has no title".to_string(),
                 (None, None) => return None,
             },
@@ -538,6 +542,9 @@ impl TicketView {
 /// agent's board a little more.
 const LABEL_WIDTH: usize = 200;
 
+/// The most bytes it keeps, as combining marks take bytes and no columns.
+const LABEL_BYTES: usize = 800;
+
 /// The most columns of what went wrong the title form shows.
 const REASON_WIDTH: usize = 100;
 
@@ -545,14 +552,20 @@ const REASON_WIDTH: usize = 100;
 /// draws it wider covers the first.
 const WARNING: &str = "⚠  ";
 
-/// What went wrong, in short, from a tracker's or token's error, which is others' text: its first
-/// clause, on one line, without where a variable wasn't set. The rest says what to do about it,
-/// and stays in the tracker panel.
+/// What went wrong, in short, from a tracker's or token's error, which is others' text: on one
+/// line, up to where it goes on to explain. A following "run …" or "get …" is kept, as it's the fix,
+/// and what's after a colon too, as what comes before one may be no more than the command's name
+/// (`gh api graphql: timed out`). Where a variable wasn't set, and the rest, stay in the panel.
 fn short_reason(error: &str) -> String {
     let line = untrusted::line(error);
-    let cut = [": ", "; ", " (", ". "].iter().filter_map(|p| line.find(p)).min();
+    let ends = |at: &(usize, &str)| {
+        let rest = &line[at.0 + 2..];
+        !(rest.starts_with("run ") || rest.starts_with("get "))
+    };
+    let clause_end = line.match_indices("; ").find(ends).map(|(at, _)| at);
+    let cuts = [store::NOT_IN_THE_SHELL, " (", ". "].map(|p| line.find(p));
+    let cut = cuts.into_iter().flatten().chain(clause_end).min();
     let clause = line[..cut.unwrap_or(line.len())].trim_end_matches('.');
-    let clause = clause.strip_suffix(store::NOT_IN_THE_SHELL).unwrap_or(clause);
     match util::truncate(clause, REASON_WIDTH) {
         short if short.is_empty() => "The tracker's answer was an error".to_string(),
         short => short,
@@ -560,10 +573,15 @@ fn short_reason(error: &str) -> String {
 }
 
 /// `text` as a ticket's own title (`Ticket::label`): on one line, without what hides text from a
-/// reader, and cut to `LABEL_WIDTH`. None when that leaves nothing. A session can write it, so it
+/// reader, and cut to `LABEL_WIDTH` and `LABEL_BYTES`. None when that leaves nothing. A session can write it, so it
 /// counts as untrusted however it came.
 pub(super) fn clean_label(text: &str) -> Option<String> {
-    Some(util::truncate(&untrusted::line(text), LABEL_WIDTH)).filter(|l| !l.is_empty())
+    let label = util::truncate(&untrusted::line(text), LABEL_WIDTH);
+    let mut end = label.len().min(LABEL_BYTES);
+    while !label.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(label[..end].trim_end().to_string()).filter(|l| !l.is_empty())
 }
 
 /// Whether `id` arrived after `seen` was first filled; nothing is new before the first fetch.
@@ -699,9 +717,20 @@ mod tests {
         );
         own.jira
             .finish(Err("Jira rejected the credentials (check the email and API token)".into()));
+        let jira = Access::Client(crate::tracker::Client::Jira(crate::jira::JiraConfig::new(
+            "https://example.invalid",
+            "dev@example.com",
+            "mock",
+        )));
+        assert_eq!(
+            own.no_tracker_title(&jira),
+            Some(format!("⚠  Jira rejected the credentials. Check settings ({settings})"))
+        );
+        // With no account to change, settings can't fix it, and the error's own fix stays.
+        own.jira.finish(Err("gh isn't logged in; run gh auth login".into()));
         assert_eq!(
             own.no_tracker_title(&client()),
-            Some(format!("⚠  Jira rejected the credentials. Check settings ({settings})"))
+            Some("⚠  gh isn't logged in; run gh auth login".to_string())
         );
         // An agent has its name.
         let agent = crate::app::test_support::agent("lead", store::Cli::Claude, None);
@@ -716,7 +745,7 @@ mod tests {
                  JIRA_API_TOKEN=… to ~/.zshrc, then open a new terminal and start taskman there",
                 "JIRA_API_TOKEN isn't set",
             ),
-            ("the token command failed: locked; see the guide", "the token command failed"),
+            ("the token command failed: locked; see the guide", "the token command failed: locked"),
             (
                 "the token command printed no token; see the guide",
                 "the token command printed no token",
@@ -731,16 +760,54 @@ mod tests {
             ),
             (
                 "can't reach example.atlassian.net: no connection (no network); taskman tries again",
-                "can't reach example.atlassian.net",
+                "can't reach example.atlassian.net: no connection",
             ),
             ("Linear rejected the API key.", "Linear rejected the API key"),
             ("Jira answered HTTP 500. Try later", "Jira answered HTTP 500"),
+            // The fix is kept, and what follows it isn't.
+            ("gh isn't logged in; run gh auth login", "gh isn't logged in; run gh auth login"),
+            (
+                "gh isn't installed; get it from https://cli.github.com; or skip it",
+                "gh isn't installed; get it from https://cli.github.com",
+            ),
+            // Never cut down to the name of what failed.
+            (
+                "gh api graphql: timed out after 30s; the next refresh tries again",
+                "gh api graphql: timed out after 30s",
+            ),
+            (
+                "GraphQL: API rate limit exceeded for user ID 1. (Try again later)",
+                "GraphQL: API rate limit exceeded for user ID 1",
+            ),
+            (
+                "ENG-1 not found: no ENG-1-….md in ~/acme/workplan",
+                "ENG-1 not found: no ENG-1-….md in ~/acme/workplan",
+            ),
             // Others' text, on one line and clean.
-            ("Fix\x1b[31m\nthe\u{200b} token: more", "Fix [31m the token"),
+            ("Fix\x1b[31m\nthe\u{200b} token; more", "Fix [31m the token"),
             ("", "The tracker's answer was an error"),
-            (": nothing before it", "The tracker's answer was an error"),
+            (" . ", "The tracker's answer was an error"),
         ] {
             assert_eq!(short_reason(error), short, "{error}");
+        }
+    }
+
+    /// At the form's width, what these errors become takes no more than two rows.
+    #[test]
+    fn a_reason_stays_on_two_rows() {
+        use ratatui::widgets::{Paragraph, Wrap};
+        for error in [
+            "JIRA_API_TOKEN isn't set in the shell taskman started from: add export",
+            "gh isn't logged in; run gh auth login",
+            "gh api graphql: timed out after 30s; the next refresh tries again",
+            "GraphQL: API rate limit exceeded for user ID 1. (Try again later)",
+            "can't reach example.atlassian.net: no connection (no network); tries again",
+            "ENG-1 not found: no ENG-1-….md in ~/src/acme-web/workplan",
+        ] {
+            let why = short_reason(error);
+            let note = format!("{WARNING}{why}. Check settings ({})", keys::chord(","));
+            let rows = Paragraph::new(note.as_str()).wrap(Wrap { trim: false }).line_count(78);
+            assert!(rows <= 2, "{rows} rows: {note}");
         }
     }
 
@@ -751,6 +818,10 @@ mod tests {
         assert_eq!(clean_label(""), None);
         assert_eq!(clean_label(" \x1b\u{200b}\n"), None);
         assert_eq!(util::width(&clean_label(&"x".repeat(500)).unwrap()), LABEL_WIDTH);
+        // Combining marks take bytes and no columns.
+        let marks = format!("a{}", "\u{301}".repeat(100_000));
+        let label = clean_label(&marks).unwrap();
+        assert!(label.len() <= LABEL_BYTES && label.starts_with('a'), "{}", label.len());
     }
 
     mod labels {
@@ -760,8 +831,8 @@ mod tests {
         proptest! {
             #![proptest_config(ProptestConfig::with_cases(128))]
 
-            /// Whatever a tracker says, the form gets one clean line that says something, and the
-            /// reason never wraps past two rows at the form's width with what follows it.
+            /// Whatever a tracker says, the form gets one clean line that says something, of a
+            /// bounded width.
             #[test]
             fn a_reason_is_one_short_clean_line(text in "(\\PC|[\\x00-\\x1f\\u{200b}\\u{202e}]){0,300}") {
                 let short = short_reason(&text);
@@ -776,6 +847,7 @@ mod tests {
                 if let Some(label) = clean_label(&text) {
                     prop_assert!(!label.is_empty() && !label.contains(char::is_control));
                     prop_assert!(util::width(&label) <= LABEL_WIDTH);
+                    prop_assert!(label.len() <= LABEL_BYTES);
                     prop_assert_eq!(clean_label(&label), Some(label.clone()));
                 }
             }

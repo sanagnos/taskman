@@ -954,7 +954,7 @@ fn resolve_token(source: &str, limit: std::time::Duration) -> Result<String, Str
 /// Where a failed token source sends the user.
 const SEE_GUIDE: &str = "see Storing a token in taskman's guide";
 
-/// Where a variable a token needs wasn't set, in that error; the title form leaves it out.
+/// Where a variable a token needs wasn't set, in that error; the title form stops there.
 pub(crate) const NOT_IN_THE_SHELL: &str = " in the shell taskman started from";
 
 /// Why the variable `var` gave no token, and what to do: set it where `shell` reads it at start,

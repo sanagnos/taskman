@@ -5,9 +5,9 @@
 
 mod common;
 
+use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::process::{Output, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// `taskman title ARGS` in `session`'s environment as taskman sets it, in `repo`; no session
@@ -30,15 +30,6 @@ fn saved_label(dir: &Path, key: &str) -> Option<String> {
     let tickets = saved["tickets"].as_array().unwrap();
     let t = tickets.iter().find(|t| t["key"] == key).unwrap();
     t["label"].as_str().map(String::from)
-}
-
-/// Sets its flag as it's dropped, however the scope it's in ends.
-struct Stop<'a>(&'a AtomicBool);
-
-impl Drop for Stop<'_> {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::Relaxed);
-    }
 }
 
 #[test]
@@ -82,6 +73,14 @@ fn sets_a_title_on_a_running_taskman() {
         .unwrap();
     let status = String::from_utf8_lossy(&out.stdout);
     assert!(status.contains("ENG-1 test") && !status.contains("redirect"), "{status}");
+    let out = common::taskman(&dir)
+        .args(["status", "ENG-1", "--json"])
+        .current_dir(&repo)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let json = String::from_utf8_lossy(&out.stdout);
+    assert!(json.contains("ENG-1 test") && !json.contains("redirect"), "{json}");
 
     tui.step("a title that starts with a dash, after --");
     let (ok, out, err) = run(&dir, &repo, Some("ENG-1"), &["--", "--clear"]);
@@ -121,34 +120,19 @@ fn a_title_waits_for_taskman_to_start() {
 fn an_older_taskman_is_told_apart() {
     let dir = common::scratch_dir("title-older");
     let repo = common::project(&dir, &["ENG-1"]);
-    // The heartbeat of a running taskman of the inbox format before this one, kept fresh for as
-    // long as the command takes, as a slow machine could otherwise see it go stale and queue the
-    // request. This test's process stands in for it, so the pid is alive.
-    let inbox = dir.join("state/taskman/inbox");
+    // A running taskman of the inbox format before this one: its `alive` file, and its lock on the
+    // state folder, which says it runs however old the file gets on a slow machine.
+    let state = dir.join("state/taskman");
+    let inbox = state.join("inbox");
     std::fs::create_dir_all(&inbox).unwrap();
     let alive = serde_json::json!({
         "version": "0.1.36", "inbox": 6, "lock": true, "pid": std::process::id(),
     });
-    let (file, done) = (inbox.join("alive"), AtomicBool::new(false));
-    // Whole, and renamed into place as a taskman writes it, so the command never reads it cut
-    // short.
-    let beat = || {
-        let next = inbox.join("alive.next");
-        std::fs::write(&next, alive.to_string()).unwrap();
-        std::fs::rename(&next, &file).unwrap();
-    };
-    beat();
-    let (ok, out, err) = std::thread::scope(|s| {
-        s.spawn(|| {
-            while !done.load(Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_millis(200));
-                beat();
-            }
-        });
-        // Set by a guard: the scope joins that thread, so a panic here would otherwise hang it.
-        let _stop = Stop(&done);
-        run(&dir, &repo, None, &["ENG-1", "Fix"])
-    });
+    std::fs::write(inbox.join("alive"), alive.to_string()).unwrap();
+    let lock = std::fs::File::create(state.join("lock")).unwrap();
+    // SAFETY: flock on a descriptor this test owns; it reads or writes no memory.
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
+    let (ok, out, err) = run(&dir, &repo, None, &["ENG-1", "Fix"]);
     assert!(!ok, "{out}");
     assert!(
         err.starts_with(
@@ -178,6 +162,8 @@ fn refuses_what_it_cant_mean() {
         (&["ENG-1", "--clear"], "taskman title: --clear needs the ticket"),
         (&["ENG-1"], "taskman title: ENG-1 looks like a ticket"),
         (&["-v broken"], "taskman title: unknown option -v broken"),
+        (&["ENG-1", "\u{200b}"], "taskman title: the title is empty"),
+        (&["Fix", "--project", "acme"], "taskman title: --project goes with a ticket"),
         (&["--project="], "taskman title: --project needs a value"),
     ] {
         let (ok, out, err) = run(&dir, &repo, None, args);

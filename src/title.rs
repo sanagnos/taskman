@@ -127,6 +127,10 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         2 => (a.input, a.text) = (words.next(), words.next().unwrap_or_default()),
         _ => return Err("put the title in quotes, as one argument".into()),
     }
+    // On its own, the session's ticket is meant, whatever project is named.
+    if a.input.is_none() && a.project.is_some() {
+        return Err("--project goes with a ticket: taskman title KEY TEXT --project NAME".into());
+    }
     // Someone naming a ticket and forgetting the title shouldn't title their own ticket with it.
     // One word only: `ticket_key::parse` finds a key inside a phrase, and "Move to sha-256" is a
     // title.
@@ -135,16 +139,21 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         && !word.contains(char::is_whitespace)
         && (ticket_key::is_number(word) || ticket_key::parse(word).is_some())
     {
-        return Err(format!(
-            "{word} looks like a ticket, not a title. To use it as the title, name the ticket \
-             first, like taskman title ENG-52 {word}"
-        ));
+        return Err(not_a_title(word));
     }
-    // `"$TITLE"` with nothing in it isn't asking to lose the title.
-    if a.text.trim().is_empty() {
+    // `"$TITLE"` with nothing in it isn't asking to lose the title, and nor is text with nothing
+    // left once it's cleaned, which the TUI would only refuse after the command said it was set.
+    if untrusted::line(&a.text).is_empty() {
         return Err("the title is empty; to drop the one it has, pass --clear KEY".into());
     }
     Ok(a)
+}
+
+fn not_a_title(word: &str) -> String {
+    format!(
+        "{word} looks like a ticket, not a title. To use it as the title, name the ticket first, \
+         like taskman title ENG-52 {word}"
+    )
 }
 
 /// The project and key of the ticket to title. A session asks the user before running this (it's
@@ -164,9 +173,18 @@ fn target(
                 cli::locate_ticket(input, a.project.as_deref(), named, me, saved, here)?;
             t.ok_or_else(|| format!("{key} isn't open in {}", project.name))?
         }
-        None => me.ok_or_else(|| {
-            "name the ticket, like taskman title ENG-52 \"Fix the login redirect\"".to_string()
-        })?,
+        None => {
+            let me = me.ok_or_else(|| {
+                "name the ticket, like taskman title ENG-52 \"Fix the login redirect\"".to_string()
+            })?;
+            // What only its tracker reads as a ticket, like GitHub's `#52`.
+            let project = saved.projects.iter().find(|p| p.repo == me.repo);
+            let tracker = project.and_then(|p| p.tracker.as_ref());
+            if tracker.and_then(|t| t.key_from_input(&a.text)).is_some() {
+                return Err(not_a_title(a.text.trim()));
+            }
+            me
+        }
     };
     if t.agent.is_some() {
         return Err(format!(
@@ -245,6 +263,13 @@ mod tests {
         assert_eq!(args(&["ENG-52", "--clear"]), Err(needs.into()));
         assert_eq!(args(&["--clear="]), Err(needs.into()));
         assert_eq!(args(&["--", "--clear"]), Ok(text("--clear")));
+        // `--project` has nothing to name without a ticket.
+        assert!(args(&["Fix", "--project", "acme"]).unwrap_err().contains("goes with a ticket"));
+        // Nothing left once it's cleaned: refused here, rather than said to be set.
+        for hidden in ["\u{200b}", "\x1b", "\u{202e} \u{200b}"] {
+            let e = args(&["ENG-52", hidden]).unwrap_err();
+            assert!(e.contains("pass --clear KEY"), "{hidden:?}: {e}");
+        }
         // An empty variable doesn't clear what's there.
         for empty in [&[""][..], &["  "], &["ENG-52", ""]] {
             assert!(args(empty).unwrap_err().contains("pass --clear KEY"), "{empty:?}");
@@ -300,6 +325,50 @@ mod tests {
             of(&["API-7", "Fix", "--project", "acme-api"]),
             Err(format!("that's API-7, {refused}"))
         );
+    }
+
+    /// A key is unique only within its project: `Ticket::is`, the repo's first rule.
+    #[test]
+    fn the_same_key_in_two_projects_stays_apart() {
+        let mut s = tickets();
+        s.projects.push(crate::cli::tests::project("legacy", "/src/legacy", "ENG"));
+        let mut other = s.tickets[0].clone();
+        (other.repo, other.cwd) = ("/src/legacy".into(), "/src/legacy".into());
+        s.tickets.push(other);
+        let legacy = s.projects.len() - 1;
+        let of = |session_repo: &str, a: &[&str]| {
+            let (me, own) = session(&s, "ENG-52", session_repo);
+            target(&args(a).unwrap(), &s, me, own, None)
+        };
+        // Each session's ENG-52 is its own, with the key or without.
+        for a in [&["Fix"][..], &["ENG-52", "Fix"], &["52", "Fix"]] {
+            assert_eq!(of("/src/acme-web", a), Ok((0, "ENG-52".into())), "{a:?}");
+            assert_eq!(of("/src/legacy", a), Ok((legacy, "ENG-52".into())), "{a:?}");
+        }
+        // Naming the other project's refuses, though the key's the same.
+        let e = of("/src/acme-web", &["ENG-52", "Fix", "--project", "legacy"]).unwrap_err();
+        assert!(e.contains("only its own"), "{e}");
+    }
+
+    /// A lone issue reference on a GitHub project is a ticket, though only its tracker reads it so.
+    #[test]
+    fn a_lone_issue_reference_is_not_a_title() {
+        let mut s = tickets();
+        let t = s.projects[0].tracker.as_mut().unwrap();
+        (t.provider, t.site) = (crate::store::Provider::Github, "acme/web".into());
+        let (me, own) = session(&s, "ENG-52", "/src/acme-web");
+        let of = |a: &[&str]| target(&args(a).unwrap(), &s, me, own, None);
+        for lone in ["#53", "acme/web#53", "https://github.com/acme/web/issues/53"] {
+            let e = of(&[lone]).unwrap_err();
+            assert!(e.contains("looks like a ticket, not a title"), "{e}");
+        }
+        assert_eq!(of(&["#53 broke the login"]), Ok((0, "ENG-52".into())));
+        assert_eq!(of(&["#52", "#53"]), Ok((0, "ENG-52".into())));
+        // Elsewhere `#53` means nothing, and can be a title.
+        let plain = tickets();
+        let (me, own) = session(&plain, "ENG-52", "/src/acme-web");
+        let elsewhere = target(&args(&["#53"]).unwrap(), &plain, me, own, None);
+        assert_eq!(elsewhere, Ok((0, "ENG-52".into())));
     }
 
     #[test]

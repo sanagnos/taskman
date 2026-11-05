@@ -210,6 +210,16 @@ pub enum Client {
 }
 
 impl Client {
+    /// The tracker it talks to.
+    pub fn provider(&self) -> Provider {
+        match self {
+            Client::Jira(_) => Provider::Jira,
+            Client::Linear(_) => Provider::Linear,
+            Client::Local(_) => Provider::Local,
+            Client::Github(_) => Provider::Github,
+        }
+    }
+
     /// The client for `tracker` in the project folder `repo`, with the account and token it uses;
     /// None when it needs an account (`Provider::needs_account`) and has none.
     pub fn new(
