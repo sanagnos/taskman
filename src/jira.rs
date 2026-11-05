@@ -264,7 +264,7 @@ impl JiraConfig {
         }
         if matches!(e, ureq::Error::StatusCode(401 | 403)) && self.deployment().captcha {
             return FetchError::Auth(format!(
-                "Jira wants a CAPTCHA solved before it takes another login: log in to {} in a browser, then restart taskman",
+                "Jira wants a CAPTCHA solved before it takes another login: log in to {} in a browser, then save the account in Settings or restart taskman",
                 store::site_host(&self.base)
             ));
         }
@@ -959,7 +959,7 @@ mod tests {
         let cfg = JiraConfig::new(&server.url, "ana@example.com", "t");
         for _ in 0..2 {
             let e = cfg.whoami().unwrap_err();
-            assert!(e.starts_with(CAPTCHA_FIRST) && e.ends_with("then restart taskman"), "{e}");
+            assert!(e.starts_with(CAPTCHA_FIRST) && e.ends_with("or restart taskman"), "{e}");
         }
         let asked = server.requests();
         assert_eq!(asked.len(), 2);

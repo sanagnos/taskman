@@ -554,6 +554,32 @@ impl Access {
     }
 }
 
+/// Which account and site a client is for. Not the account's place in the list, which deleting
+/// another one changes, and more than its id, which a hand-edited config may leave empty or repeat:
+/// two accounts must never share a client, as that sends one's credentials for the other.
+#[derive(PartialEq, Eq, Hash)]
+struct ClientKey {
+    id: String,
+    email: String,
+    token: String,
+    host: String,
+}
+
+impl ClientKey {
+    fn new(account: &Account, site: &str) -> Self {
+        Self {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            token: account.token.clone(),
+            host: store::site_host(site),
+        }
+    }
+
+    fn is_for(&self, account: &Account) -> bool {
+        (&self.id, &self.email, &self.token) == (&account.id, &account.email, &account.token)
+    }
+}
+
 /// The TUI's tokens, its clients built from them, and the Local files boards' listings.
 #[derive(Default)]
 pub struct Clients {
@@ -563,8 +589,8 @@ pub struct Clients {
     tokens: HashMap<String, Option<Result<String, String>>>,
     /// Threads waiting for a token being read, by source.
     waiters: HashMap<String, Vec<mpsc::Sender<Result<String, String>>>>,
-    /// Clients by (account index, site host), for every project whose tracker uses an account.
-    clients: HashMap<(usize, String), Client>,
+    /// Clients by account and site, for every project whose tracker uses an account.
+    clients: HashMap<ClientKey, Client>,
     /// Local files boards' listings, shared by the status poll and the Add form.
     boards: RefCell<HashMap<PathBuf, local::Cache>>,
 }
@@ -619,10 +645,10 @@ impl Clients {
         self.tokens.remove(source);
     }
 
-    /// Drops the clients of the account at index `account`, and what they know: it was saved on
-    /// purpose, perhaps having solved a CAPTCHA in a browser.
-    pub fn start_afresh(&mut self, account: usize) {
-        self.clients.retain(|(i, _), _| *i != account);
+    /// Drops `account`'s clients, and what they know: it was saved on purpose, perhaps having
+    /// solved a CAPTCHA in a browser.
+    pub fn start_afresh(&mut self, account: &Account) {
+        self.clients.retain(|key, _| !key.is_for(account));
     }
 
     /// The clients for the tokens read so far. One that signs in the same way as before is kept, as
@@ -638,7 +664,7 @@ impl Clients {
             if let Some(token) = self.token(&a.token)
                 && let Some(client) = Client::new(t, &p.repo, Some((a, token)))
             {
-                let key = (i, store::site_host(&t.site));
+                let key = ClientKey::new(a, &t.site);
                 let client = match old.get(&key) {
                     Some(same) if same.same_login(&client) => same.clone(),
                     _ => client,
@@ -662,7 +688,8 @@ impl Clients {
             Some(Some(token)) => token,
             _ => return Access::Reading,
         };
-        match (token, self.clients.get(&(i, store::site_host(&tracker.site)))) {
+        let key = ClientKey::new(&config.accounts[i], &tracker.site);
+        match (token, self.clients.get(&key)) {
             (Err(e), _) => Access::Failed(e.clone()),
             (Ok(_), Some(c)) => Access::Client(c.clone()),
             (Ok(_), None) => {
@@ -700,7 +727,7 @@ impl Clients {
     pub(crate) fn serve(&mut self, config: &Config, project: &Project, client: Client) {
         let t = project.tracker.as_ref().expect("a project with a tracker");
         let i = config.account_for(t).expect("an account for the tracker");
-        self.clients.insert((i, store::site_host(&t.site)), client);
+        self.clients.insert(ClientKey::new(&config.accounts[i], &t.site), client);
     }
 
     /// The board's files, from the cache: listed again only when one of its folders changed, so
@@ -1038,6 +1065,39 @@ impl Tracker {
 
 #[cfg(test)]
 mod tests {
+    /// A hand-edited config can leave ids empty: two accounts sharing one on a host each keep a
+    /// client of their own, so neither signs in as the other.
+    #[test]
+    fn accounts_with_the_same_id_dont_share_a_client() {
+        let config: Config = serde_json::from_value(serde_json::json!({ "accounts": [
+            { "provider": "jira", "site": "https://other.example.com", "email": "a@example.com",
+              "token": "env:A" },
+            { "provider": "jira", "site": "https://jira.example.com", "email": "b@example.com",
+              "token": "env:B" },
+        ]}))
+        .unwrap();
+        let project = |name: &str, account: serde_json::Value| -> Project {
+            serde_json::from_value(serde_json::json!({
+                "name": name,
+                "repo": format!("/src/{name}"),
+                "tracker": { "provider": "jira", "site": "https://jira.example.com", "key": "ENG",
+                             "account": account },
+            }))
+            .unwrap()
+        };
+        let projects = [project("first", "".into()), project("second", serde_json::Value::Null)];
+        assert_eq!(config.account_for(projects[0].tracker.as_ref().unwrap()), Some(0));
+        assert_eq!(config.account_for(projects[1].tracker.as_ref().unwrap()), Some(1));
+        let mut clients = Clients::default();
+        clients.token_read("env:A", Ok("a".into()), &config, &projects);
+        clients.token_read("env:B", Ok("b".into()), &config, &projects);
+        let jira = |p: &Project| match clients.access(&config, Some(p)) {
+            Access::Client(Client::Jira(c)) => c,
+            _ => panic!("no Jira client"),
+        };
+        assert!(!jira(&projects[0]).same_login(&jira(&projects[1])));
+    }
+
     /// A refresh rebuilds the clients: one with the same login keeps what it knows, and a new token
     /// starts afresh, as does saving the account (`events/accounts.rs`).
     #[test]
@@ -1070,7 +1130,7 @@ mod tests {
         let replaced = jira(&clients);
         assert!(!replaced.same_client(&first));
 
-        clients.start_afresh(0);
+        clients.start_afresh(&config.accounts[0]);
         clients.rebuild(&config, &projects, |_| {});
         assert!(!jira(&clients).same_client(&replaced));
     }

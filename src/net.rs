@@ -140,9 +140,9 @@ fn read_system() -> System {
 }
 
 /// The roots for what was read. A variable's certificates replace everything, as someone may have
-/// set one to narrow what's trusted. Without one,
-/// the system's and the bundled ones, so a machine with an old store still reaches public sites;
-/// and with no system certificates, ureq's own list, as only that keeps a root's name limit.
+/// set one to narrow what's trusted. Without one, the system's and the bundled ones, so a machine
+/// with an old store still reaches public sites; and with no system certificates, ureq's own list,
+/// as only that keeps a root's name limit.
 fn roots_for(system: Vec<Certificate<'static>>, variable: bool) -> RootCerts {
     match (variable, system.is_empty()) {
         (true, _) => system.into(),
