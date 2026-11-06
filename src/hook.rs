@@ -912,6 +912,7 @@ mod tests {
         assert!(git_out(&repo, &["status"], gone).is_none());
         assert!(!reached_origin_since(&repo, 0, gone));
         assert!(made_since(&repo, &from, gone).is_none());
+        assert!(head_by(&repo, gone).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

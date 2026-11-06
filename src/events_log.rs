@@ -327,15 +327,16 @@ pub fn sent(tool: &str, input: &Value, response: &Value) -> Option<Sent> {
     (!text.is_empty()).then(|| Sent { to: cut(to, ADDRESS_KEPT), text })
 }
 
-/// Whether `to` is an address (`uds:/run/…`), whatever its scheme, not a name. A name with a space
-/// isn't one (`fix: login`). `db:migrate` could be either and reads as an address: at worst a row
-/// says "a session", where a name taken wrongly would draw a path.
+/// Whether `to` is an address (`uds:/run/…`), whatever its scheme, not a name. An address's path
+/// can hold a space, but one straight after the colon reads as a name (`fix: login`). `db:migrate`
+/// could be either and reads as an address: at worst a row says "a session", where an address taken
+/// for a name would draw a path.
 fn is_address(to: &str) -> bool {
-    !to.contains(char::is_whitespace)
-        && to.split_once(':').is_some_and(|(scheme, _)| {
-            scheme.starts_with(|c: char| c.is_ascii_alphabetic())
-                && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
-        })
+    to.split_once(':').is_some_and(|(scheme, rest)| {
+        scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+            && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+            && !rest.starts_with(char::is_whitespace)
+    })
 }
 
 /// The name of the session at `to`, for the log at `path`: `to` itself unless it's an address, as
@@ -976,7 +977,8 @@ mod tests {
     #[test]
     fn any_scheme_is_an_address_and_never_a_name() {
         let path = scratch("schemes.events.jsonl");
-        for to in ["uds:/run/x.sock", "bridge:abc", "ws+unix:/x", "tcp:1.2.3.4:5"] {
+        let spaced = "uds:/Users/Jo Doe/x.sock";
+        for to in ["uds:/run/x.sock", spaced, "bridge:abc", "ws+unix:/x", "tcp:1.2.3.4:5"] {
             assert_eq!(peer_at(&path, to), None, "{to}");
         }
         for to in ["lead", "beta/WP-1", "", ":x", "1a:b", "fix: login", "a b:c"] {
@@ -984,6 +986,10 @@ mod tests {
         }
         // Either, read as an address: at worst it says "a session".
         assert_eq!(peer_at(&path, "db:migrate"), None);
+        // A path with a space in it still finds who it is, and is never drawn.
+        let prompt = format!("{WRAPPER} from=\"{spaced}\" from-name=\"lead\">\nhi\n</x>");
+        append_message(&path, &received(&prompt, false, 1).unwrap()).unwrap();
+        assert_eq!(peer_at(&path, spaced).as_deref(), Some("lead"));
         let long = "n".repeat(PEER_KEPT + 5);
         assert_eq!(peer_at(&path, &long).unwrap().chars().count(), PEER_KEPT + 1);
     }
@@ -1382,14 +1388,33 @@ mod tests {
             }
         }
 
-        /// Whatever a name holds, a row can't be made to say a reserved name of its own, or to
-        /// hold a line break.
+        /// Whatever a name holds, it comes out as the cleaned name, quoted unless plain, or as "a
+        /// session" when nothing's left: one line, and never a reserved word of its own.
         #[test]
-        fn a_label_stays_a_label(name in "(\\PC|\n|you|user|a session){0,12}") {
+        fn a_label_stays_a_label(name in "(\\PC|\n|you|user|me|a session|[._/-]){0,12}") {
             let label = named(&name).label();
             prop_assert!(!label.contains('\n'));
-            prop_assert!(!RESERVED_NAMES.iter().any(|r| label.eq_ignore_ascii_case(r))
-                || label == "a session" && untrusted::line(&name).trim().is_empty());
+            let cleaned = untrusted::line(&name);
+            let cleaned = cleaned.trim();
+            if cleaned.is_empty() {
+                prop_assert_eq!(label, "a session");
+            } else if let Some(quoted) = label.strip_prefix("session \"") {
+                prop_assert_eq!(quoted.strip_suffix('"'), Some(cleaned));
+            } else {
+                prop_assert_eq!(label.as_str(), cleaned);
+                let plain = |c: char| c.is_ascii_alphanumeric() || "._/-".contains(c);
+                prop_assert!(label.chars().all(plain), "{}", label);
+                let bare = label.trim_matches(['.', '_', '/', '-']);
+                prop_assert!(!RESERVED_NAMES.iter().any(|r| bare.eq_ignore_ascii_case(r)));
+            }
+        }
+
+        /// A reserved word is quoted in any case, whatever marks surround it.
+        #[test]
+        fn a_reserved_word_is_always_quoted(
+            name in "[._/-]{0,3}((?i:you)|(?i:user)|(?i:me))[._/-]{0,3}",
+        ) {
+            prop_assert_eq!(named(&name).label(), format!("session \"{name}\""));
         }
 
         /// Whatever a send holds, what's kept is one line within the cut, and never from a send

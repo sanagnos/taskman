@@ -295,24 +295,15 @@ fn a_slow_log_doesnt_claim_the_default_branchs_commits() {
     let dir = scratch_dir("hook-slow-log");
     let repo = dir.join("acme");
     std::fs::create_dir_all(&repo).unwrap();
-    let git = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .args(["-c", "user.name=Tester", "-c", "user.email=tester@example.com"])
-            .args(args)
-            .current_dir(&repo)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    };
-    git(&["init", "-q", "-b", "main"]);
-    git(&["commit", "-q", "--allow-empty", "-m", "start"]);
-    let start = git(&["rev-parse", "HEAD"]);
-    git(&["checkout", "-q", "-b", "eng-52"]);
-    git(&["checkout", "-q", "main"]);
-    git(&["commit", "-q", "--allow-empty", "-m", "upstream"]);
-    git(&["checkout", "-q", "eng-52"]);
-    git(&["rebase", "-q", "main"]);
+    common::sh(
+        &repo,
+        "git init -q -b main && git commit -q --allow-empty -m start \
+         && git rev-parse HEAD > ../start && git checkout -q -b eng-52 \
+         && git checkout -q main && git commit -q --allow-empty -m upstream \
+         && git checkout -q eng-52 && git rebase -q main",
+    );
+    let start = std::fs::read_to_string(dir.join("start")).unwrap();
+    let start = start.trim();
     let path = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
         .map(|d| d.join("git"))
         .find(|g| g.exists())
@@ -323,7 +314,7 @@ fn a_slow_log_doesnt_claim_the_default_branchs_commits() {
          exec '{}' \"$@\"\n",
         path.display()
     );
-    let (log, _) = stop_with_git(&dir, &repo, &start, &stub);
+    let (log, _) = stop_with_git(&dir, &repo, start, &stub);
     assert!(log.contains(r#""message":"Done.""#), "{log}");
     assert!(!log.contains("commits"), "the rebase's commit isn't the turn's: {log}");
 }
