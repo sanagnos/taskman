@@ -4,12 +4,13 @@
 
 use super::poll::{remove_log_at, remove_status_at, remove_status_files};
 use super::sync::Msg;
-use super::ticket::{Added, merged_head, own_worktree};
+use super::ticket::{Added, clean_label, merged_head, own_worktree};
 use super::{AgentState, App, Away, Field, Form, FormKind, Level, Mode, TicketView};
 use crate::session::Reaper;
 use crate::store::{self, Base, Cli, Ticket};
 use crate::{close, events_log, github, keys, resume, stack, untrusted, util, worktree};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 
 /// What closing a ticket leaves its caller (`close_at`): the claim on its session, for removing
 /// its worktree, or why it couldn't be taken; and the reaper of its CLI if one was still running,
@@ -185,6 +186,7 @@ impl App {
             seen_gh: None,
             agent: None,
             role: None,
+            label: None,
             created_worktree: false,
             base: None,
             pending_worktree: None,
@@ -308,6 +310,7 @@ impl App {
             seen_gh: None,
             agent: Some(name),
             role,
+            label: None,
             created_worktree: false,
             base: None,
             pending_worktree: None,
@@ -477,7 +480,20 @@ impl App {
     pub(super) fn open_rename_form(&mut self) {
         let Some(tv) = self.tickets.get(self.sel) else { return };
         let Some(name) = tv.t.agent.clone() else {
-            self.warn("Only agents can be renamed; a ticket is named by its key");
+            let mut form = Form::new(
+                FormKind::TicketTitle(tv.t.repo.clone(), tv.t.key.clone()),
+                "Ticket title",
+                vec![Field::text(
+                    "Title",
+                    tv.t.label.clone().unwrap_or_default(),
+                    "shown under its key, kept in taskman",
+                )],
+            );
+            // The hint on the card leads here, so this says why the tracker gave none. On its own
+            // above the field: a form too tall for the window loses its top rows first, and one
+            // field has no keys to scroll them back.
+            form.note = tv.no_tracker_title(&self.access(&tv.t));
+            self.mode = Mode::Form(Box::new(form));
             return;
         };
         let mut form = Form::new(
@@ -494,6 +510,33 @@ impl App {
             tv.t.cli.label()
         ));
         self.mode = Mode::Form(Box::new(form));
+    }
+
+    /// Sets the title of ticket `key` in the project in `repo`, or clears it with `text` empty, as
+    /// `prefix e` and `taskman title` do. The session isn't touched: unlike an agent's name, this
+    /// is only what the card shows. Returns the title as saved; Err, with nothing changed, for what
+    /// isn't an open ticket, or text with nothing left to show once cleaned.
+    pub(super) fn set_label(
+        &mut self,
+        repo: &Path,
+        key: &str,
+        text: &str,
+    ) -> Result<Option<String>, String> {
+        let shown = untrusted::line(key);
+        let Some(tv) = self.tickets.iter_mut().find(|tv| tv.t.is(repo, key)) else {
+            return Err(format!("{shown} isn't open in taskman"));
+        };
+        if tv.t.agent.is_some() {
+            return Err(format!("{shown} is an agent, which goes by its name"));
+        }
+        let label = clean_label(text);
+        if label.is_none() && !text.is_empty() {
+            return Err(format!("{shown}'s title would be empty once cleaned"));
+        }
+        tv.t.label.clone_from(&label);
+        self.save();
+        self.dirty.store(true, Ordering::Relaxed);
+        Ok(label)
     }
 
     /// Renames an agent. Claude only takes --name at startup (and the status file follows the

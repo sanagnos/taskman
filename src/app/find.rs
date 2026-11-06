@@ -23,17 +23,21 @@ pub struct Card<'a> {
     /// An agent's name; its key is the session's name, which the project and name already cover.
     pub agent: Option<&'a str>,
     pub title: Option<&'a str>,
+    /// The tracker's title, when a title of the ticket's own (`Ticket::label`) shows instead: a
+    /// session's `taskman title` shouldn't stop a ticket being found by the tracker's words.
+    pub summary: Option<&'a str>,
 }
 
 /// Whether `card` matches what was typed: a case-insensitive substring of its key (so a bare
-/// number finds the key with that number, `52` finds ENG-52), of its title, of an agent's name or
-/// of its project's name. Nothing typed matches everything.
+/// number finds the key with that number, `52` finds ENG-52), of its title or the tracker's, of an
+/// agent's name or of its project's name. Nothing typed matches everything.
 pub fn matches(query: &str, card: &Card) -> bool {
     let q = query.trim().to_lowercase();
     let has = |s: &str| untrusted::line(s).to_lowercase().contains(&q);
     card.agent.is_none() && has(card.key)
         || card.agent.is_some_and(has)
         || card.title.is_some_and(has)
+        || card.summary.is_some_and(has)
         || has(card.project)
 }
 
@@ -52,6 +56,7 @@ impl App {
                     key: &tv.t.key,
                     agent: tv.t.agent.as_deref(),
                     title: title.as_deref(),
+                    summary: tv.jira.data.as_ref().map(|i| i.summary.as_str()),
                 };
                 matches(query, &card)
             })
@@ -120,7 +125,7 @@ mod tests {
     use proptest::prelude::*;
 
     fn ticket<'a>(key: &'a str, title: &'a str) -> Card<'a> {
-        Card { project: "acme", key, agent: None, title: Some(title) }
+        Card { project: "acme", key, agent: None, title: Some(title), summary: None }
     }
 
     #[test]
@@ -137,7 +142,13 @@ mod tests {
         assert!(!matches("flr", &eng52));
         // A project's name matches all its cards.
         assert!(matches("Acm", &eng52));
-        let agent = Card { project: "acme", key: "acme-lead", agent: Some("lead"), title: None };
+        let agent = Card {
+            project: "acme",
+            key: "acme-lead",
+            agent: Some("lead"),
+            title: None,
+            summary: None,
+        };
         assert!(matches("lead", &agent));
         assert!(matches("acme", &agent));
         assert!(!matches("reviewer", &agent));
@@ -147,6 +158,14 @@ mod tests {
         // Nothing typed, or only spaces, matches everything.
         assert!(matches("", &agent));
         assert!(matches("  ", &agent));
+    }
+
+    #[test]
+    fn a_ticket_with_its_own_title_is_found_by_the_trackers_too() {
+        let card = Card { summary: Some("Fix the login redirect"), ..ticket("ENG-9", "Mine") };
+        assert!(matches("mine", &card));
+        assert!(matches("REDIRECT", &card));
+        assert!(!matches("logout", &card));
     }
 
     #[test]

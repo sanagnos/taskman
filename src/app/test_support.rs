@@ -134,6 +134,11 @@ pub(crate) fn acme() -> Saved {
     .unwrap()
 }
 
+/// `acme_app`'s Linear token couldn't be read, for `why`.
+pub(crate) fn token_failed(app: &mut App, why: &str) {
+    app.trackers.token_read("env:ACME_LINEAR_TOKEN", Err(why.into()), &app.config, &app.projects);
+}
+
 /// `acme()` as the TUI holds it a while after starting: each session in a state, the panels
 /// fetched, GitHub ready in acme. ENG-52's issue has a comment and its PR a review the user
 /// hasn't seen.

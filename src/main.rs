@@ -41,6 +41,7 @@ mod store;
 mod term;
 mod theme;
 mod ticket_key;
+mod title;
 mod token_file;
 mod tracker;
 mod ui;
@@ -341,6 +342,7 @@ fn main() -> anyhow::Result<()> {
         Some("add") => Some(add::run),
         Some("close") => Some(close::run),
         Some("move") => Some(local::run),
+        Some("title") => Some(title::run),
         Some("resume") => Some(resume::run),
         Some("update") => Some(update::run),
         Some("uninstall") => Some(uninstall::run),
@@ -408,6 +410,12 @@ fn main() -> anyhow::Result<()> {
                 "       taskman move KEY COLUMN  move a Local files ticket to another column of the board in"
             );
             cli::out!("                            its project folder (--help for more)");
+            cli::out!(
+                "       taskman title TEXT   set what the session's ticket's card shows under its key; from a"
+            );
+            cli::out!(
+                "                            shell, taskman title KEY TEXT (--clear KEY; --help for more)"
+            );
             cli::out!(
                 "       taskman resume KEY   continue a ticket's or agent's session in this terminal, as"
             );

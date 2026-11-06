@@ -213,6 +213,16 @@ pub enum Client {
 }
 
 impl Client {
+    /// The tracker it talks to.
+    pub fn provider(&self) -> Provider {
+        match self {
+            Client::Jira(_) => Provider::Jira,
+            Client::Linear(_) => Provider::Linear,
+            Client::Local(_) => Provider::Local,
+            Client::Github(_) => Provider::Github,
+        }
+    }
+
     /// Whether `other` signs in the same way to the same site. Only Jira's client learns anything
     /// worth keeping.
     fn same_login(&self, other: &Client) -> bool {
