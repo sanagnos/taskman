@@ -13,7 +13,7 @@ expression: screen
 "┃ ENG-52         ✓ your turn │                                                                      "
 "┃╭ What ENG-52 did ───────────────────────────────────────────────────────────────────────────────╮ "
 "┃│                                                                                                │ "
-" │  acme · each turn it finished, newest first                                                    │ "
+" │  acme · its turns and messages, newest first                                                   │ "
 " │                                                                                                │ "
 " │  › now  1 file   abcdef0     no message                                                        │ "
 " │    5m   3 files  0123456 +1  Fixed the lint failure in src/store.rs: the ]52;c;ZXZpbA==check…  │ "

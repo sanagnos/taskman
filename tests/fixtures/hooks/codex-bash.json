@@ -1,0 +1,1 @@
+{"session_id":"01a1b18a-d934-76c3-a4d5-a26992afdf2c","turn_id":"01a1b18b-e76f-7623-9d59-f449c79c8b26","cwd":"/src/acme-ENG-61","hook_event_name":"PostToolUse","model":"gpt-mock","permission_mode":"default","tool_name":"Bash","tool_input":{"command":"echo hi"},"tool_response":"hi\n","tool_use_id":"exec-7d712226-3dc3-475c-80ea-b2f3006d3caf"}

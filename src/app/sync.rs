@@ -154,7 +154,9 @@ pub(super) enum Msg {
     /// What the bug report link fills in about the machine was looked up.
     Machine(super::help::Machine),
     /// A session's log was read (`prefix d`): its ticket, and its turns, newest first.
-    Turns(Id, Vec<crate::events_log::Turn>),
+    Turns(Id, Vec<crate::events_log::Entry>),
+    /// The latest message in each ticket's log that changed (`App::poll_board`).
+    LatestMessages(Vec<(Id, Option<crate::events_log::Message>)>),
     /// The CLI of a fork asked for answered what it can do, or the probe panicked.
     Forked(super::fork::ForkAsk, Result<crate::coding_cli::ForkProbe, String>),
 }
@@ -427,6 +429,7 @@ impl App {
                 Msg::Keychain(k) => self.keychain_probed(k),
                 Msg::Machine(m) => self.machine_found(m),
                 Msg::Turns(id, turns) => self.turns_read(&id, turns),
+                Msg::LatestMessages(read) => self.latest_messages_read(read),
                 Msg::Forked(ask, probe) => self.forked(&ask, probe),
                 Msg::Scanned(id, launch, kind, found) => self.scanned(&id, &launch, kind, found),
                 Msg::BackgroundStopped(id, launch, res) => {

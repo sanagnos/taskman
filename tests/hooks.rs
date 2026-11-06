@@ -181,3 +181,40 @@ fn a_restarted_sessions_late_end_does_not_show_the_new_one_as_ended() {
     assert!(tui.text().contains("stub ready for ENG-1"), "{}", tui.text());
     quit(&mut tui);
 }
+
+/// The real command, given a hook's input as a CLI gives it: a message from another session and a
+/// send each write a line beside the status file, and a Codex prompt writes none.
+#[test]
+fn the_hook_logs_messages_from_recorded_input() {
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let dir = scratch_dir("hook-log-messages");
+    let status = dir.join("status/acme/ENG-52.json");
+    let log = status.with_extension("events.jsonl");
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hooks");
+    let feed = |file: &str, state: &str| {
+        let input = std::fs::read(fixtures.join(file)).unwrap();
+        let mut child = taskman(&dir)
+            .args(["hook", state])
+            .env("TASKMAN_STATUS_FILE", &status)
+            .env("TASKMAN_CWD", &dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(&input).unwrap();
+        assert!(child.wait().unwrap().success());
+    };
+    feed("codex-user-prompt.json", "working");
+    feed("codex-bash.json", "working");
+    assert!(!log.exists(), "nothing to log yet");
+    feed("claude-received.json", "working");
+    feed("claude-send.json", "working");
+    feed("claude-send-failed.json", "working");
+    let text = std::fs::read_to_string(&log).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "{text}");
+    assert!(lines[0].contains(r#""dir":"in""#) && lines[0].contains("Fix the lint failure."));
+    assert!(lines[1].contains(r#""dir":"out""#) && lines[1].contains("Rebase on main"));
+    assert!(!text.contains("Then push") && !text.contains("The base is about to go"), "{text}");
+}
