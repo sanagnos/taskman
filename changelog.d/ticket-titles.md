@@ -1,4 +1,0 @@
-- A ticket can have a title of your own: `ctrl+a e` sets what its card shows under the key, in place of the tracker's, and saving it empty goes back. It stays in taskman, and a session can set its own ticket's with `taskman title "..."`.
-- A ticket's card now says `⚠ no tracker title` when taskman can't get a title from the tracker, rather than showing nothing.
-- Commands take `--` to end their options, so a script's text can start with a dash: `taskman title -- "$TITLE"`.
-- On GitHub Issues, `taskman close` now takes an issue's link and `'#52'`, in quotes, as `taskman title` does. Unquoted, the shell reads `#52` as a comment.

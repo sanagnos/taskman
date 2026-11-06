@@ -2,6 +2,15 @@
 
 What changed in each release; a release's notes on GitHub are its section here. What's merged but not released yet is in [changelog.d/](changelog.d/), a file for each change, which the release moves in here. Versions follow Cargo's rule for 0.x: the patch number (0.1.1) for anything compatible, fixes and new features alike, and the minor (0.2.0) for breaking changes, such as changed keys, config or saved-state format, or a removed command.
 
+## 0.1.37 - 2026-11-06
+
+- Jira and Linear connections now trust the system's certificate store as well as the bundled list, so a tracker behind a private CA or a re-signing proxy works. `SSL_CERT_FILE` and `SSL_CERT_DIR` work too, and replace what's trusted. A certificate that still isn't trusted says what to do about it, rather than `UnknownIssuer`.
+- Pointed at Jira Data Center or Server, taskman now says it works with Jira Cloud only when it can tell, rather than that the ticket wasn't found or the credentials were rejected. Once it knows, or once Jira asks for a CAPTCHA, it stops sending logins that can't work.
+- A ticket can have a title of your own: `ctrl+a e` sets what its card shows under the key, in place of the tracker's, and saving it empty goes back. It stays in taskman, and a session can set its own ticket's with `taskman title "..."`.
+- A ticket's card now says `⚠ no tracker title` when taskman can't get a title from the tracker, rather than showing nothing.
+- Commands take `--` to end their options, so a script's text can start with a dash: `taskman title -- "$TITLE"`.
+- On GitHub Issues, `taskman close` now takes an issue's link and `'#52'`, in quotes, as `taskman title` does. Unquoted, the shell reads `#52` as a comment.
+
 ## 0.1.36 - 2026-10-31
 
 - `ctrl+a f` forks a session into a new agent that starts with a copy of its conversation so far, in the same CLI, while the original carries on; sessions ask for one with `taskman add --agent NAME --fork KEY`, which waits for your approval.
