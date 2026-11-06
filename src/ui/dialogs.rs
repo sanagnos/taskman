@@ -3,7 +3,7 @@
 use super::sidebar::{more_line, scroll_to_show, shown_rows};
 use super::{accent, asleep, badge, dim, selection_bg, spinner};
 use crate::app::{AgentAsk, AgentState, App, Form, Level, Mode, Scroll, SettingsItem, toasts};
-use crate::events_log::Turn;
+use crate::events_log::{Entry, Message, Turn};
 use crate::keys::prefix;
 use crate::markdown;
 use crate::store::tilde;
@@ -501,10 +501,13 @@ fn draw_log(f: &mut Frame, app: &mut App) {
     f.render_widget(Paragraph::new(shown).block(dialog("Notices").padding(DIALOG_PAD)), rect);
 }
 
-/// A session's turns (`prefix d`), newest first, a row each: how long ago it ended, the files it
-/// changed, its commits and a headline from the CLI's last message (`markdown::headline`), with the
-/// open one's whole message under its row (`message_rows`). The message is the CLI's own output
-/// and may quote anything it read, so all of it goes through `untrusted`.
+/// A session's turns and messages (`prefix d`), newest first, a row each: a turn's age, the files
+/// it changed, its commits, whether its branch reached origin and a headline from the CLI's last
+/// message (`markdown::headline`); a message's age, `←` or `→`, who with, and its first line. The
+/// open row's whole text is under it (`message_rows`). A turn's message is the CLI's own output and
+/// may quote anything it read, and a message's text and names are another session's choice, so all
+/// of it goes through `untrusted`. A row says what the log saw and no more: `→` that it was sent,
+/// `←` that it arrived, `on origin` that the branch got there, and nothing about who or what for.
 fn draw_turns(f: &mut Frame, app: &mut App) {
     let Mode::Turns(t) = &app.mode else { return };
     let label = match app.tickets.iter().find(|tv| tv.t.is(&t.id.0, &t.id.1)) {
@@ -512,6 +515,8 @@ fn draw_turns(f: &mut Frame, app: &mut App) {
         _ => t.id.1.clone(),
     };
     let project = app.projects.iter().find(|p| p.repo == t.id.0).map_or("", |p| p.name.as_str());
+    let session = app.tickets.iter().find(|tv| tv.t.is(&t.id.0, &t.id.1));
+    let messages = session.is_none_or(|tv| tv.t.cli.messages_agents());
     let w = (100 + DIALOG_PAD_W).min(f.area().width.saturating_sub(2));
     let inner = usize::from(w.saturating_sub(2 + DIALOG_PAD_W)).max(1);
     let turns = t.turns.as_deref().unwrap_or_default();
@@ -519,7 +524,20 @@ fn draw_turns(f: &mut Frame, app: &mut App) {
     // The open turn's message, under its row, indented past the marker and the age.
     let indent = 4;
     let mut message = match turns.get(t.at) {
-        Some(turn) if t.open => message_rows(&turn.message, inner.saturating_sub(indent)),
+        Some(Entry::Turn(turn)) if t.open => {
+            message_rows(&turn.message, inner.saturating_sub(indent))
+        }
+        Some(Entry::Message(m)) if t.open => {
+            // Its row cuts a long name, so here it is whole.
+            let room = inner.saturating_sub(indent);
+            let mut rows = message_rows(&format!("{} {}", m.arrow(), m.label()), room);
+            rows.extend(message_rows(&m.text, room));
+            rows.push(String::new());
+            rows.push(
+                "The log keeps a message's first line; the session's history has the rest.".into(),
+            );
+            rows
+        }
         _ => Vec::new(),
     };
     // A blank row between it and the next turn's.
@@ -543,10 +561,20 @@ fn draw_turns(f: &mut Frame, app: &mut App) {
     match &t.turns {
         None => text.push(Line::from(Span::styled("Reading…", dim()))),
         Some(_) if n == 0 => text.push(Line::from(Span::styled(
-            "No turns yet: each one shows here when it ends.",
+            if messages {
+                "Nothing yet: a turn shows here when it ends, a message when it's sent or received."
+            } else {
+                "No turns yet: each one shows here when it ends."
+            },
             dim(),
         ))),
         Some(_) => {
+            let finished = || {
+                turns.iter().filter_map(|e| match e {
+                    Entry::Turn(turn) => Some(turn),
+                    Entry::Message(_) => None,
+                })
+            };
             let files = |turn: &Turn| match turn.file_count() {
                 0 => String::new(),
                 1 => "1 file".to_string(),
@@ -563,32 +591,50 @@ fn draw_turns(f: &mut Frame, app: &mut App) {
                 }
             };
             let widest = |col: &dyn Fn(&Turn) -> String| {
-                turns.iter().map(|turn| util::width(&col(turn))).max().unwrap_or(0)
+                finished().map(|turn| util::width(&col(turn))).max().unwrap_or(0)
             };
             let (files_w, commits_w) = (widest(&files), widest(&commits));
-            for (i, turn) in turns.iter().enumerate() {
+            let any_on_origin = finished().any(|turn| turn.on_origin);
+            // A turn's columns before its headline, which a message's name fills so the text of
+            // both rows starts in one place where it can.
+            let columns = if files_w > 0 { 1 + files_w } else { 0 }
+                + if commits_w > 0 { 2 + commits_w } else { 0 }
+                + if any_on_origin { 11 } else { 0 };
+            for (i, entry) in turns.iter().enumerate() {
                 let chosen = i == t.at;
+                let ts = match entry {
+                    Entry::Turn(turn) => turn.ts,
+                    Entry::Message(m) => m.ts,
+                };
                 let mut spans = vec![
                     Span::raw(if chosen { "› " } else { "  " }),
-                    Span::styled(
-                        pad(&util::ago(turn.ts), 4),
-                        Style::new().fg(super::yellow()).bold(),
-                    ),
+                    Span::styled(pad(&util::ago(ts), 4), Style::new().fg(super::yellow()).bold()),
                 ];
-                if files_w > 0 {
-                    spans.push(Span::styled(format!(" {}", pad(&files(turn), files_w)), dim()));
+                match entry {
+                    Entry::Turn(turn) => {
+                        if files_w > 0 {
+                            let f = format!(" {}", pad(&files(turn), files_w));
+                            spans.push(Span::styled(f, dim()));
+                        }
+                        if commits_w > 0 {
+                            let c = format!("  {}", pad(&commits(turn), commits_w));
+                            spans.push(Span::styled(c, Style::new().fg(Color::Green)));
+                        }
+                        if any_on_origin {
+                            let at = if turn.on_origin { "  on origin" } else { "           " };
+                            spans.push(Span::styled(at, Style::new().fg(Color::Green)));
+                        }
+                        let used: usize = spans.iter().map(|s| util::width(&s.content)).sum();
+                        let room = inner.saturating_sub(used + 2);
+                        // Worked out and cleaned with `untrusted` when the log was read
+                        // (`with_headlines`).
+                        spans.push(match turn.headline.as_str() {
+                            "" => Span::styled(truncate("  no message", room + 2), dim()),
+                            head => Span::raw(format!("  {}", truncate(head, room))),
+                        });
+                    }
+                    Entry::Message(m) => message_row(&mut spans, m, columns, inner),
                 }
-                if commits_w > 0 {
-                    let c = format!("  {}", pad(&commits(turn), commits_w));
-                    spans.push(Span::styled(c, Style::new().fg(Color::Green)));
-                }
-                let used: usize = spans.iter().map(|s| util::width(&s.content)).sum();
-                let room = inner.saturating_sub(used + 2);
-                // Worked out and cleaned with `untrusted` when the log was read (`with_headlines`).
-                spans.push(match turn.headline.as_str() {
-                    "" => Span::styled(truncate("  no message", room + 2), dim()),
-                    head => Span::raw(format!("  {}", truncate(head, room))),
-                });
                 if chosen {
                     let used: usize = spans.iter().map(|s| util::width(&s.content)).sum();
                     spans.push(Span::raw(" ".repeat(inner.saturating_sub(used))));
@@ -609,7 +655,11 @@ fn draw_turns(f: &mut Frame, app: &mut App) {
     }
     let mut shown = vec![
         Line::from(Span::styled(
-            format!("{} · each turn it finished, newest first", untrusted::line(project)),
+            format!(
+                "{} · {}, newest first",
+                untrusted::line(project),
+                if messages { "its turns and messages" } else { "each turn it finished" }
+            ),
             dim(),
         )),
         Line::from(""),
@@ -622,6 +672,21 @@ fn draw_turns(f: &mut Frame, app: &mut App) {
     let title = format!("What {} did", truncate(&untrusted::line(&label), 40));
     f.render_widget(Clear, rect);
     f.render_widget(Paragraph::new(shown).block(dialog(&title).padding(DIALOG_PAD)), rect);
+}
+
+/// Adds a message's own columns to its row in a list of `inner` columns: who with, filling
+/// `columns` where it fits, then whether a turn was under way, and its first line.
+fn message_row(spans: &mut Vec<Span<'static>>, m: &Message, columns: usize, inner: usize) {
+    let who = format!(" {} {}", m.arrow(), truncate(&m.label(), super::PEER_ROW_WIDTH));
+    let who = pad(&who, columns.max(util::width(&who)));
+    spans.push(Span::styled(who, Style::new().fg(super::accent())));
+    if m.during {
+        spans.push(Span::styled("  during a turn ·", dim()));
+    }
+    let used: usize = spans.iter().map(|s| util::width(&s.content)).sum();
+    let gap = if m.during { " " } else { "  " };
+    let room = inner.saturating_sub(used + gap.len());
+    spans.push(Span::raw(format!("{gap}{}", truncate(&m.headline, room))));
 }
 
 /// The keys under the turns, for a turn `open` or not; `at` says which turn is selected when they

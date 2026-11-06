@@ -1,0 +1,1 @@
+{"session_id":"7a1d","cwd":"/src/acme-ENG-52","permission_mode":"auto","hook_event_name":"UserPromptSubmit","prompt":"<cross-session-message from=\"uds:/run/user/1000/cc-socks/4100.sock\" from-name=\"lead\" from-mode=\"prompting\">\nFix the lint failure.\nThen push.\n</cross-session-message>"}

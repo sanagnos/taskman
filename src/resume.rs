@@ -497,6 +497,10 @@ fn resume(args: &[String]) -> Result<i32, String> {
         ));
     };
     hold.write(&format!("{OUTSIDE} {}", std::process::id()));
+    // A turn an earlier start left unfinished isn't this start's, however long ago it was, as when
+    // the TUI starts one (`App::start_session`). Its log stays.
+    let status = crate::store::status_file(&t.repo, &t.key);
+    let _ = std::fs::remove_file(crate::events_log::pending_path(&status));
     let mut cmd = std::process::Command::new(&launch.program);
     cmd.args(&launch.args).current_dir(&launch.cwd);
     for (k, v) in &launch.env {

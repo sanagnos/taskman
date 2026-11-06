@@ -205,6 +205,88 @@ fn ticket_title_form_saying_why_the_tracker_gave_none() {
     assert_snapshot!(draw(&mut app, 100, 30));
 }
 
+/// The board with what each ticket's own log last saw go by, while it's recent: one it got, one it
+/// sent, and one from long ago that no longer shows. A Codex ticket has none.
+#[test]
+fn agents_board_with_messages() {
+    use crate::app::test_support::settle_until;
+    use crate::events_log::{self, Direction, Message};
+    let mut app = acme_app();
+    let now = crate::util::now();
+    let write = |key: &str, m: Message| {
+        let log = events_log::log_path(&crate::store::status_file("/src/acme".as_ref(), key));
+        events_log::append_message(&log, &m).unwrap();
+    };
+    let lead = Some("lead".to_string());
+    write(
+        "ENG-52",
+        Message {
+            dir: Direction::In,
+            peer: lead.clone(),
+            text: "Fix the lint failure, then push; the review waits on it.".into(),
+            ts: now - 150,
+            ..Message::default()
+        },
+    );
+    write(
+        "ENG-53",
+        Message {
+            peer: lead.clone(),
+            text: "Is the API stable?".into(),
+            ts: now - 330,
+            ..Message::default()
+        },
+    );
+    write(
+        "ENG-70",
+        Message {
+            peer: lead,
+            text: "An old question.".into(),
+            ts: now - 7200,
+            ..Message::default()
+        },
+    );
+    select(&mut app, "acme-lead");
+    draw(&mut app, 160, 40);
+    app.poll_board();
+    settle_until(&mut app, |a| {
+        a.tickets.iter().filter(|tv| tv.latest_message.is_some()).count() == 3
+    });
+    let screen = draw(&mut app, 160, 40);
+    assert!(screen.contains("← lead · 2m: Fix the lint failure"), "{screen}");
+    assert!(screen.contains("→ lead · 5m: Is the API stable?"), "{screen}");
+    assert!(!screen.contains("An old question"), "{screen}");
+    assert_snapshot!(screen);
+}
+
+/// A name can't wrap into a row that reads as the board's own, or leave the text no room: the panel
+/// wraps with no indent, so a word of it could start a line.
+#[test]
+fn agents_board_cuts_a_long_name() {
+    use crate::app::test_support::settle_until;
+    use crate::events_log::{self, Direction, Message};
+    let mut app = acme_app();
+    let log = events_log::log_path(&crate::store::status_file("/src/acme".as_ref(), "ENG-52"));
+    let long = format!("{} ENG-53 ✓ your turn", "x".repeat(40));
+    let m = Message {
+        dir: Direction::In,
+        peer: Some(long),
+        text: "Fix the lint.".into(),
+        ts: crate::util::now() - 150,
+        ..Message::default()
+    };
+    events_log::append_message(&log, &m).unwrap();
+    select(&mut app, "acme-lead");
+    draw(&mut app, 160, 40);
+    app.poll_board();
+    settle_until(&mut app, |a| a.tickets.iter().any(|tv| tv.latest_message.is_some()));
+    let screen = draw(&mut app, 160, 40);
+    assert!(screen.contains("· 2m: Fix the lint."), "the text still shows: {screen}");
+    assert!(!screen.contains("ENG-53 ✓"), "no word of the name reaches a line: {screen}");
+    let row = screen.lines().find(|l| l.contains("Fix the lint.")).unwrap();
+    assert!(row.contains("← session \"xxx"), "{row}");
+}
+
 #[test]
 fn agents_board() {
     let mut app = acme_app();
@@ -1578,6 +1660,107 @@ fn turns_of_a_session() {
     let mut app = turns_open();
     let screen = draw(&mut app, 100, 30);
     assert!(screen.contains("Fixed the lint failure in src/store.rs: the"), "{screen}");
+    assert_snapshot!(screen);
+}
+
+/// The turns of a session an agent talks to, its messages mixed in where they were written: `←`
+/// what reached it, `→` what it sent, and no more than that. A turn its branch reached origin in
+/// says so.
+#[test]
+fn turns_and_messages_of_a_session() {
+    use crate::app::test_support::{ctrl, key, settle_until};
+    use crate::events_log::{self, Direction, Message, Turn};
+    use crossterm::event::KeyCode;
+    let mut app = acme_app();
+    draw(&mut app, 100, 30);
+    let log = events_log::log_path(&crate::store::status_file("/src/acme".as_ref(), "ENG-52"));
+    let now = crate::util::now();
+    let peer = |name: &str| Some(name.to_string());
+    let got = |text: &str, during, ts| Message {
+        dir: Direction::In,
+        peer: peer("lead"),
+        text: text.into(),
+        during,
+        ts,
+        ..Message::default()
+    };
+    let turn = |text: &str, files: Vec<String>, commit: &str, on_origin, ts| Turn {
+        on_origin,
+        ..Turn::new(text, files, vec![commit.to_string()], ts)
+    };
+    let write = |m: &Message| events_log::append_message(&log, m).unwrap();
+    write(&got("Look into the flaky login test.", false, now - 3 * 3600 - 1800));
+    write(&got("Also check the macOS job.", true, now - 2 * 3600 - 1800));
+    events_log::append(
+        &log,
+        &Turn::new("Looked into the flaky login test: it races.", vec![], vec![], now - 2 * 3600),
+    )
+    .unwrap();
+    write(&got("Fix the lint failure.", false, now - 750));
+    // An address it never heard from: "a session", never the address.
+    write(&Message { text: "Is the API stable?".into(), ts: now - 690, ..Message::default() });
+    let files = vec!["src/parser.rs".into(), "src/main.rs".into(), "tests/parser.rs".into()];
+    events_log::append(
+        &log,
+        &turn("Fixed the lint failure in the parser.", files, "a1b2c3d4", true, now - 570),
+    )
+    .unwrap();
+    write(&Message {
+        peer: peer("lead"),
+        text: "Fixed; CI is running.\x1b]52;c;ZXZpbA==\x07".into(),
+        ts: now - 510,
+        ..Message::default()
+    });
+    app.on_key(ctrl('a'));
+    app.on_key(key(KeyCode::Char('d')));
+    settle_until(&mut app, |a| matches!(&a.mode, Mode::Turns(t) if t.turns.is_some()));
+    let screen = draw(&mut app, 100, 30);
+    assert!(screen.contains("← lead") && screen.contains("→ lead"), "{screen}");
+    assert!(screen.contains("→ a session") && screen.contains("during a turn"), "{screen}");
+    assert!(screen.contains("on origin") && !screen.contains("uds:"), "{screen}");
+    assert!(!screen.contains("pushed"), "{screen}");
+    assert!(!screen.contains('\x1b'), "{screen}");
+    assert_snapshot!(screen);
+}
+
+/// A Codex session's list says nothing of messages, and shows what its hooks can: turns, and git's
+/// word on origin.
+#[test]
+fn turns_of_a_codex_session() {
+    use crate::app::test_support::{ctrl, key, settle_until};
+    use crate::events_log::{self, Turn};
+    use crossterm::event::KeyCode;
+    let mut app = acme_app();
+    select(&mut app, "ENG-61");
+    draw(&mut app, 100, 30);
+    let log = events_log::log_path(&crate::store::status_file("/src/acme".as_ref(), "ENG-61"));
+    let now = crate::util::now();
+    let mut reached = Turn::new(
+        "Pushed the export limit.",
+        vec!["src/a.rs".into()],
+        vec!["a1b2c3d".into()],
+        now - 330,
+    );
+    reached.on_origin = true;
+    events_log::append(&log, &Turn::new("Read the export code.", vec![], vec![], now - 1800))
+        .unwrap();
+    events_log::append(&log, &reached).unwrap();
+    // Text that merely looks like a message, as a prompt quoting the wrapper could leave: a Codex
+    // session has no messages to show, whatever its log holds.
+    let looks_like = events_log::Message {
+        dir: events_log::Direction::In,
+        peer: Some("lead".into()),
+        text: "Fix the lint failure.".into(),
+        ts: now - 60,
+        ..events_log::Message::default()
+    };
+    events_log::append_message(&log, &looks_like).unwrap();
+    app.on_key(ctrl('a'));
+    app.on_key(key(KeyCode::Char('d')));
+    settle_until(&mut app, |a| matches!(&a.mode, Mode::Turns(t) if t.turns.is_some()));
+    let screen = draw(&mut app, 100, 30);
+    assert!(screen.contains("on origin") && !screen.contains("messages"), "{screen}");
+    assert!(!screen.contains("← lead") && !screen.contains("Fix the lint"), "{screen}");
     assert_snapshot!(screen);
 }
 

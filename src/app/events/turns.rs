@@ -1,5 +1,5 @@
 use super::*;
-use crate::events_log::{self, Turn};
+use crate::events_log::{self, Entry, Message, Turn};
 
 // ---- a session's turns (`prefix d`) ----------------------------------------------------------
 
@@ -16,7 +16,14 @@ fn turn(key: &str, message: &str) {
 /// The session the open overlay shows, and its turns' messages once read.
 fn shown(app: &App) -> (String, Option<Vec<String>>) {
     let Mode::Turns(t) = &app.mode else { panic!("no turns open") };
-    let turns = t.turns.as_ref().map(|ts| ts.iter().map(|t| t.message.clone()).collect());
+    let turns = t.turns.as_ref().map(|ts| {
+        ts.iter()
+            .map(|e| match e {
+                Entry::Turn(t) => t.message.clone(),
+                Entry::Message(m) => format!("{} {}", m.arrow(), m.text),
+            })
+            .collect()
+    });
     (t.id.1.clone(), turns)
 }
 
@@ -256,4 +263,121 @@ fn a_start_of_taskman_keeps_the_log() {
     );
     open(&mut app);
     assert_eq!(shown(&app).1, Some(vec!["Done.".into()]));
+}
+
+// ---- who asked whom ----------------------------------------------------------------------------
+
+/// A message in `key`'s log, as its hooks would write it.
+fn message(key: &str, m: &Message) {
+    events_log::append_message(&log(key), m).unwrap();
+}
+
+fn got(from: &str, text: &str) -> Message {
+    let (peer, text) = (Some(from.to_string()), text.to_string());
+    Message { dir: events_log::Direction::In, peer, text, ts: 1, ..Message::default() }
+}
+
+#[test]
+fn the_overlay_mixes_a_sessions_messages_with_its_turns_in_the_order_written() {
+    let (mut app, _) = at_eng_52();
+    message("ENG-52", &got("lead", "Fix the lint."));
+    turn("ENG-52", "Fixed it.");
+    let sent = Message { peer: Some("lead".into()), text: "Done.".into(), ..Message::default() };
+    message("ENG-52", &sent);
+    open(&mut app);
+    assert_eq!(
+        shown(&app).1,
+        Some(vec!["→ Done.".to_string(), "Fixed it.".into(), "← Fix the lint.".into()])
+    );
+    // A message row chooses and opens like a turn's.
+    app.on_key(key(KeyCode::Enter));
+    let screen = draw(&mut app, 100, 30);
+    assert!(place(&app).1);
+    assert!(screen.contains("the session's history has the rest"), "{screen}");
+    app.on_key(key(KeyCode::Esc));
+    assert!(matches!(app.mode, Mode::Turns(_)));
+}
+
+#[test]
+fn a_codex_session_shows_no_message_rows() {
+    let (mut app, _) = at_eng_52();
+    let i = app.tickets.iter().position(|tv| tv.t.key == "ENG-52").unwrap();
+    app.tickets[i].t.cli = crate::store::Cli::Codex;
+    // Text in its log that merely looks like a message, as a prompt that quoted the wrapper.
+    message("ENG-52", &got("lead", "Fix the lint."));
+    turn("ENG-52", "Fixed it.");
+    open(&mut app);
+    assert_eq!(shown(&app).1, Some(vec!["Fixed it.".to_string()]));
+}
+
+/// The board's latest message of `key`, once it's been read.
+fn on_board(app: &mut App, key: &str) -> Option<String> {
+    app.select(index(app, "acme-lead"));
+    // Writes in one tick of the clock can share a stamp, which a test does and a hook won't.
+    let i = index(app, key);
+    app.tickets[i].log_stamp = None;
+    app.poll_board();
+    settle(app);
+    app.tickets[i].latest_message.as_ref().map(|m| m.text.clone())
+}
+
+#[test]
+fn the_board_reads_each_tickets_latest_message_while_it_shows() {
+    let (mut app, _) = at_eng_52();
+    // Not while a ticket is selected: there's no board to show it on.
+    message("ENG-52", &got("lead", "Fix the lint."));
+    app.poll_board();
+    let i = index(&app, "ENG-52");
+    assert_eq!(app.tickets[i].latest_message, None);
+    assert_eq!(on_board(&mut app, "ENG-52").as_deref(), Some("Fix the lint."));
+    // A turn since doesn't change it; a newer message does.
+    turn("ENG-52", "Fixed it.");
+    assert_eq!(on_board(&mut app, "ENG-52").as_deref(), Some("Fix the lint."));
+    let sent = Message { peer: Some("lead".into()), text: "Done.".into(), ..Message::default() };
+    message("ENG-52", &sent);
+    assert_eq!(on_board(&mut app, "ENG-52").as_deref(), Some("Done."));
+    // Nothing is read for a Codex ticket, so no thread starts for it.
+    message("ENG-61", &got("lead", "Not a real message."));
+    app.poll_board();
+    let i = index(&app, "ENG-61");
+    assert_eq!((app.tickets[i].log_stamp, app.tickets[i].latest_message.clone()), (None, None));
+}
+
+#[test]
+fn enter_shows_a_name_the_row_cuts() {
+    let (mut app, _) = at_eng_52();
+    let long = format!("reviewer-{}", "n".repeat(40));
+    message("ENG-52", &got(&long, "Check the build."));
+    open(&mut app);
+    let closed = draw(&mut app, 100, 30);
+    assert!(!closed.contains(&long), "{closed}");
+    app.on_key(key(KeyCode::Enter));
+    let opened = draw(&mut app, 100, 30);
+    assert!(opened.contains(&format!("← {long}")), "{opened}");
+}
+
+/// Reads finish in any order: one asked for before the log last changed doesn't replace what's
+/// been read since.
+#[test]
+fn a_late_read_for_the_board_doesnt_replace_a_newer_one() {
+    use std::time::{Duration, SystemTime};
+    let (mut app, _) = at_eng_52();
+    let i = index(&app, "ENG-52");
+    let id = (app.tickets[i].t.repo.clone(), app.tickets[i].t.key.clone());
+    let (older, newer) = (SystemTime::UNIX_EPOCH, SystemTime::UNIX_EPOCH + Duration::from_secs(9));
+    app.tickets[i].log_stamp = Some(newer);
+    app.latest_messages_read(vec![(id.clone(), Some(newer), Some(got("lead", "Newer.")))]);
+    app.latest_messages_read(vec![(id, Some(older), Some(got("lead", "Older.")))]);
+    assert_eq!(app.tickets[i].latest_message.as_ref().unwrap().text, "Newer.");
+}
+
+#[test]
+fn closing_removes_a_killed_rewrite_of_the_log() {
+    let status = store::status_file("/src/acme".as_ref(), "ENG-52");
+    let log = events_log::log_path(&status);
+    turn("ENG-52", "Fixed it.");
+    let leftover = log.with_extension("4242.tmp");
+    std::fs::write(&leftover, "x").unwrap();
+    crate::app::poll::remove_log_at(&status);
+    assert!(!log.exists() && !leftover.exists());
 }

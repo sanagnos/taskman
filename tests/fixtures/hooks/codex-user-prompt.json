@@ -1,0 +1,1 @@
+{"session_id":"01a1b18a-d934-76c3-a4d5-a26992afdf2c","turn_id":"01a1b18b-e76f-7623-9d59-f449c79c8b26","cwd":"/src/acme-ENG-61","hook_event_name":"UserPromptSubmit","model":"gpt-mock","permission_mode":"default","prompt":"Run the shell command: echo hi . Then reply with the single word done."}

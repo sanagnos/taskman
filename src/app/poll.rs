@@ -443,6 +443,7 @@ pub(super) fn remove_status_files(t: &Ticket) {
 /// Removes the session's log (`events_log`) beside the status file at `status`, and the turn it
 /// noted so far. Only with its ticket: a start of the session, or of taskman, keeps the log.
 pub(super) fn remove_log_at(status: &Path) {
+    events_log::remove_rewrites(&events_log::log_path(status));
     let _ = std::fs::remove_file(events_log::log_path(status));
     let _ = std::fs::remove_file(events_log::pending_path(status));
 }

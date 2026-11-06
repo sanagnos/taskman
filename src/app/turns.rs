@@ -1,24 +1,30 @@
-//! `prefix d`: what a session did, a finished turn at a time, newest first, from its log
-//! (`events_log`): a row per turn, and Enter shows the selected one's whole message under its row.
-//! ↑/↓ choose a turn, ←/→ show the session above or below in the sidebar without closing, `g`
-//! selects the session shown, and Esc closes an open turn, then the overlay, leaving the selection
+//! `prefix d`: what a session did, newest first, from its log (`events_log`): a row per finished
+//! turn and per message it sent or got, and Enter shows the selected row's whole text under it.
+//! ↑/↓ choose a row, ←/→ show the session above or below in the sidebar without closing, `g`
+//! selects the session shown, and Esc closes an open row, then the overlay, leaving the selection
 //! as it was. The log is read off the UI thread, and again when a hook changes it while it's open.
+//!
+//! Also the board's latest messages (`App::poll_board`): each ticket's own log, read off the UI
+//! thread while an agent is selected and when that log changes.
 
 use super::sync::Msg;
 use super::{App, Id, Mode};
-use crate::events_log::{self, Turn};
+use crate::events_log::{self, Entry, Message};
 use crate::{markdown, store, untrusted};
 use crossterm::event::{KeyCode, KeyEvent};
 use std::path::PathBuf;
 use std::time::SystemTime;
+
+/// What the board read of a ticket's log: which, its stamp when asked, and its newest message.
+pub type LatestMessage = (Id, Option<SystemTime>, Option<Message>);
 
 /// The overlay while it's open.
 #[derive(Clone, Debug, Default)]
 pub struct Turns {
     /// The session shown: the selected one at first, then wherever ←/→ moved.
     pub id: Id,
-    /// Its turns, newest first; None until they're read.
-    pub turns: Option<Vec<Turn>>,
+    /// Its turns and messages, newest first; None until they're read.
+    pub turns: Option<Vec<Entry>>,
     /// When the log last changed, as last asked for: the poll reads it again when this changes.
     pub stamp: Option<SystemTime>,
     /// The turn selected, counted from the newest.
@@ -134,13 +140,20 @@ fn stamp(path: &PathBuf) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
-/// `turns`, each with the line the overlay shows for it, cleaned for the screen: worked out here,
-/// in the thread that reads them, rather than with every frame.
-fn with_headlines(mut turns: Vec<Turn>) -> Vec<Turn> {
-    for t in &mut turns {
-        t.headline = untrusted::line(&markdown::headline(&untrusted::clean(&t.message)));
+/// `entries`, each with the line the overlay shows for it, cleaned for the screen: worked out here,
+/// in the thread that reads them, rather than with every frame. Message rows only for a CLI whose
+/// sessions message each other, so text that merely looks like one can't show on another's list.
+fn with_headlines(mut entries: Vec<Entry>, messages: bool) -> Vec<Entry> {
+    entries.retain(|e| messages || matches!(e, Entry::Turn(_)));
+    for e in &mut entries {
+        match e {
+            Entry::Turn(t) => {
+                t.headline = untrusted::line(&markdown::headline(&untrusted::clean(&t.message)));
+            }
+            Entry::Message(m) => m.headline = untrusted::line(&m.text),
+        }
     }
-    turns
+    entries
 }
 
 impl App {
@@ -163,15 +176,66 @@ impl App {
 
     fn read_turns(&self, id: Id, path: PathBuf) {
         let failed_id = id.clone();
+        let session = self.tickets.iter().find(|tv| tv.t.is(&id.0, &id.1));
+        let messages = session.is_none_or(|tv| tv.t.cli.messages_agents());
         self.reporter().spawn(
             format!("reading {}", path.display()),
-            move || Msg::Turns(id, with_headlines(events_log::read(&path))),
+            move || Msg::Turns(id, with_headlines(events_log::read_entries(&path), messages)),
             move |_| Msg::Turns(failed_id, Vec::new()),
         );
     }
 
+    /// Reads the latest message of each ticket whose log changed, while an agent is selected, which
+    /// is when the board can show them. From the status poll, so a log is looked at no more often
+    /// than a status file.
+    pub(crate) fn poll_board(&mut self) {
+        let Some(sel) = self.selected().filter(|tv| tv.t.agent.is_some()) else { return };
+        let Some(p) = self.project_of(&sel.t) else { return };
+        let mut changed = Vec::new();
+        for i in self.members(p) {
+            let tv = &mut self.tickets[i];
+            if tv.t.agent.is_some() || !tv.t.cli.messages_agents() {
+                continue;
+            }
+            let id = (tv.t.repo.clone(), tv.t.key.clone());
+            let path = log_of(&id);
+            let now = stamp(&path);
+            if now != tv.log_stamp {
+                tv.log_stamp = now;
+                changed.push((id, now, path));
+            }
+        }
+        if changed.is_empty() {
+            return;
+        }
+        self.reporter().spawn(
+            "reading the latest messages".to_string(),
+            move || {
+                Msg::LatestMessages(
+                    changed
+                        .into_iter()
+                        .map(|(id, at, path)| (id, at, events_log::latest_message(&path)))
+                        .collect(),
+                )
+            },
+            |_| Msg::LatestMessages(Vec::new()),
+        );
+    }
+
+    /// The latest messages read for the board. A read for a stamp that's since moved on is older
+    /// than one still to come: reads finish in any order, and only the last asked for counts.
+    pub(super) fn latest_messages_read(&mut self, read: Vec<LatestMessage>) {
+        for (id, at, message) in read {
+            if let Some(tv) = self.tickets.iter_mut().find(|tv| tv.t.is(&id.0, &id.1))
+                && tv.log_stamp == at
+            {
+                tv.latest_message = message;
+            }
+        }
+    }
+
     /// The turns read for session `id`, if it's still the one shown.
-    pub(super) fn turns_read(&mut self, id: &Id, turns: Vec<Turn>) {
+    pub(super) fn turns_read(&mut self, id: &Id, turns: Vec<Entry>) {
         if let Mode::Turns(t) = &mut self.mode
             && t.id == *id
         {

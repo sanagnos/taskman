@@ -181,3 +181,140 @@ fn a_restarted_sessions_late_end_does_not_show_the_new_one_as_ended() {
     assert!(tui.text().contains("stub ready for ENG-1"), "{}", tui.text());
     quit(&mut tui);
 }
+
+/// The real command, given a hook's input as a CLI gives it: a message from another session and a
+/// send each write a line beside the status file, and a Codex prompt writes none.
+#[test]
+fn the_hook_logs_messages_from_recorded_input() {
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let dir = scratch_dir("hook-log-messages");
+    let status = dir.join("status/acme/ENG-52.json");
+    let log = status.with_extension("events.jsonl");
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hooks");
+    let feed = |file: &str, state: &str| {
+        let input = std::fs::read(fixtures.join(file)).unwrap();
+        let mut child = taskman(&dir)
+            .args(["hook", state])
+            .env("TASKMAN_STATUS_FILE", &status)
+            .env("TASKMAN_CWD", &dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(&input).unwrap();
+        assert!(child.wait().unwrap().success());
+    };
+    feed("codex-user-prompt.json", "working");
+    feed("codex-bash.json", "working");
+    assert!(!log.exists(), "nothing to log yet");
+    feed("claude-received.json", "working");
+    feed("claude-send.json", "working");
+    feed("claude-send-failed.json", "working");
+    let text = std::fs::read_to_string(&log).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "{text}");
+    assert!(lines[0].contains(r#""dir":"in""#) && lines[0].contains("Fix the lint failure."));
+    assert!(lines[1].contains(r#""dir":"out""#) && lines[1].contains("Rebase on main"));
+    assert!(!text.contains("Then push") && !text.contains("The base is about to go"), "{text}");
+}
+
+/// A prompt that merely starts as a message, in a session taskman says runs Codex, stays out of the
+/// log: the user's own prompts aren't logged.
+#[test]
+fn a_codex_session_logs_no_message() {
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let dir = scratch_dir("hook-codex-no-message");
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hooks");
+    let input = std::fs::read(fixtures.join("claude-received.json")).unwrap();
+    let logged = |cli: &str| {
+        let status = dir.join(format!("status/acme/{cli}.json"));
+        let mut child = taskman(&dir)
+            .args(["hook", "working"])
+            .env("TASKMAN_STATUS_FILE", &status)
+            .env("TASKMAN_CWD", &dir)
+            .env("TASKMAN_CLI", cli)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(&input).unwrap();
+        assert!(child.wait().unwrap().success());
+        status.with_extension("events.jsonl").exists()
+    };
+    assert!(!logged("Codex"));
+    assert!(logged("Claude"));
+}
+
+/// The real command with its real limits, given a Stop in the session at `repo`, whose turn began
+/// at `head`, with `git` first on PATH. Returns the log's text and how long the hook took.
+fn stop_with_git(dir: &Path, repo: &Path, head: &str, git: &str) -> (String, Duration) {
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let bin = dir.join("git-stub");
+    std::fs::create_dir_all(&bin).unwrap();
+    script(&bin, "git", git);
+    let status = dir.join("status/acme/ENG-52.json");
+    std::fs::create_dir_all(status.parent().unwrap()).unwrap();
+    let begun = format!("{{\"head\":\"{head}\",\"ts\":1}}\n");
+    std::fs::write(status.with_extension("turn.jsonl"), begun).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    let started = std::time::Instant::now();
+    let mut child = taskman(dir)
+        .args(["hook", "done"])
+        .env("TASKMAN_STATUS_FILE", &status)
+        .env("TASKMAN_CWD", repo)
+        .env("PATH", path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let stop = r#"{"hook_event_name":"Stop","last_assistant_message":"Done."}"#;
+    child.stdin.take().unwrap().write_all(stop.as_bytes()).unwrap();
+    assert!(child.wait().unwrap().success());
+    let took = started.elapsed();
+    (std::fs::read_to_string(status.with_extension("events.jsonl")).unwrap(), took)
+}
+
+/// A git that hangs must not cost the turn's line: the CLI ends a hook that takes too long, Codex's
+/// at 3 s. Sleeping, not working, so a busy machine doesn't change how long this takes by much.
+#[test]
+fn a_hung_git_still_leaves_the_turns_line() {
+    let dir = scratch_dir("hook-hung-git");
+    let (log, took) = stop_with_git(&dir, &dir, "abc", "#!/bin/sh\nexec sleep 60\n");
+    assert!(log.contains(r#""message":"Done.""#), "{log}");
+    assert!(!log.contains("commits") && !log.contains("on_origin"), "{log}");
+    assert!(took < Duration::from_secs(10), "{took:?}");
+}
+
+/// A log too slow to answer isn't a default branch that's gone: asking again without leaving it out
+/// would count what a rebase brought in as the turn's.
+#[test]
+fn a_slow_log_doesnt_claim_the_default_branchs_commits() {
+    let dir = scratch_dir("hook-slow-log");
+    let repo = dir.join("acme");
+    std::fs::create_dir_all(&repo).unwrap();
+    common::sh(
+        &repo,
+        "git init -q -b main && git commit -q --allow-empty -m start \
+         && git rev-parse HEAD > ../start && git checkout -q -b eng-52 \
+         && git checkout -q main && git commit -q --allow-empty -m upstream \
+         && git checkout -q eng-52 && git rebase -q main",
+    );
+    let start = std::fs::read_to_string(dir.join("start")).unwrap();
+    let start = start.trim();
+    let path = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|d| d.join("git"))
+        .find(|g| g.exists())
+        .unwrap();
+    // Hangs on the log that leaves the default branch out, and is itself for all the rest.
+    let stub = format!(
+        "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in ^*) exec sleep 60;; esac; done\n\
+         exec '{}' \"$@\"\n",
+        path.display()
+    );
+    let (log, _) = stop_with_git(&dir, &repo, start, &stub);
+    assert!(log.contains(r#""message":"Done.""#), "{log}");
+    assert!(!log.contains("commits"), "the rebase's commit isn't the turn's: {log}");
+}

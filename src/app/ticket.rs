@@ -42,6 +42,10 @@ pub struct TicketView {
     /// When no PR is shown: the newest one closed without merging, for a note.
     pub closed_pr: Option<u64>,
     pub jira_scroll: u16,
+    /// The newest message in its log, for the board (`App::poll_board`), and when that log last
+    /// changed as last read.
+    pub latest_message: Option<crate::events_log::Message>,
+    pub(super) log_stamp: Option<std::time::SystemTime>,
     pub gh_scroll: u16,
     /// Modification times of the hook's "Claude touched Jira / GitHub" signal files.
     pub(super) jira_signal: Option<SystemTime>,
@@ -133,6 +137,8 @@ impl TicketView {
             pr: Remote::new(),
             closed_pr: None,
             jira_scroll: 0,
+            latest_message: None,
+            log_stamp: None,
             gh_scroll: 0,
             jira_signal: None,
             gh_signal: None,

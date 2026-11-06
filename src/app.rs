@@ -685,6 +685,7 @@ impl App {
             self.last_status_poll = Instant::now();
             self.poll_status();
             self.poll_turns();
+            self.poll_board();
             self.take_inbox();
         }
         self.ask_next();

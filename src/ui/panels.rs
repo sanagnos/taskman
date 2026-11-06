@@ -297,8 +297,13 @@ fn draw_panel(
     }
 }
 
+/// How long the board shows a ticket's latest message, in seconds: long enough to see what a
+/// session was asked or said, and gone before the board fills with old talk.
+const BOARD_MESSAGE_SECS: i64 = 3600;
+
 /// The board beside an agent: for each ticket in its project, what the sidebar can't show (why it
-/// needs you, its branch, failing and running checks, the latest review and comment).
+/// needs you, its branch, failing and running checks, the latest review and comment, its latest
+/// message while recent).
 pub(super) fn draw_board(f: &mut Frame, app: &mut App, area: Rect) {
     let Some(sel) = app.selected() else { return };
     let Some(p) = app.project_of(&sel.t) else { return };
@@ -432,6 +437,23 @@ pub(super) fn draw_board(f: &mut Frame, app: &mut App, area: Rect) {
                 w.saturating_sub(width(&lead) + 2 * usize::from(is_new)),
             )));
             lines.push(Line::from(row));
+        }
+        // What its own log saw go by: `←` it got, `→` it sent. That's all it says: not that one
+        // was read, or led to anything.
+        if let Some(m) = tv.latest_message.as_ref().filter(|m| {
+            let age = crate::util::now().saturating_sub(m.ts);
+            tv.t.cli.messages_agents() && (0..BOARD_MESSAGE_SECS).contains(&age)
+        }) {
+            // Cut here, as the panel wraps with no indent: a name with a word in it wider than the
+            // panel would start a row like a ticket's, and leave no room for the text.
+            let who = truncate(&m.label(), super::PEER_ROW_WIDTH.min(w / 2));
+            let lead = format!("{} {who} · {}: ", m.arrow(), ago(m.ts));
+            let room = w.saturating_sub(width(&lead));
+            lines.push(Line::from(vec![
+                indent(),
+                Span::styled(lead, Style::new().fg(accent())),
+                Span::raw(truncate(&untrusted::line(&m.text), room)),
+            ]));
         }
         lines.push(Line::from(""));
     }

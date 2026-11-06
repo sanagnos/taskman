@@ -220,6 +220,15 @@ fn a_hand_off_keeps_the_session_claimed_until_the_old_cli_is_gone() {
         assert!(held, "the session was let go while its CLI was still running");
         std::thread::sleep(Duration::from_millis(5));
     }
+    // A turn the last start left unfinished, which isn't this start's to finish.
+    let owner = std::fs::read_dir(dir.join("state/taskman/status"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path().join("ENG-1.owner"))
+        .find(|p| p.exists())
+        .unwrap();
+    let scratch = owner.with_extension("turn.jsonl");
+    std::fs::write(&scratch, "{\"head\":\"abc\",\"ts\":1}\n").unwrap();
     // `taskman resume` then runs it, waiting the moment the TUI takes to let go if it must.
     let resume = slow(&dir)
         .args(["resume", "ENG-1"])
@@ -232,6 +241,7 @@ fn a_hand_off_keeps_the_session_claimed_until_the_old_cli_is_gone() {
     tui.wait_until("taskman resume didn't start the session", || {
         pid(&dir, "ENG-1").is_some_and(|p| p != first)
     });
+    assert!(!scratch.exists(), "the start it resumed began with what the last one left");
     let second = pid(&dir, "ENG-1").unwrap();
     tui.wait_text("ENG-1 is running in another terminal");
     // SAFETY: sends a signal; no memory is involved.
