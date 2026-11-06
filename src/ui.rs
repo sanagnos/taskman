@@ -146,6 +146,9 @@ fn yellow() -> Color {
     crate::theme::current().yellow
 }
 
+/// The most columns a row gives another session's name, so a long one can't push out its text.
+const PEER_ROW_WIDTH: usize = 24;
+
 /// Cyan text, or a dark teal or navy where cyan wouldn't read (`Theme::accent`).
 fn accent() -> Color {
     crate::theme::current().accent

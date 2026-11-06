@@ -9,7 +9,7 @@ use crate::status_file::{self, HookState, Reason, Record};
 use serde_json::{Value, json};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The `--settings` JSON that wires every relevant hook event to `taskman hook`, and lets
 /// `taskman status`, `taskman add` and `taskman move` run without a prompt.
@@ -140,7 +140,16 @@ pub fn run(state_arg: &str) {
     let _ = status_file::write(path, &out);
     // After the status record, so the git calls a turn's end makes never hold up "done": nothing
     // reads the log for it, and a CLI ends a hook that takes too long (Codex after 3 s).
+    if logs_messages(std::env::var("TASKMAN_CLI").ok().as_deref()) {
+        log_message(path, &v);
+    }
     log_turn(path, &v, session_dir(std::env::var_os("TASKMAN_CWD"), &v).as_deref());
+}
+
+/// Whether the session's CLI, from `TASKMAN_CLI` (a session an older taskman started has none),
+/// has messages to log. So a Codex prompt that merely starts as one stays out of the log.
+fn logs_messages(cli: Option<&str>) -> bool {
+    cli.is_none_or(|c| crate::store::Cli::from_label(c).messages_agents())
 }
 
 /// The session's own folder: the one taskman started it in (`TASKMAN_CWD`, given as `started`),
@@ -154,35 +163,44 @@ fn session_dir(started: Option<std::ffi::OsString>, v: &Value) -> Option<PathBuf
         .or_else(|| std::env::current_dir().ok())
 }
 
-/// How long a hook waits for git: the CLIs give a hook 3 s (Codex) or 5 s.
-const GIT_WAIT: Duration = Duration::from_millis(800);
+/// How long a hook waits for one git call. Tests run real git on machines that may be busy, and a
+/// hook's limit isn't what they're about.
+const GIT_WAIT: Duration =
+    if cfg!(test) { Duration::from_secs(60) } else { Duration::from_millis(800) };
 
-/// Adds to the session's log (`events_log`) for a hook event in the session working in `dir`: a
-/// prompt notes the commit the turn starts on, an edit the files, and the turn's end writes its
-/// line from those and the CLI's last message. A message from another session comes as a prompt,
-/// and one to another session as a tool call, each with a line of its own at once. From the hooks'
-/// own input only, never the CLI's transcript, whose format is its own.
-fn log_turn(status: &Path, v: &Value, dir: Option<&Path>) {
-    let pending = events_log::pending_path(status);
+/// How long a turn's end waits for all its git calls together: the CLIs give a hook 3 s (Codex) or
+/// 5 s, and a hook they end hasn't written the turn's line, which matters more than what git says.
+const STOP_WAIT: Duration =
+    if cfg!(test) { Duration::from_secs(300) } else { Duration::from_millis(2500) };
+
+/// What `git args` printed in `dir`, by the time `until` at the latest and within `GIT_WAIT`. None
+/// when it failed, or there's no time left to run it.
+fn git_out(dir: &Path, args: &[&str], until: Instant) -> Option<String> {
+    let left = until.saturating_duration_since(Instant::now()).min(GIT_WAIT);
+    if left.is_zero() {
+        return None;
+    }
+    let out = git::run(dir, args, left).ok().filter(|o| o.status.success())?;
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Adds to the session's log a line for a message another session sent it, which comes as a prompt,
+/// or one it sent, which is a tool call. From the hooks' own input only.
+fn log_message(status: &Path, v: &Value) {
     let log = events_log::log_path(status);
     let now = crate::util::now();
     match v["hook_event_name"].as_str().unwrap_or("") {
         "UserPromptSubmit" => {
-            // Before this prompt is noted: was a turn under way when it came?
-            let noted = events_log::read_pending(&pending);
+            // Before `log_turn` notes this prompt: was a turn under way when it came?
+            let noted = events_log::read_pending(&events_log::pending_path(status));
             let during = noted.head.is_some() && !noted.after_stop;
             let prompt = v["prompt"].as_str().unwrap_or("");
             if let Some(m) = events_log::received(prompt, during, now) {
                 let _ = events_log::append_message(&log, &m);
             }
-            if let Some(h) = dir.and_then(head) {
-                let _ = events_log::note_start(&pending, &h, now);
-            }
         }
         "PostToolUse" => {
             let tool = v["tool_name"].as_str().unwrap_or("");
-            let edited = events_log::edited(tool, &v["tool_input"], dir.unwrap_or(Path::new("")));
-            let _ = events_log::note_files(&pending, &edited);
             if let Some(s) = events_log::sent(tool, &v["tool_input"], &v["tool_response"]) {
                 let m = events_log::Message {
                     peer: events_log::peer_at(&log, &s.to),
@@ -193,16 +211,37 @@ fn log_turn(status: &Path, v: &Value, dir: Option<&Path>) {
                 let _ = events_log::append_message(&log, &m);
             }
         }
+        _ => {}
+    }
+}
+
+/// Adds to the session's log (`events_log`) for a hook event in the session working in `dir`: a
+/// prompt notes the commit the turn starts on, an edit the files, and the turn's end writes its
+/// line from those and the CLI's last message. From the hooks' own input only, never the CLI's
+/// transcript, whose format is its own.
+fn log_turn(status: &Path, v: &Value, dir: Option<&Path>) {
+    let pending = events_log::pending_path(status);
+    let log = events_log::log_path(status);
+    let now = crate::util::now();
+    match v["hook_event_name"].as_str().unwrap_or("") {
+        "UserPromptSubmit" => {
+            if let Some(h) = dir.and_then(head) {
+                let _ = events_log::note_start(&pending, &h, now);
+            }
+        }
+        "PostToolUse" => {
+            let tool = v["tool_name"].as_str().unwrap_or("");
+            let edited = events_log::edited(tool, &v["tool_input"], dir.unwrap_or(Path::new("")));
+            let _ = events_log::note_files(&pending, &edited);
+        }
         "Stop" => {
             let noted = events_log::read_pending(&pending);
-            let pushed = match (noted.since, dir) {
-                (Some(since), Some(dir)) => pushed_since(dir, since),
-                _ => false,
-            };
+            let until = Instant::now() + STOP_WAIT;
+            let since = noted.since;
             let mut files = noted.files;
             let mut commits = Vec::new();
             if let (Some(from), Some(dir)) = (noted.head, dir)
-                && let Some(made) = made_since(dir, &from)
+                && let Some(made) = made_since(dir, &from, until)
             {
                 // What the commits changed, so files a shell command or formatter wrote count
                 // too once they're committed.
@@ -217,7 +256,10 @@ fn log_turn(status: &Path, v: &Value, dir: Option<&Path>) {
             let message = v["last_assistant_message"].as_str().unwrap_or("");
             let mut turn = events_log::Turn::new(message, files, commits, now);
             turn.session_id = v["session_id"].as_str().map(str::to_string);
-            turn.pushed = pushed;
+            turn.on_origin = match (since, dir) {
+                (Some(since), Some(dir)) => reached_origin_since(dir, since, until),
+                _ => false,
+            };
             if events_log::append(&log, &turn).is_ok() {
                 // A Stop hook of the user's own can keep Claude going with no new prompt
                 // (`stop_hook_active`): the commit it ends on starts what follows, until a prompt
@@ -234,39 +276,39 @@ fn log_turn(status: &Path, v: &Value, dir: Option<&Path>) {
 
 /// The commit checked out in `dir`; None outside a repository or before its first commit.
 fn head(dir: &Path) -> Option<String> {
-    let out = git::run(dir, &["rev-parse", "--verify", "-q", "HEAD"], GIT_WAIT).ok()?;
-    let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (out.status.success() && !id.is_empty()).then_some(id)
+    let out = git_out(dir, &["rev-parse", "--verify", "-q", "HEAD"], Instant::now() + GIT_WAIT)?;
+    let id = out.trim().to_string();
+    (!id.is_empty()).then_some(id)
 }
 
-/// Whether the branch checked out in `dir` was pushed since `since`, in seconds since the epoch,
-/// from what git itself recorded: a push updates `refs/remotes/origin/<branch>` and its reflog says
+/// Whether the branch checked out in `dir` reached origin after `since`, in seconds since the
+/// epoch, from what git recorded: a push updates `refs/remotes/origin/<branch>` and its reflog says
 /// `update by push`, which a dry run, a refused push or a fetch doesn't. So no command is parsed,
 /// which would take `echo "git push"` for one and miss a push from a script, and Claude and Codex
-/// are alike. It can miss one (to another branch or remote, or with reflogs turned off) and never
-/// claims one that didn't happen. A second is the reflog's finest, so a push in the second the turn
-/// started counts.
-fn pushed_since(dir: &Path, since: i64) -> bool {
-    let run = |args: &[&str]| {
-        let out = git::run(dir, args, GIT_WAIT).ok().filter(|o| o.status.success())?;
-        Some(String::from_utf8_lossy(&out.stdout).into_owned())
-    };
-    let Some(branch) = run(&["symbolic-ref", "-q", "HEAD"]) else { return false };
+/// are alike.
+///
+/// It says the branch got there, not who pushed it: worktrees share that reflog, so a push from the
+/// main checkout or another session counts, and so does one after an interrupted turn, which leaves
+/// `since` at its start. It can also miss one, as the branch must still be this ref when the turn
+/// ends. A second is the reflog's finest, so one in the very second `since` counts for neither side
+/// of it, rather than for both turns.
+fn reached_origin_since(dir: &Path, since: i64, until: Instant) -> bool {
+    let Some(branch) = git_out(dir, &["symbolic-ref", "-q", "HEAD"], until) else { return false };
     let Some(branch) = branch.trim().strip_prefix("refs/heads/").map(str::to_string) else {
         return false;
     };
     let remote = format!("refs/remotes/origin/{branch}");
     let log = ["reflog", "show", "--date=unix", "--format=%gd%x09%gs", "-n", "20", &remote];
-    run(&log).is_some_and(|out| pushes_since(&out, since))
+    git_out(dir, &log, until).is_some_and(|out| pushes_after(&out, since))
 }
 
-/// Whether `git reflog show --date=unix --format=%gd%x09%gs`'s output has a push since `since`.
-fn pushes_since(reflog: &str, since: i64) -> bool {
+/// Whether `git reflog show --date=unix --format=%gd%x09%gs`'s output has a push after `since`.
+fn pushes_after(reflog: &str, since: i64) -> bool {
     reflog.lines().any(|l| {
         let Some((at, what)) = l.split_once('\t') else { return false };
         let when = at.rsplit_once("@{").and_then(|(_, t)| t.strip_suffix('}'));
         what.starts_with("update by push")
-            && when.and_then(|t| t.parse::<i64>().ok()).is_some_and(|t| t >= since)
+            && when.and_then(|t| t.parse::<i64>().ok()).is_some_and(|t| t > since)
     })
 }
 
@@ -283,11 +325,8 @@ struct Made {
 /// that rebases or merges onto main brings main's commits into `from..HEAD`, and they aren't the
 /// turn's. The default branch is the remote's (`origin/HEAD`), else a local main or master; on that
 /// branch itself, nothing is left out, or a session committing there would show nothing.
-fn made_since(dir: &Path, from: &str) -> Option<Made> {
-    let run = |args: &[&str]| {
-        let out = git::run(dir, args, GIT_WAIT).ok().filter(|o| o.status.success())?;
-        Some(String::from_utf8_lossy(&out.stdout).into_owned())
-    };
+fn made_since(dir: &Path, from: &str, until: Instant) -> Option<Made> {
+    let run = |args: &[&str]| git_out(dir, args, until);
     // One call for where the session is, its branch and the default branch.
     let format = "--format=%(HEAD)%09%(refname)%09%(symref)";
     let refs = run(&["for-each-ref", format, "refs/remotes/origin/HEAD", "refs/heads/"])?;
@@ -547,6 +586,12 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
+    /// A hook event as `run` gives it to a Claude session: its message, then its turn.
+    fn hook_in(status: &Path, v: &Value, dir: Option<&Path>) {
+        log_message(status, v);
+        log_turn(status, v, dir);
+    }
+
     /// The turns in the log beside the status file `status`, newest first.
     fn turns(status: &Path) -> Vec<events_log::Turn> {
         entries(status)
@@ -589,7 +634,7 @@ mod tests {
     #[test]
     fn a_send_that_reached_a_session_writes_one_line() {
         let status = scratch_status("hook-send");
-        log_turn(&status, &recorded("claude-send.json"), None);
+        hook_in(&status, &recorded("claude-send.json"), None);
         let logged = messages(&status);
         assert_eq!(logged.len(), 1, "{logged:?}");
         let m = &logged[0];
@@ -613,7 +658,7 @@ mod tests {
             "codex-bash.json",
         ] {
             let status = scratch_status("hook-no-send");
-            log_turn(&status, &recorded(file), None);
+            hook_in(&status, &recorded(file), None);
             assert!(entries(&status).is_empty(), "{file}");
         }
     }
@@ -623,14 +668,14 @@ mod tests {
         let status = scratch_status("hook-subagent-send");
         let v = recorded("claude-send-from-subagent.json");
         assert!(v["agent_id"].is_string(), "the recording is a subagent's");
-        log_turn(&status, &v, None);
+        hook_in(&status, &v, None);
         assert_eq!(messages(&status)[0].text, "The build passes on main.");
     }
 
     #[test]
     fn a_message_from_another_session_writes_one_line() {
         let status = scratch_status("hook-received");
-        log_turn(&status, &recorded("claude-received.json"), None);
+        hook_in(&status, &recorded("claude-received.json"), None);
         let logged = messages(&status);
         assert_eq!(logged.len(), 1);
         let m = &logged[0];
@@ -649,7 +694,7 @@ mod tests {
         git_in(&repo, &["init", "-q"]);
         git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "start"]);
         let status = dir.join("status/acme/ENG-52.json");
-        let hook = |v: Value| log_turn(&status, &v, Some(&repo));
+        let hook = |v: Value| hook_in(&status, &v, Some(&repo));
         let start = events_log::read_pending(&events_log::pending_path(&status));
         assert_eq!(start.head, None);
 
@@ -678,12 +723,12 @@ mod tests {
         let status = scratch_status("hook-reply");
         let log = events_log::log_path(&status);
         // An address it has heard nothing from.
-        log_turn(&status, &recorded("claude-send-by-address.json"), None);
+        hook_in(&status, &recorded("claude-send-by-address.json"), None);
         assert_eq!(messages(&status)[0].peer, None);
         assert_eq!(messages(&status)[0].label(), "a session");
         // Once a message came from there, a reply takes the name it gave.
-        log_turn(&status, &recorded("claude-received.json"), None);
-        log_turn(&status, &recorded("claude-send-by-address.json"), None);
+        hook_in(&status, &recorded("claude-received.json"), None);
+        hook_in(&status, &recorded("claude-send-by-address.json"), None);
         assert_eq!(messages(&status)[0].peer.as_deref(), Some("lead"));
         // The address is kept only where a message came from, for this lookup.
         let text = std::fs::read_to_string(&log).unwrap();
@@ -705,17 +750,23 @@ mod tests {
         repo
     }
 
+    /// A turn in `repo` that began a few seconds ago, for what `run` does in it to count as after
+    /// its start, as a second is all the reflog tells apart. Says whether it came out on origin.
+    fn turn_on_origin(status: &Path, repo: &Path, run: &dyn Fn()) -> bool {
+        let pending = events_log::pending_path(status);
+        let start = crate::util::now() - 5;
+        events_log::note_start(&pending, &head(repo).unwrap(), start).unwrap();
+        run();
+        log_turn(status, &json!({ "hook_event_name": "Stop" }), Some(repo));
+        turns(status)[0].on_origin
+    }
+
     #[test]
-    fn a_turn_says_it_pushed_from_what_git_recorded() {
-        let dir = crate::store::scratch::dir().join("hook-pushed");
+    fn a_turn_says_its_branch_reached_origin_from_what_git_recorded() {
+        let dir = crate::store::scratch::dir().join("hook-on-origin");
         let repo = cloned(&dir);
         let status = dir.join("status/acme/ENG-52.json");
-        let turn = |repo: &Path, run: &dyn Fn()| {
-            log_turn(&status, &json!({ "hook_event_name": "UserPromptSubmit" }), Some(repo));
-            run();
-            log_turn(&status, &json!({ "hook_event_name": "Stop" }), Some(repo));
-            turns(&status)[0].pushed
-        };
+        let turn = |repo: &Path, run: &dyn Fn()| turn_on_origin(&status, repo, run);
         // Nothing, a dry run, and only the words.
         assert!(!turn(&repo, &|| {}));
         assert!(!turn(&repo, &|| {
@@ -739,10 +790,8 @@ mod tests {
         assert!(!turn(&fetcher, &|| {
             git_in(&fetcher, &["fetch", "-q", "origin"]);
         }));
-        let moved = git_in(
-            &fetcher,
-            &["reflog", "show", "--format=%gs", "-n", "1", "refs/remotes/origin/eng-52"],
-        );
+        let ref_log = ["reflog", "show", "--format=%gs", "-n", "1", "refs/remotes/origin/eng-52"];
+        let moved = git_in(&fetcher, &ref_log);
         assert!(moved.starts_with("fetch"), "{moved}");
 
         // A push to another branch, which this one's reflog doesn't show, is missed, not claimed.
@@ -753,29 +802,93 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Why the row says "on origin", not "pushed": git records that the branch got there, and
+    /// worktrees share that record, so a push nobody in this session made counts.
     #[test]
-    fn pushes_are_read_from_the_reflog() {
-        let log = "origin/eng-52@{200}\tupdate by push\norigin/eng-52@{150}\tfetch origin: forced-update\norigin/eng-52@{100}\tupdate by push\n";
-        assert!(pushes_since(log, 200), "in the second it started");
-        assert!(pushes_since(log, 101));
-        assert!(!pushes_since(log, 201), "before the turn");
-        let fetched = "origin/eng-52@{200}\tfetch origin: fast-forward\n";
-        assert!(!pushes_since(fetched, 0));
-        assert!(!pushes_since("", 0));
-        assert!(!pushes_since("junk\nno tab here\na@{x}\tupdate by push\n", 0));
+    fn a_push_from_another_checkout_counts_too() {
+        let dir = crate::store::scratch::dir().join("hook-other-checkout");
+        let main = cloned(&dir);
+        let worktree = dir.join("acme-ENG-53");
+        let wt = worktree.to_str().unwrap();
+        git_in(&main, &["worktree", "add", "-q", "-b", "feat/eng-53", wt]);
+        git_in(&worktree, &["commit", "-q", "--allow-empty", "-m", "work"]);
+        let status = dir.join("status/acme/ENG-53.json");
+        // The session in the worktree pushes nothing; the main checkout pushes its branch.
+        assert!(turn_on_origin(&status, &worktree, &|| {
+            git_in(&main, &["push", "-q", "origin", "feat/eng-53"]);
+        }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An interrupt fires no hook, so the turn after one counts from the interrupted one's start.
+    #[test]
+    fn a_turn_after_an_interrupt_counts_from_the_interrupted_ones_start() {
+        let dir = crate::store::scratch::dir().join("hook-interrupted");
+        let repo = cloned(&dir);
+        let status = dir.join("status/acme/ENG-52.json");
+        let pending = events_log::pending_path(&status);
+        let long_ago = crate::util::now() - 3600;
+        events_log::note_start(&pending, &head(&repo).unwrap(), long_ago).unwrap();
+        // Interrupted; then a push; then the next prompt, which keeps the older start.
+        git_in(&repo, &["push", "-q", "origin", "eng-52"]);
+        log_turn(&status, &json!({ "hook_event_name": "UserPromptSubmit" }), Some(&repo));
+        assert_eq!(events_log::read_pending(&pending).since, Some(long_ago));
+        log_turn(&status, &json!({ "hook_event_name": "Stop" }), Some(&repo));
+        assert!(turns(&status)[0].on_origin);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn a_turn_outside_a_branch_or_a_remote_pushed_nothing() {
+    fn pushes_are_read_from_the_reflog() {
+        let log = "origin/eng-52@{200}\tupdate by push\n\
+                   origin/eng-52@{150}\tfetch origin: forced-update\n\
+                   origin/eng-52@{100}\tupdate by push\n";
+        assert!(pushes_after(log, 199));
+        assert!(pushes_after(log, 101));
+        assert!(!pushes_after(log, 200), "in the second it started: neither turn's, not both");
+        assert!(!pushes_after(log, 201), "before the turn");
+        let fetched = "origin/eng-52@{200}\tfetch origin: fast-forward\n";
+        assert!(!pushes_after(fetched, 0));
+        assert!(!pushes_after("", 0));
+        assert!(!pushes_after("junk\nno tab here\na@{x}\tupdate by push\n", 0));
+    }
+
+    #[test]
+    fn a_turns_end_stops_asking_git_at_its_limit() {
+        let dir = crate::store::scratch::dir().join("hook-limit");
+        let repo = cloned(&dir);
+        let from = head(&repo).unwrap();
+        let later = Instant::now() + STOP_WAIT;
+        git_in(&repo, &["push", "-q", "origin", "eng-52"]);
+        assert!(reached_origin_since(&repo, 0, later));
+        assert!(made_since(&repo, &from, later).is_some());
+        // No time left: no call, nothing claimed, and the line goes in without it.
+        let gone = Instant::now();
+        assert!(git_out(&repo, &["status"], gone).is_none());
+        assert!(!reached_origin_since(&repo, 0, gone));
+        assert!(made_since(&repo, &from, gone).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cli_with_no_messages_logs_none() {
+        assert!(logs_messages(Some("Claude")));
+        assert!(!logs_messages(Some("Codex")));
+        assert!(logs_messages(None), "a session an older taskman started");
+    }
+
+    #[test]
+    fn a_turn_outside_a_branch_or_a_remote_reaches_no_origin() {
+        let later = || Instant::now() + STOP_WAIT;
         let dir = crate::store::scratch::dir().join("hook-no-remote");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(!pushed_since(&dir, 0), "not a repository");
+        assert!(!reached_origin_since(&dir, 0, later()), "not a repository");
         git_in(&dir, &["init", "-q"]);
         git_in(&dir, &["commit", "-q", "--allow-empty", "-m", "start"]);
-        assert!(!pushed_since(&dir, 0), "no remote");
+        assert!(!reached_origin_since(&dir, 0, later()), "no remote");
         git_in(&dir, &["checkout", "-q", "--detach"]);
-        assert!(!pushed_since(&dir, 0), "no branch");
+        assert!(!reached_origin_since(&dir, 0, later()), "no branch");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

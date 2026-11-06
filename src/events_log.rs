@@ -1,9 +1,10 @@
 //! A session's log: JSON lines beside its status file, which `taskman hook` appends and the TUI
 //! shows (`prefix d`, and the board's latest message). A finished turn's line, written at the CLI's
 //! Stop, holds its last message of the turn, the files the session edited, the commits it made and
-//! whether it pushed. The edits and the commit the turn started from build up in a scratch file of
-//! their own (`Pending`) as the hooks fire, and go into the turn's line at its end. A message
-//! another session sent it, or it sent another session, has a line of its own (`Message`).
+//! whether its branch reached origin. The edits and the commit the turn started from build up in a
+//! scratch file of their own (`Pending`) as the hooks fire, and go into the turn's line at its end.
+//! A message another session sent it, or it sent another session, has a line of its own
+//! (`Message`).
 //!
 //! Each line says what it is (`"kind"`) and readers skip kinds they don't know, so other events
 //! can join the file later without a reader from before them failing. Like the status record, a
@@ -15,6 +16,7 @@
 //! `untrusted` and nothing puts in a brief or in `taskman status`.
 
 use crate::status_file::{lenient, lenient_value};
+use crate::untrusted;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{self, Write as _};
@@ -46,6 +48,14 @@ const TEXT_KEPT: usize = 200;
 /// The most of another session's name a log keeps, in characters.
 const PEER_KEPT: usize = 100;
 
+/// The most of another session's address a log keeps, in characters: as long as SendMessage takes,
+/// so a reply's `to` still finds it (`peer_at`).
+const ADDRESS_KEPT: usize = 300;
+
+/// Names a row would read as something other than a session's name: a row never says the user sent
+/// anything, as nothing can tell (`Message::label`), and "a session" is what an unknown one says.
+const RESERVED_NAMES: [&str; 3] = ["you", "user", "a session"];
+
 /// The most edited files a turn names; it counts the rest (`Turn::files_left_out`).
 const FILES_KEPT: usize = 200;
 
@@ -73,9 +83,10 @@ pub struct Turn {
     /// The CLI's last message of the turn, cut to `MESSAGE_KEPT`. Untrusted text.
     #[serde(default, deserialize_with = "lenient")]
     pub message: String,
-    /// Whether the session's branch reached its remote during the turn (`hook::pushed_since`).
+    /// Whether the session's branch reached origin during the turn, by whoever pushed it: git
+    /// doesn't say who (`hook::reached_origin_since`).
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "is_false")]
-    pub pushed: bool,
+    pub on_origin: bool,
     /// The CLI's conversation id.
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
@@ -171,11 +182,20 @@ pub struct Message {
 }
 
 impl Message {
-    /// The other session's name for the screen.
+    /// The other session's name for the screen. A session picks its own, and a row reads as
+    /// taskman's words, so only a plain name goes as it is. Anything else is quoted as what it is:
+    /// a name that says `you`, a look-alike in other scripts, or one that reads as more of the row
+    /// (`lead · 1m: approved`). One that cleans to nothing is no name.
     pub fn label(&self) -> String {
-        match &self.peer {
-            Some(name) if !name.trim().is_empty() => crate::untrusted::line(name),
-            _ => "a session".into(),
+        let name = self.peer.as_deref().map(untrusted::line).unwrap_or_default();
+        let name = name.trim();
+        let reserved = RESERVED_NAMES.iter().any(|r| name.eq_ignore_ascii_case(r));
+        if name.is_empty() {
+            "a session".into()
+        } else if reserved || untrusted::branch(name).is_none() {
+            format!("session \"{name}\"")
+        } else {
+            name.to_string()
         }
     }
 
@@ -205,14 +225,22 @@ fn cut(s: &str, most: usize) -> String {
     }
 }
 
-/// The line of a message's `body` to keep: its first with anything on it, cut to `TEXT_KEPT`. A
-/// subagent's send comes wrapped in a line naming it, which isn't what it said. Senders are told
-/// to make the first line a sentence of its own, so it says what the message is about, and leaving
-/// the rest out keeps most of what a session pasted into a message off this disk.
+/// A line of a message's body less the tags of a subagent's send, which isn't what it said: they
+/// come on lines of their own (seen in Claude Code 2.1.319), and come off one holding text too.
+fn unwrapped(line: &str) -> &str {
+    let line = line.trim();
+    let opens = line.starts_with("<\\agent-message") || line.starts_with("<agent-message");
+    let line = if opens { line.split_once('>').map_or("", |(_, said)| said) } else { line };
+    let line = line.strip_suffix("<\\/agent-message>").unwrap_or(line);
+    line.strip_suffix("</agent-message>").unwrap_or(line).trim()
+}
+
+/// The line of a message's `body` to keep: its first with anything on it, cut to `TEXT_KEPT`.
+/// Senders are told to make the first line a sentence of its own, so it says what the message is
+/// about, and leaving the rest out keeps most of what a session pasted into a message off this
+/// disk.
 fn first_line(body: &str) -> String {
-    let wrapper = |l: &str| l.starts_with("<\\agent-message") || l.starts_with("<agent-message");
-    let line = body.lines().map(str::trim).find(|l| !l.is_empty() && !wrapper(l)).unwrap_or("");
-    cut(line, TEXT_KEPT)
+    cut(body.lines().map(unwrapped).find(|l| !l.is_empty()).unwrap_or(""), TEXT_KEPT)
 }
 
 /// The wrapper Claude Code puts around a message from another session when it gives it to the
@@ -220,6 +248,9 @@ fn first_line(body: &str) -> String {
 /// `<cross-session-message from="uds:…" from-name="lead" from-mode="prompting">`, its body and the
 /// closing tag. Only at the very start: a prompt the user wrote may quote one further in, and their
 /// prompts stay out of the log. Other prompts from the CLI, such as its idle notices, don't match.
+/// Each message comes as a prompt of its own, also when several wait on a busy session. Claude Code
+/// takes `"` and `>` out of a name, so a name can't add to the tag; were that to change, the first
+/// of an attribute still wins, and `from` comes before the name.
 const WRAPPER: &str = "<cross-session-message";
 
 /// The message `prompt` holds, written `ts`, if it's one from another session; None when it's any
@@ -241,14 +272,13 @@ pub fn received(prompt: &str, during: bool, ts: i64) -> Option<Message> {
             return None;
         }
         match name {
-            "from" => address = Some(value.to_string()),
-            "from-name" => peer = Some(cut(value, PEER_KEPT)),
+            "from" if address.is_none() => address = Some(cut(value, ADDRESS_KEPT)),
+            "from-name" if peer.is_none() => peer = Some(cut(value, PEER_KEPT)),
             _ => {}
         }
         rest = after;
     };
-    let body = body.trim_end();
-    let text = first_line(body.strip_suffix("</cross-session-message>").unwrap_or(body));
+    let text = first_line(body.split("</cross-session-message>").next().unwrap_or(body));
     (!text.is_empty()).then_some(Message {
         dir: Direction::In,
         peer,
@@ -269,10 +299,9 @@ pub struct Sent {
     pub text: String,
 }
 
-/// What a finished tool call sent another session, if it did. Claude Code's SendMessage is the only
-/// such tool: Codex's reach only its own session's sub-agents, and go by other names, so recognising
-/// the name is enough, as `edited` does, and the hook needn't know which CLI runs it. By its exact
-/// name, as a tool of an MCP server could be called the like and send elsewhere.
+/// What a finished tool call sent another session, if it did. Claude Code's SendMessage is the
+/// only such tool, by its exact name, as a tool of an MCP server could be called the like and send
+/// elsewhere.
 ///
 /// The tool also fails with an answer (`success: false`), and talks to the session's own subagents,
 /// which aren't sessions; only a send to a session gets an id (`msg_id`, Claude Code 2.1.319). A
@@ -291,20 +320,29 @@ pub fn sent(tool: &str, input: &Value, response: &Value) -> Option<Sent> {
         Some((name, _)) if to.ends_with(']') => name,
         _ => to,
     };
-    (!text.is_empty()).then(|| Sent { to: cut(to, PEER_KEPT), text })
+    (!text.is_empty()).then(|| Sent { to: cut(to, ADDRESS_KEPT), text })
+}
+
+/// Whether `to` is an address (`uds:/run/…`), whatever its scheme, not a name.
+fn is_address(to: &str) -> bool {
+    to.split_once(':').is_some_and(|(scheme, _)| {
+        scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+            && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    })
 }
 
 /// The name of the session at `to`, for the log at `path`: `to` itself unless it's an address, as
-/// a reply is addressed, which the message it answers says the name of. None when it doesn't, as
-/// an address is no name to show anyone.
+/// a reply is addressed, which the newest message from there says the name of. None when it says
+/// none, or nothing came from there, as an address is no name to show anyone.
 pub fn peer_at(path: &Path, to: &str) -> Option<String> {
-    if !to.starts_with("uds:") {
-        return Some(to.to_string());
+    if !is_address(to) {
+        return Some(cut(to, PEER_KEPT));
     }
-    read_entries(path).into_iter().find_map(|e| match e {
-        Entry::Message(m) if m.address.as_deref() == Some(to) => m.peer,
+    let newest = read_entries(path).into_iter().find_map(|e| match e {
+        Entry::Message(m) if m.address.as_deref() == Some(to) => Some(m),
         _ => None,
-    })
+    });
+    newest.and_then(|m| m.peer)
 }
 
 /// A line of a session's log.
@@ -343,9 +381,15 @@ pub fn parse_entries(text: &str) -> Vec<Entry> {
         .collect()
 }
 
+/// The text of the file at `path`. A hook stopped part-way can cut a character in two, and that
+/// costs the line it's on, not the whole file.
+fn read_text(path: &Path) -> io::Result<String> {
+    Ok(String::from_utf8_lossy(&std::fs::read(path)?).into_owned())
+}
+
 /// What the log at `path` holds, newest first; nothing when there's no log.
 pub fn read_entries(path: &Path) -> Vec<Entry> {
-    std::fs::read_to_string(path).map(|t| parse_entries(&t)).unwrap_or_default()
+    read_text(path).map(|t| parse_entries(&t)).unwrap_or_default()
 }
 
 /// The newest message in the log at `path`.
@@ -414,7 +458,7 @@ fn append_line(path: &Path, new: &str) -> io::Result<()> {
     let line = format!("{}{new}\n", if ended { "" } else { "\n" });
     file.write_all(line.as_bytes())?;
     drop(file);
-    let text = std::fs::read_to_string(path)?;
+    let text = read_text(path)?;
     let lines: Vec<&str> = text.lines().collect();
     if let Some(kept) = rotated(&lines) {
         let kept = kept.join("\n") + "\n";
@@ -423,6 +467,24 @@ fn append_line(path: &Path, new: &str) -> io::Result<()> {
         std::fs::rename(tmp, path)?;
     }
     Ok(())
+}
+
+/// Removes what a rewrite of the log at `path` left, if it was killed before its rename: its
+/// `<KEY>.events.<pid>.tmp`. With the log, when its ticket closes.
+pub fn remove_rewrites(path: &Path) {
+    let (Some(dir), Some(stem)) = (path.parent(), path.file_stem()) else { return };
+    let Some(stem) = stem.to_str() else { return };
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = entry.file_name();
+        let pid = name
+            .to_str()
+            .and_then(|n| n.strip_prefix(stem))
+            .and_then(|n| n.strip_prefix('.'))
+            .and_then(|n| n.strip_suffix(".tmp"));
+        if pid.is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// What the hooks noted during the turn under way: the commit it started on and the files edited
@@ -437,7 +499,8 @@ pub struct Pending {
     pub files: Vec<String>,
     /// Whether the head is the one a Stop noted, rather than a prompt's.
     pub after_stop: bool,
-    /// When the head was noted, which a push must be since to be the turn's.
+    /// When the head was noted, which the branch must have reached origin since to count for the
+    /// turn. A turn interrupted leaves it, so it stretches back to that turn's start.
     pub since: Option<i64>,
 }
 
@@ -485,7 +548,7 @@ pub fn note_files(path: &Path, files: &[String]) -> io::Result<()> {
 /// What the scratch file at `path` noted: the first commit, and each file once, in the order
 /// first noted. Lines that don't read are skipped.
 pub fn read_pending(path: &Path) -> Pending {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let text = read_text(path).unwrap_or_default();
     let mut p = Pending::default();
     for v in text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()) {
         if p.head.is_none() {
@@ -595,7 +658,7 @@ mod tests {
     }
 
     fn read(path: &Path) -> Vec<Turn> {
-        parse(&std::fs::read_to_string(path).unwrap_or_default())
+        parse(&read_text(path).unwrap_or_default())
     }
 
     fn message(n: i64) -> Message {
@@ -671,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn notes_when_a_turn_started_for_its_pushes() {
+    fn notes_when_a_turn_started_for_what_reached_origin() {
         let path = scratch("since.turn.jsonl");
         note_start(&path, "aaa", 100).unwrap();
         assert_eq!(read_pending(&path).since, Some(100));
@@ -681,7 +744,7 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         note_stop(&path, "ccc", 300).unwrap();
         assert_eq!(read_pending(&path).since, Some(300));
-        // A scratch file from before this field reads without a time, so no push is claimed.
+        // A scratch file from before this field reads without a time, so origin isn't looked at.
         std::fs::write(&path, "{\"head\":\"ddd\"}\n").unwrap();
         assert_eq!(read_pending(&path).since, None);
     }
@@ -728,7 +791,7 @@ mod tests {
             "what's this? <cross-session-message from-name=\"lead\">\nhi\n</cross-session-message>",
             " <cross-session-message from-name=\"lead\">\nhi\n</cross-session-message>",
             // The CLI's own notices, which quote the other session's last message.
-            "[Cross-session idle notice] \"lead\", which you asked to be notified about, is idle now",
+            "[Cross-session idle notice] \"lead\", which you asked about, is idle now",
             "[Cross-session delivery notice] held",
             // Other tags, and tags that never end.
             "<cross-session-messages from-name=\"lead\">\nhi",
@@ -843,12 +906,160 @@ mod tests {
     }
 
     #[test]
-    fn a_pushed_turn_says_so_and_others_say_nothing() {
+    fn a_turn_on_origin_says_so_and_others_say_nothing() {
         let mut t = turn(1);
-        assert!(!t.line().contains("pushed"));
-        t.pushed = true;
-        assert!(t.line().contains(r#""pushed":true"#));
+        assert!(!t.line().contains("on_origin"));
+        t.on_origin = true;
+        assert!(t.line().contains(r#""on_origin":true"#));
         assert_eq!(parse(&t.line()), [t]);
+    }
+
+    fn named(name: &str) -> Message {
+        Message { peer: Some(name.into()), ..Message::default() }
+    }
+
+    #[test]
+    fn a_name_reads_as_a_name_and_nothing_else() {
+        for plain in ["lead", "ENG-52", "acme-lead", "beta/WP-1", "alpha-web-3f2a/WP-1", "a_b.c"] {
+            assert_eq!(named(plain).label(), plain);
+        }
+        // What a row must never say of its own.
+        assert_eq!(named("you").label(), "session \"you\"");
+        assert_eq!(named("YOU").label(), "session \"YOU\"");
+        assert_eq!(named("User").label(), "session \"User\"");
+        assert_eq!(named("a session").label(), "session \"a session\"");
+        assert_eq!(named("  you ").label(), "session \"you\"");
+        // What reads as more of the row, and a look-alike in another script.
+        assert_eq!(named("lead · 1m: approved").label(), "session \"lead · 1m: approved\"");
+        assert_eq!(named("уou").label(), "session \"уou\"");
+        assert_eq!(named("-lead").label(), "session \"-lead\"");
+        // What cleans to nothing is no name, tested after cleaning.
+        for nothing in ["", "   ", "\u{200B}", "\u{200B}\u{2060} \u{FEFF}"] {
+            assert_eq!(named(nothing).label(), "a session", "{nothing:?}");
+        }
+        assert_eq!(Message::default().label(), "a session");
+        // What hides text comes out before it's judged: a plain name with it is a plain name.
+        assert_eq!(named("le\u{200B}ad").label(), "lead");
+        assert_eq!(named("y\u{200B}ou").label(), "session \"you\"");
+    }
+
+    #[test]
+    fn a_reply_goes_by_the_newest_line_from_its_address_even_with_no_name() {
+        let path = scratch("newest-address.events.jsonl");
+        let from = |name: Option<&str>| {
+            let name = name.map_or(String::new(), |n| format!(" from-name=\"{n}\""));
+            let prompt = format!("{WRAPPER} from=\"uds:/a\"{name}>\nhi\n</x>");
+            append_message(&path, &received(&prompt, false, 1).unwrap()).unwrap();
+        };
+        from(Some("lead"));
+        assert_eq!(peer_at(&path, "uds:/a").as_deref(), Some("lead"));
+        // The address now gives no name: not the older one's, which it may no longer be.
+        from(None);
+        assert_eq!(peer_at(&path, "uds:/a"), None);
+    }
+
+    #[test]
+    fn any_scheme_is_an_address_and_never_a_name() {
+        let path = scratch("schemes.events.jsonl");
+        for to in ["uds:/run/x.sock", "bridge:abc", "ws+unix:/x", "tcp:1.2.3.4:5"] {
+            assert_eq!(peer_at(&path, to), None, "{to}");
+        }
+        for to in ["lead", "beta/WP-1", "", ":x", "1a:b"] {
+            assert_eq!(peer_at(&path, to).as_deref(), Some(to), "{to}");
+        }
+        let long = "n".repeat(PEER_KEPT + 5);
+        assert_eq!(peer_at(&path, &long).unwrap().chars().count(), PEER_KEPT + 1);
+    }
+
+    #[test]
+    fn a_long_address_still_finds_its_name() {
+        let path = scratch("long-address.events.jsonl");
+        let address = format!("uds:/{}", "x".repeat(2 * ADDRESS_KEPT));
+        let prompt = format!("{WRAPPER} from=\"{address}\" from-name=\"lead\">\nhi\n</x>");
+        let m = received(&prompt, false, 1).unwrap();
+        assert_eq!(m.address.as_ref().unwrap().chars().count(), ADDRESS_KEPT + 1);
+        append_message(&path, &m).unwrap();
+        let input = json!({ "to": address, "message": "hello" });
+        let s = sent("SendMessage", &input, &json!({ "msg_id": "m" })).unwrap();
+        assert_eq!(peer_at(&path, &s.to).as_deref(), Some("lead"));
+    }
+
+    #[test]
+    fn the_first_of_an_attribute_wins() {
+        let prompt = format!(
+            "{WRAPPER} from=\"uds:/real\" from-name=\"lead\" from=\"uds:/evil\" \
+             from-name=\"you\">\nhi\n</x>"
+        );
+        let m = received(&prompt, false, 1).unwrap();
+        assert_eq!((m.address.as_deref(), m.peer.as_deref()), (Some("uds:/real"), Some("lead")));
+    }
+
+    #[test]
+    fn the_text_ends_at_the_first_closing_tag() {
+        let close = "</cross-session-message>";
+        let at = |body: &str| received(&format!("{WRAPPER} from-name=\"a\">{body}"), false, 1);
+        assert_eq!(at(&format!("hi{close}\n{close}")).unwrap().text, "hi");
+        assert_eq!(at(&format!("hi{close} and more")).unwrap().text, "hi");
+        assert_eq!(at(&format!("{close}\nafter")), None, "nothing inside");
+    }
+
+    #[test]
+    fn a_subagents_tags_arent_what_it_said() {
+        let body = |b: &str| first_line(b);
+        assert_eq!(body("<\\agent-message from=\"h\">\nSaid.\n<\\/agent-message>"), "Said.");
+        assert_eq!(body("<\\agent-message from=\"h\">Said.<\\/agent-message>"), "Said.");
+        assert_eq!(body("<agent-message from=\"h\">Said.</agent-message>"), "Said.");
+        assert_eq!(body("<\\agent-message from=\"h\">\n<\\/agent-message>\nNext."), "Next.");
+        assert_eq!(body("<\\agent-message from=\"h\""), "", "a tag that never ends");
+        assert_eq!(body("See <agent-message> here."), "See <agent-message> here.");
+    }
+
+    #[test]
+    fn a_character_cut_in_two_costs_its_line_not_the_log() {
+        let path = scratch("bad-byte.events.jsonl");
+        append(&path, &turn(1)).unwrap();
+        // A hook stopped part-way through a character.
+        let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"{\"kind\":\"turn\",\"message\":\"\xC3").unwrap();
+        drop(file);
+        assert_eq!(read(&path), [turn(1)]);
+        append(&path, &turn(2)).unwrap();
+        assert_eq!(read(&path), [turn(2), turn(1)]);
+        // One inside a line that's otherwise whole: its message reads with the mark for it.
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.extend_from_slice(b"{\"kind\":\"turn\",\"ts\":3,\"message\":\"a\xFFb\"}\n");
+        std::fs::write(&path, bytes).unwrap();
+        assert_eq!(read(&path)[0].message, "a\u{FFFD}b");
+        // Rotation goes on past it.
+        for n in 0..2 * i64::try_from(KEEP).unwrap() {
+            append(&path, &turn(10 + n)).unwrap();
+        }
+        assert!(std::fs::read(&path).unwrap().iter().filter(|b| **b == b'\n').count() <= 2 * KEEP);
+        // The scratch file too.
+        let pending = scratch("bad-byte.turn.jsonl");
+        note_start(&pending, "aaa", 1).unwrap();
+        let mut file = std::fs::OpenOptions::new().append(true).open(&pending).unwrap();
+        file.write_all(b"\xC3").unwrap();
+        drop(file);
+        assert_eq!(read_pending(&pending).head.as_deref(), Some("aaa"));
+    }
+
+    #[test]
+    fn closing_removes_what_a_killed_rewrite_left() {
+        let path = scratch("rewrites/ENG-5.events.jsonl");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let beside = |name: &str| path.with_file_name(name);
+        let leftover = beside("ENG-5.events.4242.tmp");
+        std::fs::write(&leftover, "x").unwrap();
+        let others = ["ENG-52.events.4242.tmp", "ENG-5.events.jsonl", "ENG-5.events.x.tmp"];
+        for name in others {
+            std::fs::write(beside(name), "x").unwrap();
+        }
+        remove_rewrites(&path);
+        assert!(!leftover.exists());
+        for name in others {
+            assert!(beside(name).exists(), "{name}");
+        }
     }
 
     #[test]
@@ -1030,19 +1241,80 @@ mod tests {
             prop_assert_eq!(parse_entries(&m.line()), vec![Entry::Message(m)]);
         }
 
-        /// Whatever other processes leave in the log, it reads, and each message and turn line
-        /// counts for what it is.
+        /// Whatever other processes leave in the log, each line whole gives its row, newest first,
+        /// and each line it can't use gives none. The numbers are each line's time.
         #[test]
-        fn reads_any_mix_of_lines(lines in prop::collection::vec(prop_oneof![
-            "\\PC{0,30}",
-            Just(message(1).line()),
-            Just(turn(1).line()),
-            Just(r#"{"kind":"message","dir":7,"peer":[],"text":{},"ts":"soon"}"#.to_string()),
-            Just(r#"{"kind":"message","dir":"in","peer":[],"text":{},"ts":"soon"}"#.to_string()),
-            (0usize..40).prop_map(|n| message(2).line().chars().take(n).collect()),
-        ], 0..8)) {
-            let n = parse_entries(&lines.join("\n")).len();
-            prop_assert!(n <= lines.len());
+        fn reads_any_mix_of_lines(kinds in prop::collection::vec(0u8..6, 0..12)) {
+            let mut lines = Vec::new();
+            let mut want = Vec::new();
+            for (i, kind) in kinds.iter().enumerate() {
+                let n = i64::try_from(i).unwrap() + 1;
+                lines.push(match kind {
+                    0 => { want.push(n); turn(n).line() }
+                    1 => { want.push(n); message(n).line() }
+                    // Fields that aren't what they should be read as their defaults.
+                    2 => {
+                        want.push(0);
+                        let odd =
+                            r#"{"kind":"message","dir":"in","peer":[],"text":{},"ts":"soon"}"#;
+                        odd.to_string()
+                    }
+                    3 => r#"{"kind":"message","dir":7,"text":"no way to draw it"}"#.to_string(),
+                    4 => format!("not json {n}"),
+                    // A line cut short, by a hook stopped part-way.
+                    _ => {
+                        let whole = message(n).line();
+                        whole.chars().take(whole.chars().count() - 1).collect()
+                    }
+                });
+            }
+            want.reverse();
+            let got: Vec<i64> = parse_entries(&lines.join("\n"))
+                .iter()
+                .map(|e| match e {
+                    Entry::Turn(t) => t.ts,
+                    Entry::Message(m) => m.ts,
+                })
+                .collect();
+            prop_assert_eq!(got, want);
+        }
+
+        /// A rewrite keeps each budget, the newest of each and their order, and happens only once
+        /// a log is past one of its limits.
+        #[test]
+        fn rotation_keeps_the_newest_of_each_in_order(
+            is_turn in prop::collection::vec(prop::bool::weighted(0.3), 0..500),
+        ) {
+            let lines: Vec<String> = is_turn
+                .iter()
+                .enumerate()
+                .map(|(i, turned)| {
+                    let n = i64::try_from(i).unwrap();
+                    if *turned { turn(n).line() } else { message(n).line() }
+                })
+                .collect();
+            let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+            let turns = is_turn.iter().filter(|t| **t).count();
+            let others = is_turn.len() - turns;
+            let past = turns > 2 * KEEP || others > 2 * KEEP_OTHER;
+            let kept = rotated(&refs);
+            prop_assert_eq!(kept.is_some(), past);
+            if let Some(kept) = kept {
+                let at: Vec<usize> =
+                    kept.iter().map(|k| lines.iter().position(|l| l == k).unwrap()).collect();
+                prop_assert!(at.windows(2).all(|w| w[0] < w[1]), "in the order written");
+                let want = |of_turns: bool, budget: usize| -> Vec<usize> {
+                    let all: Vec<usize> = (0..lines.len())
+                        .filter(|i| is_turn[*i] == of_turns)
+                        .collect();
+                    all[all.len().saturating_sub(budget)..].to_vec()
+                };
+                let got = |of_turns: bool| -> Vec<usize> {
+                    at.iter().copied().filter(|i| is_turn[*i] == of_turns).collect()
+                };
+                prop_assert_eq!(got(true), want(true, KEEP));
+                prop_assert_eq!(got(false), want(false, KEEP_OTHER));
+            }
         }
 
         /// A prompt that doesn't start with the wrapper is never a message, whatever it quotes:
@@ -1056,20 +1328,51 @@ mod tests {
             prop_assert_eq!(received(&prompt, false, 1), None);
         }
 
-        /// Whatever the prompt, it never panics, and what comes out is one line within the cut.
+        /// A wrapper as Claude Code writes it, whatever its fields hold: they come back within
+        /// their cuts, and the text is one line of what was said.
+        #[test]
+        fn a_wrapper_gives_back_its_fields(
+            address in "[^\"]{0,400}",
+            name in "[^\">]{0,150}",
+            body in "(\\PC|\n){0,300}",
+        ) {
+            let prompt = format!(
+                "{WRAPPER} from=\"{address}\" from-name=\"{name}\" from-mode=\"prompting\">\n\
+                 said {body}"
+            );
+            let m = received(&prompt, false, 1);
+            prop_assert!(m.is_some());
+            let m = m.unwrap();
+            prop_assert_eq!(m.address, Some(cut(&address, ADDRESS_KEPT)));
+            prop_assert_eq!(m.peer, Some(cut(&name, PEER_KEPT)));
+            prop_assert!(m.text.starts_with("said") && !m.text.contains('\n'));
+            prop_assert!(m.text.chars().count() <= TEXT_KEPT + 1);
+        }
+
+        /// Whatever the prompt, it never panics, and what comes out is one line within the cuts.
         #[test]
         fn a_wrapper_parses_whatever_it_holds(
             attrs in "\\PC{0,40}",
             body in "(\\PC|\n){0,300}",
         ) {
-            let prompt = format!("{WRAPPER} {attrs}>{body}");
-            if let Some(m) = received(&prompt, false, 1) {
-                prop_assert!(!m.text.contains('\n'));
-                prop_assert!(!m.text.is_empty());
-                prop_assert!(m.text.chars().count() <= TEXT_KEPT + 1);
-                prop_assert!(m.peer.as_ref().is_none_or(|p| p.chars().count() <= PEER_KEPT + 1));
+            for prompt in [format!("{WRAPPER} {attrs}>{body}"), format!("{WRAPPER} {attrs}")] {
+                if let Some(m) = received(&prompt, false, 1) {
+                    prop_assert!(!m.text.contains('\n') && !m.text.is_empty());
+                    prop_assert!(m.text.chars().count() <= TEXT_KEPT + 1);
+                    let name = m.peer.as_ref().map_or(0, |p| p.chars().count());
+                    prop_assert!(name <= PEER_KEPT + 1);
+                }
             }
-            let _ = received(&format!("{WRAPPER} {attrs}"), false, 1);
+        }
+
+        /// Whatever a name holds, a row can't be made to say a reserved name of its own, or to
+        /// hold a line break.
+        #[test]
+        fn a_label_stays_a_label(name in "(\\PC|\n|you|user|a session){0,12}") {
+            let label = named(&name).label();
+            prop_assert!(!label.contains('\n'));
+            prop_assert!(!RESERVED_NAMES.iter().any(|r| label.eq_ignore_ascii_case(r))
+                || label == "a session" && untrusted::line(&name).trim().is_empty());
         }
 
         /// Whatever a send holds, what's kept is one line within the cut, and never from a send

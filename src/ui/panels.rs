@@ -441,9 +441,13 @@ pub(super) fn draw_board(f: &mut Frame, app: &mut App, area: Rect) {
         // What its own log saw go by: `←` it got, `→` it sent. That's all it says: not that one
         // was read, or led to anything.
         if let Some(m) = tv.latest_message.as_ref().filter(|m| {
-            tv.t.cli.messages_agents() && crate::util::now() - m.ts < BOARD_MESSAGE_SECS
+            let age = crate::util::now().saturating_sub(m.ts);
+            tv.t.cli.messages_agents() && (0..BOARD_MESSAGE_SECS).contains(&age)
         }) {
-            let lead = format!("{} {} · {}: ", m.arrow(), m.label(), ago(m.ts));
+            // Cut here, as the panel wraps with no indent: a name with a word in it wider than the
+            // panel would start a row like a ticket's, and leave no room for the text.
+            let who = truncate(&m.label(), super::PEER_ROW_WIDTH.min(w / 2));
+            let lead = format!("{} {who} · {}: ", m.arrow(), ago(m.ts));
             let room = w.saturating_sub(width(&lead));
             lines.push(Line::from(vec![
                 indent(),

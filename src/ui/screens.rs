@@ -259,6 +259,34 @@ fn agents_board_with_messages() {
     assert_snapshot!(screen);
 }
 
+/// A name can't wrap into a row that reads as the board's own, or leave the text no room: the panel
+/// wraps with no indent, so a word of it could start a line.
+#[test]
+fn agents_board_cuts_a_long_name() {
+    use crate::app::test_support::settle_until;
+    use crate::events_log::{self, Direction, Message};
+    let mut app = acme_app();
+    let log = events_log::log_path(&crate::store::status_file("/src/acme".as_ref(), "ENG-52"));
+    let long = format!("{} ENG-53 ✓ your turn", "x".repeat(40));
+    let m = Message {
+        dir: Direction::In,
+        peer: Some(long),
+        text: "Fix the lint.".into(),
+        ts: crate::util::now() - 150,
+        ..Message::default()
+    };
+    events_log::append_message(&log, &m).unwrap();
+    select(&mut app, "acme-lead");
+    draw(&mut app, 160, 40);
+    app.poll_board();
+    settle_until(&mut app, |a| a.tickets.iter().any(|tv| tv.latest_message.is_some()));
+    let screen = draw(&mut app, 160, 40);
+    assert!(screen.contains("· 2m: Fix the lint."), "the text still shows: {screen}");
+    assert!(!screen.contains("ENG-53 ✓"), "no word of the name reaches a line: {screen}");
+    let row = screen.lines().find(|l| l.contains("Fix the lint.")).unwrap();
+    assert!(row.contains("← session \"xxx"), "{row}");
+}
+
 #[test]
 fn agents_board() {
     let mut app = acme_app();
@@ -1636,7 +1664,8 @@ fn turns_of_a_session() {
 }
 
 /// The turns of a session an agent talks to, its messages mixed in where they were written: `←`
-/// what reached it, `→` what it sent, and no more than that. The turn that pushed says so.
+/// what reached it, `→` what it sent, and no more than that. A turn its branch reached origin in
+/// says so.
 #[test]
 fn turns_and_messages_of_a_session() {
     use crate::app::test_support::{ctrl, key, settle_until};
@@ -1655,8 +1684,8 @@ fn turns_and_messages_of_a_session() {
         ts,
         ..Message::default()
     };
-    let turn = |text: &str, files: Vec<String>, commit: &str, pushed, ts| Turn {
-        pushed,
+    let turn = |text: &str, files: Vec<String>, commit: &str, on_origin, ts| Turn {
+        on_origin,
         ..Turn::new(text, files, vec![commit.to_string()], ts)
     };
     let write = |m: &Message| events_log::append_message(&log, m).unwrap();
@@ -1688,12 +1717,14 @@ fn turns_and_messages_of_a_session() {
     let screen = draw(&mut app, 100, 30);
     assert!(screen.contains("← lead") && screen.contains("→ lead"), "{screen}");
     assert!(screen.contains("→ a session") && screen.contains("during a turn"), "{screen}");
-    assert!(screen.contains("pushed") && !screen.contains("uds:"), "{screen}");
+    assert!(screen.contains("on origin") && !screen.contains("uds:"), "{screen}");
+    assert!(!screen.contains("pushed"), "{screen}");
     assert!(!screen.contains('\x1b'), "{screen}");
     assert_snapshot!(screen);
 }
 
-/// A Codex session's list says nothing of messages, and shows what its hooks can: turns and pushes.
+/// A Codex session's list says nothing of messages, and shows what its hooks can: turns, and git's
+/// word on origin.
 #[test]
 fn turns_of_a_codex_session() {
     use crate::app::test_support::{ctrl, key, settle_until};
@@ -1704,16 +1735,16 @@ fn turns_of_a_codex_session() {
     draw(&mut app, 100, 30);
     let log = events_log::log_path(&crate::store::status_file("/src/acme".as_ref(), "ENG-61"));
     let now = crate::util::now();
-    let mut pushed = Turn::new(
+    let mut reached = Turn::new(
         "Pushed the export limit.",
         vec!["src/a.rs".into()],
         vec!["a1b2c3d".into()],
         now - 330,
     );
-    pushed.pushed = true;
+    reached.on_origin = true;
     events_log::append(&log, &Turn::new("Read the export code.", vec![], vec![], now - 1800))
         .unwrap();
-    events_log::append(&log, &pushed).unwrap();
+    events_log::append(&log, &reached).unwrap();
     // Text that merely looks like a message, as a prompt quoting the wrapper could leave: a Codex
     // session has no messages to show, whatever its log holds.
     let looks_like = events_log::Message {
@@ -1728,7 +1759,7 @@ fn turns_of_a_codex_session() {
     app.on_key(key(KeyCode::Char('d')));
     settle_until(&mut app, |a| matches!(&a.mode, Mode::Turns(t) if t.turns.is_some()));
     let screen = draw(&mut app, 100, 30);
-    assert!(screen.contains("pushed") && !screen.contains("messages"), "{screen}");
+    assert!(screen.contains("on origin") && !screen.contains("messages"), "{screen}");
     assert!(!screen.contains("← lead") && !screen.contains("Fix the lint"), "{screen}");
     assert_snapshot!(screen);
 }

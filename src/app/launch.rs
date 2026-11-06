@@ -391,6 +391,8 @@ impl App {
             // The folder the session works in, which the hooks take a turn's commits in
             // (`hook::session_dir`), wherever its shell has gone since.
             ("TASKMAN_CWD", t.cwd.clone().into()),
+            // Which CLI the hooks run for, as a hook's input doesn't say (`hook::logs_messages`).
+            ("TASKMAN_CLI", t.cli.label().into()),
         ];
         // The briefs say `taskman status`; this makes it the running binary, even when taskman
         // isn't on PATH or another build of it is.
@@ -902,6 +904,7 @@ mod tests {
         assert_eq!(env("TASKMAN_STATUS_FILE"), Some(status.display().to_string()));
         assert_eq!(env("TERM").as_deref(), Some("xterm-256color"));
         assert_eq!(env("TASKMAN_LAUNCH").as_deref(), Some("1-1"));
+        assert_eq!(env("TASKMAN_CLI").as_deref(), Some("Claude"));
         // `taskman` in the session is this binary, ahead of any other on PATH.
         let path = cmd.get_env("PATH").unwrap();
         assert_eq!(std::env::split_paths(path).next(), app.bin_dir);

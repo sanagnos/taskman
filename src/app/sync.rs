@@ -156,7 +156,7 @@ pub(super) enum Msg {
     /// A session's log was read (`prefix d`): its ticket, and its turns, newest first.
     Turns(Id, Vec<crate::events_log::Entry>),
     /// The latest message in each ticket's log that changed (`App::poll_board`).
-    LatestMessages(Vec<(Id, Option<crate::events_log::Message>)>),
+    LatestMessages(Vec<super::turns::LatestMessage>),
     /// The CLI of a fork asked for answered what it can do, or the probe panicked.
     Forked(super::fork::ForkAsk, Result<crate::coding_cli::ForkProbe, String>),
 }

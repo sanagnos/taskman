@@ -75,7 +75,7 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 
 /// "now", "5m", "3h", "2d", "6w".
 pub fn ago(ts: i64) -> String {
-    short_age(now() - ts)
+    short_age(now().saturating_sub(ts))
 }
 
 /// "just now", "5m ago", "3h ago": `secs` seconds ago, in words, in [`ago`]'s buckets.

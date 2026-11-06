@@ -342,3 +342,42 @@ fn the_board_reads_each_tickets_latest_message_while_it_shows() {
     let i = index(&app, "ENG-61");
     assert_eq!((app.tickets[i].log_stamp, app.tickets[i].latest_message.clone()), (None, None));
 }
+
+#[test]
+fn enter_shows_a_name_the_row_cuts() {
+    let (mut app, _) = at_eng_52();
+    let long = format!("reviewer-{}", "n".repeat(40));
+    message("ENG-52", &got(&long, "Check the build."));
+    open(&mut app);
+    let closed = draw(&mut app, 100, 30);
+    assert!(!closed.contains(&long), "{closed}");
+    app.on_key(key(KeyCode::Enter));
+    let opened = draw(&mut app, 100, 30);
+    assert!(opened.contains(&format!("← {long}")), "{opened}");
+}
+
+/// Reads finish in any order: one asked for before the log last changed doesn't replace what's
+/// been read since.
+#[test]
+fn a_late_read_for_the_board_doesnt_replace_a_newer_one() {
+    use std::time::{Duration, SystemTime};
+    let (mut app, _) = at_eng_52();
+    let i = index(&app, "ENG-52");
+    let id = (app.tickets[i].t.repo.clone(), app.tickets[i].t.key.clone());
+    let (older, newer) = (SystemTime::UNIX_EPOCH, SystemTime::UNIX_EPOCH + Duration::from_secs(9));
+    app.tickets[i].log_stamp = Some(newer);
+    app.latest_messages_read(vec![(id.clone(), Some(newer), Some(got("lead", "Newer.")))]);
+    app.latest_messages_read(vec![(id, Some(older), Some(got("lead", "Older.")))]);
+    assert_eq!(app.tickets[i].latest_message.as_ref().unwrap().text, "Newer.");
+}
+
+#[test]
+fn closing_removes_a_killed_rewrite_of_the_log() {
+    let status = store::status_file("/src/acme".as_ref(), "ENG-52");
+    let log = events_log::log_path(&status);
+    turn("ENG-52", "Fixed it.");
+    let leftover = log.with_extension("4242.tmp");
+    std::fs::write(&leftover, "x").unwrap();
+    crate::app::poll::remove_log_at(&status);
+    assert!(!log.exists() && !leftover.exists());
+}

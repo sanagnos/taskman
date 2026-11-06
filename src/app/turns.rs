@@ -5,7 +5,7 @@
 //! as it was. The log is read off the UI thread, and again when a hook changes it while it's open.
 //!
 //! Also the board's latest messages (`App::poll_board`): each ticket's own log, read off the UI
-//! thread while the board shows and when that log changes.
+//! thread while an agent is selected and when that log changes.
 
 use super::sync::Msg;
 use super::{App, Id, Mode};
@@ -14,6 +14,9 @@ use crate::{markdown, store, untrusted};
 use crossterm::event::{KeyCode, KeyEvent};
 use std::path::PathBuf;
 use std::time::SystemTime;
+
+/// What the board read of a ticket's log: which, its stamp when asked, and its newest message.
+pub type LatestMessage = (Id, Option<SystemTime>, Option<Message>);
 
 /// The overlay while it's open.
 #[derive(Clone, Debug, Default)]
@@ -182,8 +185,9 @@ impl App {
         );
     }
 
-    /// Reads the latest message of each ticket whose log changed, while the board beside an agent
-    /// shows them. From the status poll, so a log is looked at no more often than a status file.
+    /// Reads the latest message of each ticket whose log changed, while an agent is selected, which
+    /// is when the board can show them. From the status poll, so a log is looked at no more often
+    /// than a status file.
     pub(crate) fn poll_board(&mut self) {
         let Some(sel) = self.selected().filter(|tv| tv.t.agent.is_some()) else { return };
         let Some(p) = self.project_of(&sel.t) else { return };
@@ -198,7 +202,7 @@ impl App {
             let now = stamp(&path);
             if now != tv.log_stamp {
                 tv.log_stamp = now;
-                changed.push((id, path));
+                changed.push((id, now, path));
             }
         }
         if changed.is_empty() {
@@ -210,7 +214,7 @@ impl App {
                 Msg::LatestMessages(
                     changed
                         .into_iter()
-                        .map(|(id, path)| (id, events_log::latest_message(&path)))
+                        .map(|(id, at, path)| (id, at, events_log::latest_message(&path)))
                         .collect(),
                 )
             },
@@ -218,10 +222,13 @@ impl App {
         );
     }
 
-    /// The latest messages read for the board.
-    pub(super) fn latest_messages_read(&mut self, read: Vec<(Id, Option<Message>)>) {
-        for (id, message) in read {
-            if let Some(tv) = self.tickets.iter_mut().find(|tv| tv.t.is(&id.0, &id.1)) {
+    /// The latest messages read for the board. A read for a stamp that's since moved on is older
+    /// than one still to come: reads finish in any order, and only the last asked for counts.
+    pub(super) fn latest_messages_read(&mut self, read: Vec<LatestMessage>) {
+        for (id, at, message) in read {
+            if let Some(tv) = self.tickets.iter_mut().find(|tv| tv.t.is(&id.0, &id.1))
+                && tv.log_stamp == at
+            {
                 tv.latest_message = message;
             }
         }

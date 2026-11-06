@@ -218,3 +218,31 @@ fn the_hook_logs_messages_from_recorded_input() {
     assert!(lines[1].contains(r#""dir":"out""#) && lines[1].contains("Rebase on main"));
     assert!(!text.contains("Then push") && !text.contains("The base is about to go"), "{text}");
 }
+
+/// A prompt that merely starts as a message, in a session taskman says runs Codex, stays out of the
+/// log: the user's own prompts aren't logged.
+#[test]
+fn a_codex_session_logs_no_message() {
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let dir = scratch_dir("hook-codex-no-message");
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hooks");
+    let input = std::fs::read(fixtures.join("claude-received.json")).unwrap();
+    let logged = |cli: &str| {
+        let status = dir.join(format!("status/acme/{cli}.json"));
+        let mut child = taskman(&dir)
+            .args(["hook", "working"])
+            .env("TASKMAN_STATUS_FILE", &status)
+            .env("TASKMAN_CWD", &dir)
+            .env("TASKMAN_CLI", cli)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(&input).unwrap();
+        assert!(child.wait().unwrap().success());
+        status.with_extension("events.jsonl").exists()
+    };
+    assert!(!logged("Codex"));
+    assert!(logged("Claude"));
+}

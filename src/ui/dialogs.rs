@@ -501,16 +501,13 @@ fn draw_log(f: &mut Frame, app: &mut App) {
     f.render_widget(Paragraph::new(shown).block(dialog("Notices").padding(DIALOG_PAD)), rect);
 }
 
-/// The longest name a message's row gives its column, so one long name doesn't push out the text.
-const PEER_ROW_WIDTH: usize = 24;
-
-/// A session's turns and messages (`prefix d`), newest first, a row each: a turn's age, the files it
-/// changed, its commits, whether it pushed and a headline from the CLI's last message
-/// (`markdown::headline`); a message's age, `←` or `→`, who with, and its first line. The open
-/// row's whole text is under it (`message_rows`). A turn's message is the CLI's own output and may
-/// quote anything it read, and a message's text and names are another session's choice, so all of it
-/// goes through `untrusted`. A row says what the log saw and no more: `→` that it was sent, `←` that
-/// it arrived, and nothing about what either led to.
+/// A session's turns and messages (`prefix d`), newest first, a row each: a turn's age, the files
+/// it changed, its commits, whether its branch reached origin and a headline from the CLI's last
+/// message (`markdown::headline`); a message's age, `←` or `→`, who with, and its first line. The
+/// open row's whole text is under it (`message_rows`). A turn's message is the CLI's own output and
+/// may quote anything it read, and a message's text and names are another session's choice, so all
+/// of it goes through `untrusted`. A row says what the log saw and no more: `→` that it was sent,
+/// `←` that it arrived, `on origin` that the branch got there, and nothing about who or what for.
 fn draw_turns(f: &mut Frame, app: &mut App) {
     let Mode::Turns(t) = &app.mode else { return };
     let label = match app.tickets.iter().find(|tv| tv.t.is(&t.id.0, &t.id.1)) {
@@ -531,7 +528,10 @@ fn draw_turns(f: &mut Frame, app: &mut App) {
             message_rows(&turn.message, inner.saturating_sub(indent))
         }
         Some(Entry::Message(m)) if t.open => {
-            let mut rows = message_rows(&m.text, inner.saturating_sub(indent));
+            // Its row cuts a long name, so here it is whole.
+            let room = inner.saturating_sub(indent);
+            let mut rows = message_rows(&format!("{} {}", m.arrow(), m.label()), room);
+            rows.extend(message_rows(&m.text, room));
             rows.push(String::new());
             rows.push(
                 "The log keeps a message's first line; the session's history has the rest.".into(),
@@ -594,12 +594,12 @@ fn draw_turns(f: &mut Frame, app: &mut App) {
                 finished().map(|turn| util::width(&col(turn))).max().unwrap_or(0)
             };
             let (files_w, commits_w) = (widest(&files), widest(&commits));
-            let any_pushed = finished().any(|turn| turn.pushed);
+            let any_on_origin = finished().any(|turn| turn.on_origin);
             // A turn's columns before its headline, which a message's name fills so the text of
             // both rows starts in one place where it can.
             let columns = if files_w > 0 { 1 + files_w } else { 0 }
                 + if commits_w > 0 { 2 + commits_w } else { 0 }
-                + if any_pushed { 8 } else { 0 };
+                + if any_on_origin { 11 } else { 0 };
             for (i, entry) in turns.iter().enumerate() {
                 let chosen = i == t.at;
                 let ts = match entry {
@@ -620,9 +620,9 @@ fn draw_turns(f: &mut Frame, app: &mut App) {
                             let c = format!("  {}", pad(&commits(turn), commits_w));
                             spans.push(Span::styled(c, Style::new().fg(Color::Green)));
                         }
-                        if any_pushed {
-                            let p = if turn.pushed { "  pushed" } else { "        " };
-                            spans.push(Span::styled(p, Style::new().fg(Color::Green)));
+                        if any_on_origin {
+                            let at = if turn.on_origin { "  on origin" } else { "           " };
+                            spans.push(Span::styled(at, Style::new().fg(Color::Green)));
                         }
                         let used: usize = spans.iter().map(|s| util::width(&s.content)).sum();
                         let room = inner.saturating_sub(used + 2);
@@ -674,10 +674,10 @@ fn draw_turns(f: &mut Frame, app: &mut App) {
     f.render_widget(Paragraph::new(shown).block(dialog(&title).padding(DIALOG_PAD)), rect);
 }
 
-/// Adds a message's own columns to its row in a list of `inner` columns: who with, filling `columns`
-/// where it fits, then whether a turn was under way, and its first line.
+/// Adds a message's own columns to its row in a list of `inner` columns: who with, filling
+/// `columns` where it fits, then whether a turn was under way, and its first line.
 fn message_row(spans: &mut Vec<Span<'static>>, m: &Message, columns: usize, inner: usize) {
-    let who = format!(" {} {}", m.arrow(), truncate(&m.label(), PEER_ROW_WIDTH));
+    let who = format!(" {} {}", m.arrow(), truncate(&m.label(), super::PEER_ROW_WIDTH));
     let who = pad(&who, columns.max(util::width(&who)));
     spans.push(Span::styled(who, Style::new().fg(super::accent())));
     if m.during {
