@@ -2,6 +2,11 @@
 
 What changed in each release; a release's notes on GitHub are its section here. What's merged but not released yet is in [changelog.d/](changelog.d/), a file for each change, which the release moves in here. Versions follow Cargo's rule for 0.x: the patch number (0.1.1) for anything compatible, fixes and new features alike, and the minor (0.2.0) for breaking changes, such as changed keys, config or saved-state format, or a removed command.
 
+## 0.1.38 - 2026-11-06
+
+- `ctrl+a d` now shows what Claude Code sessions said to each other, mixed in with the turns: `← lead` a message that arrived, `→ lead` one it sent, with its first line. A turn during which the session's branch reached origin says `on origin`, in Codex too.
+- The board beside an agent shows each ticket's latest message for an hour after it was sent or received.
+
 ## 0.1.37 - 2026-11-06
 
 - Jira and Linear connections now trust the system's certificate store as well as the bundled list, so a tracker behind a private CA or a re-signing proxy works. `SSL_CERT_FILE` and `SSL_CERT_DIR` work too, and replace what's trusted. A certificate that still isn't trusted says what to do about it, rather than `UnknownIssuer`.

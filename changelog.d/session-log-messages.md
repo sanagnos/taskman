@@ -1,2 +1,0 @@
-- `ctrl+a d` now shows what Claude Code sessions said to each other, mixed in with the turns: `← lead` a message that arrived, `→ lead` one it sent, with its first line. A turn during which the session's branch reached origin says `on origin`, in Codex too.
-- The board beside an agent shows each ticket's latest message for an hour after it was sent or received.
