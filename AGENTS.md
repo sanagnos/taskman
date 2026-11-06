@@ -18,7 +18,7 @@ The invariants in docs/architecture.md, as rules; that file and design.md say wh
 - Text from trackers and PRs is untrusted: print it through `untrusted` and keep it out of briefs (see "Untrusted text" in docs/design.md).
 - Tokens are never stored: `env:VAR` or `cmd:COMMAND`, read in the background by `tracker::Clients`.
 - Keep network calls and token commands off the UI thread; commands go through `proc::run` so a hung one gives up. Background work reports back as a `Msg`; there is no async runtime.
-- Agents add and close tickets through the inbox (`taskman add`, `taskman close`), never by editing `tickets.json`. A change to the request needs a new `add::INBOX_FORMAT`, so a command never asks an older running TUI for something it can't do. `taskman close` is deliberately not on the `--settings` allow-list.
+- Agents add and close tickets through the inbox (`taskman add`, `taskman close`), never by editing `tickets.json`. A change to the request needs a new `add::INBOX_FORMAT`, so a command never asks an older running TUI for something it can't do. `taskman close` and `taskman title` are deliberately not on the `--settings` allow-list.
 - Each difference between trackers is a method on `Provider` or `Tracker` in `tracker.rs`: use those rather than matching on a provider. Likewise each difference between Claude Code and Codex is a method on `Cli` in `coding_cli.rs`.
 - Hints name the prefix through `keys::prefix()`, never a literal `ctrl+a`.
 

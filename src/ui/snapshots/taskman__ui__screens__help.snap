@@ -19,7 +19,7 @@ expression: screen
 " │    ctrl+a /          find a ticket, agent or project by typing             │ "
 " │  This ticket                                                               │ "
 " │    ctrl+a { / }      move: ↑/↓ go on, p moves the project, Enter ends      │ "
-" │    ctrl+a e          rename agent                                          │ "
+" │    ctrl+a e          rename the agent, or set the ticket's title           │ "
 " │    ctrl+a M          run in the main checkout when the worktree failed     │ "
 " │    ctrl+a x          close the ticket or agent                             │ "
 " │  Open                                                                      │ "

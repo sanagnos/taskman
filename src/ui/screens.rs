@@ -98,6 +98,113 @@ fn no_pr_after_a_failed_refresh() {
     assert_snapshot!(draw(&mut app, 160, 40));
 }
 
+/// The tracker didn't answer, so the card says it has no title, and how to give it one; the panel
+/// says why.
+#[test]
+fn ticket_without_a_tracker_title() {
+    let mut app = acme_app();
+    select(&mut app, "ENG-70");
+    let tv = app.tickets.iter_mut().find(|tv| tv.t.key == "ENG-70").unwrap();
+    tv.jira.data = None;
+    tv.jira.error = Some("Linear rejected the API key".into());
+    assert_snapshot!(draw(&mut app, 160, 40));
+}
+
+/// A title of its own in place of the tracker's on the card; the panel keeps the tracker's.
+#[test]
+fn ticket_with_a_title_of_its_own() {
+    let mut app = acme_app();
+    app.tickets.iter_mut().find(|tv| tv.t.key == "ENG-52").unwrap().t.label =
+        Some("Login redirect".into());
+    assert_snapshot!(draw(&mut app, 160, 40));
+}
+
+#[test]
+fn ticket_title_form() {
+    let mut app = acme_app();
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(KeyCode::Char('e')));
+    assert_snapshot!(draw(&mut app, 100, 30));
+}
+
+const UNREACHABLE: &str = "can't reach api.linear.app: no connection (no network, or a VPN, proxy \
+     or firewall in the way); taskman tries again on the next refresh";
+
+/// One field has no keys to scroll with, so a window too short for the form loses its top rows
+/// for good. The reason is short, so it goes only once the window is about the form's own height.
+#[test]
+fn a_short_window_keeps_the_reason_above_the_title_field() {
+    let mut app = acme_app();
+    select(&mut app, "ENG-70");
+    crate::app::test_support::token_failed(&mut app, "the token command failed: op: locked");
+    let tv = app.tickets.iter_mut().find(|tv| tv.t.key == "ENG-70").unwrap();
+    tv.jira.data = None;
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(KeyCode::Char('e')));
+    for h in (13..=30).rev() {
+        let screen = draw(&mut app, 100, h);
+        assert!(
+            screen.contains("the token command failed: op: locked. Fix"),
+            "{h} rows:\n{screen}"
+        );
+        assert!(screen.contains("Title") && screen.contains("Enter save"), "{h} rows:\n{screen}");
+    }
+}
+
+/// A reason that takes two rows needs one row more.
+#[test]
+fn a_short_window_keeps_a_two_row_reason() {
+    let mut app = acme_app();
+    select(&mut app, "ENG-70");
+    let tv = app.tickets.iter_mut().find(|tv| tv.t.key == "ENG-70").unwrap();
+    tv.jira.data = None;
+    tv.jira.error = Some(SSO.into());
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(KeyCode::Char('e')));
+    let (start, end) = ("⚠  acme/web's organization", "Check settings");
+    for h in (14..=30).rev() {
+        let screen = draw(&mut app, 100, h);
+        assert!(screen.contains(start) && screen.contains(end), "{h} rows:\n{screen}");
+    }
+    // A row short, the form scrolls it out of view: its top row and the edge row's, both of it.
+    let screen = draw(&mut app, 100, 13);
+    assert!(!screen.contains(start) && !screen.contains(end), "13 rows:\n{screen}");
+    assert!(screen.contains("Title") && screen.contains("Enter save"), "13 rows:\n{screen}");
+}
+
+const SSO: &str = "acme/web's organization needs gh's token authorized for its single sign-on; \
+     run gh auth refresh -h github.com";
+
+/// A chord in the reason stays whole on any width it's wrapped at.
+#[test]
+fn the_title_forms_reason_never_splits_its_key() {
+    let mut app = acme_app();
+    select(&mut app, "ENG-70");
+    let tv = app.tickets.iter_mut().find(|tv| tv.t.key == "ENG-70").unwrap();
+    tv.jira.data = None;
+    tv.jira.error = Some(UNREACHABLE.into());
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(KeyCode::Char('e')));
+    for w in 40..=120 {
+        let screen = draw(&mut app, w, 30);
+        let chord = crate::keys::chord(",");
+        assert!(screen.contains(&format!("({chord})")), "{w} columns:\n{screen}");
+    }
+}
+
+/// The hint's key leads here, so the form says why there's no title.
+#[test]
+fn ticket_title_form_saying_why_the_tracker_gave_none() {
+    let mut app = acme_app();
+    select(&mut app, "ENG-70");
+    let tv = app.tickets.iter_mut().find(|tv| tv.t.key == "ENG-70").unwrap();
+    tv.jira.data = None;
+    tv.jira.error = Some(UNREACHABLE.into());
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(KeyCode::Char('e')));
+    assert_snapshot!(draw(&mut app, 100, 30));
+}
+
 #[test]
 fn agents_board() {
     let mut app = acme_app();

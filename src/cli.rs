@@ -1,6 +1,6 @@
 //! What the CLI commands share: how they run and read their arguments, the project a command
-//! means, and the ticket key an input names in it (`taskman add`, `move`, `close`, `status`,
-//! `resume` and `update`).
+//! means, and the ticket key an input names in it (`taskman add`, `move`, `close`, `title`,
+//! `status`, `resume` and `update`).
 
 use crate::status::{self, Here, real};
 use crate::store::{self, Project, Saved, Ticket};
@@ -19,15 +19,16 @@ macro_rules! out {
 }
 pub(crate) use out;
 
-/// Runs `taskman NAME`: prints `usage` for `-h` or `--help` anywhere in `args`, before anything is
-/// read or fetched, else returns the exit code `command` gives, or prints its error and returns 1.
+/// Runs `taskman NAME`: prints `usage` for `-h` or `--help` anywhere in `args` before a `--`, whose
+/// followers are words (`Lexer`), before anything is read or fetched, else returns the exit code
+/// `command` gives, or prints its error and returns 1.
 pub(crate) fn run(
     name: &str,
     usage: &str,
     args: &[String],
     command: impl FnOnce(&[String]) -> Result<i32, String>,
 ) -> i32 {
-    if args.iter().any(|a| a == "-h" || a == "--help") {
+    if args.iter().take_while(|a| *a != "--").any(|a| a == "-h" || a == "--help") {
         out!("{usage}");
         return 0;
     }
@@ -51,7 +52,10 @@ pub(crate) enum Arg<'a> {
 
 /// Reads a command's arguments one at a time, so every command takes `--x`, `--x VALUE` and
 /// `--x=VALUE` and refuses an empty value, a value given to an option that takes none and an
-/// unknown option alike. Each command matches only the options it knows.
+/// unknown option alike. Each command matches only the options it knows. A first `--` ends the
+/// options: what follows is words, for text from a script that may start with a dash. An option
+/// taking a value takes the next argument as its value, `--` included. That's the lexer only:
+/// `cli::run` looks for `-h` and `--help` first, in everything before a `--`, a value too.
 pub(crate) struct Lexer<'a> {
     args: std::slice::Iter<'a, String>,
     usage: &'a str,
@@ -59,12 +63,14 @@ pub(crate) struct Lexer<'a> {
     option: &'a str,
     /// The value it came with after `=`, until `value` takes it.
     inline: Option<&'a str>,
+    /// `--` was read: the rest are words, whatever they look like.
+    words_only: bool,
 }
 
 impl<'a> Lexer<'a> {
     /// `usage` goes with the error for an unknown option.
     pub fn new(args: &'a [String], usage: &'a str) -> Self {
-        Self { args: args.iter(), usage, option: "", inline: None }
+        Self { args: args.iter(), usage, option: "", inline: None, words_only: false }
     }
 
     pub fn next(&mut self) -> Result<Option<Arg<'a>>, String> {
@@ -72,8 +78,13 @@ impl<'a> Lexer<'a> {
         if self.inline.take().is_some() {
             return Err(format!("{} takes no value", self.option));
         }
-        let Some(arg) = self.args.next() else { return Ok(None) };
-        if !arg.starts_with('-') {
+        let Some(mut arg) = self.args.next() else { return Ok(None) };
+        if !self.words_only && arg == "--" {
+            self.words_only = true;
+            let Some(next) = self.args.next() else { return Ok(None) };
+            arg = next;
+        }
+        if self.words_only || !arg.starts_with('-') {
             return Ok(Some(Arg::Word(arg)));
         }
         (self.option, self.inline) = match arg.split_once('=') {
@@ -225,6 +236,69 @@ pub(crate) fn confine(p: usize, own: Option<usize>, saved: &Saved) -> Result<(),
     }
 }
 
+/// The key `input` names and where it's open, as `taskman close` and `taskman title` read a ticket:
+/// a number takes the prefix of the project the command means, the tracker's own way of writing one
+/// (GitHub's `#12` and issue links) is read by that tracker, and any other key or link goes by
+/// `status::locate`, so a key open in two projects needs the project. `named` is `project`'s index.
+pub(crate) fn locate_ticket<'a>(
+    input: &str,
+    project: Option<&str>,
+    named: Option<usize>,
+    me: Option<&Ticket>,
+    saved: &'a Saved,
+    here: Option<&Here>,
+) -> Result<(String, (Option<&'a Ticket>, &'a Project)), String> {
+    if ticket_key::is_number(input) {
+        let p = pick_project(project, &[], me, saved, here)?;
+        let key = resolve_key(input, p, &saved.projects)?;
+        let located = status::locate(&key, saved, status::Scope::Named(&saved.projects[p].repo))?;
+        return Ok((key, located));
+    }
+    // Before `ticket_key::parse`, which would take the name of a repository like acme/ENG-52 for
+    // the key in its issue's link.
+    let place = named.or_else(|| context(me, saved, here));
+    if let Some((key, p)) = tracker_key(input, place, saved)? {
+        let located = status::locate(&key, saved, status::Scope::Named(&saved.projects[p].repo))?;
+        return Ok((key, located));
+    }
+    let key = ticket_key::parse(input)
+        .ok_or_else(|| format!("{input} isn't a ticket number, key or link"))?;
+    let located = status::locate(&key, saved, status::scope(named, None, me, saved, here))?;
+    Ok((key, located))
+}
+
+/// The key and project of `input` when it's written a tracker's own way: `place`'s tracker's, or
+/// with no project to go by, the one tracker's that takes it. None when it isn't.
+fn tracker_key(
+    input: &str,
+    place: Option<usize>,
+    saved: &Saved,
+) -> Result<Option<(String, usize)>, String> {
+    let read = |p: usize| saved.projects[p].tracker.as_ref()?.key_from_input(input);
+    if let Some(p) = place {
+        return read(p).map(|key| key.map(|k| (k, p))).transpose();
+    }
+    let (mut taken, mut refused) = (Vec::new(), false);
+    for p in 0..saved.projects.len() {
+        match read(p) {
+            Some(Ok(key)) => taken.push((key, p)),
+            Some(Err(_)) => refused = true,
+            None => {}
+        }
+    }
+    match (taken.len(), refused) {
+        // Not a tracker's own refusal: each speaks of its own project, and none is meant here.
+        (0, true) => Err(format!("{input} isn't an issue of a project in taskman")),
+        (0, false) => Ok(None),
+        (1, _) => Ok(taken.pop()),
+        _ => {
+            let names: Vec<&str> =
+                taken.iter().map(|(_, p)| saved.projects[*p].name.as_str()).collect();
+            Err(format!("{input} could mean projects {}; pass --project", names.join(" or ")))
+        }
+    }
+}
+
 fn has_prefix(p: &Project, prefix: &str) -> bool {
     p.tracker.as_ref().is_some_and(|t| !t.key.is_empty() && t.key.eq_ignore_ascii_case(prefix))
 }
@@ -294,6 +368,7 @@ pub(crate) mod tests {
             seen_gh: None,
             agent: agent.map(String::from),
             role: None,
+            label: None,
             created_worktree: false,
             base: None,
             pending_worktree: None,
@@ -373,6 +448,14 @@ pub(crate) mod tests {
             lexed(&["--frce=yes"]),
             Err("unknown option --frce\n\nUsage: taskman test".into())
         );
+        // After `--`, words, whatever they look like; the first `--` only.
+        assert_eq!(
+            lexed(&["--json", "--", "--project", "--", "-x", "--jsn=1"]),
+            ok(&["json", "--project", "--", "-x", "--jsn=1"])
+        );
+        assert_eq!(lexed(&["--"]), ok(&[]));
+        // As an option's value it's only that.
+        assert_eq!(lexed(&["--project", "--", "--json"]), ok(&["project --", "json"]));
         // A single dash is never split at `=`.
         assert_eq!(lexed(&["-p=web"]), Err("unknown option -p=web\n\nUsage: taskman test".into()));
         assert_eq!(lexed(&["-"]), Err("unknown option -\n\nUsage: taskman test".into()));
@@ -420,7 +503,7 @@ pub(crate) mod tests {
         }
         assert_eq!(
             key("https://github.com/acme/web/pull/45"),
-            Err("acme/web#45 is a pull request; add the issue it closes instead".into())
+            Err("acme/web#45 is a pull request; name the issue it closes instead".into())
         );
         assert_eq!(
             key("https://github.com/acme/api/issues/3"),
@@ -476,6 +559,72 @@ pub(crate) mod tests {
                 .unwrap_err()
                 .contains("no projects yet")
         );
+    }
+
+    /// Project acme on GitHub's `repo`, with ENG-52 and ENG-88 open.
+    fn on_github(repo: &str) -> Saved {
+        let mut acme = project("acme", "/src/acme", "ENG");
+        let t = acme.tracker.as_mut().unwrap();
+        (t.provider, t.site) = (Provider::Github, repo.into());
+        Saved {
+            projects: vec![acme, project("notes", "/src/notes", "")],
+            tickets: vec![ticket("ENG-52", "/src/acme", None), ticket("ENG-88", "/src/acme", None)],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn reads_a_ticket_the_way_its_tracker_writes_it() {
+        // A repository named like a key: the issue's number decides, not the name.
+        let s = on_github("acme/ENG-52");
+        let key = |input: &str, named: Option<usize>, here: Option<&Here>| {
+            let project = named.map(|_| "acme");
+            locate_ticket(input, project, named, None, &s, here)
+                .map(|(k, (t, p))| (k, t.map(|t| t.key.clone()), p.name.clone()))
+        };
+        let open = |k: &str| Ok((k.to_string(), Some(k.to_string()), "acme".to_string()));
+        let url = "https://github.com/acme/ENG-52/issues/88";
+        assert_eq!(key(url, Some(0), None), open("ENG-88"));
+        assert_eq!(key(url, None, None), open("ENG-88"), "no project to go by");
+        assert_eq!(key(url, None, Some(&here("/src/acme"))), open("ENG-88"));
+
+        // The usual ways of writing one.
+        let s = on_github("acme/web");
+        let key = |input: &str, named: Option<usize>, here: Option<&Here>| {
+            let project = named.map(|_| "acme");
+            locate_ticket(input, project, named, None, &s, here)
+                .map(|(k, (t, p))| (k, t.map(|t| t.key.clone()), p.name.clone()))
+        };
+        for input in ["#88", "acme/web#88", "https://github.com/acme/web/issues/88", "88", "ENG-88"]
+        {
+            assert_eq!(key(input, Some(0), None), open("ENG-88"), "{input}");
+        }
+        assert_eq!(key("#88", None, None), open("ENG-88"));
+        // Not open, in the project it's named in.
+        assert_eq!(key("#9", Some(0), None), Ok(("ENG-9".to_string(), None, "acme".to_string())));
+        // Another repository's, or a pull request: what the tracker says.
+        for input in ["https://github.com/acme/api/issues/3", "https://github.com/acme/web/pull/4"]
+        {
+            assert!(key(input, Some(0), None).is_err(), "{input}");
+            // With no project meant, it names none.
+            let e = key(input, None, None).unwrap_err();
+            assert_eq!(e, format!("{input} isn't an issue of a project in taskman"));
+        }
+        // Other trackers' links are nobody's here, and go on to the plain key.
+        assert_eq!(
+            key("https://example.atlassian.net/browse/ENG-88", Some(0), None),
+            open("ENG-88")
+        );
+        // Two GitHub projects that take it: which?
+        let mut two = on_github("acme/web");
+        two.projects[1] = {
+            let mut p = project("api", "/src/api", "API");
+            let t = p.tracker.as_mut().unwrap();
+            (t.provider, t.site) = (Provider::Github, "acme/api".into());
+            p
+        };
+        let e = locate_ticket("#88", None, None, None, &two, None).unwrap_err();
+        assert_eq!(e, "#88 could mean projects acme or api; pass --project");
     }
 
     #[test]

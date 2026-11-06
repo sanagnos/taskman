@@ -226,6 +226,8 @@ pub enum FormKind {
     AccountSettings(usize),
     /// Renaming the agent at this ticket index.
     RenameAgent(usize),
+    /// Setting the title of the ticket with this project and key.
+    TicketTitle(std::path::PathBuf, String),
     /// Forking the session with this project and key into a new agent.
     Fork(std::path::PathBuf, String),
     /// Settings that aren't about a project or an account.
@@ -517,6 +519,15 @@ impl App {
             FormKind::RenameAgent(i) => {
                 let i = *i;
                 self.rename_agent(i, &form.value("Name"))
+            }
+            FormKind::TicketTitle(repo, key) => {
+                let (repo, key) = (repo.clone(), key.clone());
+                // A folded card doesn't show the title, so this says what happened.
+                self.set_label(&repo, &key, form.value("Title").trim()).map(|label| {
+                    self.mode = Mode::Normal;
+                    let done = if label.is_some() { "set" } else { "cleared" };
+                    self.toast(format!("{key}'s title {done}"));
+                })
             }
             FormKind::Fork(repo, key) => {
                 let (repo, key) = (repo.clone(), key.clone());
