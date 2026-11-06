@@ -246,3 +246,84 @@ fn a_codex_session_logs_no_message() {
     assert!(!logged("Codex"));
     assert!(logged("Claude"));
 }
+
+/// The real command with its real limits, given a Stop in the session at `repo`, whose turn began
+/// at `head`, with `git` first on PATH. Returns the log's text and how long the hook took.
+fn stop_with_git(dir: &Path, repo: &Path, head: &str, git: &str) -> (String, Duration) {
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let bin = dir.join("git-stub");
+    std::fs::create_dir_all(&bin).unwrap();
+    script(&bin, "git", git);
+    let status = dir.join("status/acme/ENG-52.json");
+    std::fs::create_dir_all(status.parent().unwrap()).unwrap();
+    let begun = format!("{{\"head\":\"{head}\",\"ts\":1}}\n");
+    std::fs::write(status.with_extension("turn.jsonl"), begun).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    let started = std::time::Instant::now();
+    let mut child = taskman(dir)
+        .args(["hook", "done"])
+        .env("TASKMAN_STATUS_FILE", &status)
+        .env("TASKMAN_CWD", repo)
+        .env("PATH", path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let stop = r#"{"hook_event_name":"Stop","last_assistant_message":"Done."}"#;
+    child.stdin.take().unwrap().write_all(stop.as_bytes()).unwrap();
+    assert!(child.wait().unwrap().success());
+    let took = started.elapsed();
+    (std::fs::read_to_string(status.with_extension("events.jsonl")).unwrap(), took)
+}
+
+/// A git that hangs must not cost the turn's line: the CLI ends a hook that takes too long, Codex's
+/// at 3 s. Sleeping, not working, so a busy machine doesn't change how long this takes by much.
+#[test]
+fn a_hung_git_still_leaves_the_turns_line() {
+    let dir = scratch_dir("hook-hung-git");
+    let (log, took) = stop_with_git(&dir, &dir, "abc", "#!/bin/sh\nexec sleep 60\n");
+    assert!(log.contains(r#""message":"Done.""#), "{log}");
+    assert!(!log.contains("commits") && !log.contains("on_origin"), "{log}");
+    assert!(took < Duration::from_secs(10), "{took:?}");
+}
+
+/// A log too slow to answer isn't a default branch that's gone: asking again without leaving it out
+/// would count what a rebase brought in as the turn's.
+#[test]
+fn a_slow_log_doesnt_claim_the_default_branchs_commits() {
+    let dir = scratch_dir("hook-slow-log");
+    let repo = dir.join("acme");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.name=Tester", "-c", "user.email=tester@example.com"])
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "start"]);
+    let start = git(&["rev-parse", "HEAD"]);
+    git(&["checkout", "-q", "-b", "eng-52"]);
+    git(&["checkout", "-q", "main"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "upstream"]);
+    git(&["checkout", "-q", "eng-52"]);
+    git(&["rebase", "-q", "main"]);
+    let path = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|d| d.join("git"))
+        .find(|g| g.exists())
+        .unwrap();
+    // Hangs on the log that leaves the default branch out, and is itself for all the rest.
+    let stub = format!(
+        "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in ^*) exec sleep 60;; esac; done\n\
+         exec '{}' \"$@\"\n",
+        path.display()
+    );
+    let (log, _) = stop_with_git(&dir, &repo, &start, &stub);
+    assert!(log.contains(r#""message":"Done.""#), "{log}");
+    assert!(!log.contains("commits"), "the rebase's commit isn't the turn's: {log}");
+}

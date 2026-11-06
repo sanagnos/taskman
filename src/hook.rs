@@ -173,15 +173,38 @@ const GIT_WAIT: Duration =
 const STOP_WAIT: Duration =
     if cfg!(test) { Duration::from_secs(300) } else { Duration::from_millis(2500) };
 
-/// What `git args` printed in `dir`, by the time `until` at the latest and within `GIT_WAIT`. None
-/// when it failed, or there's no time left to run it.
-fn git_out(dir: &Path, args: &[&str], until: Instant) -> Option<String> {
+/// How a git call came out.
+#[derive(Debug, PartialEq)]
+enum Git {
+    /// What it printed.
+    Out(String),
+    /// It ran and said no.
+    Failed,
+    /// It took too long or couldn't run, which says nothing about what was asked.
+    NoAnswer,
+}
+
+/// Runs `git args` in `dir`, by the time `until` at the latest and within `GIT_WAIT`.
+fn git_call(dir: &Path, args: &[&str], until: Instant) -> Git {
     let left = until.saturating_duration_since(Instant::now()).min(GIT_WAIT);
     if left.is_zero() {
-        return None;
+        return Git::NoAnswer;
     }
-    let out = git::run(dir, args, left).ok().filter(|o| o.status.success())?;
-    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    match git::run(dir, args, left) {
+        Ok(out) if out.status.success() => {
+            Git::Out(String::from_utf8_lossy(&out.stdout).into_owned())
+        }
+        Ok(_) => Git::Failed,
+        Err(_) => Git::NoAnswer,
+    }
+}
+
+/// What `git args` printed in `dir`; None when it failed or gave no answer.
+fn git_out(dir: &Path, args: &[&str], until: Instant) -> Option<String> {
+    match git_call(dir, args, until) {
+        Git::Out(out) => Some(out),
+        Git::Failed | Git::NoAnswer => None,
+    }
 }
 
 /// Adds to the session's log a line for a message another session sent it, which comes as a prompt,
@@ -237,7 +260,11 @@ fn log_turn(status: &Path, v: &Value, dir: Option<&Path>) {
         "Stop" => {
             let noted = events_log::read_pending(&pending);
             let until = Instant::now() + STOP_WAIT;
-            let since = noted.since;
+            // First, as it's two quick calls where a big repository's log can take all the time.
+            let on_origin = match (noted.since, dir) {
+                (Some(since), Some(dir)) => reached_origin_since(dir, since, until),
+                _ => false,
+            };
             let mut files = noted.files;
             let mut commits = Vec::new();
             if let (Some(from), Some(dir)) = (noted.head, dir)
@@ -256,16 +283,13 @@ fn log_turn(status: &Path, v: &Value, dir: Option<&Path>) {
             let message = v["last_assistant_message"].as_str().unwrap_or("");
             let mut turn = events_log::Turn::new(message, files, commits, now);
             turn.session_id = v["session_id"].as_str().map(str::to_string);
-            turn.on_origin = match (since, dir) {
-                (Some(since), Some(dir)) => reached_origin_since(dir, since, until),
-                _ => false,
-            };
+            turn.on_origin = on_origin;
             if events_log::append(&log, &turn).is_ok() {
                 // A Stop hook of the user's own can keep Claude going with no new prompt
                 // (`stop_hook_active`): the commit it ends on starts what follows, until a prompt
                 // starts a turn of its own.
                 let _ = std::fs::remove_file(&pending);
-                if let Some(h) = dir.and_then(head) {
+                if let Some(h) = dir.and_then(|d| head_by(d, until)) {
                     let _ = events_log::note_stop(&pending, &h, now);
                 }
             }
@@ -276,8 +300,12 @@ fn log_turn(status: &Path, v: &Value, dir: Option<&Path>) {
 
 /// The commit checked out in `dir`; None outside a repository or before its first commit.
 fn head(dir: &Path) -> Option<String> {
-    let out = git_out(dir, &["rev-parse", "--verify", "-q", "HEAD"], Instant::now() + GIT_WAIT)?;
-    let id = out.trim().to_string();
+    head_by(dir, Instant::now() + GIT_WAIT)
+}
+
+/// `head`, by the time `until`.
+fn head_by(dir: &Path, until: Instant) -> Option<String> {
+    let id = git_out(dir, &["rev-parse", "--verify", "-q", "HEAD"], until)?.trim().to_string();
     (!id.is_empty()).then_some(id)
 }
 
@@ -336,12 +364,29 @@ fn made_since(dir: &Path, from: &str, until: Instant) -> Option<Made> {
         let mut args = vec!["log", "--format=%x00%H", "--name-only", "-z", &range];
         args.extend(not);
         args.push("--");
-        run(&args)
+        git_call(dir, &args, until)
     };
-    // A default branch that's gone (an `origin/HEAD` left pointing nowhere) leaves nothing out.
     let not_base = base_ref(&refs).map(|b| format!("^{b}"));
-    let out = log(not_base.as_deref()).or_else(|| not_base.and_then(|_| log(None)))?;
+    let out = commits_log(log(not_base.as_deref()), || match &not_base {
+        Some(_) => log(None),
+        None => Git::Failed,
+    })?;
     Some(parse_made(&out, prefix.trim_end_matches('\n')))
+}
+
+/// The turn's `git log`, from how the one leaving the default branch out came out (`first`). A
+/// default branch that's gone (an `origin/HEAD` left pointing nowhere) makes git say no, so it asks
+/// again leaving nothing out. A log with no answer says nothing of the sort: in a big repository
+/// asking again would count what a rebase brought in as the turn's, so that's no commits at all.
+fn commits_log(first: Git, leaving_nothing_out: impl FnOnce() -> Git) -> Option<String> {
+    let answer = match first {
+        Git::Failed => leaving_nothing_out(),
+        other => other,
+    };
+    match answer {
+        Git::Out(out) => Some(out),
+        Git::Failed | Git::NoAnswer => None,
+    }
 }
 
 /// The default branch to leave out, from `for-each-ref`'s `%(HEAD)\t%(refname)\t%(symref)` lines
@@ -868,6 +913,18 @@ mod tests {
         assert!(!reached_origin_since(&repo, 0, gone));
         assert!(made_since(&repo, &from, gone).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_a_log_that_said_no_is_asked_again() {
+        let out = || Git::Out("all".to_string());
+        let never = || -> Git { panic!("asked again") };
+        assert_eq!(commits_log(Git::Out("own".into()), never).as_deref(), Some("own"));
+        assert_eq!(commits_log(Git::Failed, out).as_deref(), Some("all"), "the base is gone");
+        assert_eq!(commits_log(Git::Failed, || Git::Failed), None);
+        assert_eq!(commits_log(Git::Failed, || Git::NoAnswer), None);
+        // Too slow to answer: nothing says the base is gone, so nothing counts its commits.
+        assert_eq!(commits_log(Git::NoAnswer, never), None);
     }
 
     #[test]

@@ -54,7 +54,7 @@ const ADDRESS_KEPT: usize = 300;
 
 /// Names a row would read as something other than a session's name: a row never says the user sent
 /// anything, as nothing can tell (`Message::label`), and "a session" is what an unknown one says.
-const RESERVED_NAMES: [&str; 3] = ["you", "user", "a session"];
+const RESERVED_NAMES: [&str; 4] = ["you", "user", "me", "a session"];
 
 /// The most edited files a turn names; it counts the rest (`Turn::files_left_out`).
 const FILES_KEPT: usize = 200;
@@ -183,16 +183,20 @@ pub struct Message {
 
 impl Message {
     /// The other session's name for the screen. A session picks its own, and a row reads as
-    /// taskman's words, so only a plain name goes as it is. Anything else is quoted as what it is:
-    /// a name that says `you`, a look-alike in other scripts, or one that reads as more of the row
-    /// (`lead · 1m: approved`). One that cleans to nothing is no name.
+    /// taskman's words, so only a plain name goes as it is: ASCII letters, digits, `.`, `_`, `/`
+    /// and `-`, which session names are made of (one can start with `-`, `store::agent_key` for a
+    /// project with no ASCII in its name). Anything else is quoted as what it is: a name that says
+    /// `you`, whatever marks surround it, a look-alike in other scripts, or one that reads as more
+    /// of the row (`lead · 1m: approved`). One that cleans to nothing is no name.
     pub fn label(&self) -> String {
         let name = self.peer.as_deref().map(untrusted::line).unwrap_or_default();
         let name = name.trim();
-        let reserved = RESERVED_NAMES.iter().any(|r| name.eq_ignore_ascii_case(r));
+        let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-');
+        let bare = name.trim_matches(['.', '_', '/', '-']);
+        let reserved = RESERVED_NAMES.iter().any(|r| bare.eq_ignore_ascii_case(r));
         if name.is_empty() {
             "a session".into()
-        } else if reserved || untrusted::branch(name).is_none() {
+        } else if reserved || !name.chars().all(plain) {
             format!("session \"{name}\"")
         } else {
             name.to_string()
@@ -323,12 +327,15 @@ pub fn sent(tool: &str, input: &Value, response: &Value) -> Option<Sent> {
     (!text.is_empty()).then(|| Sent { to: cut(to, ADDRESS_KEPT), text })
 }
 
-/// Whether `to` is an address (`uds:/run/…`), whatever its scheme, not a name.
+/// Whether `to` is an address (`uds:/run/…`), whatever its scheme, not a name. A name with a space
+/// isn't one (`fix: login`). `db:migrate` could be either and reads as an address: at worst a row
+/// says "a session", where a name taken wrongly would draw a path.
 fn is_address(to: &str) -> bool {
-    to.split_once(':').is_some_and(|(scheme, _)| {
-        scheme.starts_with(|c: char| c.is_ascii_alphabetic())
-            && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
-    })
+    !to.contains(char::is_whitespace)
+        && to.split_once(':').is_some_and(|(scheme, _)| {
+            scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+                && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        })
 }
 
 /// The name of the session at `to`, for the log at `path`: `to` itself unless it's an address, as
@@ -932,7 +939,15 @@ mod tests {
         // What reads as more of the row, and a look-alike in another script.
         assert_eq!(named("lead · 1m: approved").label(), "session \"lead · 1m: approved\"");
         assert_eq!(named("уou").label(), "session \"уou\"");
-        assert_eq!(named("-lead").label(), "session \"-lead\"");
+        // A project with no ASCII in its name gives its agents this (`store::agent_key`).
+        assert_eq!(named("-lead").label(), "-lead");
+        // Reserved words with marks around them.
+        for near in ["you.", "you-", "-you-", "/you/", "_you_", "..USER..", "me", "ME.", "-me"] {
+            assert_eq!(named(near).label(), format!("session \"{near}\""), "{near}");
+        }
+        for fine in ["youth", "you-2", "me2", "user.name", "a-session"] {
+            assert_eq!(named(fine).label(), fine, "{fine}");
+        }
         // What cleans to nothing is no name, tested after cleaning.
         for nothing in ["", "   ", "\u{200B}", "\u{200B}\u{2060} \u{FEFF}"] {
             assert_eq!(named(nothing).label(), "a session", "{nothing:?}");
@@ -964,9 +979,11 @@ mod tests {
         for to in ["uds:/run/x.sock", "bridge:abc", "ws+unix:/x", "tcp:1.2.3.4:5"] {
             assert_eq!(peer_at(&path, to), None, "{to}");
         }
-        for to in ["lead", "beta/WP-1", "", ":x", "1a:b"] {
+        for to in ["lead", "beta/WP-1", "", ":x", "1a:b", "fix: login", "a b:c"] {
             assert_eq!(peer_at(&path, to).as_deref(), Some(to), "{to}");
         }
+        // Either, read as an address: at worst it says "a session".
+        assert_eq!(peer_at(&path, "db:migrate"), None);
         let long = "n".repeat(PEER_KEPT + 5);
         assert_eq!(peer_at(&path, &long).unwrap().chars().count(), PEER_KEPT + 1);
     }
