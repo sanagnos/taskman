@@ -44,6 +44,9 @@ pub const DROP: u16 = 0;
 /// tracker's does when it's overloaded or a proxy stalls.
 pub const HANG: u16 = 1;
 
+/// The status that answers 401 and says, as Jira does, that a CAPTCHA must be solved first.
+pub const CAPTCHA: u16 = 2;
+
 /// Answers one connection per response, in order, each with that status and JSON body (`DROP` or
 /// `HANG` for none). A request is recorded before it's answered, so once the client has its answer,
 /// `requests` has it.
@@ -68,10 +71,14 @@ pub fn serve(responses: Vec<(u16, &'static str)>) -> Server {
                 });
                 continue;
             }
+            let (status, denied) = match status {
+                CAPTCHA => (401, "X-Authentication-Denied-Reason: CAPTCHA_CHALLENGE\r\n"),
+                status => (status, ""),
+            };
             let _ = write!(
                 stream,
                 "HTTP/1.1 {status} Recorded\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-                 Connection: close\r\n\r\n{body}",
+                 {denied}Connection: close\r\n\r\n{body}",
                 body.len()
             );
         }

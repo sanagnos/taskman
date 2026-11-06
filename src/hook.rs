@@ -36,7 +36,8 @@ pub fn settings_json(exe: &Path) -> String {
     // for the user to approve it in taskman (`App::take_inbox`), as text a session read may be
     // what asked for it. All three keep to the session's own project (`cli::confine`), since the
     // rules can't tell arguments apart. `taskman close` is left out on purpose: it stops sessions and removes
-    // worktrees, so the session asks the user first.
+    // worktrees, so the session asks the user first. So is `taskman title`: what it writes shows on
+    // the user's card, so the prompt shows them the text first, and they can allow it for good.
     "permissions": { "allow": ["Bash(taskman status:*)", "Bash(taskman add:*)", "Bash(taskman move:*)"] }})
     .to_string()
 }

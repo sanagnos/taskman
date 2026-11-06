@@ -351,6 +351,12 @@ fn sidebar_rows(
                     }
                     row.push(Span::styled(truncate(&untrusted::line(title), room), title_style));
                     lines.push(Line::from(row));
+                } else if !agent && tv.missing_title(&app.access(&tv.t)) {
+                    let hint = Span::styled(
+                        no_title_hint(w.saturating_sub(3), &prefix().short()),
+                        yellow(),
+                    );
+                    lines.push(Line::from(vec![marker.clone(), Span::raw(" "), hint]));
                 }
                 // Agents have no PR line: a name, and a title when Claude has set one.
                 if !agent {
@@ -401,6 +407,18 @@ fn sidebar_rows(
         rows.pop();
     }
     rows
+}
+
+/// The title row of a card whose tracker gave it no title (`TicketView::missing_title`), `room`
+/// wide, with `prefix` the prefix as hints write it: says so, and names the key whose form gives it
+/// one and says why it has none. Shorter for a longer prefix, as the key is the way on.
+fn no_title_hint(room: usize, prefix: &str) -> String {
+    let key = format!("{prefix} e");
+    let hints = [format!("⚠ no tracker title · {key}"), format!("⚠ no title · {key}")];
+    hints
+        .into_iter()
+        .find(|hint| width(hint) <= room)
+        .unwrap_or_else(|| truncate("⚠ no tracker title", room))
 }
 
 /// The rows a view `view_h` tall shows of `total`, from row `top`: an edge row with rows beyond
@@ -458,6 +476,40 @@ pub(super) fn more_line(arrow: &str, entries: usize, attention: bool, w: usize) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::test_support::{acme_app, lay_out};
+    use crate::util::line_width;
+    use proptest::prelude::*;
+
+    #[test]
+    fn the_no_title_hint_fits_and_keeps_the_key() {
+        // A full-width card has 26 columns.
+        assert_eq!(no_title_hint(26, "^a"), "⚠ no tracker title · ^a e");
+        // The longest prefix keeps its key.
+        assert_eq!(no_title_hint(26, "^space"), "⚠ no title · ^space e");
+        for p in crate::keys::Prefix::ALL {
+            let hint = no_title_hint(26, &p.short());
+            assert!(hint.ends_with(&format!("{} e", p.short())) && width(&hint) <= 26, "{hint}");
+        }
+        // Narrower than any of them, it says what it can.
+        assert_eq!(no_title_hint(10, "^a"), "⚠ no trac…");
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        /// A title of any kind or length stays on its row, inside the card.
+        #[test]
+        fn a_title_never_widens_its_card(label in "(\\PC|[\\x00-\\x1f]|[界🦀]){0,80}") {
+            let mut app = acme_app();
+            lay_out(&mut app, 160, 40);
+            let i = app.tickets.iter().position(|tv| tv.t.key == "ENG-52").unwrap();
+            app.tickets[i].t.label = Some(label);
+            // The sidebar's width inside its border.
+            for row in sidebar_rows(&app, 29, false, None) {
+                prop_assert!(line_width(&row.line) <= 29, "{:?}", row.line);
+            }
+        }
+    }
 
     #[test]
     fn sidebar_edge_rows_stand_for_the_rows_hidden_past_them() {

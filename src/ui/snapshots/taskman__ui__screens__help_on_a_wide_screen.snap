@@ -18,7 +18,7 @@ expression: screen
 "  3 new comments ·│    ctrl+a /          find a ticket, agent or project by typing                   │                 │"
 "  #129 →ENG-52 dra│  This ticket                                                                     │nts (2) · 1 new  │"
 "                  │    ctrl+a { / }      move: ↑/↓ go on, p moves the project, Enter ends            │                 │"
-"  ENG-61          │    ctrl+a e          rename agent                                                │                 │"
+"  ENG-61          │    ctrl+a e          rename the agent, or set the ticket's title                 │                 │"
 "  3 new comments ·│    ctrl+a M          run in the main checkout when the worktree failed           │afor · 3h        │"
 "  #137 ✗1 ✓2 ✎chg │    ctrl+a x          close the ticket or agent                                   │link carry the   │"
 "                  │  Open                                                                            │ user came from? │"

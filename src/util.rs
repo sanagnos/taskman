@@ -214,6 +214,12 @@ fn tail(s: &str, room: usize) -> &str {
     &s[start..]
 }
 
+/// Whether `s` draws nothing: no columns but its spaces, as with only combining or directional
+/// marks in it.
+pub fn blank(s: &str) -> bool {
+    s.split_whitespace().all(|word| width(word) == 0)
+}
+
 /// `s` in at most `max` columns (`width`): as it is if it fits, else cut and ended with `…`. A
 /// wide character or an emoji with its selector that doesn't fit whole is left out, never split,
 /// so the cut may be a column short.

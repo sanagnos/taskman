@@ -74,7 +74,7 @@ fn the_add_form_takes_issue_numbers_and_links_and_refuses_pull_requests() {
     assert_eq!(listed(&app), ["#15 Fix the login form", "#14 Fix the search page"]);
     app.on_key(ctrl('u'));
     type_text(&mut app, "https://github.com/acme/web/pull/45");
-    let pr = "acme/web#45 is a pull request; add the issue it closes instead";
+    let pr = "acme/web#45 is a pull request; name the issue it closes instead";
     assert_eq!(listed(&app), [pr]);
     app.on_key(key(KeyCode::Enter));
     assert_eq!(add_error(&app), Some(pr));

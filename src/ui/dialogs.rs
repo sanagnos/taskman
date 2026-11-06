@@ -1114,10 +1114,19 @@ fn editing_keys(focused: &crate::app::Field) -> Vec<(&'static str, &'static str)
     keys
 }
 
+/// The keys under a form. With one field there's nowhere for Tab to go.
+fn form_keys(form: &Form) -> Vec<(&'static str, &'static str)> {
+    let mut keys = editing_keys(&form.fields[form.focus]);
+    if form.fields.iter().filter(|f| !f.hidden).count() < 2 {
+        keys.retain(|(key, _)| *key != "Tab");
+    }
+    keys.extend([("ctrl+u", "clear"), ("Esc", "cancel")]);
+    keys
+}
+
 fn draw_form(f: &mut Frame, app: &App) {
     let Mode::Form(form) = &app.mode else { return };
-    let mut keys = editing_keys(&form.fields[form.focus]);
-    keys.extend([("ctrl+u", "clear"), ("Esc", "cancel")]);
+    let keys = form_keys(form);
     let w = (78 + DIALOG_PAD_W).min(f.area().width.saturating_sub(2));
     // Sized to the wrapped text, notes and hints included; on a shorter screen the form scrolls.
     let inner_w = w.saturating_sub(2 + DIALOG_PAD_W);
@@ -1697,7 +1706,7 @@ fn draw_help(f: &mut Frame, app: &mut App) {
             "This ticket",
             &[
                 ("{ / }", "move: ↑/↓ go on, p moves the project, Enter ends"),
-                ("e", "rename agent"),
+                ("e", "rename the agent, or set the ticket's title"),
                 ("M", "run in the main checkout when the worktree failed"),
                 ("x", "close the ticket or agent"),
             ],
@@ -1952,6 +1961,17 @@ mod tests {
                 Field::choice("Tracker", vec!["Jira".into()], "Jira", ""),
             ],
         );
+        let one = Form::new(FormKind::General, "One", vec![Field::text("Name", "", "")]);
+        assert_eq!(form_keys(&one), [("Enter", "save"), ("ctrl+u", "clear"), ("Esc", "cancel")]);
+        assert!(form_keys(&form).contains(&("Tab", "next field")));
+        // A hidden field is no field to go to.
+        let mut hidden = Form::new(
+            FormKind::General,
+            "One shown",
+            vec![Field::text("Name", "", ""), Field::text("Other", "", "")],
+        );
+        hidden.fields[1].hidden = true;
+        assert!(!form_keys(&hidden).iter().any(|(key, _)| *key == "Tab"));
         let keys = |form: &Form| editing_keys(&form.fields[form.focus]);
         // ←/→ move the cursor in text, and change a choice.
         assert_eq!(keys(&form), [("Enter", "save"), ("Tab", "next field")]);

@@ -8,7 +8,7 @@ Everything beyond the [README](../README.md)'s quick start: setting projects and
 - [Continuing a session in another terminal](#continuing-a-session-in-another-terminal-taskman-resume)
 - [Worktrees](#worktrees), [stacked tickets](#stacked-tickets) and [closing tickets](#closing-a-ticket)
 - [Agents](#agents)
-- Commands: [`taskman status`](#sessions-read-their-ticket-taskman-status), [`taskman add`](#adding-tickets-from-a-shell-or-a-session-taskman-add), [`taskman close`](#closing-tickets-from-a-shell-or-a-session-taskman-close)
+- Commands: [`taskman status`](#sessions-read-their-ticket-taskman-status), [`taskman add`](#adding-tickets-from-a-shell-or-a-session-taskman-add), [`taskman close`](#closing-tickets-from-a-shell-or-a-session-taskman-close), [`taskman title`](#setting-a-tickets-title-from-a-shell-or-a-session-taskman-title)
 - [Local files](#local-files-tickets-without-an-account), [GitHub Issues](#github-issues-the-repositorys-own-issues) and [Codex sessions](#codex-sessions)
 - [How it works](#how-it-works) and [when Claude Code or Codex changes](#when-claude-code-or-codex-changes)
 
@@ -117,7 +117,7 @@ In this and every form, Tab and ↑/↓ move between fields and ←/→ change a
 
 A **project** is one folder: usually a repository's main checkout, but any folder works. Adding one takes only its path. Without a tracker it has agents only; pick Jira or Linear under **Tracker** to add tickets, and the form asks, in this order, for the site, the account to sign in with, then the project or team its tickets are in. Local files asks only for its folder and prefix (see [Local files](#local-files-tickets-without-an-account)), and GitHub Issues only for the prefix (see [GitHub Issues](#github-issues-the-repositorys-own-issues)). The project's page also says whether its tickets get a PR panel and which GitHub repo it reads (`acme/web`), and if not, why: `gh` missing or logged out, no GitHub remote, or not a git repository. The repo is the one `gh` picks from the git remotes; in a fork with `origin` and `upstream` that is `upstream` unless you run `gh repo set-default` in the repo. Deleting a project closes its tickets; the folder, worktrees and branches stay.
 
-- **Site** (Jira): `your-site.atlassian.net`. **Workspace** (Linear): the part after `linear.app/`.
+- **Site** (Jira): `your-site.atlassian.net`. Jira Cloud only: Data Center and Server aren't supported yet, and taskman says so when it can tell, which it can't for one under a path, such as `example.com/jira`. **Workspace** (Linear): the part after `linear.app/`.
 - **Account:** the credentials the project uses. A saved account that fits (the same Linear workspace, or your Jira account) is picked for you; ←/→ picks another or **+ new account**. With + new account, the account's own fields show in the same form: **Email** (Jira), **Keep in**, and **Token** or **Read from** (see the accounts below). Saving the project saves the account too, once its connection test passes or you press Enter again to save anyway. The picker shows who each account is and a short source (`you@example.com · cmd:op`); two accounts that would look the same show their whole sources, cut in the middle to fit.
 - **Project** (Jira) or **Team** (Linear): where the project's tickets are. Once the form can sign in, which it tries when you leave the token field (or right away with a saved account), it lists the Jira projects or Linear teams the account can see, with their keys and names. Type to narrow the list by key or name, ↑/↓ to pick (past the top, ↑ moves to the field above; past the bottom, ↓ moves to the next field, or stays on the last entry when this is the form's last field); the only one is picked for you. Its key is the **ticket prefix**: the letters before the number in ticket keys (`ENG` in `ENG-12`), a shortcut so typing `12` adds `ENG-12`, and what the Add form lists open issues by. Full keys and links work whatever it says. If the list can't load (no permission to list projects, network down), the field says why, and you can type the key by hand; a key the list doesn't have asks you to press Enter again to save it anyway.
 - **Ticket prefix** (GitHub Issues, Local files): the same shortcut, typed, and suggested for you (see their sections).
@@ -158,6 +158,14 @@ Make the token first. Jira: [id.atlassian.com → Security → API tokens](https
 
 taskman reads the token when it starts and again when you save the account. After changing a token in your password manager, save the account again (Settings, the account, Enter) and it's read anew; after changing an environment variable, quit taskman and start it from a new terminal, which has the new value.
 
+### A private CA
+
+If your tracker's certificate comes from a company's own CA, or a proxy on your network re-signs connections, add that CA to the system's certificate store, as for any other tool, then restart taskman, which reads the store once. Jira and Linear connections trust the store as well as a bundled copy of Mozilla's list: on Linux, the file your distribution keeps (`/etc/pki/tls/certs/ca-bundle.crt` on RHEL and Fedora, `/etc/ssl/certs/ca-certificates.crt` on Debian and Ubuntu); on macOS, the certificates your keychains trust.
+
+Without access to the store, set `SSL_CERT_FILE` to a PEM file holding the CA, or `SSL_CERT_DIR` to a folder of them, in the environment taskman starts in. They replace what's trusted: Jira and Linear connections trust only what they hold, with neither the store nor the bundled list. So a file with just your CA won't reach a public tracker such as Linear, while a copy of the system's bundle with your CA added does both. If they yield no certificates between them (`SSL_CERT_FILE` set empty, a file that's missing or isn't a regular one, or over 5 s to read), nothing is trusted, and the error says why. Sessions inherit them, so tools in a session that read these variables, such as `gh`, read them too. Restart taskman after changing them.
+
+With neither set, a store that takes over 5 s to read leaves only the bundled list. A certificate that isn't trusted says so, with the host. `taskman update` and the background updater trust only the bundled list, and fall back to `gh` when that fails; `gh` and the install script's `curl` read the system's store and these variables themselves.
+
 ## Use
 
 Press `ctrl+a n` (just `n` while the list is empty) to add a ticket to the current project (the one whose header you last clicked, else the selected card's; the form opens on Agent; typing a number, a key or a link switches it to Ticket): a number (`52` becomes `ENG-52`), a key, or a link. Its session starts in the ticket's own worktree (see [Worktrees](#worktrees)). In a project without a tracker, `ctrl+a n` adds an agent. From a shell, or from an agent, `taskman add 52` does the same without switching to it (see [taskman add](#adding-tickets-from-a-shell-or-a-session-taskman-add)). Every key goes to the session except after the `ctrl+a` prefix (and `ctrl+z`, which would suspend the session with no way to resume it, and `ctrl+c` or `Esc` while text is selected). Pressing `ctrl+a` shows a menu of the everyday command keys, a row for each kind: New, Go to, This ticket, Open, Session, Look back, Panels and General. `ctrl+a ?` (Help) lists every key in the same groups and explains each. The keys, in that order (with the default prefix):
@@ -171,7 +179,7 @@ Press `ctrl+a n` (just `n` while the list is empty) to add a ticket to the curre
 | `ctrl+a w` | list every session that needs you, oldest first, with how long, why and what it asks (see below) |
 | `ctrl+a /` | find a ticket, agent or project by typing (see below) |
 | `ctrl+a {` / `}` | move the selected agent or ticket up / down, then keep going (see [Sidebar](#sidebar)) |
-| `ctrl+a e` / `M` | rename the selected agent (see [Agents](#agents)) / run the session in the main checkout when its worktree couldn't be made (see [Worktrees](#worktrees)) |
+| `ctrl+a e` / `M` | rename the selected agent (see [Agents](#agents)), or set the selected ticket's title (see [Sidebar](#sidebar)) / run the session in the main checkout when its worktree couldn't be made (see [Worktrees](#worktrees)) |
 | `ctrl+a x` | close the selected ticket or agent |
 | `ctrl+a o` / `p` | open the ticket / PR in your browser (a Local files ticket opens in `$EDITOR`) |
 | `ctrl+a l` | the ticket's links (issue, PR, checks), then the session's, newest first: Enter opens one, `c` copies it |
@@ -226,7 +234,7 @@ The footer shows what taskman has to say as a toast. A message that says what yo
 
 ### Finding by typing
 
-`ctrl+a /` puts a text box at the top of the sidebar, and the sidebar narrows to the cards that match what you type: a ticket's key (a bare number finds its key, so `52` finds ENG-52), a title, an agent's name, or a project's name, which shows all that project's cards, folded or not. It's a case-insensitive substring match, not a fuzzy one, over the tickets and agents taskman holds, not the tracker's other issues. ↑/↓ move the highlight, Enter selects the highlighted card as a click would, and Esc closes the box leaving the selection as it was. Either way the full sidebar comes back; this is a one-off find, not a filter that stays on. While the box is in the sidebar, the footer lists these keys, unless a message is showing there. With no match the sidebar says so and Enter does nothing. Nothing typed in the box reaches the session. When the sidebar is folded (with `ctrl+a b`, or by a narrow window), the box opens over the screen instead: what you type on top, and under it the cards that match, a row each with its project, title and state, and the same keys listed under them.
+`ctrl+a /` puts a text box at the top of the sidebar, and the sidebar narrows to the cards that match what you type: a ticket's key (a bare number finds its key, so `52` finds ENG-52), a title (a ticket's own or the tracker's), an agent's name, or a project's name, which shows all that project's cards, folded or not. It's a case-insensitive substring match, not a fuzzy one, over the tickets and agents taskman holds, not the tracker's other issues. ↑/↓ move the highlight, Enter selects the highlighted card as a click would, and Esc closes the box leaving the selection as it was. Either way the full sidebar comes back; this is a one-off find, not a filter that stays on. While the box is in the sidebar, the footer lists these keys, unless a message is showing there. With no match the sidebar says so and Enter does nothing. Nothing typed in the box reaches the session. When the sidebar is folded (with `ctrl+a b`, or by a narrow window), the box opens over the screen instead: what you type on top, and under it the cards that match, a row each with its project, title and state, and the same keys listed under them.
 
 ### Another prefix
 
@@ -248,6 +256,10 @@ The tracker panel shows for tickets in a project with a tracker, and the GitHub 
 ### Sidebar
 
 The sidebar lists each project's agents and tickets, each with its session's state beside its name; a folded project's header shows `●` when one of its tickets needs you or finished a turn, or ended, since you looked. A list longer than the screen scrolls: selecting a card out of view, by key or click, scrolls just enough to show it, and the mouse wheel over the sidebar scrolls the list without moving the selection; selecting the selected card again (from `ctrl+a /`, or a click on what shows of it) brings it back into view. The top and bottom rows then say what's hidden past them (`↑ 3 more`, `↓ 5 more`), with `●` when a hidden ticket needs you or finished a turn, or ended, since you looked.
+
+A ticket's card shows its key, then its title, then its PR (or its branch, without GitHub). The title is the tracker's, cut to fit. To tell tickets apart your own way, or when the tracker has none to give, `ctrl+a e` sets a title of your own in its place: it stays in taskman, the tracker's doesn't change, and this one doesn't follow it. Save it empty to go back to the tracker's. A session can set it too, with [`taskman title`](#setting-a-tickets-title-from-a-shell-or-a-session-taskman-title). The key stays on the card's first row, and a folded sidebar shows only the key.
+
+`⚠ no tracker title · ^a e` on a card means taskman has asked the tracker and got no title, or can't ask: a token it can't read, no account picked, or a tracker that refused or didn't answer. `ctrl+a e` opens the title form, which says which, and points to settings when that's where to fix it. It says so for as long as the tracker gives none, also after you've set a title and the card no longer shows the hint. The hint doesn't show once the session has titled its window either, as the card then has that to show; the title form and the tracker panel still say what failed.
 
 What the states mean, as `ctrl+a ?` lists them (a folded sidebar shows the symbol alone):
 
@@ -442,12 +454,28 @@ Closed ENG-62. Kept ~/acme-web-ENG-62: it has 2 unpushed commits
 ENG-63's PR #88 isn't merged: not closed
 ```
 
-- **What it takes:** numbers, keys or links (`taskman close 61 62`), or `--merged` for every ticket whose PR has merged; with keys too, only those of them that merged. `--keep-worktree` closes without removing anything, and `--agent NAME` closes a project agent.
+- **What it takes:** numbers, keys or links (`taskman close 61 62`), or `--merged` for every ticket whose PR has merged; with keys too, only those of them that merged. On GitHub Issues, an issue's link and `'#61'` too, in quotes: unquoted, the shell reads `#61` as a comment, so `taskman close --merged #61` runs as bare `--merged` and closes every merged ticket. `--keep-worktree` closes without removing anything, and `--agent NAME` closes a project agent.
 - **Each ticket closes as `ctrl+a x` closes it:** its session stops, then, once its CLI has ended, the worktree taskman created is removed, with its branch once merged, only if nothing would be lost (see [Worktrees](#worktrees)). Otherwise it stays and the line names the folder and says why, like `Kept ~/src/acme-web-ENG-52: it has ignored files: .env`. Nothing is forced. Ignored files are never deleted from here, and the ticket is closed by then, so the dialog can't either: keep what you need from the folder, then remove it yourself with `git worktree remove` and its path, which deletes ignored files too. taskman looks each PR up fresh first, so a merge from a minute ago counts.
 - **Which project:** as for `taskman add`; `--merged` run outside any project covers them all.
 - **Not closed:** a ticket whose session you continued in another terminal with `taskman resume` ("quit it there first"), and with `--merged` one whose PR can't be looked up.
 - **taskman closed?** The tickets close when it starts. If a dialog is open in taskman, they close once it's answered.
 - **It asks first in a session.** Unlike `taskman add`, sessions aren't allowed to run it without your approval, so text a session read can't close your tickets unattended.
+
+## Setting a ticket's title from a shell or a session: `taskman title`
+
+`taskman title` sets the title `ctrl+a e` sets, so anything that knows a ticket's title can fill in its card when taskman can't get it from the tracker: a plugin of the session's, a script, or the session itself when you ask it to.
+
+```
+$ taskman title "Fix the login redirect"
+ENG-52's title is now: Fix the login redirect
+```
+
+- **What it takes:** in a session, the title alone means its own ticket, and it can't be one word that reads as a ticket's number or key, in case you meant to name one. To use such a word as the title, name the ticket first: `taskman title ENG-52 sha-256`. From a shell, name the ticket first: `taskman title ENG-52 "Fix the login redirect"`, with `--project NAME` if the folder doesn't say which. On GitHub Issues, an issue's link or `'#52'` names it too, in quotes, as the shell reads an unquoted `#52` as a comment. `--clear ENG-52` drops the title, so the card shows the tracker's again. Text from a script may start with a dash, so put `--` before it: `taskman title -- "$TITLE"`.
+- **A session sets only its own ticket's title,** and an agent, which goes by its name, sets none.
+- **taskman gives it no allowance in a session.** It isn't on the sessions' allow-list, so the session's own permission settings decide whether it asks. When Claude Code asks, its prompt shows you the whole command, and you can allow it for good there. Codex's sandbox applies too, as the command writes to taskman's state folder.
+- **It's a snapshot, and stays in taskman.** It doesn't follow later changes in the tracker, and nothing is sent there. The last title set wins, whether you set it or a session did. It counts as untrusted: it's cleaned to one line of up to 200 columns, and stays out of sessions' startup instructions, branch names and `taskman status`. Closing the ticket drops it.
+- **taskman doesn't run this for you.** It never starts a turn or spends tokens to find a title.
+- **taskman closed?** The title is set when it starts.
 
 ## Local files: tickets without an account
 

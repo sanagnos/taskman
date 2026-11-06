@@ -1021,6 +1021,7 @@ mod tests {
         };
         let branch = |field: &str| format!("eng-52-fix{}login {}", tags(&text(field)), text(field));
         for tv in &mut app.tickets {
+            tv.t.label = Some(text("label"));
             if let Some(b) = &mut tv.t.branch {
                 *b = branch("saved branch");
             }

@@ -98,7 +98,7 @@ pub fn key_from_input(input: &str, prefix: &str, repo: &Repo) -> Option<Result<S
     let theirs = Repo::site(host, &format!("{owner}/{name}"));
     match kind {
         "pull" | "pulls" => {
-            Some(Err(format!("{theirs}#{n} is a pull request; add the issue it closes instead")))
+            Some(Err(format!("{theirs}#{n} is a pull request; name the issue it closes instead")))
         }
         "issues" if other => Some(Err(format!(
             "that's an issue of {theirs}; this project's issues are {}",
@@ -469,11 +469,11 @@ pub(crate) mod tests {
         );
         assert_eq!(
             k("https://github.com/acme/web/pull/45"),
-            Some(Err("acme/web#45 is a pull request; add the issue it closes instead".into()))
+            Some(Err("acme/web#45 is a pull request; name the issue it closes instead".into()))
         );
         assert_eq!(
             k("https://github.com/acme/web/pull/45/files"),
-            Some(Err("acme/web#45 is a pull request; add the issue it closes instead".into()))
+            Some(Err("acme/web#45 is a pull request; name the issue it closes instead".into()))
         );
         // The same repository on another host is another repository.
         assert!(matches!(k("https://git.acme.example/acme/web/issues/12"), Some(Err(_))));

@@ -22,6 +22,7 @@ fn every_command_refuses_an_empty_project() {
         &["status", "--project="],
         &["resume", "lead", "--project="],
         &["move", "3", "review", "--project="],
+        &["title", "52", "Fix", "--project="],
     ] {
         let out = run(&dir, args);
         assert_eq!(out.status.code(), Some(1), "{args:?}");

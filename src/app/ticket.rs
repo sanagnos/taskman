@@ -8,9 +8,9 @@ use crate::github::{self, Pr, PrState};
 use crate::session::{End, Parser, Reaper, Session};
 use crate::status_file::Record;
 use crate::store::{self, Ticket};
-use crate::tracker::Issue;
+use crate::tracker::{Access, Issue};
 use crate::worktree;
-use crate::{resume, util};
+use crate::{keys, resume, untrusted, util};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime};
@@ -470,9 +470,13 @@ impl TicketView {
         }
     }
 
-    /// A title worth showing: the tracker summary, or Claude's window title without its status
-    /// glyph. None when there's only something generic like "Claude Code".
+    /// A title worth showing: the ticket's own (`Ticket::label`), else the tracker summary, else
+    /// Claude's window title without its status glyph. None when there's only something generic
+    /// like "Claude Code".
     pub fn title(&self) -> Option<String> {
+        if let Some(label) = self.t.label.as_deref().filter(|l| !util::blank(l)) {
+            return Some(label.to_string());
+        }
         if let Some(i) = &self.jira.data
             && !i.summary.trim().is_empty()
         {
@@ -495,6 +499,108 @@ impl TicketView {
             self.t.cwd.file_name().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
         strip_folder(&raw, &dir).to_string()
     }
+
+    /// Why the tracker gave this ticket no title and where to fix it, in a line or two for the
+    /// title form, for `access`, the ticket's (`App::access`), whatever title the card shows
+    /// instead. None when it gave one, with no tracker to ask, and until the first answer. The
+    /// tracker panel has the whole of what went wrong.
+    pub fn no_tracker_title(&self, access: &Access) -> Option<String> {
+        let titled = self.jira.data.as_ref().is_some_and(|i| !i.summary.trim().is_empty());
+        if self.t.agent.is_some() || titled {
+            return None;
+        }
+        let settings = keys::chord(",");
+        let why = match access {
+            Access::NoTracker | Access::Reading => return None,
+            Access::NoAccount(provider, _) => {
+                format!("No {} account picked. Pick one in settings ({settings})", provider.label())
+            }
+            Access::Failed(e) => format!("{}. Fix it in settings ({settings})", short_reason(e)),
+            Access::Client(client) => match (&self.jira.error, &self.jira.data) {
+                // Could be the network as well as the account, so it doesn't promise a fix.
+                (Some(e), _) if client.provider().needs_account() && !beyond_settings(e) => {
+                    format!("{}. Check settings ({settings})", short_reason(e))
+                }
+                // No account to change, or changing it wouldn't help or is said already: the
+                // error speaks for itself, as with `gh auth login`.
+                (Some(e), _) => short_reason(e),
+                (None, Some(_)) => "The tracker's answer has no title".to_string(),
+                (None, None) => return None,
+            },
+        };
+        Some(format!("{WARNING}{why}"))
+    }
+
+    /// Whether the card should say its tracker gave it no title. Otherwise a tracker that can't be
+    /// reached leaves a card with its key alone, and nothing says why while the tracker panel is
+    /// hidden. A title from anywhere ends it: the title form still says why (`no_tracker_title`).
+    pub fn missing_title(&self, access: &Access) -> bool {
+        self.title().is_none() && self.no_tracker_title(access).is_some()
+    }
+}
+
+/// The most columns a ticket's own title keeps: a card shows far fewer, and the find picker and an
+/// agent's board a little more.
+const LABEL_WIDTH: usize = 200;
+
+/// The most bytes it keeps, as combining marks take bytes and no columns.
+const LABEL_BYTES: usize = 800;
+
+/// The most columns of what went wrong the title form shows.
+const REASON_WIDTH: usize = 120;
+
+/// The same for an error nothing is added after (`beyond_settings`), so its own fix stays whole.
+const OWN_FIX_WIDTH: usize = 150;
+
+/// Where a certificate's error stops saying what's wrong and goes on to what to do.
+const NOT_TRUSTED: &str = "doesn't trust";
+
+/// Whether pointing to settings would be wrong for this error: a certificate or a self-hosted Jira,
+/// which settings can't fix, or a CAPTCHA, whose message says when to save the account.
+fn beyond_settings(error: &str) -> bool {
+    [NOT_TRUSTED, "certificate was refused", "is Jira Data Center or Server", "save the account in"]
+        .iter()
+        .any(|words| error.contains(words))
+}
+
+/// Before a reason in the title form. Two spaces: the sign is one column wide, but a terminal that
+/// draws it wider covers the first.
+const WARNING: &str = "⚠  ";
+
+/// What went wrong, in short, from a tracker's or token's error, which is others' text: on one
+/// line, up to where it goes on to explain. A following "run …" or "get …" is kept, as it's the
+/// fix, and what's after a colon too, as what comes before one may be no more than the command's
+/// name (`gh api graphql: timed out`). Where a variable wasn't set, and the rest, stay in the
+/// panel.
+fn short_reason(error: &str) -> String {
+    let line = untrusted::line(error).replacen(" before it takes another login", "", 1);
+    let ends = |at: &(usize, &str)| {
+        let rest = &line[at.0 + 2..];
+        !(rest.starts_with("run ") || rest.starts_with("get "))
+    };
+    let clause_end = line.match_indices("; ").find(ends).map(|(at, _)| at);
+    let cuts = [store::NOT_IN_THE_SHELL, " (", ". "].map(|p| line.find(p));
+    let trusted = line.find(NOT_TRUSTED).map(|at| at + NOT_TRUSTED.len());
+    let cut = cuts.into_iter().flatten().chain(clause_end).chain(trusted).min();
+    let clause = line[..cut.unwrap_or(line.len())].trim_end_matches(['.', ':']);
+    let width = if beyond_settings(&line) { OWN_FIX_WIDTH } else { REASON_WIDTH };
+    match util::truncate(clause, width) {
+        short if short.is_empty() => "The tracker's answer was an error".to_string(),
+        short => short,
+    }
+}
+
+/// `text` as a ticket's own title (`Ticket::label`): on one line, without what hides text from a
+/// reader, and cut to `LABEL_WIDTH` and `LABEL_BYTES`. None when that leaves nothing to see. A
+/// session can write it, so it counts as untrusted however it came.
+pub(super) fn clean_label(text: &str) -> Option<String> {
+    let label = util::truncate(&untrusted::line(text), LABEL_WIDTH);
+    let mut end = label.len().min(LABEL_BYTES);
+    while !label.is_char_boundary(end) {
+        end -= 1;
+    }
+    // Cleaned again: the cut can leave a joiner or a space at its end.
+    Some(untrusted::line(&label[..end])).filter(|l| !util::blank(l))
 }
 
 /// Whether `id` arrived after `seen` was first filled; nothing is new before the first fetch.
@@ -557,6 +663,308 @@ mod tests {
     use crate::status_file::parse;
     use std::path::Path;
     use std::time::Duration;
+
+    fn viewed() -> TicketView {
+        TicketView::new(ticket())
+    }
+
+    fn issue(summary: &str) -> Issue {
+        Issue { summary: summary.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn a_tickets_own_title_wins_over_the_trackers() {
+        let mut tv = viewed();
+        assert_eq!(tv.title(), None);
+        tv.jira.finish(Ok(issue("From the tracker")));
+        assert_eq!(tv.title().as_deref(), Some("From the tracker"));
+        tv.t.label = Some("Mine".into());
+        assert_eq!(tv.title().as_deref(), Some("Mine"));
+        // tickets.json edited by hand: blank is no title.
+        tv.t.label = Some("  ".into());
+        assert_eq!(tv.title().as_deref(), Some("From the tracker"));
+    }
+
+    #[test]
+    fn says_when_the_tracker_gave_no_title() {
+        use crate::store::Provider;
+        let board = serde_json::from_value(
+            serde_json::json!({ "provider": "local", "site": "workplan", "key": "ENG" }),
+        )
+        .unwrap();
+        let client = || {
+            Access::Client(
+                crate::tracker::Client::new(&board, Path::new("/src/acme"), None).unwrap(),
+            )
+        };
+        let no_account = Access::NoAccount(Provider::Jira, "example".into());
+        let failed = Access::Failed("the token command failed".into());
+        let mut tv = viewed();
+        // Nothing to ask, or nothing heard yet: quiet.
+        assert!(!tv.missing_title(&Access::NoTracker));
+        assert!(!tv.missing_title(&Access::Reading));
+        assert!(!tv.missing_title(&client()));
+        // It can't ask.
+        assert!(tv.missing_title(&no_account));
+        assert!(tv.missing_title(&failed));
+        // It asked, and heard no title.
+        tv.jira.finish(Err("timed out".into()));
+        assert!(tv.missing_title(&client()));
+        assert!(!tv.missing_title(&Access::Reading), "still reading the token after a failure");
+        tv.jira.finish(Ok(issue("  ")));
+        assert!(tv.missing_title(&client()));
+        assert_eq!(
+            tv.no_tracker_title(&client()).as_deref(),
+            Some("⚠  The tracker's answer has no title")
+        );
+        // A title from anywhere ends it.
+        tv.jira.finish(Ok(issue("From the tracker")));
+        assert!(!tv.missing_title(&client()));
+        assert_eq!(tv.no_tracker_title(&failed), None);
+        let mut own = viewed();
+        own.t.label = Some("Mine".into());
+        assert!(!own.missing_title(&failed));
+        // The card's quiet then, but the form still has the reason, short, and where to fix it.
+        let settings = keys::chord(",");
+        assert_eq!(
+            own.no_tracker_title(&failed),
+            Some(format!("⚠  the token command failed. Fix it in settings ({settings})"))
+        );
+        assert_eq!(
+            own.no_tracker_title(&no_account),
+            Some(format!("⚠  No Jira account picked. Pick one in settings ({settings})"))
+        );
+        own.jira
+            .finish(Err("Jira rejected the credentials (check the email and API token)".into()));
+        let jira = Access::Client(crate::tracker::Client::Jira(crate::jira::JiraConfig::new(
+            "https://example.invalid",
+            "dev@example.com",
+            "mock",
+        )));
+        assert_eq!(
+            own.no_tracker_title(&jira),
+            Some(format!("⚠  Jira rejected the credentials. Check settings ({settings})"))
+        );
+        // With no account to change, settings can't fix it, and the error's own fix stays.
+        own.jira.finish(Err("gh isn't logged in; run gh auth login".into()));
+        assert_eq!(
+            own.no_tracker_title(&client()),
+            Some("⚠  gh isn't logged in; run gh auth login".to_string())
+        );
+        // An agent has its name.
+        let agent = crate::app::test_support::agent("lead", store::Cli::Claude, None);
+        assert!(!TicketView::new(agent).missing_title(&failed));
+    }
+
+    #[test]
+    fn shortens_a_reason_to_what_went_wrong() {
+        for (error, short) in [
+            (
+                "JIRA_API_TOKEN isn't set in the shell taskman started from: add export \
+                 JIRA_API_TOKEN=… to ~/.zshrc, then open a new terminal and start taskman there",
+                "JIRA_API_TOKEN isn't set",
+            ),
+            ("the token command failed: locked; see the guide", "the token command failed: locked"),
+            (
+                "the token command printed no token; see the guide",
+                "the token command printed no token",
+            ),
+            (
+                "Jira rejected the credentials (check the email and API token)",
+                "Jira rejected the credentials",
+            ),
+            (
+                "ENG-52 not found, or not visible to this account",
+                "ENG-52 not found, or not visible to this account",
+            ),
+            (
+                "can't reach example.atlassian.net: no connection (no network); taskman tries again",
+                "can't reach example.atlassian.net: no connection",
+            ),
+            ("Linear rejected the API key.", "Linear rejected the API key"),
+            ("Jira answered HTTP 500. Try later", "Jira answered HTTP 500"),
+            // The fix is kept, and what follows it isn't.
+            ("gh isn't logged in; run gh auth login", "gh isn't logged in; run gh auth login"),
+            (
+                "gh isn't installed; get it from https://cli.github.com; or skip it",
+                "gh isn't installed; get it from https://cli.github.com",
+            ),
+            (
+                "acme/web's organization needs gh's token authorized for its single sign-on; run gh auth refresh -h github.com",
+                "acme/web's organization needs gh's token authorized for its single sign-on; run gh auth refresh -h github.com",
+            ),
+            // Never cut down to the name of what failed.
+            (
+                "gh api graphql: timed out after 30s; the next refresh tries again",
+                "gh api graphql: timed out after 30s",
+            ),
+            (
+                "GraphQL: API rate limit exceeded for user ID 1. (Try again later)",
+                "GraphQL: API rate limit exceeded for user ID 1",
+            ),
+            (
+                "ENG-1 not found: no ENG-1-….md in ~/acme/workplan",
+                "ENG-1 not found: no ENG-1-….md in ~/acme/workplan",
+            ),
+            // What settings can't fix, or says already.
+            (
+                "example.atlassian.net is Jira Data Center or Server, which taskman doesn't support yet: it works with Jira Cloud only",
+                "example.atlassian.net is Jira Data Center or Server, which taskman doesn't support yet: it works with Jira Cloud only",
+            ),
+            (
+                "Jira wants a CAPTCHA solved before it takes another login: log in to example.atlassian.net in a browser, then save the account in Settings or restart taskman",
+                "Jira wants a CAPTCHA solved: log in to example.atlassian.net in a browser, then save the account in Settings or restart taskman",
+            ),
+            // Nothing left hanging where it's cut.
+            ("the token command failed: (1) locked", "the token command failed"),
+            // Others' text, on one line and clean.
+            ("Fix\x1b[31m\nthe\u{200b} token; more", "Fix [31m the token"),
+            ("", "The tracker's answer was an error"),
+            (" . ", "The tracker's answer was an error"),
+        ] {
+            assert_eq!(short_reason(error), short, "{error}");
+        }
+    }
+
+    /// The certificate errors as `net` writes them, however they go on.
+    #[test]
+    fn a_certificates_reason_stops_at_what_went_wrong() {
+        let host = "jira.example.com";
+        let unknown = crate::net::certificate_failure(host, "UnknownIssuer");
+        let short = "jira.example.com's certificate comes from a CA this machine doesn't trust";
+        assert!(unknown.starts_with(short) && unknown.len() > short.len(), "{unknown}");
+        assert_eq!(short_reason(&unknown), short);
+        for went_on in
+            [". SSL_CERT_FILE is set, then restart taskman", ": add the CA", " (no such file)"]
+        {
+            assert_eq!(short_reason(&format!("{short}{went_on}")), short, "{went_on}");
+        }
+        let expired = crate::net::certificate_failure(host, "certificate expired");
+        assert_eq!(
+            short_reason(&expired),
+            "jira.example.com's certificate was refused: certificate expired"
+        );
+        // Settings can't fix these, and a CAPTCHA's says when to save the account.
+        for beyond in [unknown.as_str(), expired.as_str()] {
+            assert!(beyond_settings(beyond), "{beyond}");
+        }
+        assert!(beyond_settings(
+            "x is Jira Data Center or Server, which taskman doesn't support yet"
+        ));
+        assert!(beyond_settings("log in to x in a browser, then save the account in Settings"));
+        for points in ["Jira rejected the credentials", "can't reach x: no connection"] {
+            assert!(!beyond_settings(points), "{points}");
+        }
+    }
+
+    /// What the form says for them: no pointer to settings, on a Jira project that has an account.
+    #[test]
+    fn the_form_adds_no_settings_for_what_they_cant_fix() {
+        let jira = Access::Client(crate::tracker::Client::Jira(crate::jira::JiraConfig::new(
+            "https://example.invalid",
+            "dev@example.com",
+            "mock",
+        )));
+        let mut tv = viewed();
+        let says = |tv: &mut TicketView, error: &str| {
+            tv.jira.finish(Err(error.to_string()));
+            tv.no_tracker_title(&jira).unwrap()
+        };
+        let unknown = crate::net::certificate_failure("jira.example.com", "UnknownIssuer");
+        assert_eq!(
+            says(&mut tv, &unknown),
+            "⚠  jira.example.com's certificate comes from a CA this machine doesn't trust"
+        );
+        let self_hosted = "jira.example.com is Jira Data Center or Server, which taskman doesn't support yet: it works with Jira Cloud only";
+        assert_eq!(says(&mut tv, self_hosted), format!("⚠  {self_hosted}"));
+        let captcha = "Jira wants a CAPTCHA solved before it takes another login: log in to jira.example.com in a browser, then save the account in Settings or restart taskman";
+        assert!(
+            says(&mut tv, captcha).ends_with("save the account in Settings or restart taskman")
+        );
+        assert!(!says(&mut tv, captcha).contains("Check settings"));
+    }
+
+    /// At the form's width, what these errors become takes no more than two rows.
+    #[test]
+    fn a_reason_stays_on_two_rows() {
+        use ratatui::widgets::{Paragraph, Wrap};
+        for error in [
+            "JIRA_API_TOKEN isn't set in the shell taskman started from: add export",
+            "gh isn't logged in; run gh auth login",
+            "acme/web's organization needs gh's token authorized for its single sign-on; run gh auth refresh -h github.com",
+            "gh api graphql: timed out after 30s; the next refresh tries again",
+            "GraphQL: API rate limit exceeded for user ID 1. (Try again later)",
+            "can't reach example.atlassian.net: no connection (no network); tries again",
+            "ENG-1 not found: no ENG-1-….md in ~/src/acme-web/workplan",
+            "jira.example.com's certificate comes from a CA this machine doesn't trust: add the CA to the system's certificate store, or set SSL_CERT_FILE to a file holding it, then restart taskman",
+            "jira.example.com's certificate was refused: certificate expired",
+            "example.atlassian.net is Jira Data Center or Server, which taskman doesn't support yet: it works with Jira Cloud only",
+            "Jira wants a CAPTCHA solved before it takes another login: log in to example.atlassian.net in a browser, then save the account in Settings or restart taskman",
+        ] {
+            let why = short_reason(error);
+            let more = if beyond_settings(error) {
+                String::new()
+            } else {
+                format!(". Check settings ({})", keys::chord(","))
+            };
+            let note = format!("{WARNING}{why}{more}");
+            let rows = Paragraph::new(note.as_str()).wrap(Wrap { trim: false }).line_count(78);
+            assert!(rows <= 2, "{rows} rows: {note}");
+        }
+    }
+
+    #[test]
+    fn cleans_a_label() {
+        assert_eq!(clean_label("  Fix  the\nlogin\t"), Some("Fix the login".into()));
+        assert_eq!(clean_label("\x1b]0;x\x07Fix\u{202e}"), Some("]0;x Fix".into()));
+        assert_eq!(clean_label(""), None);
+        assert_eq!(clean_label(" \x1b\u{200b}\n"), None);
+        assert_eq!(util::width(&clean_label(&"x".repeat(500)).unwrap()), LABEL_WIDTH);
+        // Combining marks take bytes and no columns.
+        let marks = format!("a{}", "\u{301}".repeat(100_000));
+        let label = clean_label(&marks).unwrap();
+        assert!(label.len() <= LABEL_BYTES && label.starts_with('a'), "{}", label.len());
+        // Nothing to see, whatever it's made of.
+        for blank in ["\u{200e}", "\u{301}", "\u{200e}\u{301} \u{200e}"] {
+            assert_eq!(clean_label(blank), None, "{blank:?}");
+        }
+        // The byte cut lands after a joiner here, which cleaning again takes off.
+        let joined = "👍\u{200d}".repeat(200);
+        let label = clean_label(&joined).unwrap();
+        assert!(label.len() <= LABEL_BYTES && !label.ends_with('\u{200d}'), "{label:?}");
+        assert_eq!(clean_label(&label), Some(label));
+    }
+
+    mod labels {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(128))]
+
+            /// Whatever a tracker says, the form gets one clean line that says something, of a
+            /// bounded width.
+            #[test]
+            fn a_reason_is_one_short_clean_line(text in "(\\PC|[\\x00-\\x1f\\u{200b}\\u{202e}]){0,300}") {
+                let short = short_reason(&text);
+                prop_assert!(!short.is_empty() && !short.contains(char::is_control));
+                prop_assert!(util::width(&short) <= REASON_WIDTH);
+            }
+
+            /// Whatever comes in, what's saved is one clean line of a bounded width, which
+            /// cleaning again leaves as it is.
+            #[test]
+            fn a_label_is_one_clean_line(text in "(\\PC|[\\x00-\\x1f\\u{200b}\\u{202e}\\u{e0001}]){0,300}") {
+                if let Some(label) = clean_label(&text) {
+                    prop_assert!(!label.is_empty() && !label.contains(char::is_control));
+                    prop_assert!(util::width(&label) <= LABEL_WIDTH);
+                    prop_assert!(label.len() <= LABEL_BYTES);
+                    prop_assert!(!util::blank(&label));
+                    prop_assert_eq!(clean_label(&label), Some(label.clone()));
+                }
+            }
+        }
+    }
 
     #[test]
     fn strips_codex_folder_from_titles() {
