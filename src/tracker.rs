@@ -264,7 +264,7 @@ impl Client {
             return Err(FetchError::Auth(format!(
                 "no {} account picked for project {}; pick or add one in its settings in taskman ({} ,)",
                 t.provider.label(),
-                project.name,
+                crate::untrusted::line(&project.name),
                 crate::keys::prefix()
             )));
         };

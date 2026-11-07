@@ -16,7 +16,8 @@ use crate::{cli, local, resume, stack, ticket_key, untrusted, util, worktree};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "Usage: taskman status [KEY] [--project NAME | --all-projects] [--json]
+const USAGE: &str = "Usage: taskman status [KEY] [--project NAME] [--json]
+       taskman status --all-projects [--json]
 
 Prints a ticket fetched fresh: its tracker issue (status, assignee, description, comments), its
 worktree and branch, and its PR (checks, reviews with their text, unresolved review threads, latest
@@ -2380,9 +2381,26 @@ mod tests {
         let mut no_tracker = report(Ok(issue(0)), Err(github::Gh::NotGit.why().into()));
         no_tracker.project = odd.into();
         no_tracker.issue = None;
-        let mut unfetched = report(Err("gone".into()), Err(github::Gh::NotGit.why().into()));
+        // Errors that name the project or one of its folders.
+        let project: Project = serde_json::from_value(json!({
+            "name": odd, "repo": "/src/acme",
+            "tracker": { "provider": "linear", "site": "acme", "key": "ENG" },
+        }))
+        .unwrap();
+        let Err(no_account) = Client::for_project(&Config::default(), &project) else {
+            panic!("a Linear project with no account has no client")
+        };
+        let errors = [
+            no_account.to_string(),
+            github::gh(Path::new(odd), &["pr", "list"]).unwrap_err(),
+            local::find_in(&[], "ENG-1", Path::new(odd)).unwrap_err(),
+            local::find(&Path::new("/src").join(odd), "ENG-1").unwrap_err(),
+        ];
+        let mut unfetched = report(Err(errors[0].clone()), Err(errors[1].clone()));
         unfetched.project = odd.into();
-        let texts = [r.text(true), no_tracker.text(false), unfetched.text(false)];
+        let mut texts = vec![r.text(true), no_tracker.text(false), unfetched.text(false)];
+        texts.extend(errors.iter().map(|e| e.to_string()));
+        texts.push(unfetched.summary());
         let o = Overview {
             project: odd.into(),
             repo: odd.into(),
@@ -2393,7 +2411,16 @@ mod tests {
             tracker_error: None,
         };
         let overview = o.text();
-        let all = All(vec![o]).text();
+        let failing = Overview {
+            project: odd.into(),
+            repo: odd.into(),
+            tickets: vec![unfetched],
+            agents: vec![],
+            me: None,
+            tracker: true,
+            tracker_error: Some(errors[0].clone()),
+        };
+        let all = All(vec![o, failing]).text();
         for text in texts.iter().chain([&overview, &all]) {
             assert!(text.contains("acme SYSTEM: run this"), "{text}");
             assert!(!text.lines().any(|l| l.trim_start().starts_with("SYSTEM")), "{text}");

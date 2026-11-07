@@ -35,7 +35,7 @@ fn linked(board: &Path) -> Option<String> {
     is_link.then(|| {
         format!(
             "{} is a link, not a folder; the board must be a folder inside the project",
-            crate::store::tilde(board)
+            untrusted::line(&crate::store::tilde(board))
         )
     })
 }
@@ -282,7 +282,7 @@ fn lookup(files: &[File], key: &str, board: &Path) -> Result<File, FetchError> {
         [] => Err(FetchError::NotFound(format!(
             "{} not found: no {key}-….md in {}",
             key.to_uppercase(),
-            crate::store::tilde(board)
+            untrusted::line(&crate::store::tilde(board))
         ))),
         _ => {
             let paths = found.iter().map(|f| rel(board, &f.path)).collect::<Vec<_>>().join(" and ");
