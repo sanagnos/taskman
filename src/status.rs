@@ -386,10 +386,10 @@ pub(crate) fn locate<'a>(
         [] => None,
         [t] => Some(t),
         _ => {
-            let names: Vec<&str> = open
+            let names: Vec<String> = open
                 .iter()
                 .filter_map(|t| saved.projects.iter().find(|p| p.repo == t.repo))
-                .map(|p| p.name.as_str())
+                .map(|p| untrusted::line(&p.name))
                 .collect();
             return Err(format!(
                 "{key} is open in {}: run this in one's folder, or pass --project NAME",
@@ -2390,11 +2390,33 @@ mod tests {
         let Err(no_account) = Client::for_project(&Config::default(), &project) else {
             panic!("a Linear project with no account has no client")
         };
+        // A board that is a link, named with the line break.
+        let dir = std::env::temp_dir().join(format!("taskman-odd-board-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("elsewhere")).unwrap();
+        std::os::unix::fs::symlink(dir.join("elsewhere"), dir.join(odd)).unwrap();
+        let linked = local::find(&dir.join(odd), "ENG-1").unwrap_err();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(linked.contains("is a link, not a folder"), "{linked}");
+        // A key open in two projects, named with it too.
+        let two: Saved = serde_json::from_value(json!({
+            "projects": [{ "name": odd, "repo": "/src/acme" }, { "name": odd, "repo": "/src/beta" }],
+            "tickets": [
+                { "key": "ENG-1", "repo": "/src/acme", "cwd": "/src/acme" },
+                { "key": "ENG-1", "repo": "/src/beta", "cwd": "/src/beta" },
+            ],
+        }))
+        .unwrap();
+        let Err(open_twice) = locate("ENG-1", &two, Scope::Anywhere) else {
+            panic!("a key open in two projects names them")
+        };
+        assert!(open_twice.contains("is open in"), "{open_twice}");
         let errors = [
             no_account.to_string(),
             github::gh(Path::new(odd), &["pr", "list"]).unwrap_err(),
             local::find_in(&[], "ENG-1", Path::new(odd)).unwrap_err(),
-            local::find(&Path::new("/src").join(odd), "ENG-1").unwrap_err(),
+            linked,
+            open_twice,
         ];
         let mut unfetched = report(Err(errors[0].clone()), Err(errors[1].clone()));
         unfetched.project = odd.into();
