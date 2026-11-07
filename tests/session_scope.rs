@@ -43,6 +43,87 @@ fn run(dir: &Path, acme: &Path, session: Option<&str>, args: &[&str]) -> (bool, 
 }
 
 #[test]
+fn a_session_is_refused_every_project() {
+    let dir = common::scratch_dir("session-all-projects");
+    let (acme, _) = two_projects(&dir);
+    // SEC-7 open too, as the view lists open tickets, and a third project on a Jira account whose
+    // token command leaves a mark. With no ticket there, nothing asks that Jira for anything.
+    let state = dir.join("state/taskman/tickets.json");
+    let mut saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
+    let private = saved["projects"][1]["repo"].clone();
+    let site = "https://127.0.0.1:1";
+    saved["tickets"].as_array_mut().unwrap().push(serde_json::json!(
+        {"key": "SEC-7", "repo": private, "cwd": private}
+    ));
+    saved["projects"].as_array_mut().unwrap().push(serde_json::json!({
+        "name": "work", "repo": dir.join("work"),
+        "tracker": {"provider": "jira", "site": site, "key": "OPS", "account": "jira-1"},
+    }));
+    std::fs::write(&state, saved.to_string()).unwrap();
+    let mark = dir.join("token-read");
+    let token = format!("cmd:touch '{}'; echo token", mark.display());
+    let config = serde_json::json!({"accounts": [
+        {"id": "jira-1", "provider": "jira", "site": site, "email": "ana@example.com", "token": token},
+    ]});
+    std::fs::write(dir.join("config.json"), config.to_string()).unwrap();
+
+    let run = |env: &[(&str, &Path)], args: &[&str]| {
+        let mut cmd = common::taskman(&dir);
+        cmd.envs(env.iter().copied()).args(args).current_dir(&acme).stdin(Stdio::null());
+        let out = cmd.output().unwrap();
+        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        (out.status.success(), text(&out.stdout), text(&out.stderr))
+    };
+    let ticket = ("TASKMAN_TICKET", Path::new("ENG-1"));
+    let agent = ("TASKMAN_TICKET", Path::new("acme-lead"));
+    let repo = ("TASKMAN_REPO", acme.as_path());
+    let all = ["status", "--all-projects"];
+    let all_json = ["status", "--all-projects", "--json"];
+    for env in [&[ticket, repo][..], &[agent, repo], &[repo]] {
+        for args in [&all[..], &all_json] {
+            let (ok, out, err) = run(env, args);
+            assert!(!ok && out.is_empty(), "{env:?} {args:?}: {out}\n{err}");
+            assert!(
+                err.contains("`--all-projects` reads every project's tracker")
+                    && err.contains("`env -u TASKMAN_REPO`"),
+                "{env:?} {args:?}: {err}"
+            );
+        }
+    }
+    // Nor does a session whose project has gone get round it.
+    let (ok, out, err) = run(&[ticket, ("TASKMAN_REPO", Path::new("/gone"))], &all);
+    assert!(!ok && out.is_empty() && err.contains("no longer in taskman"), "{out}\n{err}");
+    assert!(!mark.exists(), "a refused command read a token");
+
+    // In acme's folder a plain shell's `status` stays with acme; the flag shows them all.
+    let (_, out, err) = run(&[], &["status"]);
+    assert!(out.contains("ENG-1") && !out.contains("private plans"), "{out}\n{err}");
+    assert!(!mark.exists(), "acme's status read another project's token");
+    let (_, out, err) = run(&[], &all);
+    assert!(out.contains("ENG-1") && out.contains("private plans"), "{out}\n{err}");
+    assert!(out.contains("work  "), "{out}\n{err}");
+    assert!(mark.exists(), "the token command is what shows a token was read");
+
+    // `env -u TASKMAN_REPO` alone leaves TASKMAN_TICKET, which the flag doesn't narrow to.
+    for session in [ticket, agent] {
+        let (_, out, err) = run(&[session], &all);
+        assert!(out.contains("ENG-1") && out.contains("private plans"), "{out}\n{err}");
+        let (_, out, err) = run(&[session], &["status"]);
+        assert!(out.contains("ENG-1") && !out.contains("private plans"), "{out}\n{err}");
+    }
+}
+
+/// With one project there is nothing else to reach, but the answer doesn't say so.
+#[test]
+fn a_session_is_refused_every_project_when_there_is_one() {
+    let dir = common::scratch_dir("session-all-projects-one");
+    let acme = common::project(&dir, &["ENG-1"]);
+    let (ok, out, err) = run(&dir, &acme, Some("ENG-1"), &["status", "--all-projects"]);
+    assert!(!ok && out.is_empty() && err.contains("`--all-projects` reads"), "{out}\n{err}");
+}
+
+#[test]
 fn a_session_reaches_only_its_own_project() {
     let dir = common::scratch_dir("session-scope");
     let (acme, private) = two_projects(&dir);

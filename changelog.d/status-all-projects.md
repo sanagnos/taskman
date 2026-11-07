@@ -1,0 +1,2 @@
+- `taskman status --all-projects` shows every project from any folder. A session taskman started is refused unless the command has `env -u TASKMAN_REPO` in front, which Claude asks you about first.
+- `taskman status` keeps a project's or agent's name, and a folder's, on one line even if it holds a line break.
