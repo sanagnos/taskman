@@ -872,6 +872,7 @@ mod tests {
             ticket("web-lead", "/w", Some("lead")),
             ticket("api-lead", "/a", Some("lead")),
             ticket("api-tester", "/a", Some("tester")),
+            ticket("api-my-lead", "/a", Some("my lead")),
         ];
         assert_eq!(command_line(&all[0], "web", &all), "taskman resume ENG-1");
         assert_eq!(command_line(&all[1], "web", &all), "taskman resume ENG-2 --project web");
@@ -881,6 +882,8 @@ mod tests {
         );
         assert_eq!(command_line(&all[3], "web", &all), "taskman resume lead --project web");
         assert_eq!(command_line(&all[5], "api", &all), "taskman resume tester");
+        // A name the shell would split, as the hand-off's window runs the line through `sh`.
+        assert_eq!(command_line(&all[6], "api", &all), "taskman resume 'my lead'");
     }
 
     #[test]

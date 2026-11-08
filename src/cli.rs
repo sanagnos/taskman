@@ -203,7 +203,7 @@ pub(crate) fn context(me: Option<&Ticket>, saved: &Saved, here: Option<&Here>) -
 /// What lifts `confine` and `confine_all`. A command written this way matches no rule of the
 /// allow-list, so the CLI's own permission settings decide: Claude Code asks the user, runs it
 /// (auto mode's classifier, a mode that skips prompts, a rule of the user's) or refuses it
-/// (`dontAsk`); Codex runs it if its sandbox lets it, else as its approval policy and rules say.
+/// (`dontAsk`); Codex runs it, asks or refuses as its sandbox, approval policy and rules say.
 const WIDER: &str = "if the user asked for it, run the same command with `env -u TASKMAN_REPO` in front, which taskman's allow-list doesn't cover: the session's own permission settings (Claude's mode and rules, Codex's sandbox and approval policy) decide whether it runs, asks the user or is refused (auto mode can run it unasked)";
 
 /// The project of the session taskman started that the command runs in, by `TASKMAN_REPO`; None
