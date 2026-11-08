@@ -203,8 +203,9 @@ pub(crate) fn context(me: Option<&Ticket>, saved: &Saved, here: Option<&Here>) -
 /// What lifts `confine` and `confine_all`. A command written this way matches no rule of the
 /// allow-list, so the CLI's own permission settings decide: Claude Code asks the user, runs it
 /// (auto mode's classifier, a mode that skips prompts, a rule of the user's) or refuses it
-/// (`dontAsk`); Codex runs it, asks or refuses as its sandbox, approval policy and rules say.
-const WIDER: &str = "if the user asked for it, run the same command with `env -u TASKMAN_REPO` in front, which taskman's allow-list doesn't cover: the session's own permission settings (Claude's mode and rules, Codex's sandbox and approval policy) decide whether it runs, asks the user or is refused (auto mode can run it unasked)";
+/// (`dontAsk`); Codex runs it, asks or refuses as its sandbox, approval policy and rules say. The
+/// refusal says only that much, as taskman can't tell which applies; the guide says more.
+const WIDER: &str = "If the user asked for it, run the same command with `env -u TASKMAN_REPO` in front; the session's permission settings decide whether it runs, asks the user or is refused";
 
 /// The project of the session taskman started that the command runs in, by `TASKMAN_REPO`; None
 /// outside one.
@@ -216,9 +217,7 @@ pub(crate) fn session_project(
     let repo = real(repo);
     match saved.projects.iter().position(|p| real(&p.repo) == repo) {
         Some(p) => Ok(Some(p)),
-        None => {
-            Err(format!("this session's project is no longer in taskman; to go ahead, {WIDER}"))
-        }
+        None => Err(format!("this session's project is no longer in taskman. {WIDER}.")),
     }
 }
 
@@ -231,7 +230,7 @@ pub(crate) fn session_project(
 pub(crate) fn confine(p: usize, own: Option<usize>, saved: &Saved) -> Result<(), String> {
     match own {
         Some(own) if own != p => Err(format!(
-            "that's project {}, and this session works in {}: a session keeps to its own project. To go ahead, {WIDER}.",
+            "that's project {}, and this session works in {}: a session keeps to its own project. {WIDER}.",
             untrusted::line(&saved.projects[p].name),
             untrusted::line(&saved.projects[own].name)
         )),
@@ -246,7 +245,7 @@ pub(crate) fn confine(p: usize, own: Option<usize>, saved: &Saved) -> Result<(),
 pub(crate) fn confine_all(own: Option<usize>) -> Result<(), String> {
     match own {
         Some(_) => Err(format!(
-            "`--all-projects` reads every project's tracker with its account: a session keeps to its own project. To go ahead, {WIDER}."
+            "`--all-projects` reads every project's tracker with its account: a session keeps to its own project. {WIDER}."
         )),
         None => Ok(()),
     }
@@ -661,12 +660,13 @@ pub(crate) mod tests {
         assert_eq!(confine(0, own, &s), Ok(()));
         assert_eq!(
             confine(1, own, &s).unwrap_err(),
-            "that's project acme-api, and this session works in acme-web: a session keeps to its own project. To go ahead, if the user asked for it, run the same command with `env -u TASKMAN_REPO` in front, which taskman's allow-list doesn't cover: the session's own permission settings (Claude's mode and rules, Codex's sandbox and approval policy) decide whether it runs, asks the user or is refused (auto mode can run it unasked)."
+            "that's project acme-api, and this session works in acme-web: a session keeps to its own project. If the user asked for it, run the same command with `env -u TASKMAN_REPO` in front; the session's permission settings decide whether it runs, asks the user or is refused."
         );
         // A session whose project was removed reaches none.
-        assert!(session_project(&s, Some(Path::new("/src/gone"))).unwrap_err().contains(
-            "no longer in taskman; to go ahead, if the user asked for it, run the same command with `env -u TASKMAN_REPO`"
-        ));
+        assert_eq!(
+            session_project(&s, Some(Path::new("/src/gone"))).unwrap_err(),
+            "this session's project is no longer in taskman. If the user asked for it, run the same command with `env -u TASKMAN_REPO` in front; the session's permission settings decide whether it runs, asks the user or is refused."
+        );
         // A project agent's session is its project's too, so add and move keep to it as well:
         // --project names another, or the key's prefix picks one when the session can't.
         let me =
@@ -685,7 +685,7 @@ pub(crate) mod tests {
         // Its own project is no exception, so the answer doesn't depend on there being others.
         let e = confine_all(Some(0)).unwrap_err();
         assert!(e.starts_with("`--all-projects` reads every project's tracker"), "{e}");
-        assert!(e.ends_with(&format!("To go ahead, {WIDER}.")), "{e}");
+        assert!(e.ends_with(&format!("a session keeps to its own project. {WIDER}.")), "{e}");
     }
 
     #[test]
