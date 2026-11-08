@@ -1456,9 +1456,9 @@ mod tests {
         assert!(!script.contains("--signer-workflow"));
     }
 
-    /// The strings in `targets = [...]` in a TOML file's `table` ("" for the top level, before the
-    /// first table), where cargo-deny and cargo-about read them, comments left out: enough TOML for
-    /// deny.toml and about.toml, not a parser.
+    /// The double-quoted strings in `targets = [...]` in a TOML file's `table` ("" for the top
+    /// level, before the first table), where cargo-deny and cargo-about read them, comments left
+    /// out: enough TOML for deny.toml and about.toml, not a parser.
     fn toml_targets(toml: &str, table: &str) -> Option<Vec<String>> {
         let (mut current, mut in_list, mut found) = ("", false, vec![]);
         for line in toml.lines() {
@@ -1540,6 +1540,10 @@ mod tests {
             listed.sort();
             assert_eq!(listed, targets, "{name}'s targets are the released builds");
         }
+        // cargo-deny still takes a top-level list, deprecated, in place of `[graph]`'s, with only
+        // a warning.
+        let deny = include_str!("../deny.toml");
+        assert_eq!(toml_targets(deny, ""), None, "deny.toml's targets belong in [graph]");
         // A Linux build with neither C library has no release; this one has, where there's one.
         assert_eq!(target_for("linux", "x86_64", ""), None);
         if cfg!(any(target_os = "macos", target_os = "linux"))
