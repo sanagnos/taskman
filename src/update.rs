@@ -1480,13 +1480,18 @@ mod tests {
         assert_eq!(script.matches(") target=").count(), targets.len());
         assert!(released.contains(r"s/.*) target=\([a-z0-9_-]*\) ;;.*/\1/p"));
         // The license and advisory checks and the third-party notices cover every released build.
-        for (name, settings) in [
-            ("deny.toml", include_str!("../deny.toml")),
-            ("about.toml", include_str!("../about.toml")),
+        // Each list is read from the table its tool reads it in: cargo-deny's `[graph]`,
+        // cargo-about's top level (before the first table).
+        for (name, settings, header) in [
+            ("deny.toml", include_str!("../deny.toml"), "\n[graph]\n"),
+            ("about.toml", include_str!("../about.toml"), ""),
         ] {
-            let list =
-                settings.split_once("\ntargets = [").and_then(|(_, rest)| rest.split_once(']'));
-            let mut listed: Vec<&str> = list.unwrap().0.split('"').skip(1).step_by(2).collect();
+            let table = settings.split_once(header).map(|(_, rest)| rest);
+            let table = table.unwrap_or_else(|| panic!("{name} has no {} table", header.trim()));
+            let table = table.split("\n[").next().unwrap();
+            let list = table.split_once("\ntargets = [").and_then(|(_, rest)| rest.split_once(']'));
+            let list = list.unwrap_or_else(|| panic!("{name} has no `targets = [` list there"));
+            let mut listed: Vec<&str> = list.0.split('"').skip(1).step_by(2).collect();
             listed.sort();
             assert_eq!(listed, targets, "{name}'s targets are the released builds");
         }
