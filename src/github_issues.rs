@@ -109,6 +109,12 @@ pub fn key_from_input(input: &str, prefix: &str, repo: &Repo) -> Option<Result<S
     }
 }
 
+/// Whether `input` names an issue of `repo` the GitHub way, whatever the project's prefix.
+pub fn names_issue(input: &str, repo: &Repo) -> bool {
+    // Any prefix will do: only a missing one makes `key_from_input` refuse an issue of `repo`.
+    matches!(key_from_input(input, "X", repo), Some(Ok(_)))
+}
+
 /// How gh is run: the real one in the project folder, or, in tests, recorded output.
 #[derive(Clone)]
 enum Runner {
@@ -482,6 +488,23 @@ pub(crate) mod tests {
             assert_eq!(k(s), None, "{s}");
         }
         assert!(matches!(key_from_input("#12", "", &repo), Some(Err(_))));
+    }
+
+    #[test]
+    fn names_its_own_issues_whatever_the_prefix() {
+        let repo = Repo::parse("acme/web").unwrap();
+        for s in ["#12", "acme/web#12", "https://github.com/acme/web/issues/12"] {
+            assert!(names_issue(s, &repo), "{s}");
+        }
+        for s in [
+            "12",
+            "WEB-12",
+            "acme/api#12",
+            "https://github.com/acme/api/issues/12",
+            "https://github.com/acme/web/pull/12",
+        ] {
+            assert!(!names_issue(s, &repo), "{s}");
+        }
     }
 
     #[test]

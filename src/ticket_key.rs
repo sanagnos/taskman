@@ -1,7 +1,8 @@
 //! Ticket keys, written once: a prefix of letters, digits or `_` starting with a letter, a dash and
-//! a number (`ENG-52`), and what reads one out of text someone typed or pasted (`parse`), for the
-//! Add form and the commands alike. A tracker's own ways of writing one (GitHub's `#12`) stay
-//! with the tracker (`Tracker::key_from_input`).
+//! a number (`ENG-52`); what reads one out of text someone typed or pasted (`parse`), for the Add
+//! form, `taskman add` and `status`; and the strict reading of the commands that act on a ticket
+//! (`exact`, for `close` and `title`), which never looks inside a phrase. A tracker's own ways of
+//! writing one (GitHub's `#12`) stay with the tracker (`Tracker::key_from_input`).
 
 use std::fmt::Display;
 
@@ -72,10 +73,140 @@ pub fn parse(input: &str) -> Option<String> {
     Some(key.to_uppercase())
 }
 
+/// The key `input` is when read whole, as the commands that act on a ticket read it (`taskman
+/// close`, `title`): a key on its own (`ENG-52`, in any case), or a link that names it where Jira
+/// and Linear do, right after `/browse/`, `/issue/` or `/issues/` in its path or as
+/// `selectedIssue=` in its query. Nothing is read out of a phrase, another word or any other link,
+/// unlike `parse`: closing removes worktrees, so a command never guesses which ticket text means.
+pub fn exact(input: &str) -> Option<String> {
+    let s = input.trim();
+    if well_formed(s) {
+        return Some(s.to_uppercase());
+    }
+    let rest = link(s)?;
+    let rest = rest.split_once('#').map_or(rest, |(r, _)| r);
+    let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let parts: Vec<&str> = path.split('/').collect();
+    let after = parts
+        .windows(2)
+        .find(|w| matches!(w[0], "browse" | "issue" | "issues") && well_formed(w[1]))
+        .map(|w| w[1]);
+    let param = || {
+        query
+            .split('&')
+            .filter_map(|p| p.split_once('='))
+            .find_map(|(name, v)| (name == "selectedIssue" && well_formed(v)).then_some(v))
+    };
+    after.or_else(param).map(str::to_uppercase)
+}
+
+/// Whether `s` starts with `http://` or `https://`, in any case: a web link, whatever follows it.
+pub fn has_web_scheme(s: &str) -> bool {
+    s.contains("://") && web_scheme_or_none(s)
+}
+
+/// Whether what's before the first `://` in `s`, if it has one, is `http` or `https`, in any case.
+/// `see:https://…` and `ftp://…` aren't.
+pub fn web_scheme_or_none(s: &str) -> bool {
+    s.split_once("://")
+        .is_none_or(|(scheme, _)| ["http", "https"].iter().any(|w| scheme.eq_ignore_ascii_case(w)))
+}
+
+/// What follows the host of `s` when it's a web link alone: `http://` or `https://` and a host
+/// (`jira`, `localhost:8080`), or with no scheme a host with a dot in it and a `/`
+/// (`linear.app/acme/issue/ENG-52`). None for anything else, a path like `./browse/ENG-52` too.
+fn link(s: &str) -> Option<&str> {
+    if s.is_empty() || s.contains(char::is_whitespace) || !web_scheme_or_none(s) {
+        return None;
+    }
+    let (rest, scheme) = s.split_once("://").map_or((s, false), |(_, rest)| (rest, true));
+    let (host, after) = rest.split_once('/')?;
+    let (name, port) = host.split_once(':').unwrap_or((host, "0"));
+    let label = |l: &str| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    let labels = name.split('.').collect::<Vec<_>>();
+    (labels.iter().all(|l| label(l)) && (scheme || labels.len() > 1) && is_number(port))
+        .then_some(after)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn knows_a_web_scheme() {
+        for s in ["https://x", "HTTP://jira/browse/ENG-52", "https://[::1]/browse/ENG-52"] {
+            assert!(has_web_scheme(s) && web_scheme_or_none(s), "{s}");
+        }
+        for s in ["ENG-52", "linear.app/acme/issue/ENG-52", "#12"] {
+            assert!(!has_web_scheme(s) && web_scheme_or_none(s), "{s}");
+        }
+        for s in ["ftp://x/browse/ENG-52", "see:https://x", "file:///x", "Fix-https://x", "://x"] {
+            assert!(!has_web_scheme(s) && !web_scheme_or_none(s), "{s}");
+        }
+    }
+
+    #[test]
+    fn reads_a_key_only_from_the_whole_input() {
+        let jira = "https://example.atlassian.net";
+        for input in [
+            "ENG-52",
+            "eng-52",
+            "\tENG-52\n",
+            &format!("{jira}/browse/ENG-52"),
+            &format!("{jira}/browse/ENG-52?focusedCommentId=10#comment-10"),
+            &format!("{jira}/browse/ENG-52#ENG-7"),
+            &format!("{jira}/jira/software/projects/ENG/boards/1?selectedIssue=ENG-52"),
+            &format!("{jira}/jira/software/c/projects/ENG/issues/ENG-52?filter=all"),
+            "https://linear.app/acme/issue/ENG-52/phase-2",
+            "HTTP://linear.app/team-1/issue/eng-52",
+            // The path names it before the query does.
+            "https://linear.app/acme/issue/ENG-52/x?selectedIssue=ENG-7#y",
+            "linear.app/acme/issue/ENG-52",
+            "jira.example.com:8080/browse/ENG-52",
+            // With a scheme, a host needs no dot: a self-hosted Jira's often has none.
+            "http://jira:8080/browse/ENG-52",
+            "http://localhost/browse/ENG-52",
+        ] {
+            assert_eq!(exact(input).as_deref(), Some("ENG-52"), "{input}");
+        }
+        for input in [
+            "",
+            "Fix ENG-52 now",
+            "ENG-52 ENG-53",
+            "close ENG-52",
+            "see https://example.atlassian.net/browse/ENG-52",
+            "https://example.atlassian.net/browse/ENG-52 now",
+            "fix/ENG-52",
+            "ENG-52,",
+            "(ENG-52)",
+            "ENG-52.",
+            "#ENG-52",
+            "52",
+            "https://example.com/t/ENG-52/split-2",
+            "https://example.com/view?id=ENG-52",
+            "https://example.com/#ENG-52",
+            "https://example.com/#/browse/ENG-52",
+            "https://example.atlassian.net/browse/ENG-52x",
+            "ftp://example.com/browse/ENG-52",
+            "file:///browse/ENG-52",
+            "browse/ENG-52",
+            "./browse/ENG-52",
+            "../issues/ENG-52",
+            "jira/browse/ENG-52",
+            ".example.com/browse/ENG-52",
+            "example..com/browse/ENG-52",
+            "example.com./browse/ENG-52",
+            "https:///browse/ENG-52",
+            "https://jira:/browse/ENG-52",
+            "see:https://example.atlassian.net/browse/ENG-52",
+            "src/browse/ENG-52",
+            "https://github.com/acme/ENG-52/issues/88",
+            "https://eng-1.example.com/ENG-52",
+        ] {
+            assert_eq!(exact(input), None, "{input}");
+        }
+    }
 
     #[test]
     fn reads_prefixes_numbers_and_keys() {
@@ -188,6 +319,47 @@ mod tests {
                 format!("https://example.com/{dir}?page={comment}#{key}/{other}"),
             ] {
                 prop_assert_eq!(parse(&input), Some(upper.clone()), "{}", input);
+            }
+        }
+
+        /// Keys alone and in Jira's and Linear's links read whole; with a word before or after,
+        /// never.
+        #[test]
+        fn only_a_whole_key_or_link_reads_exactly(
+            (key, upper) in key(),
+            words in prop::collection::vec("[A-Za-z0-9#/:.-]{1,10}", 1..3),
+            space in "[ \t\n]{1,2}",
+            workspace in "[a-z][a-z0-9-]{0,10}",
+            words_first in any::<bool>(),
+        ) {
+            let jira = "https://example.atlassian.net";
+            for whole in [
+                key.clone(),
+                format!("{jira}/browse/{key}"),
+                format!("{jira}/jira/software/projects/ENG/boards/1?selectedIssue={key}"),
+                format!("https://linear.app/{workspace}/issue/{key}/fix-login"),
+            ] {
+                prop_assert_eq!(exact(&whole), Some(upper.clone()), "{}", whole);
+                let words = words.join(&space);
+                let phrase = if words_first {
+                    format!("{words}{space}{whole}")
+                } else {
+                    format!("{whole}{space}{words}")
+                };
+                prop_assert_eq!(exact(&phrase), None, "{:?}", phrase);
+            }
+        }
+
+        #[test]
+        fn what_exact_reads_is_a_key_in_the_input(
+            input in "(\\PC|[-/=?&# ]|[A-Za-z]{1,3}-[0-9]{1,3}|https?://|browse/|issue/){0,12}",
+        ) {
+            if let Some(k) = exact(&input) {
+                prop_assert!(well_formed(&k), "{k}");
+                prop_assert_eq!(k.to_uppercase(), k.clone());
+                prop_assert!(input.to_uppercase().contains(&k), "{input:?} {k}");
+                prop_assert!(!input.trim().contains(char::is_whitespace), "{input:?}");
+                prop_assert_eq!(exact(&k), Some(k.clone()));
             }
         }
 

@@ -1037,6 +1037,12 @@ impl Tracker {
         github_issues::key_from_input(input, &self.key, &self.github_repo()?)
     }
 
+    /// Whether `input` is written this tracker's own way and names one of its issues, whatever the
+    /// project's prefix: `key_from_input` gives its key, or would once a prefix is set.
+    pub fn names_issue(&self, input: &str) -> bool {
+        self.github_repo().is_some_and(|repo| github_issues::names_issue(input, &repo))
+    }
+
     /// The issue that `key`'s PR closes, when the tracker is the repository's own issues: the PR
     /// lookup tries the PRs GitHub links to it first.
     pub fn closes(&self, key: &str) -> Option<crate::github::Closes> {

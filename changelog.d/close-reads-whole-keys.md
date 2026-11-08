@@ -1,0 +1,1 @@
+- `taskman close` and `taskman title` read a ticket only from a whole argument: a number, a key, `'#52'` on GitHub Issues, or a link that names the ticket. A key inside a phrase, like `taskman close "Fix ENG-52 now"`, used to close ENG-52 and is now refused, and so is a GitHub link to another project's issue, naming that project.
