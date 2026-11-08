@@ -2372,9 +2372,7 @@ mod tests {
         r.name = odd.into();
         r.worktree = Some(odd.into());
         // The message the hooks record, which the session's CLI wrote.
-        if let Some(s) = r.session.as_mut() {
-            s.record.message = odd.into();
-        }
+        r.session.as_mut().expect("the report has a session").record.message = odd.into();
         let row = |key: &str| AgentRow {
             name: odd.into(),
             key: key.into(),

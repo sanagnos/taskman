@@ -271,7 +271,7 @@ pub fn command_line<'a>(
     all: impl IntoIterator<Item = &'a Ticket>,
 ) -> String {
     let name = t.agent.as_deref().unwrap_or(&t.key);
-    let mut line = format!("taskman resume {name}");
+    let mut line = format!("taskman resume {}", quote(name));
     let all: Vec<&Ticket> = all.into_iter().collect();
     let shared = all.iter().any(|o| {
         o.repo != t.repo
