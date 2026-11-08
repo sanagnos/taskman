@@ -1,7 +1,8 @@
 //! Ticket keys, written once: a prefix of letters, digits or `_` starting with a letter, a dash and
-//! a number (`ENG-52`), and what reads one out of text someone typed or pasted (`parse`), for the
-//! Add form and the commands alike. A tracker's own ways of writing one (GitHub's `#12`) stay
-//! with the tracker (`Tracker::key_from_input`).
+//! a number (`ENG-52`); what reads one out of text someone typed or pasted (`parse`), for the Add
+//! form, `taskman add` and `status`; and the strict reading of the commands that act on a ticket
+//! (`exact`, for `close` and `title`), which never looks inside a phrase. A tracker's own ways of
+//! writing one (GitHub's `#12`) stay with the tracker (`Tracker::key_from_input`).
 
 use std::fmt::Display;
 
@@ -99,24 +100,32 @@ pub fn exact(input: &str) -> Option<String> {
     after.or_else(param).map(str::to_uppercase)
 }
 
-/// What follows the host of `s` when it's a web link alone: `http://` or `https://` and a host, or
-/// a host with a dot in it and a `/` (`linear.app/acme/issue/ENG-52`). None for anything else.
+/// Whether `s` is a web link alone, as `exact` reads one (`link`).
+pub fn is_link(s: &str) -> bool {
+    link(s).is_some()
+}
+
+/// Whether what's before the first `://` in `s`, if it has one, is `http` or `https`, in any case.
+/// `see:https://…` and `ftp://…` aren't.
+pub fn web_scheme_or_none(s: &str) -> bool {
+    s.split_once("://")
+        .is_none_or(|(scheme, _)| ["http", "https"].iter().any(|w| scheme.eq_ignore_ascii_case(w)))
+}
+
+/// What follows the host of `s` when it's a web link alone: `http://` or `https://` and a host
+/// (`jira`, `localhost:8080`), or with no scheme a host with a dot in it and a `/`
+/// (`linear.app/acme/issue/ENG-52`). None for anything else, a path like `./browse/ENG-52` too.
 fn link(s: &str) -> Option<&str> {
-    if s.is_empty() || s.contains(char::is_whitespace) {
+    if s.is_empty() || s.contains(char::is_whitespace) || !web_scheme_or_none(s) {
         return None;
     }
-    let rest = match s.split_once("://") {
-        Some((scheme, rest))
-            if ["http", "https"].iter().any(|h| scheme.eq_ignore_ascii_case(h)) =>
-        {
-            rest
-        }
-        Some(_) => return None,
-        None => s,
-    };
+    let (rest, scheme) = s.split_once("://").map_or((s, false), |(_, rest)| (rest, true));
     let (host, after) = rest.split_once('/')?;
-    let hostlike = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':');
-    (host.contains('.') && host.chars().all(hostlike)).then_some(after)
+    let (name, port) = host.split_once(':').unwrap_or((host, "0"));
+    let label = |l: &str| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    let labels = name.split('.').collect::<Vec<_>>();
+    (labels.iter().all(|l| label(l)) && (scheme || labels.len() > 1) && is_number(port))
+        .then_some(after)
 }
 
 #[cfg(test)]
@@ -142,6 +151,9 @@ mod tests {
             "https://linear.app/acme/issue/ENG-52/x?selectedIssue=ENG-7#y",
             "linear.app/acme/issue/ENG-52",
             "jira.example.com:8080/browse/ENG-52",
+            // With a scheme, a host needs no dot: a self-hosted Jira's often has none.
+            "http://jira:8080/browse/ENG-52",
+            "http://localhost/browse/ENG-52",
         ] {
             assert_eq!(exact(input).as_deref(), Some("ENG-52"), "{input}");
         }
@@ -166,6 +178,15 @@ mod tests {
             "ftp://example.com/browse/ENG-52",
             "file:///browse/ENG-52",
             "browse/ENG-52",
+            "./browse/ENG-52",
+            "../issues/ENG-52",
+            "jira/browse/ENG-52",
+            ".example.com/browse/ENG-52",
+            "example..com/browse/ENG-52",
+            "example.com./browse/ENG-52",
+            "https:///browse/ENG-52",
+            "https://jira:/browse/ENG-52",
+            "see:https://example.atlassian.net/browse/ENG-52",
             "src/browse/ENG-52",
             "https://github.com/acme/ENG-52/issues/88",
             "https://eng-1.example.com/ENG-52",

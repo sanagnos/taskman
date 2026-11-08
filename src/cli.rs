@@ -263,8 +263,9 @@ pub(crate) fn locate_ticket<'a>(
     let not_a_ticket =
         || format!("\"{input}\" isn't a ticket: pass just its number (52), key (ENG-52) or link");
     let input = input.trim();
-    // Before any tracker reads it: GitHub's finds an issue's link anywhere after a `://`.
-    if input.contains(char::is_whitespace) {
+    // Before any tracker reads it: GitHub's finds an issue's link after any `://`, whatever comes
+    // before it (`Fix https://…`, `see:https://…`), as the Add form wants.
+    if input.contains(char::is_whitespace) || !ticket_key::web_scheme_or_none(input) {
         return Err(not_a_ticket());
     }
     if ticket_key::is_number(input) {
@@ -273,14 +274,25 @@ pub(crate) fn locate_ticket<'a>(
         let located = status::locate(&key, saved, status::Scope::Named(&saved.projects[p].repo))?;
         return Ok((key, located));
     }
-    // Before `ticket_key::parse`, which would take the name of a repository like acme/ENG-52 for
-    // the key in its issue's link.
+    // Before `ticket_key::exact`: a GitHub issue's link is its tracker's to read, and another
+    // project's is refused naming it, rather than refused as a link to nobody's ticket.
     let place = named.or_else(|| context(me, saved, here));
     if let Some((key, p)) = tracker_key(input, place, saved)? {
         let located = status::locate(&key, saved, status::Scope::Named(&saved.projects[p].repo))?;
         return Ok((key, located));
     }
-    let key = ticket_key::exact(input).ok_or_else(not_a_ticket)?;
+    let key = ticket_key::exact(input).ok_or_else(|| {
+        if ticket_key::is_link(input) {
+            // Say what to paste instead, as a link can name its ticket where `exact` doesn't look
+            // (a Jira Service Management queue's ends in the key).
+            format!(
+                "\"{input}\" isn't a link taskman reads a ticket from: pass the ticket's key, like \
+                 ENG-52, or its Jira /browse/ENG-52 link"
+            )
+        } else {
+            not_a_ticket()
+        }
+    })?;
     let located = status::locate(&key, saved, status::scope(named, None, me, saved, here))?;
     Ok((key, located))
 }
@@ -684,30 +696,39 @@ pub(crate) mod tests {
         let web = Some(&here("/src/acme-web"));
         for (s, here, input) in [
             (&jira, web, "Fix ENG-52 now"),
-            (&jira, web, "ENG-52 "),
             (&jira, None, "close ENG-52"),
             (&jira, web, "see https://example.atlassian.net/browse/ENG-52"),
             (&jira, web, "fix/ENG-52"),
             (&jira, web, "ENG-52,"),
+            (&jira, web, "./browse/ENG-52"),
+            (&jira, web, "../issues/ENG-52"),
             (&jira, web, "https://example.com/t/ENG-52/split-2"),
             (&jira, web, "https://example.com/view?id=ENG-52"),
             (&jira, web, "https://example.com/#ENG-52"),
             (&jira, web, "ftp://example.com/browse/ENG-52"),
             (&github, acme, "Follow up https://github.com/acme/web/issues/88"),
             (&github, None, "Follow up https://github.com/acme/web/issues/88"),
+            (&github, acme, "see:https://github.com/acme/web/issues/88"),
+            (&github, None, "see:https://github.com/acme/web/issues/88"),
+            (&github, acme, "Fix-https://github.com/acme/web/issues/88"),
+            (&github, acme, "ftp://github.com/acme/web/issues/88"),
             (&github, acme, "see #88"),
             (&github, acme, "88 and 52"),
-            (&github, acme, "#88 "),
         ] {
-            let got = locate_ticket(input, None, None, None, s, here);
-            // A trailing space alone is what a shell or script leaves; it still names the key.
-            if input.trim() != input && !input.trim().contains(' ') {
-                assert!(got.is_ok(), "{input:?}: {got:?}");
-                continue;
-            }
-            let e = got.map(|(k, _)| k).unwrap_err();
-            assert!(e.starts_with(&format!("\"{input}\" isn't a ticket")), "{input:?}: {e}");
+            let e = locate_ticket(input, None, None, None, s, here).map(|(k, _)| k).unwrap_err();
+            assert!(e.starts_with(&format!("\"{input}\" isn't a")), "{input:?}: {e}");
         }
+        // A link that names its ticket elsewhere says which link to pass.
+        let queue =
+            "https://example.atlassian.net/jira/servicedesk/projects/ENG/queues/custom/1/ENG-52";
+        let e = locate_ticket(queue, None, None, None, &jira, web).unwrap_err();
+        assert_eq!(
+            e,
+            format!(
+                "\"{queue}\" isn't a link taskman reads a ticket from: pass the ticket's key, like \
+                 ENG-52, or its Jira /browse/ENG-52 link"
+            )
+        );
     }
 
     #[test]
@@ -726,8 +747,23 @@ pub(crate) mod tests {
             "https://example.atlassian.net/jira/software/c/projects/ENG/issues/ENG-52",
             "HTTPS://linear.app/acme/issue/ENG-52/phase-2",
             "linear.app/acme/issue/ENG-52",
+            // A self-hosted Jira's host may have no dot, with a scheme.
+            "http://jira/browse/ENG-52",
+            "http://localhost:8080/browse/ENG-52",
+            // A trailing space, as a shell or script may leave, still names it.
+            "ENG-52 ",
         ] {
             assert_eq!(key(input), Ok("ENG-52".into()), "{input:?}");
+        }
+        let github = on_github("acme/web");
+        let acme = Some(&here("/src/acme"));
+        for input in [
+            "#88 ",
+            "https://github.com/acme/web/issues/88",
+            "HTTPS://github.com/acme/web/issues/88",
+        ] {
+            let got = locate_ticket(input, None, None, None, &github, acme).map(|(k, _)| k);
+            assert_eq!(got, Ok("ENG-88".into()), "{input:?}");
         }
     }
 
@@ -769,7 +805,7 @@ pub(crate) mod tests {
             web,
         )
         .unwrap_err();
-        assert!(e.contains("isn't a ticket"), "{e}");
+        assert!(e.contains("isn't a link taskman reads a ticket from"), "{e}");
         // Named, it's that project's.
         let named = locate_ticket(
             "https://github.com/acme/ENG-52/issues/88",
