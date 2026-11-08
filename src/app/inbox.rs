@@ -278,8 +278,11 @@ impl App {
                 Err(o) => steps.push((name, Step::Done(o))),
             }
         }
-        let (tx, id, from) = (self.tx.clone(), id.to_string(), req.from.clone());
-        let finish = move |steps: Vec<(String, Step)>| {
+        let (id, from) = (id.to_string(), req.from.clone());
+        // `show` takes the toast before the command hears back, so what its answer sets off toasts
+        // after it: git finishing the worktree of a ticket that closed while it was being created,
+        // say, whose toast says more and would otherwise be replaced by this one.
+        let finish = move |steps: Vec<(String, Step)>, show: &mut dyn FnMut(String)| {
             let done: Vec<(String, close::Outcome)> = steps
                 .into_iter()
                 .map(|(name, step)| match step {
@@ -295,11 +298,8 @@ impl App {
                     }
                 })
                 .collect();
-            // Queued before the command hears back, so what its answer sets off toasts after it:
-            // git finishing the worktree of a ticket that closed while it was being created, say,
-            // whose toast says more and would otherwise be replaced by this one.
             if let Some(t) = close::toast(from.as_deref(), &done) {
-                let _ = tx.send(Msg::Closed(t));
+                show(t);
             }
             let lines: Vec<add::Line> =
                 done.iter().map(|(n, o)| close::line(n, &project, o)).collect();
@@ -312,9 +312,22 @@ impl App {
             .map(|(n, _)| n.clone())
             .collect();
         if !removed.is_empty() {
-            self.removing.push((removed, std::thread::spawn(move || finish(steps))));
+            let tx = self.tx.clone();
+            let removal = std::thread::spawn(move || {
+                finish(steps, &mut |t| {
+                    let _ = tx.send(Msg::Closed(t));
+                });
+            });
+            self.removing.push((removed, removal));
         } else {
-            finish(steps);
+            // Shown now rather than sent: a message that came after `drain_messages` (git
+            // finishing a worktree for a ticket this closed, say) is queued already, and sent, this
+            // would land after it and replace its toast.
+            let mut shown = None;
+            finish(steps, &mut |t| shown = Some(t));
+            if let Some(t) = shown {
+                self.toast(t);
+            }
         }
     }
 

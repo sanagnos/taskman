@@ -270,7 +270,6 @@ fn a_renamed_projects_agent_is_found_by_its_name() {
     );
     app.take_inbox();
     app.close_next();
-    settle(&mut app);
     let lines = reply("0005");
     assert!(lines.iter().all(|l| l.ok) && !lines[0].text.contains("isn't open"), "{lines:?}");
     assert!(!app.tickets.iter().any(|tv| tv.t.key == "acme-lead"));

@@ -45,9 +45,13 @@ struct Live {
     starting: usize,
     /// `stop_all` has run: nothing starts from now on.
     stopped: bool,
+    /// The groups `stop_all` asked to end, and when: those it found, and those that finished
+    /// starting after. It kills them all once their grace is up.
+    asked: Vec<(libc::pid_t, Instant)>,
 }
 
-static LIVE: Mutex<Live> = Mutex::new(Live { groups: Vec::new(), starting: 0, stopped: false });
+static LIVE: Mutex<Live> =
+    Mutex::new(Live { groups: Vec::new(), starting: 0, stopped: false, asked: Vec::new() });
 
 /// The live groups. A child is reaped, and its id leaves them, under this lock, so `stop_all`
 /// never signals an id that has passed to another group meanwhile.
@@ -55,8 +59,19 @@ fn live() -> MutexGuard<'static, Live> {
     LIVE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// How long [`stop_all`] gives the groups it asked to end before it kills them.
+/// How long [`stop_all`] gives the groups it asked to end before it kills them, and [`stop`] a
+/// helper at its time limit.
 const STOP_GRACE: Duration = Duration::from_millis(250);
+
+/// [`STOP_GRACE`], or in a test the grace its thread set, so a test on a slow machine can give a
+/// trap time to run.
+fn stop_grace() -> Duration {
+    #[cfg(test)]
+    if let Some(grace) = tests::GRACE.get() {
+        return grace;
+    }
+    STOP_GRACE
+}
 
 /// How long [`stop_all`] waits for helpers still starting: forked, but not yet running the
 /// program, so there's nothing to signal. Starting takes milliseconds; this only bounds an exec
@@ -82,23 +97,41 @@ impl Drop for Starting {
 pub fn stop_all() {
     let mut live = live();
     live.stopped = true;
+    let begun = Instant::now();
     for &group in &live.groups {
         signal_group(group, libc::SIGTERM);
     }
-    // A group ends when `run` reaps it: its pipes close once all of it has ended. Still in the
-    // list, it hasn't been reaped, so its id is still its own to kill. One that finishes starting
-    // meanwhile asks itself to end, and is killed at its own grace (`run_inner`).
-    let begun = Instant::now();
-    let waiting = |live: &Live| {
-        let now = begun.elapsed();
-        !live.groups.is_empty() && now < STOP_GRACE || live.starting > 0 && now < START_WAIT
-    };
-    while waiting(&live) {
+    // Added to, not replaced: the watchdog runs this again while the quit's may still wait, and
+    // what the first asked must still be killed.
+    let groups: Vec<_> = live.groups.iter().map(|&g| (g, begun)).collect();
+    live.asked.extend(groups);
+    // `run` reaps a group's leader once its pipes close, and the group leaves the list; what's
+    // left of it then holds no pipe (a process that ignores SIGTERM with its output elsewhere,
+    // say), and is waited for by asking the group with signal 0. One that finishes starting
+    // meanwhile asks itself to end and joins `asked` (`run_inner`), which a helper still starting
+    // keeps this waiting for. A group seen empty is dropped, so its id, free to be reused from
+    // then on, isn't killed at the end.
+    let left = |live: &Live, group| live.groups.contains(&group) || group_exists(group);
+    loop {
+        let mut asked = std::mem::take(&mut live.asked);
+        asked.retain(|&(g, _)| left(&live, g));
+        live.asked = asked;
+        let waiting = live.asked.iter().any(|&(_, at)| at.elapsed() < STOP_GRACE)
+            || live.starting > 0 && begun.elapsed() < START_WAIT;
+        if !waiting {
+            break;
+        }
         drop(live);
         std::thread::sleep(Duration::from_millis(5));
         live = self::live();
     }
-    for group in live.groups.drain(..) {
+    // Every group asked that was there when last looked at, not only those still listed. A
+    // listed one hasn't been reaped, so its id is still its own. A reaped one's id can't pass to
+    // another group while anything is left in it; once nothing is, the kill finds no one, unless
+    // pids wrapped around since it was last looked at and a new process made itself a group
+    // leader under it.
+    live.groups.clear();
+    for (group, _) in std::mem::take(&mut live.asked) {
         signal_group(group, libc::SIGKILL);
     }
 }
@@ -161,9 +194,15 @@ pub fn unless_interrupted<T>(result: T) -> T {
 }
 
 /// The paths a signal ending the command removes ([`Leftover`]).
-static LEFTOVERS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+struct Leftovers {
+    paths: Vec<PathBuf>,
+    /// A signal has removed them ([`remove_leftovers`]).
+    removed: bool,
+}
 
-fn leftovers() -> MutexGuard<'static, Vec<PathBuf>> {
+static LEFTOVERS: Mutex<Leftovers> = Mutex::new(Leftovers { paths: Vec::new(), removed: false });
+
+fn leftovers() -> MutexGuard<'static, Leftovers> {
     LEFTOVERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
@@ -173,23 +212,39 @@ fn leftovers() -> MutexGuard<'static, Vec<PathBuf>> {
 pub struct Leftover(PathBuf);
 
 impl Leftover {
-    pub fn new(path: &Path) -> Self {
-        leftovers().push(path.to_path_buf());
-        Self(path.to_path_buf())
+    /// Makes `path` with `make` (writes the file, creates the folder) and holds it. Made under
+    /// the lock a signal's removal takes, so the removal waits for a file still being written,
+    /// and once it has run nothing more is made: this waits for the signal to end the command.
+    /// When `make` fails, whatever it left is the caller's to remove, as without a signal.
+    pub fn make<T>(path: &Path, make: impl FnOnce() -> io::Result<T>) -> io::Result<(Self, T)> {
+        let mut leftovers = leftovers();
+        if leftovers.removed {
+            drop(leftovers);
+            loop {
+                std::thread::park();
+            }
+        }
+        let made = make()?;
+        leftovers.paths.push(path.to_path_buf());
+        Ok((Self(path.to_path_buf()), made))
     }
 }
 
 impl Drop for Leftover {
     fn drop(&mut self) {
-        let mut paths = leftovers();
+        let paths = &mut leftovers().paths;
         if let Some(i) = paths.iter().position(|p| *p == self.0) {
             paths.swap_remove(i);
         }
     }
 }
 
+/// Removes the leftovers held, waiting for one being made ([`Leftover::make`]), and makes none
+/// from now on: the signal ends the command next.
 fn remove_leftovers() {
-    for path in leftovers().drain(..) {
+    let mut leftovers = leftovers();
+    leftovers.removed = true;
+    for path in leftovers.paths.drain(..) {
         if std::fs::remove_file(&path).is_err() {
             let _ = std::fs::remove_dir_all(&path);
         }
@@ -209,6 +264,8 @@ fn run_inner(
     stopped_at_quit: bool,
 ) -> io::Result<Output> {
     let mut deadline = Instant::now() + timeout;
+    // How long `stop` gives the group at the limit, after asking it to end.
+    let mut grace = stop_grace();
     // Without a terminal, ssh asks with an askpass program instead. Kept for a user who chose one
     // (some desktops set SSH_ASKPASS); otherwise ssh tries a built-in default, a bare X window.
     if ["SSH_ASKPASS", "SSH_ASKPASS_REQUIRE"].iter().all(|v| std::env::var_os(v).is_none()) {
@@ -232,7 +289,8 @@ fn run_inner(
         .stderr(Stdio::piped())
         .spawn()?;
     // Held until it's reaped when `stop_all` ran while it started: asked to end as the rest
-    // were, and killed at its own limit, cut to the same grace, while `stop_all` waits.
+    // were, and killed at its own limit, cut to the same grace, while `stop_all` waits; what's
+    // left of the group once it's reaped, `stop_all` kills.
     let _late = match starting {
         Some(starting) => {
             let mut live = live();
@@ -240,8 +298,10 @@ fn run_inner(
             if live.stopped {
                 if let Some(g) = group {
                     signal_group(g, libc::SIGTERM);
+                    live.asked.push((g, Instant::now()));
                 }
                 deadline = deadline.min(Instant::now() + STOP_GRACE);
+                grace = Duration::ZERO;
                 Some(starting)
             } else {
                 live.groups.extend(group);
@@ -279,7 +339,7 @@ fn run_inner(
         match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
             Ok((false, buf)) => stdout = buf,
             Ok((true, buf)) => stderr = buf,
-            Err(_) => return Err(stop(&mut child, timeout)),
+            Err(_) => return Err(stop(&mut child, timeout, grace)),
         }
     }
     let mut pause = Duration::from_millis(1);
@@ -288,7 +348,7 @@ fn run_inner(
             return Ok(Output { status, stdout, stderr });
         }
         if Instant::now() >= deadline {
-            return Err(stop(&mut child, timeout));
+            return Err(stop(&mut child, timeout, grace));
         }
         std::thread::sleep(pause);
         pause = (pause * 2).min(Duration::from_millis(50));
@@ -340,13 +400,33 @@ fn signal_group(group: libc::pid_t, signal: libc::c_int) {
     unsafe { libc::kill(-group, signal) };
 }
 
-/// Stops `child`'s whole process group (a hung `git fetch` waits on ssh, say) and says why.
-fn stop(child: &mut Child, timeout: Duration) -> io::Error {
+/// Whether any process is left in `group`, which signal 0 asks without sending anything. A group
+/// whose members we may not signal (EPERM) still has them: only an empty one (ESRCH) is gone.
+fn group_exists(group: libc::pid_t) -> bool {
+    // SAFETY: kill only checks the group; it reads or writes no memory.
+    let found = unsafe { libc::kill(-group, 0) } == 0;
+    found || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Stops `child`'s whole process group (a hung `git fetch` waits on ssh, say) and says why. The
+/// group is asked to end and given `grace` before it's killed, as at a quit ([`stop_all`]): git
+/// killed part-way leaves its `.lock` files. `grace` is zero when it was asked already.
+fn stop(child: &mut Child, timeout: Duration, grace: Duration) -> io::Error {
     // The child isn't reaped until the wait below, so its group's id can't pass to another group
-    // meanwhile; it leaves the live ones first, so `stop_all` doesn't signal it after.
-    if let Some(group) = group_of(child) {
-        live().groups.retain(|g| *g != group);
-        signal_group(group, libc::SIGKILL);
+    // meanwhile, and a zombie still counts as being in it: the grace is waited out in full. The
+    // group stays live meanwhile, for a quit to stop too, and leaves the live ones before the
+    // kill; a quit that asked it meanwhile drops it once it's gone, or kills it again and finds
+    // no one.
+    let group = group_of(child);
+    if let Some(g) = group
+        && !grace.is_zero()
+    {
+        signal_group(g, libc::SIGTERM);
+        std::thread::sleep(grace);
+    }
+    if let Some(g) = group {
+        live().groups.retain(|l| *l != g);
+        signal_group(g, libc::SIGKILL);
     }
     let _ = child.kill();
     let _ = child.wait();
@@ -359,6 +439,12 @@ fn stop(child: &mut Child, timeout: Duration) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+
+    thread_local! {
+        /// The grace `stop` gives a helper this thread runs, in place of `STOP_GRACE`.
+        pub(super) static GRACE: Cell<Option<Duration>> = const { Cell::new(None) };
+    }
 
     fn sh(script: &str, timeout: Duration) -> io::Result<Output> {
         run(Command::new("sh").args(["-c", script]), timeout)
@@ -479,7 +565,9 @@ mod tests {
         // The shell is done at once, but what it left in the background still holds stdout.
         let err = sh("sleep 10 & echo ready", Duration::from_millis(300)).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::TimedOut);
-        assert!(start.elapsed() < Duration::from_secs(3), "took {:?}", start.elapsed());
+        // Well short of the sleep's 10 s; the rest is room for a busy machine, past the limit and
+        // the grace `stop` gives before it kills.
+        assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
     }
 
     #[test]
@@ -508,14 +596,24 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::TimedOut);
-        assert!(start.elapsed() < Duration::from_secs(3), "took {:?}", start.elapsed());
+        // Well short of the sleep's 10 s; the rest is room for a busy machine, past the limit and
+        // the grace `stop` gives before it kills.
+        assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
     }
 
-    /// Waits for `pid` to end; false if it's still running after 5s.
+    /// Waits for `pid` to end; false if it's still running after 5s. A zombie has ended: where
+    /// PID 1 doesn't reap, nothing may.
     fn ends(pid: libc::pid_t) -> bool {
         let gone = Instant::now() + Duration::from_secs(5);
-        // SAFETY: signal 0 sends nothing, only checks the process is there.
-        while unsafe { libc::kill(pid, 0) } == 0 {
+        let ended = || {
+            // SAFETY: signal 0 sends nothing, only checks the process is there.
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                return true;
+            }
+            let ps = Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output();
+            ps.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim_start().starts_with('Z'))
+        };
+        while !ended() {
             if Instant::now() >= gone {
                 return false;
             }
@@ -695,22 +793,153 @@ mod tests {
         std::process::exit(0);
     }
 
-    /// What a signal ending a command removes: the leftovers still held, not those dropped.
+    /// What a signal ending a command removes: the leftovers still held, not those dropped, and
+    /// one being made when the signal came, once it's made. Then the signal ends the command.
     #[test]
     fn a_signal_removes_the_leftovers_still_held() {
+        use std::os::unix::process::ExitStatusExt;
+        let test = "proc::tests::a_signal_removes_the_leftovers_still_held";
         let Some(dir) = std::env::var_os(ALONE).map(std::path::PathBuf::from) else {
-            let out = alone("proc::tests::a_signal_removes_the_leftovers_still_held");
-            assert!(out.contains("file=false folder=false done=true"), "{out}");
+            // Not `alone`, which removes the folder before this could look in it.
+            let dir = std::env::temp_dir().join(format!("taskman-signal-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let out = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", test, "--nocapture", "--test-threads=1"])
+                .env(ALONE, &dir)
+                .output()
+                .unwrap();
+            let exists = |name: &str| dir.join(name).exists();
+            let left = ["staged", "private", "making", "done"].map(|n| (n, exists(n)));
+            let _ = std::fs::remove_dir_all(&dir);
+            let printed = String::from_utf8_lossy(&out.stdout);
+            assert_eq!(out.status.signal(), Some(libc::SIGTERM), "{printed}");
+            let left: Vec<_> = left.into_iter().filter(|(_, e)| *e).map(|(n, _)| n).collect();
+            assert_eq!(left, ["done"], "{printed}");
             return;
         };
         let (file, folder, done) = (dir.join("staged"), dir.join("private"), dir.join("done"));
-        std::fs::write(&file, "new").unwrap();
-        std::fs::create_dir_all(folder.join("inside")).unwrap();
-        std::fs::write(&done, "kept").unwrap();
-        let _held = (Leftover::new(&file), Leftover::new(&folder));
-        drop(Leftover::new(&done));
-        remove_leftovers();
-        println!("file={} folder={} done={}", file.exists(), folder.exists(), done.exists());
+        let _held = (
+            Leftover::make(&file, || std::fs::write(&file, "new")).unwrap(),
+            Leftover::make(&folder, || std::fs::create_dir_all(folder.join("inside"))).unwrap(),
+        );
+        drop(Leftover::make(&done, || std::fs::write(&done, "kept")).unwrap());
+        stop_on_signals();
+        // The signal comes before the file is made, and its removal waits for it.
+        let making = dir.join("making");
+        let _making = Leftover::make(&making, || {
+            // SAFETY: sends a signal to this process; no memory is involved.
+            unsafe { libc::kill(libc::getpid(), libc::SIGTERM) };
+            std::fs::write(&making, "half")?;
+            std::fs::write(&making, "all")
+        })
+        .unwrap();
+        let until = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        println!("the signal didn't end the command");
+    }
+
+    /// A helper's process that ignores SIGTERM and holds none of its pipes, as a daemon a helper
+    /// started would: its group's leader ends and is reaped at once, and the quit still kills it.
+    #[test]
+    fn stop_all_kills_what_ignores_it_away_from_the_pipes() {
+        let Some(dir) = std::env::var_os(ALONE).map(std::path::PathBuf::from) else {
+            let out = alone("proc::tests::stop_all_kills_what_ignores_it_away_from_the_pipes");
+            assert!(out.contains("stray=gone"), "{out}");
+            return;
+        };
+        let pid = dir.join("stray.pid");
+        let script = format!(
+            "sh -c 'trap \"\" TERM; echo $$ > \"{}\"; exec sleep 60' </dev/null >/dev/null 2>&1 & \
+             wait",
+            pid.display()
+        );
+        let helper = std::thread::spawn(move || sh(&script, Duration::from_secs(60)));
+        let stray = pids(&pid, 1)[0];
+        stop_all();
+        let _ = helper.join();
+        let gone = ends(stray);
+        if !gone {
+            // SAFETY: sends a signal; no memory is involved.
+            unsafe { libc::kill(stray, libc::SIGKILL) };
+        }
+        println!("stray={}", if gone { "gone" } else { "left" });
+    }
+
+    /// The watchdog runs `stop_all` again while the quit's may still wait: what the first asked to
+    /// end is still killed, though its group has left the live ones (its leader reaped, a stray
+    /// left in it). Set up as the first leaves it, so nothing depends on timing.
+    #[test]
+    fn a_second_stop_all_still_kills_what_the_first_asked() {
+        use std::os::unix::process::ExitStatusExt;
+        if std::env::var_os(ALONE).is_none() {
+            let out = alone("proc::tests::a_second_stop_all_still_kills_what_the_first_asked");
+            assert!(out.contains("killed=true"), "{out}");
+            return;
+        }
+        // A group of its own that ignores SIGTERM, which no `run` lists.
+        let mut stray = own_session(Command::new("sh").args(["-c", "trap '' TERM; exec sleep 60"]))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let group = libc::pid_t::try_from(stray.id()).unwrap();
+        {
+            let mut live = live();
+            live.stopped = true;
+            live.asked.push((group, Instant::now()));
+        }
+        stop_all();
+        // Unreaped until here, so the group's id was still its own.
+        let until = Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            match stray.try_wait().unwrap() {
+                Some(status) => break Some(status),
+                None if Instant::now() >= until => break None,
+                None => std::thread::sleep(Duration::from_millis(10)),
+            }
+        };
+        let _ = stray.kill();
+        let killed = status.and_then(|s| s.signal()) == Some(libc::SIGKILL);
+        println!("killed={killed}");
+    }
+
+    /// A helper at its time limit is asked to end before it's killed, as at a quit: a git fetch
+    /// stopped then removes its ref locks. One that doesn't end is killed after the grace.
+    #[test]
+    fn a_helper_at_its_limit_is_asked_before_it_is_killed() {
+        let dir = std::env::temp_dir().join(format!("taskman-limit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let start = |name: &str, on_term: &str| {
+            let (pid, file) = (dir.join(format!("{name}.pid")), dir.join(name));
+            let script = format!(
+                "trap 'echo term > \"{}\"; {on_term}' TERM; echo $$ > '{}'; \
+                 while :; do sleep 0.05; done",
+                file.display(),
+                pid.display()
+            );
+            let begun = Instant::now();
+            // Time for a slow machine to start the shell, and for its trap to run.
+            let helper = std::thread::spawn(move || {
+                GRACE.set(Some(Duration::from_secs(2)));
+                sh(&script, Duration::from_secs(3))
+            });
+            (pids(&pid, 1)[0], file, helper, begun)
+        };
+        let polite = start("polite", "exit 0");
+        let stubborn = start("stubborn", ":");
+        for (pid, file, helper, begun) in [polite, stubborn] {
+            let err = helper.join().unwrap().unwrap_err();
+            let took = begun.elapsed();
+            assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+            assert!(took < Duration::from_secs(10), "took {took:?}");
+            assert!(ends(pid), "{pid} is still running");
+            let term = std::fs::read_to_string(&file).unwrap_or_default();
+            assert_eq!(term.trim(), "term", "{} wasn't asked to end", file.display());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

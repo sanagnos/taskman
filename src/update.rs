@@ -444,13 +444,22 @@ fn install(exe: &Path, tag: &str, by: By) -> Result<(), String> {
         _ => return Err(format!("can't tell where to install over {}", exe.display())),
     };
     let staged = dir.join(format!(".{name}.new.{}", std::process::id()));
-    let _leftover = proc::Leftover::new(&staged);
-    let result = stage(&staged, &binary, tag).and_then(|version| {
-        std::fs::rename(&staged, exe)
-            .map_err(|e| format!("couldn't replace {}: {e}", exe.display()))?;
-        Ok(version)
-    });
+    let written = proc::Leftover::make(&staged, || {
+        // Not held when it fails: what was written goes now, before a signal could leave it.
+        std::fs::write(&staged, &binary).inspect_err(|_| {
+            let _ = std::fs::remove_file(&staged);
+        })
+    })
+    .map_err(|e| format!("couldn't write {}: {e}", staged.display()));
+    let result = written.as_ref().map_err(Clone::clone).and_then(|_| stage(&staged, tag)).and_then(
+        |version| {
+            std::fs::rename(&staged, exe)
+                .map_err(|e| format!("couldn't replace {}: {e}", exe.display()))?;
+            Ok(version)
+        },
+    );
     let _ = std::fs::remove_file(&staged);
+    drop(written);
     say(format!("Installed: {} ({})", result?, exe.display()));
     Ok(())
 }
@@ -522,27 +531,32 @@ impl Private {
         use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
         let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
         let mut tries = 0;
-        let dir = loop {
+        loop {
             let dir = parent.join(format!(
                 ".taskman-{}-{}-{tries}",
                 std::process::id(),
                 nanos.as_nanos()
             ));
-            // Not recursive, so a folder (or link) already there is an error, never reused.
-            match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+            let file = dir.join(name);
+            // Made as a leftover, so a signal can't come between making the folder and holding
+            // it, nor remove it while the file is being written.
+            let made = proc::Leftover::make(&dir, || {
+                // Not recursive, so a folder (or link) already there is an error, never reused.
+                std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
+                let mut open = std::fs::OpenOptions::new();
+                let written = open.write(true).create_new(true).mode(0o600).open(&file);
+                let written = written.and_then(|mut f| f.write_all(data));
+                if written.is_err() {
+                    let _ = std::fs::remove_dir_all(&dir);
+                }
+                written
+            });
+            match made {
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && tries < 10 => tries += 1,
                 Err(e) => return Err(e),
-                Ok(()) => break dir,
+                Ok((leftover, ())) => return Ok(Self { dir, file, _leftover: leftover }),
             }
-        };
-        let copy = Self { file: dir.join(name), _leftover: proc::Leftover::new(&dir), dir };
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&copy.file)?;
-        f.write_all(data)?;
-        Ok(copy)
+        }
     }
 }
 
@@ -647,12 +661,12 @@ fn network_trouble(err: &str) -> bool {
         && (server_error || NETWORK.iter().any(|n| err.contains(n)))
 }
 
-/// Writes the new binary to `staged`, and checks it runs and says it's release `tag`.
-fn stage(staged: &Path, binary: &[u8], tag: &str) -> Result<String, String> {
+/// Makes the new binary written to `staged` runnable, and checks it runs and says it's release
+/// `tag`.
+fn stage(staged: &Path, tag: &str) -> Result<String, String> {
     use std::os::unix::fs::PermissionsExt;
-    let written = std::fs::write(staged, binary)
-        .and_then(|()| std::fs::set_permissions(staged, std::fs::Permissions::from_mode(0o755)));
-    written.map_err(|e| format!("couldn't write {}: {e}", staged.display()))?;
+    std::fs::set_permissions(staged, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("couldn't write {}: {e}", staged.display()))?;
     let broken = |e: String| {
         format!("the new binary doesn't run on this machine ({e}); nothing was installed")
     };
@@ -1456,6 +1470,57 @@ mod tests {
         assert!(!script.contains("--signer-workflow"));
     }
 
+    /// The double-quoted strings in `targets = [...]` in a TOML file's `table` ("" for the top
+    /// level, before the first table), where cargo-deny and cargo-about read them, comments left
+    /// out: enough TOML for deny.toml and about.toml, not a parser.
+    fn toml_targets(toml: &str, table: &str) -> Option<Vec<String>> {
+        let (mut current, mut in_list, mut found) = ("", false, vec![]);
+        for line in toml.lines() {
+            // No target has a `#` in it, so one starts a comment wherever it is.
+            let line = line.split('#').next().unwrap().trim();
+            let items = if in_list {
+                line
+            } else if let Some(header) = line.strip_prefix('[') {
+                current = header.trim_end_matches(']').trim();
+                continue;
+            } else if current == table
+                && let Some(rest) = line.strip_prefix("targets")
+                && let Some(rest) = rest.trim_start().strip_prefix('=')
+                && let Some(rest) = rest.trim_start().strip_prefix('[')
+            {
+                in_list = true;
+                rest
+            } else {
+                continue;
+            };
+            let (items, end) = items.split_once(']').map_or((items, false), |(i, _)| (i, true));
+            found.extend(items.split('"').skip(1).step_by(2).map(String::from));
+            if end {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn reads_a_targets_list_where_the_tools_do() {
+        let graph = |toml: &str| toml_targets(toml, "graph");
+        let ab = Some(vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(graph("[graph]\ntargets = [\"a\", \"b\"]\n"), ab);
+        assert_eq!(graph("# x\n[graph] # the platforms\ntargets=[\n  \"a\",\n  \"b\",\n]"), ab);
+        assert_eq!(graph("[graph]  \r\n\r\ntargets = [\r\n  \"a\",\r\n  \"b\",\r\n]\r\n"), ab);
+        // An entry commented out isn't checked, so it isn't counted.
+        let commented = "[graph]\ntargets = [\n  \"a\", # \"c\"\n  # \"d\",\n  \"b\",\n]";
+        assert_eq!(graph(commented), ab);
+        // Only in the table named: not a subtable, another table or before the table.
+        assert_eq!(graph("[graph.x]\ntargets = [\"a\"]\n[graph]\n"), None);
+        assert_eq!(graph("[graph]\n[bans]\ntargets = [\"a\"]\n"), None);
+        assert_eq!(graph("targets = [\"a\"]\n[graph]\n"), None);
+        assert_eq!(toml_targets("targets = [\"a\", \"b\"]\n[graph]\n", ""), ab);
+        assert_eq!(toml_targets("[graph]\ntargets = [\"a\"]\n", ""), None);
+        assert_eq!(graph("[graph]\ntargets = [\"a\",\n"), None);
+    }
+
     #[test]
     fn updates_to_a_build_the_release_has_and_install_sh_picks() {
         let released = include_str!("../.github/workflows/release.yml");
@@ -1479,6 +1544,20 @@ mod tests {
         // The release workflow wants an archive for each of install.sh's `) target=` lines.
         assert_eq!(script.matches(") target=").count(), targets.len());
         assert!(released.contains(r"s/.*) target=\([a-z0-9_-]*\) ;;.*/\1/p"));
+        // The license and advisory checks and the third-party notices cover every released build.
+        for (name, settings, table) in [
+            ("deny.toml", include_str!("../deny.toml"), "graph"),
+            ("about.toml", include_str!("../about.toml"), ""),
+        ] {
+            let listed = toml_targets(settings, table);
+            let mut listed = listed.unwrap_or_else(|| panic!("{name} has no targets list"));
+            listed.sort();
+            assert_eq!(listed, targets, "{name}'s targets are the released builds");
+        }
+        // cargo-deny still takes a top-level list, deprecated, in place of `[graph]`'s, with only
+        // a warning.
+        let deny = include_str!("../deny.toml");
+        assert_eq!(toml_targets(deny, ""), None, "deny.toml's targets belong in [graph]");
         // A Linux build with neither C library has no release; this one has, where there's one.
         assert_eq!(target_for("linux", "x86_64", ""), None);
         if cfg!(any(target_os = "macos", target_os = "linux"))
