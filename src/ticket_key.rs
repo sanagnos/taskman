@@ -100,9 +100,9 @@ pub fn exact(input: &str) -> Option<String> {
     after.or_else(param).map(str::to_uppercase)
 }
 
-/// Whether `s` is a web link alone, as `exact` reads one (`link`).
-pub fn is_link(s: &str) -> bool {
-    link(s).is_some()
+/// Whether `s` starts with `http://` or `https://`, in any case: a web link, whatever follows it.
+pub fn has_web_scheme(s: &str) -> bool {
+    s.contains("://") && web_scheme_or_none(s)
 }
 
 /// Whether what's before the first `://` in `s`, if it has one, is `http` or `https`, in any case.
@@ -132,6 +132,19 @@ fn link(s: &str) -> Option<&str> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn knows_a_web_scheme() {
+        for s in ["https://x", "HTTP://jira/browse/ENG-52", "https://[::1]/browse/ENG-52"] {
+            assert!(has_web_scheme(s) && web_scheme_or_none(s), "{s}");
+        }
+        for s in ["ENG-52", "linear.app/acme/issue/ENG-52", "#12"] {
+            assert!(!has_web_scheme(s) && web_scheme_or_none(s), "{s}");
+        }
+        for s in ["ftp://x/browse/ENG-52", "see:https://x", "file:///x", "Fix-https://x", "://x"] {
+            assert!(!has_web_scheme(s) && !web_scheme_or_none(s), "{s}");
+        }
+    }
 
     #[test]
     fn reads_a_key_only_from_the_whole_input() {

@@ -260,9 +260,9 @@ pub(crate) fn locate_ticket<'a>(
     saved: &'a Saved,
     here: Option<&Here>,
 ) -> Result<(String, (Option<&'a Ticket>, &'a Project)), String> {
+    let input = input.trim();
     let not_a_ticket =
         || format!("\"{input}\" isn't a ticket: pass just its number (52), key (ENG-52) or link");
-    let input = input.trim();
     // Before any tracker reads it: GitHub's finds an issue's link after any `://`, whatever comes
     // before it (`Fix https://…`, `see:https://…`), as the Add form wants.
     if input.contains(char::is_whitespace) || !ticket_key::web_scheme_or_none(input) {
@@ -282,12 +282,12 @@ pub(crate) fn locate_ticket<'a>(
         return Ok((key, located));
     }
     let key = ticket_key::exact(input).ok_or_else(|| {
-        if ticket_key::is_link(input) {
-            // Say what to paste instead, as a link can name its ticket where `exact` doesn't look
-            // (a Jira Service Management queue's ends in the key).
+        // A web link can name its ticket where `exact` doesn't look (a Jira Service Management
+        // queue's ends in the key), or have a host `exact` doesn't take: the key always does.
+        if ticket_key::has_web_scheme(input) {
             format!(
                 "\"{input}\" isn't a link taskman reads a ticket from: pass the ticket's key, like \
-                 ENG-52, or its Jira /browse/ENG-52 link"
+                 ENG-52"
             )
         } else {
             not_a_ticket()
@@ -718,17 +718,25 @@ pub(crate) mod tests {
             let e = locate_ticket(input, None, None, None, s, here).map(|(k, _)| k).unwrap_err();
             assert!(e.starts_with(&format!("\"{input}\" isn't a")), "{input:?}: {e}");
         }
-        // A link that names its ticket elsewhere says which link to pass.
-        let queue =
-            "https://example.atlassian.net/jira/servicedesk/projects/ENG/queues/custom/1/ENG-52";
-        let e = locate_ticket(queue, None, None, None, &jira, web).unwrap_err();
-        assert_eq!(
-            e,
-            format!(
-                "\"{queue}\" isn't a link taskman reads a ticket from: pass the ticket's key, like \
-                 ENG-52, or its Jira /browse/ENG-52 link"
-            )
-        );
+        // A web link that names its ticket elsewhere, or with a host `exact` doesn't take, says
+        // to pass the key instead.
+        for link in [
+            "https://example.atlassian.net/jira/servicedesk/projects/ENG/queues/custom/1/ENG-52",
+            "https://jira_1.example.com/browse/ENG-52",
+            "https://you@example.atlassian.net/browse/ENG-52",
+            "HTTP://[::1]:8080/browse/ENG-52",
+        ] {
+            assert_eq!(
+                locate_ticket(&format!(" {link}\n"), None, None, None, &jira, web).unwrap_err(),
+                format!(
+                    "\"{link}\" isn't a link taskman reads a ticket from: pass the ticket's key, \
+                     like ENG-52"
+                )
+            );
+        }
+        // Either refusal quotes the input as trimmed.
+        let e = locate_ticket("\tfix/ENG-52 ", None, None, None, &jira, web).unwrap_err();
+        assert!(e.starts_with("\"fix/ENG-52\" isn't a ticket: pass just"), "{e}");
     }
 
     #[test]
