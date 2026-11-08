@@ -230,6 +230,52 @@ fn closes_tickets_and_removes_only_safe_worktrees() {
     assert!(tui.wait_exit().success());
 }
 
+/// A phrase with an open ticket's key or issue link in it closes nothing: the command refuses it
+/// before asking taskman anything. A whole key, the control, is queued for taskman to close.
+#[test]
+fn a_phrase_closes_nothing() {
+    let dir = scratch_dir("close-phrase").canonicalize().unwrap();
+    let repo = acme(&dir);
+    let state = dir.join("state/taskman");
+    std::fs::create_dir_all(&state).unwrap();
+    let tickets = serde_json::json!({
+        "projects": [{"name": "acme", "repo": repo, "tracker": {"provider": "github", "site": "acme/web", "key": "ENG"}}],
+        "tickets": [
+            {"key": "ENG-12", "repo": repo, "cwd": repo},
+            {"key": "ENG-52", "repo": repo, "cwd": repo},
+        ],
+    });
+    std::fs::write(state.join("tickets.json"), tickets.to_string()).unwrap();
+    let close = |args: &[&str]| -> Output {
+        taskman(&dir).arg("close").args(args).current_dir(&repo).output().unwrap()
+    };
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    let queued = || std::fs::read_dir(state.join("inbox")).into_iter().flatten().flatten().count();
+
+    for phrase in [
+        "Fix ENG-52 now",
+        "Follow up https://github.com/acme/web/issues/12",
+        "see #12",
+        "fix/ENG-52",
+    ] {
+        let out = close(&[phrase]);
+        assert_eq!(out.status.code(), Some(1), "{phrase}");
+        assert_eq!(text(&out.stdout), "", "{phrase}");
+        assert_eq!(
+            text(&out.stderr),
+            format!(
+                "taskman close: \"{phrase}\" isn't a ticket: pass just its number (52), key \
+                 (ENG-52) or link\n"
+            )
+        );
+        assert_eq!(queued(), 0, "{phrase} left a request");
+    }
+
+    let out = close(&["https://github.com/acme/web/issues/12"]);
+    assert_eq!(text(&out.stdout), "taskman isn't running; ENG-12 closes when it starts.\n");
+    assert_eq!(queued(), 1);
+}
+
 /// A race found in review: a ticket closed while its worktree removal is slow, then added
 /// again. Its new session would run in the folder the removal is about to delete; instead adding
 /// it is refused until the removal is done. Through `taskman close` and the close dialog's `r`.

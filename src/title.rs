@@ -24,8 +24,9 @@ starts.
                   characters, and kept to 200 columns. Alone, it means the session's own ticket,
                   and it can't be one word that reads as a ticket's number or key; to use one
                   as the title, name the ticket first: taskman title ENG-52 sha-256
-  KEY             a ticket number (52), key (ENG-52) or link. In a session taskman started, only
-                  the session's own ticket
+  KEY             a ticket number (52), key (ENG-52) or link, as a whole argument; on GitHub
+                  Issues also '#52', quoted so the shell keeps it. In a session taskman started,
+                  only the session's own ticket
   --              what follows isn't an option: use it before text from a script, which may
                   start with a dash
   --clear KEY     drop the ticket's title, so its card shows the tracker's again
@@ -131,14 +132,10 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     if a.input.is_none() && a.project.is_some() {
         return Err("--project goes with a ticket: taskman title KEY TEXT --project NAME".into());
     }
-    // Someone naming a ticket and forgetting the title shouldn't title their own ticket with it.
-    // One word only: `ticket_key::parse` finds a key inside a phrase, and "Move to sha-256" is a
-    // title.
+    // Someone naming a ticket and forgetting the title shouldn't title their own ticket with it:
+    // what names one as KEY (`ticket_key::exact`, a whole word), so "Move to sha-256" is a title.
     let word = a.text.trim();
-    if a.input.is_none()
-        && !word.contains(char::is_whitespace)
-        && (ticket_key::is_number(word) || ticket_key::parse(word).is_some())
-    {
+    if a.input.is_none() && (ticket_key::is_number(word) || ticket_key::exact(word).is_some()) {
         return Err(not_a_title(word));
     }
     // `"$TITLE"` with nothing in it isn't asking to lose the title, and nor is text with nothing
@@ -253,6 +250,10 @@ mod tests {
             assert!(args(&["--", lone]).unwrap_err().contains("looks like a ticket"));
         }
         assert_eq!(args(&["ENG-52", "ENG-53"]).unwrap().text, "ENG-53");
+        // A word with a key in it that doesn't name the ticket as KEY is a title.
+        for word in ["fix/ENG-53", "ENG-53,", "https://example.com/t/ENG-53"] {
+            assert_eq!(args(&[word]), Ok(text(word)));
+        }
         // A script's text starting with a dash, after `--`; without it, it's refused.
         assert_eq!(args(&["--", "-v is broken"]), Ok(text("-v is broken")));
         assert_eq!(
@@ -402,7 +403,9 @@ mod tests {
         assert_eq!(of(&["--clear", "API-7"]), Ok((1, "API-7".into())));
         assert!(of(&["Fix"]).unwrap_err().starts_with("name the ticket"));
         assert_eq!(of(&["ENG-60", "Fix"]), Err("ENG-60 isn't open in acme-web".into()));
-        assert!(of(&["login", "Fix"]).unwrap_err().contains("isn't a ticket number"));
+        assert!(of(&["login", "Fix"]).unwrap_err().contains("isn't a ticket: pass just"));
+        // A key in a phrase isn't the ticket.
+        assert!(of(&["Fix ENG-53 now", "Fix"]).unwrap_err().contains("isn't a ticket: pass just"));
         // A key open in two projects needs the project, and with it means that project's.
         let mut two = tickets();
         two.projects.push(crate::cli::tests::project("legacy", "/src/legacy", "ENG"));

@@ -25,7 +25,9 @@ not in the merged PR.
 Otherwise the worktree stays and the reply says why. Nothing is forced. If taskman isn't running,
 the tickets close when it starts.
 
-  KEY             a ticket number (52), key (ENG-52) or link; several at once
+  KEY             a ticket number (52), key (ENG-52) or link, each a whole argument: a key
+                  inside a phrase is refused. On GitHub Issues also '#52', quoted so the shell
+                  keeps it. Several at once
   --merged        only tickets whose PR has merged; without KEY, every such ticket in the
                   project (in every project, run outside one)
   --keep-worktree close without removing any worktree
@@ -521,8 +523,20 @@ mod tests {
             p.lines,
             vec![
                 Line::ok("ENG-60 isn't open in acme-web"),
-                Line::err("login isn't a ticket number, key or link")
+                Line::err(
+                    "\"login\" isn't a ticket: pass just its number (52), key (ENG-52) or link"
+                )
             ]
+        );
+        // A phrase, as one argument, names no ticket, even with an open one's key in it.
+        let phrase = Args { inputs: vec!["Fix ENG-52 now".into()], ..Default::default() };
+        let p = plan(&phrase, &s, None, Some(&here("/src/acme-web"))).unwrap();
+        assert!(p.requests.is_empty());
+        assert_eq!(
+            p.lines,
+            vec![Line::err(
+                "\"Fix ENG-52 now\" isn't a ticket: pass just its number (52), key (ENG-52) or link"
+            )]
         );
         // The same key open in two projects needs the project.
         let mut two = saved();

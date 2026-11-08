@@ -251,6 +251,7 @@ pub(crate) fn confine_all(own: Option<usize>) -> Result<(), String> {
 /// a number takes the prefix of the project the command means, the tracker's own way of writing one
 /// (GitHub's `#12` and issue links) is read by that tracker, and any other key or link goes by
 /// `status::locate`, so a key open in two projects needs the project. `named` is `project`'s index.
+/// Only the whole input counts (`ticket_key::exact`): a key in a phrase is refused, never closed.
 pub(crate) fn locate_ticket<'a>(
     input: &str,
     project: Option<&str>,
@@ -259,6 +260,13 @@ pub(crate) fn locate_ticket<'a>(
     saved: &'a Saved,
     here: Option<&Here>,
 ) -> Result<(String, (Option<&'a Ticket>, &'a Project)), String> {
+    let not_a_ticket =
+        || format!("\"{input}\" isn't a ticket: pass just its number (52), key (ENG-52) or link");
+    let input = input.trim();
+    // Before any tracker reads it: GitHub's finds an issue's link anywhere after a `://`.
+    if input.contains(char::is_whitespace) {
+        return Err(not_a_ticket());
+    }
     if ticket_key::is_number(input) {
         let p = pick_project(project, &[], me, saved, here)?;
         let key = resolve_key(input, p, &saved.projects)?;
@@ -272,39 +280,55 @@ pub(crate) fn locate_ticket<'a>(
         let located = status::locate(&key, saved, status::Scope::Named(&saved.projects[p].repo))?;
         return Ok((key, located));
     }
-    let key = ticket_key::parse(input)
-        .ok_or_else(|| format!("{input} isn't a ticket number, key or link"))?;
+    let key = ticket_key::exact(input).ok_or_else(not_a_ticket)?;
     let located = status::locate(&key, saved, status::scope(named, None, me, saved, here))?;
     Ok((key, located))
 }
 
-/// The key and project of `input` when it's written a tracker's own way: `place`'s tracker's, or
-/// with no project to go by, the one tracker's that takes it. None when it isn't.
+/// The key and project of `input` when it's written a tracker's own way: `place`'s tracker's, else
+/// the one tracker's that names it as its issue (`Tracker::names_issue`), which with a project to
+/// go by is refused, naming the other project. None when no tracker reads it.
 fn tracker_key(
     input: &str,
     place: Option<usize>,
     saved: &Saved,
 ) -> Result<Option<(String, usize)>, String> {
-    let read = |p: usize| saved.projects[p].tracker.as_ref()?.key_from_input(input);
-    if let Some(p) = place {
-        return read(p).map(|key| key.map(|k| (k, p))).transpose();
+    let tracker = |p: usize| saved.projects[p].tracker.as_ref();
+    let read = |p: usize| tracker(p)?.key_from_input(input);
+    let names = |p: usize| tracker(p).is_some_and(|t| t.names_issue(input));
+    let others = (0..saved.projects.len()).filter(|&q| Some(q) != place);
+    let theirs: Vec<usize> = others.clone().filter(|&q| names(q)).collect();
+    // `place`'s answer, unless it refuses what another project names as its issue: `#12` is
+    // every GitHub tracker's, so one that's `place`'s too stays its own.
+    if let Some(p) = place
+        && let Some(key) = read(p)
+        && (key.is_ok() || theirs.is_empty() || names(p))
+    {
+        return key.map(|k| Some((k, p)));
     }
-    let (mut taken, mut refused) = (Vec::new(), false);
-    for p in 0..saved.projects.len() {
-        match read(p) {
-            Some(Ok(key)) => taken.push((key, p)),
-            Some(Err(_)) => refused = true,
-            None => {}
+    let name = |p: usize| saved.projects[p].name.as_str();
+    match (&theirs[..], place) {
+        // Written a tracker's way, but no project's issue (another repository's, or a pull
+        // request). Not that tracker's own refusal: it speaks of its own project, not meant here.
+        ([], _) if others.clone().any(|q| read(q).is_some()) => {
+            Err(format!("{input} isn't an issue of a project in taskman"))
         }
-    }
-    match (taken.len(), refused) {
-        // Not a tracker's own refusal: each speaks of its own project, and none is meant here.
-        (0, true) => Err(format!("{input} isn't an issue of a project in taskman")),
-        (0, false) => Ok(None),
-        (1, _) => Ok(taken.pop()),
-        _ => {
-            let names: Vec<&str> =
-                taken.iter().map(|(_, p)| saved.projects[*p].name.as_str()).collect();
+        ([], _) => Ok(None),
+        (&[q], Some(p)) => Err(format!(
+            "{input} is an issue of project {0}, not {1}; pass --project {0}",
+            name(q),
+            name(p)
+        )),
+        // `names_issue` says it's q's whatever the prefix, so only a missing one stops it here.
+        (&[q], None) => match read(q) {
+            Some(Ok(key)) => Ok(Some((key, q))),
+            _ => Err(format!(
+                "{input}: project {} has no ticket prefix; set one in its settings",
+                name(q)
+            )),
+        },
+        (qs, _) => {
+            let names: Vec<&str> = qs.iter().map(|&q| name(q)).collect();
             Err(format!("{input} could mean projects {}; pass --project", names.join(" or ")))
         }
     }
@@ -636,6 +660,143 @@ pub(crate) mod tests {
         };
         let e = locate_ticket("#88", None, None, None, &two, None).unwrap_err();
         assert_eq!(e, "#88 could mean projects acme or api; pass --project");
+        // In acme's folder, api's issue: refused, naming api. `#88` stays acme's, and so it does
+        // with no prefix to make a key of it, rather than going to api.
+        let acme = Some(&here("/src/acme"));
+        let link = "https://github.com/acme/api/issues/3";
+        assert_eq!(
+            locate_ticket(link, None, None, None, &two, acme).unwrap_err(),
+            format!("{link} is an issue of project api, not acme; pass --project api")
+        );
+        assert_eq!(locate_ticket("#88", None, None, None, &two, acme).unwrap().0, "ENG-88");
+        two.projects[0].tracker.as_mut().unwrap().key.clear();
+        let e = locate_ticket("#88", None, None, None, &two, acme).unwrap_err();
+        assert!(e.contains("set one in its settings"), "{e}");
+    }
+
+    /// `taskman close` removes worktrees, so only the whole input names a ticket: never a key or
+    /// link found inside a phrase or another word.
+    #[test]
+    fn a_phrase_names_no_ticket() {
+        let github = on_github("acme/web");
+        let jira = saved();
+        let acme = Some(&here("/src/acme"));
+        let web = Some(&here("/src/acme-web"));
+        for (s, here, input) in [
+            (&jira, web, "Fix ENG-52 now"),
+            (&jira, web, "ENG-52 "),
+            (&jira, None, "close ENG-52"),
+            (&jira, web, "see https://example.atlassian.net/browse/ENG-52"),
+            (&jira, web, "fix/ENG-52"),
+            (&jira, web, "ENG-52,"),
+            (&jira, web, "https://example.com/t/ENG-52/split-2"),
+            (&jira, web, "https://example.com/view?id=ENG-52"),
+            (&jira, web, "https://example.com/#ENG-52"),
+            (&jira, web, "ftp://example.com/browse/ENG-52"),
+            (&github, acme, "Follow up https://github.com/acme/web/issues/88"),
+            (&github, None, "Follow up https://github.com/acme/web/issues/88"),
+            (&github, acme, "see #88"),
+            (&github, acme, "88 and 52"),
+            (&github, acme, "#88 "),
+        ] {
+            let got = locate_ticket(input, None, None, None, s, here);
+            // A trailing space alone is what a shell or script leaves; it still names the key.
+            if input.trim() != input && !input.trim().contains(' ') {
+                assert!(got.is_ok(), "{input:?}: {got:?}");
+                continue;
+            }
+            let e = got.map(|(k, _)| k).unwrap_err();
+            assert!(e.starts_with(&format!("\"{input}\" isn't a ticket")), "{input:?}: {e}");
+        }
+    }
+
+    #[test]
+    fn names_the_ticket_on_its_own() {
+        let s = saved();
+        let web = Some(&here("/src/acme-web"));
+        let key = |input: &str| locate_ticket(input, None, None, None, &s, web).map(|(k, _)| k);
+        for input in [
+            "ENG-52",
+            "eng-52",
+            " ENG-52\n",
+            "52",
+            "https://example.atlassian.net/browse/ENG-52",
+            "https://example.atlassian.net/browse/ENG-52?focusedCommentId=10#comment-10",
+            "https://example.atlassian.net/jira/software/projects/ENG/boards/1?selectedIssue=ENG-52",
+            "https://example.atlassian.net/jira/software/c/projects/ENG/issues/ENG-52",
+            "HTTPS://linear.app/acme/issue/ENG-52/phase-2",
+            "linear.app/acme/issue/ENG-52",
+        ] {
+            assert_eq!(key(input), Ok("ENG-52".into()), "{input:?}");
+        }
+    }
+
+    /// A GitHub link is the GitHub tracker's to read, never a key in its repository's name.
+    #[test]
+    fn a_github_link_is_its_projects() {
+        let mut s = saved();
+        s.projects.push({
+            let mut p = project("acme", "/src/acme", "GH");
+            let t = p.tracker.as_mut().unwrap();
+            (t.provider, t.site) = (Provider::Github, "acme/ENG-52".into());
+            p
+        });
+        let web = Some(&here("/src/acme-web"));
+        let key = |input: &str, here| locate_ticket(input, None, None, None, &s, here);
+        // In acme-web, on Linear: another project's issue.
+        for input in ["https://github.com/acme/ENG-52/issues/88", "acme/ENG-52#88", "#88"] {
+            assert_eq!(
+                key(input, web).unwrap_err(),
+                format!("{input} is an issue of project acme, not acme-web; pass --project acme"),
+            );
+        }
+        // Nobody's: a repository no project tracks, or a pull request.
+        for input in
+            ["https://github.com/acme/ENG-52/pull/88", "https://github.com/acme/API-7/issues/88"]
+        {
+            assert_eq!(
+                key(input, web).unwrap_err(),
+                format!("{input} isn't an issue of a project in taskman"),
+            );
+        }
+        // With no GitHub project at all, still never the repository's name.
+        let e = locate_ticket(
+            "https://github.com/acme/ENG-52/issues/88",
+            None,
+            None,
+            None,
+            &saved(),
+            web,
+        )
+        .unwrap_err();
+        assert!(e.contains("isn't a ticket"), "{e}");
+        // Named, it's that project's.
+        let named = locate_ticket(
+            "https://github.com/acme/ENG-52/issues/88",
+            Some("acme"),
+            Some(3),
+            None,
+            &s,
+            web,
+        );
+        assert_eq!(named.map(|(k, _)| k), Ok("GH-88".into()));
+    }
+
+    /// A GitHub project with no prefix can't make a key of `#52`, and says how to fix that from
+    /// any folder, naming the project.
+    #[test]
+    fn says_to_set_a_prefix_from_anywhere() {
+        let mut s = on_github("acme/web");
+        s.projects[0].tracker.as_mut().unwrap().key.clear();
+        for (dir, here) in
+            [("none", None), ("acme", Some(&here("/src/acme"))), ("home", Some(&here("/home/you")))]
+        {
+            let e = locate_ticket("#52", None, None, None, &s, here).unwrap_err();
+            assert!(e.contains("set one in its settings"), "{dir}: {e}");
+            if here.is_none() {
+                assert_eq!(e, "#52: project acme has no ticket prefix; set one in its settings");
+            }
+        }
     }
 
     #[test]
@@ -765,6 +926,53 @@ pub(crate) mod tests {
                             || e.starts_with("unknown option -"),
                         "{e}"
                     ),
+                }
+            }
+        }
+    }
+
+    mod phrases {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// What a phrase is made of: open tickets' keys, numbers, GitHub's ways and other links.
+        fn word() -> impl Strategy<Value = String> {
+            prop_oneof![
+                Just("ENG-52".to_string()),
+                Just("eng-88".to_string()),
+                "[0-9]{1,3}",
+                "#[0-9]{1,3}",
+                "acme/web#[0-9]{1,3}",
+                "https://github\\.com/acme/web/issues/[0-9]{1,3}",
+                "https://example\\.atlassian\\.net/browse/ENG-(52|88)",
+                "[A-Za-z]{1,8}",
+            ]
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(128))]
+
+            /// No phrase names a ticket, whatever words it has, in a project or outside one.
+            #[test]
+            fn no_phrase_resolves(
+                words in prop::collection::vec(word(), 2..5),
+                space in "[ \t]{1,2}",
+                padding in "[ \n]{0,1}",
+            ) {
+                let phrase = format!("{padding}{}{padding}", words.join(&space));
+                let github = on_github("acme/web");
+                let jira = saved();
+                let (acme, web) = (here("/src/acme"), here("/src/acme-web"));
+                for (s, here) in
+                    [(&github, Some(&acme)), (&github, None), (&jira, Some(&web)), (&jira, None)]
+                {
+                    let got = locate_ticket(&phrase, None, None, None, s, here).map(|(k, _)| k);
+                    prop_assert!(
+                        got.as_ref().is_err_and(|e| e.contains("isn't a ticket: pass just")),
+                        "{:?}: {:?}",
+                        phrase,
+                        got
+                    );
                 }
             }
         }
