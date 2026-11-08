@@ -199,10 +199,11 @@ pub(crate) fn context(me: Option<&Ticket>, saved: &Saved, here: Option<&Here>) -
     status::project_here(&saved.projects, here?)
 }
 
-/// What lifts `confine`. The CLI asks the user before it runs a command written this way, as it
-/// matches no rule of the allow-list.
-const WIDER: &str =
-    "run the same command with `env -u TASKMAN_REPO` in front, which asks the user first";
+/// What lifts `confine` and `confine_all`. A command written this way matches no rule of the
+/// allow-list, so the CLI's own permission settings decide: Claude Code asks the user, unless its
+/// mode or the user's rules allow it (auto mode's classifier can); Codex runs it if its sandbox
+/// lets it, else asks as its approval policy says.
+const WIDER: &str = "run the same command with `env -u TASKMAN_REPO` in front, which the session's own permission settings decide on: Claude asks the user unless their mode or rules allow it (auto mode may); in Codex, its sandbox and approval settings decide";
 
 /// The project of the session taskman started that the command runs in, by `TASKMAN_REPO`; None
 /// outside one.
@@ -224,12 +225,12 @@ pub(crate) fn session_project(
 /// status`, `add` and `move` without asking (`hook::settings_json`), so text a session read could
 /// otherwise send them to another project's tracker, account, board or repository. The allow-list
 /// can't tell arguments apart (a quoted `--proj""ect` gets past an ask rule), so the line is drawn
-/// here, and only a command that leaves the session's environment, which the CLI asks the user
-/// about, crosses it.
+/// here, and only a command that leaves the session's environment, which the CLI's permission
+/// settings decide on (see `WIDER`), crosses it.
 pub(crate) fn confine(p: usize, own: Option<usize>, saved: &Saved) -> Result<(), String> {
     match own {
         Some(own) if own != p => Err(format!(
-            "that's project {}, and this session works in {}: a session goes beyond its own project only with the user's approval. To go ahead, {WIDER}.",
+            "that's project {}, and this session works in {}: a session keeps to its own project. To go ahead, {WIDER}.",
             saved.projects[p].name, saved.projects[own].name
         )),
         _ => Ok(()),
@@ -238,11 +239,13 @@ pub(crate) fn confine(p: usize, own: Option<usize>, saved: &Saved) -> Result<(),
 
 /// Refuses every project (`status --all-projects`) in any session (`own`), as `confine` refuses one
 /// other project. Even with one project, so the answer doesn't say whether there are others, and
-/// before anything reads a token. Claude's rules are what ask about lifting it (see `WIDER`), and
-/// Codex's own settings decide there.
+/// before anything reads a token. The CLI's permission settings decide on lifting it (see
+/// `WIDER`).
 pub(crate) fn confine_all(own: Option<usize>) -> Result<(), String> {
     match own {
-        Some(_) => Err("`--all-projects` reads every project's tracker with its account: a session goes beyond its own project only with the user's approval. To go ahead, run the same command with `env -u TASKMAN_REPO` in front, which Claude asks the user about first; in Codex, its sandbox and approval settings decide.".into()),
+        Some(_) => Err(format!(
+            "`--all-projects` reads every project's tracker with its account: a session keeps to its own project. To go ahead, {WIDER}."
+        )),
         None => Ok(()),
     }
 }
@@ -650,7 +653,7 @@ pub(crate) mod tests {
         assert_eq!(confine(0, own, &s), Ok(()));
         assert_eq!(
             confine(1, own, &s).unwrap_err(),
-            "that's project acme-api, and this session works in acme-web: a session goes beyond its own project only with the user's approval. To go ahead, run the same command with `env -u TASKMAN_REPO` in front, which asks the user first."
+            "that's project acme-api, and this session works in acme-web: a session keeps to its own project. To go ahead, run the same command with `env -u TASKMAN_REPO` in front, which the session's own permission settings decide on: Claude asks the user unless their mode or rules allow it (auto mode may); in Codex, its sandbox and approval settings decide."
         );
         // A session whose project was removed reaches none.
         assert!(session_project(&s, Some(Path::new("/src/gone"))).unwrap_err().contains(
@@ -674,7 +677,7 @@ pub(crate) mod tests {
         // Its own project is no exception, so the answer doesn't depend on there being others.
         let e = confine_all(Some(0)).unwrap_err();
         assert!(e.starts_with("`--all-projects` reads every project's tracker"), "{e}");
-        assert!(e.contains("`env -u TASKMAN_REPO`") && e.contains("in Codex"), "{e}");
+        assert!(e.ends_with(&format!("To go ahead, {WIDER}.")), "{e}");
     }
 
     #[test]

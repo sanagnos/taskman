@@ -1,6 +1,6 @@
 //! Sessions run `taskman status`, `add` and `move` without a prompt, so in a session taskman
 //! started they keep to its project: another project's ticket, board or repository needs a command
-//! that leaves the session's environment, which the CLI asks the user about first.
+//! that leaves the session's environment, which the CLI's own permission settings decide on.
 
 mod common;
 

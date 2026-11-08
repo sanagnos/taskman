@@ -709,7 +709,7 @@ fn session_line(s: Option<&SessionState>) -> String {
     if let Some(s) = s {
         line += &format!(", {}", util::ago_words(util::now() - s.record.ts));
         if !s.record.message.is_empty() {
-            line += &format!(" ({})", s.record.message);
+            line += &format!(" ({})", untrusted::line(&s.record.message));
         }
     }
     line
@@ -2371,6 +2371,10 @@ mod tests {
         r.project = odd.into();
         r.name = odd.into();
         r.worktree = Some(odd.into());
+        // The message the hooks record, which the session's CLI wrote.
+        if let Some(s) = r.session.as_mut() {
+            s.record.message = odd.into();
+        }
         let row = |key: &str| AgentRow {
             name: odd.into(),
             key: key.into(),
