@@ -1,0 +1,2 @@
+- When a session asks for another project and is refused, the message no longer promises that Claude asks you first: it says your permission settings decide, as auto mode or a rule of yours can let `env -u TASKMAN_REPO` through unasked.
+- `taskman status` and `taskman resume` keep a project's or agent's name, a folder and a session's message on one line, even if it holds a line break, and so do the errors any command gives when it picks or refuses a project.

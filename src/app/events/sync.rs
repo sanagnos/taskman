@@ -369,6 +369,34 @@ fn a_worktree_finished_after_its_ticket_closed_is_not_the_reopened_tickets() {
     );
 }
 
+/// git finishing a worktree after `tick` read its messages and before it closed the ticket in the
+/// inbox: the close's toast doesn't replace the one saying where the worktree went.
+#[test]
+fn a_worktree_finished_as_its_ticket_closes_keeps_its_toast() {
+    let mut app = acme_app();
+    let n = creating(&mut app, "ENG-90");
+    request(
+        "close-ENG-90",
+        &serde_json::json!({
+            "repo": "/src/acme", "reply_by": crate::util::now() + 60,
+            "items": [{ "kind": "ticket", "key": "ENG-90" }], "close": { "keep_worktree": true },
+        }),
+    );
+    app.take_inbox();
+    app.tx.send(created(&app, n, "ENG-90", true)).unwrap();
+    app.close_next();
+    assert_eq!(toast(&app), Some("Closed ENG-90"));
+    app.drain_messages();
+    assert!(app.closed_creating.is_empty());
+    assert!(
+        toast(&app)
+            .is_some_and(|t| t
+                .ends_with("closed while its worktree was being created. Kept /src/acme-ENG-90")),
+        "{:?}",
+        toast(&app)
+    );
+}
+
 /// The worktree git finished after its ticket closed goes only under the owner lock too.
 #[test]
 fn a_worktree_finished_after_its_ticket_closed_stays_when_its_session_can_not_be_claimed() {
