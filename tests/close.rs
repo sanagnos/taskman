@@ -703,6 +703,16 @@ fn locks(dir: &Path) -> Vec<std::path::PathBuf> {
     found
 }
 
+/// Whether `pid` has ended: gone, or a zombie, which nothing may reap where PID 1 doesn't.
+fn ended(pid: libc::pid_t) -> bool {
+    // SAFETY: signal 0 sends nothing, only checks the process is there.
+    if unsafe { libc::kill(pid, 0) } != 0 {
+        return true;
+    }
+    let ps = Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output();
+    ps.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim_start().starts_with('Z'))
+}
+
 /// A quit that can't wait for a removal (a second SIGTERM) stops the git checking the worktree
 /// part-way, and leaves no lock behind: the next commit there works.
 #[test]
@@ -775,8 +785,8 @@ fn a_quit_during_a_removal_leaves_no_git_lock() {
     let _ = closer.wait();
 
     let filter: libc::pid_t = std::fs::read_to_string(&filtering).unwrap().trim().parse().unwrap();
-    // SAFETY: signal 0 sends nothing, only checks the process is there.
-    assert!(unsafe { libc::kill(filter, 0) } != 0, "the filter outlived taskman");
+    // Killed, it's there until whoever inherited it reaps it.
+    tui.wait_until("the filter outlived taskman", || ended(filter));
     assert!(wt.exists(), "removed after the check was stopped");
     let left = locks(&repo.join(".git"));
     assert!(left.is_empty(), "git left {left:?}");

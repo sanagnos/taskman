@@ -444,13 +444,17 @@ fn install(exe: &Path, tag: &str, by: By) -> Result<(), String> {
         _ => return Err(format!("can't tell where to install over {}", exe.display())),
     };
     let staged = dir.join(format!(".{name}.new.{}", std::process::id()));
-    let _leftover = proc::Leftover::new(&staged);
-    let result = stage(&staged, &binary, tag).and_then(|version| {
-        std::fs::rename(&staged, exe)
-            .map_err(|e| format!("couldn't replace {}: {e}", exe.display()))?;
-        Ok(version)
-    });
+    let written = proc::Leftover::make(&staged, || std::fs::write(&staged, &binary))
+        .map_err(|e| format!("couldn't write {}: {e}", staged.display()));
+    let result = written.as_ref().map_err(Clone::clone).and_then(|_| stage(&staged, tag)).and_then(
+        |version| {
+            std::fs::rename(&staged, exe)
+                .map_err(|e| format!("couldn't replace {}: {e}", exe.display()))?;
+            Ok(version)
+        },
+    );
     let _ = std::fs::remove_file(&staged);
+    drop(written);
     say(format!("Installed: {} ({})", result?, exe.display()));
     Ok(())
 }
@@ -522,27 +526,32 @@ impl Private {
         use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
         let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
         let mut tries = 0;
-        let dir = loop {
+        loop {
             let dir = parent.join(format!(
                 ".taskman-{}-{}-{tries}",
                 std::process::id(),
                 nanos.as_nanos()
             ));
-            // Not recursive, so a folder (or link) already there is an error, never reused.
-            match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+            let file = dir.join(name);
+            // Made as a leftover, so a signal can't come between making the folder and holding
+            // it, nor remove it while the file is being written.
+            let made = proc::Leftover::make(&dir, || {
+                // Not recursive, so a folder (or link) already there is an error, never reused.
+                std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
+                let mut open = std::fs::OpenOptions::new();
+                let written = open.write(true).create_new(true).mode(0o600).open(&file);
+                let written = written.and_then(|mut f| f.write_all(data));
+                if written.is_err() {
+                    let _ = std::fs::remove_dir_all(&dir);
+                }
+                written
+            });
+            match made {
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && tries < 10 => tries += 1,
                 Err(e) => return Err(e),
-                Ok(()) => break dir,
+                Ok((leftover, ())) => return Ok(Self { dir, file, _leftover: leftover }),
             }
-        };
-        let copy = Self { file: dir.join(name), _leftover: proc::Leftover::new(&dir), dir };
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&copy.file)?;
-        f.write_all(data)?;
-        Ok(copy)
+        }
     }
 }
 
@@ -648,11 +657,10 @@ fn network_trouble(err: &str) -> bool {
 }
 
 /// Writes the new binary to `staged`, and checks it runs and says it's release `tag`.
-fn stage(staged: &Path, binary: &[u8], tag: &str) -> Result<String, String> {
+fn stage(staged: &Path, tag: &str) -> Result<String, String> {
     use std::os::unix::fs::PermissionsExt;
-    let written = std::fs::write(staged, binary)
-        .and_then(|()| std::fs::set_permissions(staged, std::fs::Permissions::from_mode(0o755)));
-    written.map_err(|e| format!("couldn't write {}: {e}", staged.display()))?;
+    std::fs::set_permissions(staged, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("couldn't write {}: {e}", staged.display()))?;
     let broken = |e: String| {
         format!("the new binary doesn't run on this machine ({e}); nothing was installed")
     };
