@@ -228,6 +228,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Every target here is in deny.toml's and about.toml's targets too, so the license and
+        # advisory checks and the third-party notices cover what's released; a unit test in
+        # update.rs keeps the three lists, and install.sh's, the same.
         include:
           # macOS. Each build runs on its own architecture too: the Intel image is the last x86_64
           # one GitHub offers. When it goes, build x86_64 on macos-26, which runs the binary

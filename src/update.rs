@@ -1479,6 +1479,17 @@ mod tests {
         // The release workflow wants an archive for each of install.sh's `) target=` lines.
         assert_eq!(script.matches(") target=").count(), targets.len());
         assert!(released.contains(r"s/.*) target=\([a-z0-9_-]*\) ;;.*/\1/p"));
+        // The license and advisory checks and the third-party notices cover every released build.
+        for (name, settings) in [
+            ("deny.toml", include_str!("../deny.toml")),
+            ("about.toml", include_str!("../about.toml")),
+        ] {
+            let list =
+                settings.split_once("\ntargets = [").and_then(|(_, rest)| rest.split_once(']'));
+            let mut listed: Vec<&str> = list.unwrap().0.split('"').skip(1).step_by(2).collect();
+            listed.sort();
+            assert_eq!(listed, targets, "{name}'s targets are the released builds");
+        }
         // A Linux build with neither C library has no release; this one has, where there's one.
         assert_eq!(target_for("linux", "x86_64", ""), None);
         if cfg!(any(target_os = "macos", target_os = "linux"))

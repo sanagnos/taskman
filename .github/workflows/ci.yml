@@ -163,9 +163,10 @@ jobs:
           persist-credentials: false
       - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
-          # cargo-about's version is the release workflow's; a different one may word the file
-          # differently.
-          tool: cargo-deny,cargo-about@0.9.2
+          # Both pinned, so a new release can't turn every pull request red. cargo-about's version
+          # is the release workflow's, as a different one may word the file differently. Raise
+          # cargo-deny by hand, after reading its changelog.
+          tool: cargo-deny@0.20.2,cargo-about@0.9.2
       - run: cargo deny --locked check advisories bans licenses sources
       # LICENSE-THIRD-PARTY, which the archives and `taskman --licenses` carry, must match the
       # lockfile: the file as cargo-about would write it now has to be the one committed.
