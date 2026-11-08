@@ -674,7 +674,8 @@ pub(crate) mod tests {
         assert_eq!(e, "#88 could mean projects acme or api; pass --project");
         // In acme's folder, api's issue: refused, naming api. `#88` stays acme's, and so it does
         // with no prefix to make a key of it, rather than going to api.
-        let acme = Some(&here("/src/acme"));
+        let acme = here("/src/acme");
+        let acme = Some(&acme);
         let link = "https://github.com/acme/api/issues/3";
         assert_eq!(
             locate_ticket(link, None, None, None, &two, acme).unwrap_err(),
@@ -692,8 +693,10 @@ pub(crate) mod tests {
     fn a_phrase_names_no_ticket() {
         let github = on_github("acme/web");
         let jira = saved();
-        let acme = Some(&here("/src/acme"));
-        let web = Some(&here("/src/acme-web"));
+        let acme = here("/src/acme");
+        let acme = Some(&acme);
+        let web = here("/src/acme-web");
+        let web = Some(&web);
         for (s, here, input) in [
             (&jira, web, "Fix ENG-52 now"),
             (&jira, None, "close ENG-52"),
@@ -742,7 +745,8 @@ pub(crate) mod tests {
     #[test]
     fn names_the_ticket_on_its_own() {
         let s = saved();
-        let web = Some(&here("/src/acme-web"));
+        let web = here("/src/acme-web");
+        let web = Some(&web);
         let key = |input: &str| locate_ticket(input, None, None, None, &s, web).map(|(k, _)| k);
         for input in [
             "ENG-52",
@@ -764,7 +768,8 @@ pub(crate) mod tests {
             assert_eq!(key(input), Ok("ENG-52".into()), "{input:?}");
         }
         let github = on_github("acme/web");
-        let acme = Some(&here("/src/acme"));
+        let acme = here("/src/acme");
+        let acme = Some(&acme);
         for input in [
             "#88 ",
             "https://github.com/acme/web/issues/88",
@@ -785,7 +790,8 @@ pub(crate) mod tests {
             (t.provider, t.site) = (Provider::Github, "acme/ENG-52".into());
             p
         });
-        let web = Some(&here("/src/acme-web"));
+        let web = here("/src/acme-web");
+        let web = Some(&web);
         let key = |input: &str, here| locate_ticket(input, None, None, None, &s, here);
         // In acme-web, on Linear: another project's issue.
         for input in ["https://github.com/acme/ENG-52/issues/88", "acme/ENG-52#88", "#88"] {
