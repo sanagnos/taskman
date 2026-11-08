@@ -2,6 +2,11 @@
 
 What changed in each release; a release's notes on GitHub are its section here. What's merged but not released yet is in [changelog.d/](changelog.d/), a file for each change, which the release moves in here. Versions follow Cargo's rule for 0.x: the patch number (0.1.1) for anything compatible, fixes and new features alike, and the minor (0.2.0) for breaking changes, such as changed keys, config or saved-state format, or a removed command.
 
+## 0.1.39 - 2026-11-08
+
+- `taskman status --all-projects` shows every project from any folder. A session taskman started is refused unless the command has `env -u TASKMAN_REPO` in front, which Claude asks you about first (in Codex, its sandbox and approval settings decide).
+- `taskman status` keeps a project's or agent's name, and a folder's, on one line even if it holds a line break.
+
 ## 0.1.38 - 2026-11-06
 
 - `ctrl+a d` now shows what Claude Code sessions said to each other, mixed in with the turns: `← lead` a message that arrived, `→ lead` one it sent, with its first line. A turn during which the session's branch reached origin says `on origin`, in Codex too.
