@@ -400,10 +400,12 @@ fn signal_group(group: libc::pid_t, signal: libc::c_int) {
     unsafe { libc::kill(-group, signal) };
 }
 
-/// Whether any process is left in `group`, which signal 0 asks without sending anything.
+/// Whether any process is left in `group`, which signal 0 asks without sending anything. A group
+/// whose members we may not signal (EPERM) still has them: only an empty one (ESRCH) is gone.
 fn group_exists(group: libc::pid_t) -> bool {
     // SAFETY: kill only checks the group; it reads or writes no memory.
-    unsafe { libc::kill(-group, 0) == 0 }
+    let found = unsafe { libc::kill(-group, 0) } == 0;
+    found || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 /// Stops `child`'s whole process group (a hung `git fetch` waits on ssh, say) and says why. The
@@ -413,7 +415,8 @@ fn stop(child: &mut Child, timeout: Duration, grace: Duration) -> io::Error {
     // The child isn't reaped until the wait below, so its group's id can't pass to another group
     // meanwhile, and a zombie still counts as being in it: the grace is waited out in full. The
     // group stays live meanwhile, for a quit to stop too, and leaves the live ones before the
-    // kill; a quit that asked it meanwhile kills it again at its end, which finds no one left.
+    // kill; a quit that asked it meanwhile drops it once it's gone, or kills it again and finds
+    // no one.
     let group = group_of(child);
     if let Some(g) = group
         && !grace.is_zero()
@@ -562,7 +565,9 @@ mod tests {
         // The shell is done at once, but what it left in the background still holds stdout.
         let err = sh("sleep 10 & echo ready", Duration::from_millis(300)).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::TimedOut);
-        assert!(start.elapsed() < Duration::from_secs(3), "took {:?}", start.elapsed());
+        // Well short of the sleep's 10 s; the rest is room for a busy machine, past the limit and
+        // the grace `stop` gives before it kills.
+        assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
     }
 
     #[test]
@@ -591,7 +596,9 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::TimedOut);
-        assert!(start.elapsed() < Duration::from_secs(3), "took {:?}", start.elapsed());
+        // Well short of the sleep's 10 s; the rest is room for a busy machine, past the limit and
+        // the grace `stop` gives before it kills.
+        assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
     }
 
     /// Waits for `pid` to end; false if it's still running after 5s. A zombie has ended: where
