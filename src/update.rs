@@ -1456,6 +1456,57 @@ mod tests {
         assert!(!script.contains("--signer-workflow"));
     }
 
+    /// The strings in `targets = [...]` in a TOML file's `table` ("" for the top level, before the
+    /// first table), where cargo-deny and cargo-about read them, comments left out: enough TOML for
+    /// deny.toml and about.toml, not a parser.
+    fn toml_targets(toml: &str, table: &str) -> Option<Vec<String>> {
+        let (mut current, mut in_list, mut found) = ("", false, vec![]);
+        for line in toml.lines() {
+            // No target has a `#` in it, so one starts a comment wherever it is.
+            let line = line.split('#').next().unwrap().trim();
+            let items = if in_list {
+                line
+            } else if let Some(header) = line.strip_prefix('[') {
+                current = header.trim_end_matches(']').trim();
+                continue;
+            } else if current == table
+                && let Some(rest) = line.strip_prefix("targets")
+                && let Some(rest) = rest.trim_start().strip_prefix('=')
+                && let Some(rest) = rest.trim_start().strip_prefix('[')
+            {
+                in_list = true;
+                rest
+            } else {
+                continue;
+            };
+            let (items, end) = items.split_once(']').map_or((items, false), |(i, _)| (i, true));
+            found.extend(items.split('"').skip(1).step_by(2).map(String::from));
+            if end {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn reads_a_targets_list_where_the_tools_do() {
+        let graph = |toml: &str| toml_targets(toml, "graph");
+        let ab = Some(vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(graph("[graph]\ntargets = [\"a\", \"b\"]\n"), ab);
+        assert_eq!(graph("# x\n[graph] # the platforms\ntargets=[\n  \"a\",\n  \"b\",\n]"), ab);
+        assert_eq!(graph("[graph]  \r\n\r\ntargets = [\r\n  \"a\",\r\n  \"b\",\r\n]\r\n"), ab);
+        // An entry commented out isn't checked, so it isn't counted.
+        let commented = "[graph]\ntargets = [\n  \"a\", # \"c\"\n  # \"d\",\n  \"b\",\n]";
+        assert_eq!(graph(commented), ab);
+        // Only in the table named: not a subtable, another table or before the table.
+        assert_eq!(graph("[graph.x]\ntargets = [\"a\"]\n[graph]\n"), None);
+        assert_eq!(graph("[graph]\n[bans]\ntargets = [\"a\"]\n"), None);
+        assert_eq!(graph("targets = [\"a\"]\n[graph]\n"), None);
+        assert_eq!(toml_targets("targets = [\"a\", \"b\"]\n[graph]\n", ""), ab);
+        assert_eq!(toml_targets("[graph]\ntargets = [\"a\"]\n", ""), None);
+        assert_eq!(graph("[graph]\ntargets = [\"a\",\n"), None);
+    }
+
     #[test]
     fn updates_to_a_build_the_release_has_and_install_sh_picks() {
         let released = include_str!("../.github/workflows/release.yml");
@@ -1480,18 +1531,12 @@ mod tests {
         assert_eq!(script.matches(") target=").count(), targets.len());
         assert!(released.contains(r"s/.*) target=\([a-z0-9_-]*\) ;;.*/\1/p"));
         // The license and advisory checks and the third-party notices cover every released build.
-        // Each list is read from the table its tool reads it in: cargo-deny's `[graph]`,
-        // cargo-about's top level (before the first table).
-        for (name, settings, header) in [
-            ("deny.toml", include_str!("../deny.toml"), "\n[graph]\n"),
+        for (name, settings, table) in [
+            ("deny.toml", include_str!("../deny.toml"), "graph"),
             ("about.toml", include_str!("../about.toml"), ""),
         ] {
-            let table = settings.split_once(header).map(|(_, rest)| rest);
-            let table = table.unwrap_or_else(|| panic!("{name} has no {} table", header.trim()));
-            let table = table.split("\n[").next().unwrap();
-            let list = table.split_once("\ntargets = [").and_then(|(_, rest)| rest.split_once(']'));
-            let list = list.unwrap_or_else(|| panic!("{name} has no `targets = [` list there"));
-            let mut listed: Vec<&str> = list.0.split('"').skip(1).step_by(2).collect();
+            let listed = toml_targets(settings, table);
+            let mut listed = listed.unwrap_or_else(|| panic!("{name} has no targets list"));
             listed.sort();
             assert_eq!(listed, targets, "{name}'s targets are the released builds");
         }
