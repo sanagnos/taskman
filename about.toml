@@ -14,8 +14,16 @@ accepted = [
     "Unicode-3.0",
     "CDLA-Permissive-2.0",
 ]
-# The platforms taskman is released for, as in deny.toml.
-targets = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin", "x86_64-apple-darwin"]
+# The platforms taskman is released for, as in .github/workflows/release.yml's build matrix (and
+# deny.toml; a unit test in update.rs keeps the three the same).
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+]
 # Only code that ends up in the binary: build scripts and tests don't ship with it.
 ignore-build-dependencies = true
 ignore-dev-dependencies = true

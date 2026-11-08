@@ -1,8 +1,17 @@
 # cargo-deny settings, checked in CI: cargo deny check advisories bans licenses sources
 
 [graph]
-# The platforms taskman is released for; Windows-only dependencies don't count.
-targets = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin", "x86_64-apple-darwin"]
+# The platforms taskman is released for, as in .github/workflows/release.yml's build matrix (and
+# about.toml; a unit test in update.rs keeps the three the same). Windows-only dependencies don't
+# count.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+]
 
 [advisories]
 # Fail on vulnerabilities in any crate, but on unmaintained ones only among our direct
