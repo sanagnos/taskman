@@ -444,8 +444,13 @@ fn install(exe: &Path, tag: &str, by: By) -> Result<(), String> {
         _ => return Err(format!("can't tell where to install over {}", exe.display())),
     };
     let staged = dir.join(format!(".{name}.new.{}", std::process::id()));
-    let written = proc::Leftover::make(&staged, || std::fs::write(&staged, &binary))
-        .map_err(|e| format!("couldn't write {}: {e}", staged.display()));
+    let written = proc::Leftover::make(&staged, || {
+        // Not held when it fails: what was written goes now, before a signal could leave it.
+        std::fs::write(&staged, &binary).inspect_err(|_| {
+            let _ = std::fs::remove_file(&staged);
+        })
+    })
+    .map_err(|e| format!("couldn't write {}: {e}", staged.display()));
     let result = written.as_ref().map_err(Clone::clone).and_then(|_| stage(&staged, tag)).and_then(
         |version| {
             std::fs::rename(&staged, exe)
@@ -656,7 +661,8 @@ fn network_trouble(err: &str) -> bool {
         && (server_error || NETWORK.iter().any(|n| err.contains(n)))
 }
 
-/// Writes the new binary to `staged`, and checks it runs and says it's release `tag`.
+/// Makes the new binary written to `staged` runnable, and checks it runs and says it's release
+/// `tag`.
 fn stage(staged: &Path, tag: &str) -> Result<String, String> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(staged, std::fs::Permissions::from_mode(0o755))

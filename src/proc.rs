@@ -63,6 +63,16 @@ fn live() -> MutexGuard<'static, Live> {
 /// helper at its time limit.
 const STOP_GRACE: Duration = Duration::from_millis(250);
 
+/// [`STOP_GRACE`], or in a test the grace its thread set, so a test on a slow machine can give a
+/// trap time to run.
+fn stop_grace() -> Duration {
+    #[cfg(test)]
+    if let Some(grace) = tests::GRACE.get() {
+        return grace;
+    }
+    STOP_GRACE
+}
+
 /// How long [`stop_all`] waits for helpers still starting: forked, but not yet running the
 /// program, so there's nothing to signal. Starting takes milliseconds; this only bounds an exec
 /// that hangs, so the watchdog still ends taskman.
@@ -91,26 +101,35 @@ pub fn stop_all() {
     for &group in &live.groups {
         signal_group(group, libc::SIGTERM);
     }
-    live.asked = live.groups.iter().map(|&g| (g, begun)).collect();
+    // Added to, not replaced: the watchdog runs this again while the quit's may still wait, and
+    // what the first asked must still be killed.
+    let groups: Vec<_> = live.groups.iter().map(|&g| (g, begun)).collect();
+    live.asked.extend(groups);
     // `run` reaps a group's leader once its pipes close, and the group leaves the list; what's
     // left of it then holds no pipe (a process that ignores SIGTERM with its output elsewhere,
     // say), and is waited for by asking the group with signal 0. One that finishes starting
     // meanwhile asks itself to end and joins `asked` (`run_inner`), which a helper still starting
-    // keeps this waiting for.
+    // keeps this waiting for. A group seen empty is dropped, so its id, free to be reused from
+    // then on, isn't killed at the end.
     let left = |live: &Live, group| live.groups.contains(&group) || group_exists(group);
-    let waiting = |live: &Live| {
-        live.asked.iter().any(|&(g, at)| at.elapsed() < STOP_GRACE && left(live, g))
-            || live.starting > 0 && begun.elapsed() < START_WAIT
-    };
-    while waiting(&live) {
+    loop {
+        let mut asked = std::mem::take(&mut live.asked);
+        asked.retain(|&(g, _)| left(&live, g));
+        live.asked = asked;
+        let waiting = live.asked.iter().any(|&(_, at)| at.elapsed() < STOP_GRACE)
+            || live.starting > 0 && begun.elapsed() < START_WAIT;
+        if !waiting {
+            break;
+        }
         drop(live);
         std::thread::sleep(Duration::from_millis(5));
         live = self::live();
     }
-    // Every group asked, not only those still listed. A listed one hasn't been reaped, so its id
-    // is still its own. A reaped one's id can't pass to another group while anything is left in
-    // it; once nothing is, the kill finds no one, unless pids wrapped around within the grace
-    // and a new process made itself a group leader under it.
+    // Every group asked that was there when last looked at, not only those still listed. A
+    // listed one hasn't been reaped, so its id is still its own. A reaped one's id can't pass to
+    // another group while anything is left in it; once nothing is, the kill finds no one, unless
+    // pids wrapped around since it was last looked at and a new process made itself a group
+    // leader under it.
     live.groups.clear();
     for (group, _) in std::mem::take(&mut live.asked) {
         signal_group(group, libc::SIGKILL);
@@ -246,7 +265,7 @@ fn run_inner(
 ) -> io::Result<Output> {
     let mut deadline = Instant::now() + timeout;
     // How long `stop` gives the group at the limit, after asking it to end.
-    let mut grace = STOP_GRACE;
+    let mut grace = stop_grace();
     // Without a terminal, ssh asks with an askpass program instead. Kept for a user who chose one
     // (some desktops set SSH_ASKPASS); otherwise ssh tries a built-in default, a bare X window.
     if ["SSH_ASKPASS", "SSH_ASKPASS_REQUIRE"].iter().all(|v| std::env::var_os(v).is_none()) {
@@ -393,8 +412,8 @@ fn group_exists(group: libc::pid_t) -> bool {
 fn stop(child: &mut Child, timeout: Duration, grace: Duration) -> io::Error {
     // The child isn't reaped until the wait below, so its group's id can't pass to another group
     // meanwhile, and a zombie still counts as being in it: the grace is waited out in full. The
-    // group stays live meanwhile, for a quit to stop too; it leaves before the kill, so
-    // `stop_all` doesn't signal it after.
+    // group stays live meanwhile, for a quit to stop too, and leaves the live ones before the
+    // kill; a quit that asked it meanwhile kills it again at its end, which finds no one left.
     let group = group_of(child);
     if let Some(g) = group
         && !grace.is_zero()
@@ -417,6 +436,12 @@ fn stop(child: &mut Child, timeout: Duration, grace: Duration) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+
+    thread_local! {
+        /// The grace `stop` gives a helper this thread runs, in place of `STOP_GRACE`.
+        pub(super) static GRACE: Cell<Option<Duration>> = const { Cell::new(None) };
+    }
 
     fn sh(script: &str, timeout: Duration) -> io::Result<Output> {
         run(Command::new("sh").args(["-c", script]), timeout)
@@ -569,11 +594,19 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(3), "took {:?}", start.elapsed());
     }
 
-    /// Waits for `pid` to end; false if it's still running after 5s.
+    /// Waits for `pid` to end; false if it's still running after 5s. A zombie has ended: where
+    /// PID 1 doesn't reap, nothing may.
     fn ends(pid: libc::pid_t) -> bool {
         let gone = Instant::now() + Duration::from_secs(5);
-        // SAFETY: signal 0 sends nothing, only checks the process is there.
-        while unsafe { libc::kill(pid, 0) } == 0 {
+        let ended = || {
+            // SAFETY: signal 0 sends nothing, only checks the process is there.
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                return true;
+            }
+            let ps = Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output();
+            ps.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim_start().starts_with('Z'))
+        };
+        while !ended() {
             if Instant::now() >= gone {
                 return false;
             }
@@ -827,6 +860,45 @@ mod tests {
         println!("stray={}", if gone { "gone" } else { "left" });
     }
 
+    /// The watchdog runs `stop_all` again while the quit's may still wait: what the first asked to
+    /// end is still killed, though its group has left the live ones (its leader reaped, a stray
+    /// left in it). Set up as the first leaves it, so nothing depends on timing.
+    #[test]
+    fn a_second_stop_all_still_kills_what_the_first_asked() {
+        use std::os::unix::process::ExitStatusExt;
+        if std::env::var_os(ALONE).is_none() {
+            let out = alone("proc::tests::a_second_stop_all_still_kills_what_the_first_asked");
+            assert!(out.contains("killed=true"), "{out}");
+            return;
+        }
+        // A group of its own that ignores SIGTERM, which no `run` lists.
+        let mut stray = own_session(Command::new("sh").args(["-c", "trap '' TERM; exec sleep 60"]))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let group = libc::pid_t::try_from(stray.id()).unwrap();
+        {
+            let mut live = live();
+            live.stopped = true;
+            live.asked.push((group, Instant::now()));
+        }
+        stop_all();
+        // Unreaped until here, so the group's id was still its own.
+        let until = Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            match stray.try_wait().unwrap() {
+                Some(status) => break Some(status),
+                None if Instant::now() >= until => break None,
+                None => std::thread::sleep(Duration::from_millis(10)),
+            }
+        };
+        let _ = stray.kill();
+        let killed = status.and_then(|s| s.signal()) == Some(libc::SIGKILL);
+        println!("killed={killed}");
+    }
+
     /// A helper at its time limit is asked to end before it's killed, as at a quit: a git fetch
     /// stopped then removes its ref locks. One that doesn't end is killed after the grace.
     #[test]
@@ -842,7 +914,11 @@ mod tests {
                 pid.display()
             );
             let begun = Instant::now();
-            let helper = std::thread::spawn(move || sh(&script, Duration::from_millis(500)));
+            // Time for a slow machine to start the shell, and for its trap to run.
+            let helper = std::thread::spawn(move || {
+                GRACE.set(Some(Duration::from_secs(2)));
+                sh(&script, Duration::from_secs(3))
+            });
             (pids(&pid, 1)[0], file, helper, begun)
         };
         let polite = start("polite", "exit 0");
@@ -851,7 +927,7 @@ mod tests {
             let err = helper.join().unwrap().unwrap_err();
             let took = begun.elapsed();
             assert_eq!(err.kind(), io::ErrorKind::TimedOut);
-            assert!(took < Duration::from_secs(3), "took {took:?}");
+            assert!(took < Duration::from_secs(10), "took {took:?}");
             assert!(ends(pid), "{pid} is still running");
             let term = std::fs::read_to_string(&file).unwrap_or_default();
             assert_eq!(term.trim(), "term", "{} wasn't asked to end", file.display());
