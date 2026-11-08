@@ -156,9 +156,9 @@ fn not_a_title(word: &str) -> String {
     )
 }
 
-/// The project and key of the ticket to title. A session asks the user before running this (it's
-/// not on `hook::settings_json`'s allow-list), but a user can allow it for good, and text the
-/// session read shouldn't then be able to relabel any card: it reaches its own ticket only.
+/// The project and key of the ticket to title. It's not on `hook::settings_json`'s allow-list, so
+/// the session's permission settings decide whether it runs, but a user can allow it for good, and
+/// text the session read shouldn't then be able to relabel any card: it reaches its own ticket only.
 fn target(
     a: &Args,
     saved: &Saved,

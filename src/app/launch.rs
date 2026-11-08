@@ -675,7 +675,7 @@ mod tests {
         assert_eq!(
             settings["permissions"],
             json!({ "allow": ["Bash(taskman status:*)", "Bash(taskman add:*)", "Bash(taskman move:*)"] }),
-            "`taskman close` stops sessions and removes worktrees, so the session asks first"
+            "`taskman close` stops sessions and removes worktrees, so the session's permission settings decide"
         );
         let hooks = settings["hooks"].as_object().unwrap();
         let states = [
