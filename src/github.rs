@@ -572,7 +572,7 @@ pub(crate) fn gh(dir: &Path, args: &[&str]) -> Result<String, String> {
                 // Its folder, moved or deleted, isn't found either: not a reason to say gh is
                 // missing, which sticks until taskman restarts.
                 std::io::ErrorKind::NotFound if !dir.is_dir() => {
-                    format!("{} is gone", crate::store::tilde(dir))
+                    format!("{} is gone", untrusted::line(&crate::store::tilde(dir)))
                 }
                 std::io::ErrorKind::NotFound => Gh::Missing.why().to_string(),
                 std::io::ErrorKind::TimedOut => {

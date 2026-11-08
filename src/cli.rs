@@ -236,6 +236,17 @@ pub(crate) fn confine(p: usize, own: Option<usize>, saved: &Saved) -> Result<(),
     }
 }
 
+/// Refuses every project (`status --all-projects`) in any session (`own`), as `confine` refuses one
+/// other project. Even with one project, so the answer doesn't say whether there are others, and
+/// before anything reads a token. Claude's rules are what ask about lifting it (see `WIDER`), and
+/// Codex's own settings decide there.
+pub(crate) fn confine_all(own: Option<usize>) -> Result<(), String> {
+    match own {
+        Some(_) => Err("`--all-projects` reads every project's tracker with its account: a session goes beyond its own project only with the user's approval. To go ahead, run the same command with `env -u TASKMAN_REPO` in front, which Claude asks the user about first; in Codex, its sandbox and approval settings decide.".into()),
+        None => Ok(()),
+    }
+}
+
 /// The key `input` names and where it's open, as `taskman close` and `taskman title` read a ticket:
 /// a number takes the prefix of the project the command means, the tracker's own way of writing one
 /// (GitHub's `#12` and issue links) is read by that tracker, and any other key or link goes by
@@ -655,6 +666,15 @@ pub(crate) mod tests {
         assert_eq!(confine(picked(None, me), own, &s), Ok(()));
         assert!(confine(picked(Some("acme-web"), me), own, &s).is_err());
         assert!(confine(picked(None, None), own, &s).is_err());
+    }
+
+    #[test]
+    fn keeps_a_session_from_every_project() {
+        assert_eq!(confine_all(None), Ok(()));
+        // Its own project is no exception, so the answer doesn't depend on there being others.
+        let e = confine_all(Some(0)).unwrap_err();
+        assert!(e.starts_with("`--all-projects` reads every project's tracker"), "{e}");
+        assert!(e.contains("`env -u TASKMAN_REPO`") && e.contains("in Codex"), "{e}");
     }
 
     #[test]

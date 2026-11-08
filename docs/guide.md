@@ -426,6 +426,8 @@ taskman status KEY shows one ticket in full.
 
 Claude sessions run it without asking. In Codex it needs network access, which Codex's sandbox blocks, so Codex asks before running it; answer "don't ask again for commands that start with `taskman status`" once to allow it from then on.
 
+`--all-projects` shows every project from any folder, reading each one's tracker with its account. In a session it's refused; `env -u TASKMAN_REPO taskman status --all-projects` asks you first in Claude, and in Codex its sandbox and approval settings decide. Without the flag, `env -u TASKMAN_REPO taskman status` still shows the session's own ticket or project.
+
 ## Adding tickets from a shell or a session: `taskman add`
 
 A ticket you or an agent just created can go straight into taskman, with the project's defaults:
