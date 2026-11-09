@@ -135,6 +135,12 @@ impl Hold {
         self
     }
 
+    /// Lets go and removes the file, as for a ticket that's gone: only a holder removes it (see
+    /// `take`).
+    fn remove(mut self) {
+        self.closed = true;
+    }
+
     /// Gives the process `cmd` starts its own copy of the claim, so the session stays claimed while
     /// either runs: this one can be killed while the CLI goes on, or the git removing a closed
     /// ticket's worktree. A copy is the same open file, so its lock is the same lock on Linux and
@@ -157,8 +163,9 @@ impl Drop for Hold {
     /// Lets go now, for every copy: processes the CLI started may have one, and would otherwise
     /// keep the session claimed after it ends.
     fn drop(&mut self) {
-        // Removed while still held, so whoever takes it next makes a new file (see `take`).
-        if self.closed {
+        // Removed while still held, so whoever takes it next makes a new file (see `take`). Only
+        // if it's still the file at the path: one made there since is someone else's.
+        if self.closed && same_file(&self.file, &self.path) {
             let _ = std::fs::remove_file(&self.path);
         }
         // SAFETY: flock on a descriptor this value owns; it reads or writes no memory.
@@ -176,9 +183,10 @@ pub fn take(path: &Path) -> std::io::Result<Result<Hold, Owner>> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    // A closed ticket's hold removes the file as it lets go (`Hold::closing`), so the file locked
-    // here may no longer be the one at `path`, opened just before it went: then it's taken again,
-    // or two could hold the same session, one on the old file and one on a new one.
+    // A holder removes the file as it lets go of a ticket that's gone (`Hold::closing`, `remove`),
+    // so the file locked here may no longer be the one at `path`, opened just before it went: then
+    // it's taken again, or two could hold the same session, one on the old file and one on a new
+    // one. Nothing else removes it.
     for _ in 0..5 {
         let mut file = std::fs::OpenOptions::new()
             .read(true)
@@ -186,6 +194,10 @@ pub fn take(path: &Path) -> std::io::Result<Result<Hold, Owner>> {
             .create(true)
             .truncate(false)
             .open(path)?;
+        #[cfg(test)]
+        if let Some(between) = BETWEEN_OPEN_AND_LOCK.with(|b| b.take()) {
+            between();
+        }
         // `peek` holds a shared lock for a moment, so a refusal is tried again before it counts.
         let mut locked = false;
         for _ in 0..5 {
@@ -206,6 +218,30 @@ pub fn take(path: &Path) -> std::io::Result<Result<Hold, Owner>> {
         }
     }
     Err(std::io::Error::other(format!("{} keeps being replaced", store::tilde(path))))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What a test does in `take` between opening the file and locking it, once.
+    static BETWEEN_OPEN_AND_LOCK: std::cell::Cell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Removes the owner file at `path` unless someone holds it, under its lock, as only a holder may
+/// (see `take`). Returns who holds it: `Free` once it's removed, or when it can't be opened.
+pub fn remove(path: &Path) -> Owner {
+    // Peeked at first, as a close holds it already and removes it itself: `take` would wait.
+    match peek(path) {
+        Owner::Free | Owner::Back if path.exists() => match take(path) {
+            Ok(Ok(hold)) => {
+                hold.remove();
+                Owner::Free
+            }
+            Ok(Err(who)) => who,
+            Err(_) => peek(path),
+        },
+        who => who,
+    }
 }
 
 /// Whether `file` is still the file at `path`.
@@ -649,6 +685,46 @@ mod tests {
         let hold = take(&path).unwrap().ok().unwrap();
         assert!(same_file(&hold.file, &path));
         assert!(take(&path).unwrap().is_err());
+    }
+
+    /// `take` opens the file just before a closing hold removes it: the lock it then gets is on a
+    /// file that's gone, so it takes the new one instead, and holds the session alone.
+    #[test]
+    fn take_retries_a_file_removed_between_open_and_lock() {
+        let path = scratch("retry").join("ENG-52.owner");
+        let closing = take(&path).unwrap().ok().unwrap().closing();
+        BETWEEN_OPEN_AND_LOCK.with(|b| b.set(Some(Box::new(move || drop(closing)))));
+        let hold = take(&path).unwrap().ok().unwrap();
+        assert!(BETWEEN_OPEN_AND_LOCK.with(|b| b.take()).is_none(), "the hook ran");
+        assert!(same_file(&hold.file, &path));
+        assert!(take(&path).unwrap().is_err());
+    }
+
+    /// Only a holder removes the file: one someone holds stays, and a hold whose file was replaced
+    /// leaves the new one alone.
+    #[test]
+    fn removes_the_owner_file_only_under_its_lock() {
+        let dir = scratch("remove");
+        let path = dir.join("ENG-52.owner");
+        assert_eq!(remove(&path), Owner::Free);
+        assert!(!path.exists(), "none made to be removed");
+        let mut outside = take(&path).unwrap().ok().unwrap();
+        outside.write("outside 4242");
+        assert_eq!(remove(&path), Owner::Outside(4242));
+        assert!(path.exists());
+        let closing = take(&dir.join("ENG-5.owner")).unwrap().ok().unwrap().closing();
+        assert_eq!(remove(&closing.path), Owner::Closing);
+        assert!(closing.path.exists(), "the close's hold removes it");
+        drop(outside);
+        assert_eq!(peek(&path), Owner::Back);
+        assert_eq!(remove(&path), Owner::Free);
+        assert!(!path.exists());
+        // A closing hold whose file went, and someone else's in its place.
+        let stale = closing.path.clone();
+        std::fs::remove_file(&stale).unwrap();
+        let other = take(&stale).unwrap().ok().unwrap();
+        drop(closing);
+        assert!(stale.exists() && same_file(&other.file, &stale));
     }
 
     #[test]

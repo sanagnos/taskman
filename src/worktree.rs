@@ -320,11 +320,12 @@ pub fn some_of(names: &[String]) -> String {
 /// Checks the worktree at `path` for anything removing it would lose: uncommitted, untracked or
 /// ignored files (`git status` leaves ignored ones out, and `git worktree remove` deletes them
 /// without asking), and commits that are on no remote (with no remote at all, not on the main
-/// checkout's branch) and not in `merged`, the head commit of the ticket's merged PR (a squash merge leaves the branch's own commits on no remote once GitHub
-/// deletes the branch, but commits made after the merge are in neither). Ok(None) when there's
-/// no worktree there to remove; Err when git couldn't be run or failed, with what went wrong,
-/// since the folder stays then and the reply says why. Local git only, so it's quick enough to
-/// run as the dialog opens.
+/// checkout's branch, or on no other branch while that's detached) and not in `merged`, the head
+/// commit of the ticket's merged PR (a squash merge leaves the branch's own commits on no remote
+/// once GitHub deletes the branch, but commits made after the merge are in neither). Ok(None) when
+/// there's no worktree there to remove; Err when git couldn't be run or failed, with what went
+/// wrong, since the folder stays then and the reply says why. Local git only, so it's quick enough
+/// to run as the dialog opens.
 pub fn removal_check(
     repo: &Path,
     path: &Path,
@@ -356,16 +357,14 @@ pub fn removal_check(
     // branch, where the worktree started (`create`) and where it's merged locally.
     let remotes = checked(repo, &["remote"])?;
     let local = String::from_utf8_lossy(&remotes.stdout).trim().is_empty();
-    let base = if local {
-        checkout_branch(repo).map(|b| format!("refs/heads/{b}"))
-    } else {
-        local_default_branch(repo)
-    };
+    let base = if local { checkout_branch(repo) } else { local_default_branch(repo) };
     let mut args = vec!["rev-list", "--count", head.as_str(), "--not"];
+    let own = listed.branch.as_ref().map(|b| format!("--exclude={b}"));
     match (local, &base) {
         (false, _) => args.push("--remotes"),
         (true, Some(b)) => args.push(b),
-        (true, None) => {}
+        // A detached main checkout is on no branch: a commit on another one isn't lost.
+        (true, None) => args.extend(own.as_deref().into_iter().chain(["--branches"])),
     }
     args.extend(pr_head.as_deref());
     let o = checked(path, &args)?;
@@ -389,10 +388,11 @@ pub fn removal_check(
         problems.push(match (local, &base) {
             (false, _) => plural(unpushed, "unpushed commit"),
             (true, Some(b)) => {
-                let b = b.strip_prefix("refs/heads/").unwrap_or(b);
-                format!("{} not on {b} (no remote)", plural(unpushed, "commit"))
+                format!("{} not on {} (no remote)", plural(unpushed, "commit"), short_branch(b))
             }
-            (true, None) => format!("{} on no remote or branch", plural(unpushed, "commit")),
+            (true, None) => {
+                format!("{} on no other branch (no remote)", plural(unpushed, "commit"))
+            }
         });
     }
     let within = |tip: &str| ok(&git(repo, &["merge-base", "--is-ancestor", &head, tip]));
@@ -675,8 +675,8 @@ pub fn default_branch_of(repo: &Path) -> DefaultBranch {
         // `create` asks the remote, which the form can't wait for.
         return DefaultBranch { start: "origin's default branch".into(), ..unknown() };
     }
-    match checkout_branch(repo) {
-        Some(b) => DefaultBranch { start: format!("HEAD ({b}): no remote"), name: b },
+    match checkout_branch(repo).as_deref().map(short_branch) {
+        Some(b) => DefaultBranch { start: format!("HEAD ({b}): no remote"), name: b.to_string() },
         None => DefaultBranch { start: "HEAD: no remote".into(), ..unknown() },
     }
 }
@@ -689,13 +689,19 @@ fn local_default_branch(repo: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
-/// The branch the main checkout at `repo` is on, like `main`. None when its HEAD is detached.
+/// The branch the main checkout at `repo` is on, as its ref, like `refs/heads/main`. None when its
+/// HEAD is detached. Not `--short`, which says `heads/main` when a tag is named `main` too.
 fn checkout_branch(repo: &Path) -> Option<String> {
-    git(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+    git(repo, &["symbolic-ref", "--quiet", "HEAD"])
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|b| !b.is_empty())
+        .filter(|b| b.starts_with("refs/heads/"))
+}
+
+/// A branch's name from its ref: `main` from `refs/heads/main`.
+fn short_branch(r: &str) -> &str {
+    r.strip_prefix("refs/heads/").unwrap_or(r)
 }
 
 /// Origin's default branch, like `origin/main`: from `origin/HEAD`, or by asking the remote when a
@@ -1216,11 +1222,42 @@ mod tests {
         assert!(remove(&repo, &merged, None, &lock).unwrap().starts_with("Removed"));
         assert!(!ok(&git(&repo, &["rev-parse", "--verify", "--quiet", "refs/heads/ENG-2"])));
 
-        // A detached main checkout is on no branch to check against: everything counts.
+        // A detached main checkout is on no branch: the other branches count instead, main among
+        // them, while the worktree's own doesn't.
         let detached = add("ENG-3");
         sh(&repo, "git checkout -q --detach");
         let check = removal_check(&repo, &detached, None).unwrap().unwrap();
-        assert_eq!(check.problems, ["2 commits on no remote or branch"]);
+        assert_eq!((check.safe(), check.branch.as_deref()), (true, None));
+        sh(&detached, &format!("git {id} commit -q --allow-empty -m work"));
+        let check = removal_check(&repo, &detached, None).unwrap().unwrap();
+        assert_eq!(check.problems, ["1 commit on no other branch (no remote)"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A tag named like the main checkout's branch makes `symbolic-ref --short` say `heads/main`:
+    /// the check and the default branch still find `main`.
+    #[test]
+    fn without_a_remote_a_tag_named_like_the_branch_changes_nothing() {
+        let (root, repo) = scratch_repo("tagged");
+        let id = "-c user.name=t -c user.email=t@example.com";
+        let sh = |dir: &Path, cmd: &str| {
+            assert!(
+                Command::new("sh").arg("-c").arg(cmd).current_dir(dir).status().unwrap().success(),
+                "{cmd}"
+            );
+        };
+        sh(&repo, "git remote remove origin && git tag main");
+        let wt =
+            create(&repo, &folder_path(BESIDE, &repo, "ENG-1"), "ENG-1", None, false).unwrap().path;
+        let check = removal_check(&repo, &wt, None).unwrap().unwrap();
+        assert_eq!((check.safe(), check.branch.as_deref()), (true, Some("ENG-1")));
+        sh(&wt, &format!("git {id} commit -q --allow-empty -m work"));
+        let check = removal_check(&repo, &wt, None).unwrap().unwrap();
+        assert_eq!(check.problems, ["1 commit not on main (no remote)"]);
+        assert_eq!(
+            default_branch_of(&repo),
+            DefaultBranch { name: "main".into(), start: "HEAD (main): no remote".into() }
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
