@@ -1,0 +1,1 @@
+- The title form keeps a fix command whole, such as `gh auth refresh -h github.com` after a long repository name, and shortens the text before it instead. A ticket's own title cut at its length limit no longer gains a column when an emoji loses its text-style selector in the cut, so saving it unchanged doesn't shorten it again.

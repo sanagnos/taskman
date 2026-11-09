@@ -580,33 +580,77 @@ const WARNING: &str = "⚠  ";
 /// panel.
 fn short_reason(error: &str) -> String {
     let line = untrusted::line(error).replacen(" before it takes another login", "", 1);
-    let ends = |at: &(usize, &str)| {
-        let rest = &line[at.0 + 2..];
-        !(rest.starts_with("run ") || rest.starts_with("get "))
+    let fix = |at: usize| {
+        let rest = &line[at + 2..];
+        rest.starts_with("run ") || rest.starts_with("get ")
     };
-    let clause_end = line.match_indices("; ").find(ends).map(|(at, _)| at);
+    let clauses = || line.match_indices("; ").map(|(at, _)| at);
+    let clause_end = clauses().find(|&at| !fix(at));
     let cuts = [store::NOT_IN_THE_SHELL, " (", ". "].map(|p| line.find(p));
     let trusted = line.find(NOT_TRUSTED).map(|at| at + NOT_TRUSTED.len());
     let cut = cuts.into_iter().flatten().chain(clause_end).chain(trusted).min();
     let clause = line[..cut.unwrap_or(line.len())].trim_end_matches(['.', ':']);
+    let fix_at = clauses().find(|&at| at < clause.len() && fix(at));
     let width = if beyond_settings(&line) { OWN_FIX_WIDTH } else { REASON_WIDTH };
-    match util::truncate(clause, width) {
+    match fit_reason(clause, fix_at, width) {
         short if short.is_empty() => "The tracker's answer was an error".to_string(),
         short => short,
     }
+}
+
+/// `clause` in `width` columns, the fix it ends with (from `fix_at`, "; run …") kept whole where
+/// that leaves room for some of what's before it: a cut command is no use, so the start is cut
+/// instead, as when a long repository name pushes the command past the edge.
+fn fit_reason(clause: &str, fix_at: Option<usize>, width: usize) -> String {
+    if util::width(clause) <= width {
+        return clause.to_string();
+    }
+    if let Some(at) = fix_at {
+        let (what, fix) = clause.split_at(at);
+        let room = width.saturating_sub(util::width(fix));
+        let short = format!("{}{fix}", util::truncate(what, room));
+        if room > 1 && util::width(&short) <= width {
+            return short;
+        }
+    }
+    util::truncate(clause, width)
 }
 
 /// `text` as a ticket's own title (`Ticket::label`): on one line, without what hides text from a
 /// reader, and cut to `LABEL_WIDTH` and `LABEL_BYTES`. None when that leaves nothing to see. A
 /// session can write it, so it counts as untrusted however it came.
 pub(super) fn clean_label(text: &str) -> Option<String> {
-    let label = util::truncate(&untrusted::line(text), LABEL_WIDTH);
-    let mut end = label.len().min(LABEL_BYTES);
-    while !label.is_char_boundary(end) {
-        end -= 1;
+    let fits = |l: &str| util::width(l) <= LABEL_WIDTH && l.len() <= LABEL_BYTES;
+    let label = untrusted::line(text);
+    // Cleaned again after a cut, which can leave a joiner or a space at its end, and measured
+    // again: the limits are for what's saved, so that saving it again changes nothing.
+    let label = if fits(&label) { label } else { untrusted::line(&cut_label(&label)) };
+    Some(label).filter(|l| fits(l) && !util::blank(l))
+}
+
+/// `label` cut to `LABEL_WIDTH` and `LABEL_BYTES`, ended with `…` where the columns ran out. In
+/// whole graphemes, never at a character's edge: a cut between an emoji and its U+FE0E would
+/// leave it a column wider (⌚︎ is one column, ⌚ two). A first grapheme with more bytes than
+/// that, all combining marks, is the exception, cut inside rather than dropped.
+fn cut_label(label: &str) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+    let more = if util::width(label) > LABEL_WIDTH { "…" } else { "" };
+    let (cols, bytes) = (LABEL_WIDTH - util::width(more), LABEL_BYTES - more.len());
+    let (mut used, mut end) = (0, 0);
+    for (at, g) in label.grapheme_indices(true) {
+        used += util::width(g);
+        if used > cols || at + g.len() > bytes {
+            break;
+        }
+        end = at + g.len();
     }
-    // Cleaned again: the cut can leave a joiner or a space at its end.
-    Some(untrusted::line(&label[..end])).filter(|l| !util::blank(l))
+    if end == 0 {
+        end = bytes.min(label.len());
+        while !label.is_char_boundary(end) {
+            end -= 1;
+        }
+    }
+    format!("{}{more}", &label[..end])
 }
 
 /// Whether `id` arrived after `seen` was first filled; nothing is new before the first fetch.
@@ -686,8 +730,10 @@ mod tests {
         assert_eq!(tv.title().as_deref(), Some("From the tracker"));
         tv.t.label = Some("Mine".into());
         assert_eq!(tv.title().as_deref(), Some("Mine"));
-        // tickets.json edited by hand: blank is no title.
+        // tickets.json edited by hand: blank is no title, and nor is what draws nothing.
         tv.t.label = Some("  ".into());
+        assert_eq!(tv.title().as_deref(), Some("From the tracker"));
+        tv.t.label = Some("\u{301}\u{301} \u{200e}".into());
         assert_eq!(tv.title().as_deref(), Some("From the tracker"));
     }
 
@@ -798,6 +844,11 @@ mod tests {
             (
                 "acme/web's organization needs gh's token authorized for its single sign-on; run gh auth refresh -h github.com",
                 "acme/web's organization needs gh's token authorized for its single sign-on; run gh auth refresh -h github.com",
+            ),
+            // Too long, it's what comes before the fix that's cut.
+            (
+                "acme-corporation-international/frontend-web-application-monorepo's organization needs gh's token authorized for its single sign-on; run gh auth refresh -h github.com",
+                "acme-corporation-international/frontend-web-application-monorepo's organization need…; run gh auth refresh -h github.com",
             ),
             // Never cut down to the name of what failed.
             (
@@ -939,11 +990,44 @@ mod tests {
         let label = clean_label(&joined).unwrap();
         assert!(label.len() <= LABEL_BYTES && !label.ends_with('\u{200d}'), "{label:?}");
         assert_eq!(clean_label(&label), Some(label));
+        // At both limits, a byte cut would split ⌚ from its U+FE0E, a column wider then (and
+        // shortened again when saved unchanged): the cut keeps whole graphemes.
+        let before = format!("{}e{}", "e\u{301}".repeat(198), "\u{301}".repeat(101));
+        let text = format!("{before}⌚\u{fe0e}");
+        assert_eq!((util::width(&text), before.len()), (LABEL_WIDTH, LABEL_BYTES - 3));
+        assert_eq!(util::width("⌚\u{fe0e}"), 1);
+        let label = clean_label(&text).unwrap();
+        assert_eq!(label, before);
+        assert_eq!(clean_label(&label), Some(label));
+        // A cut for columns leaves room for its `…` in bytes too.
+        let label = clean_label(&format!("{text}x")).unwrap();
+        assert_eq!(label, format!("{before}…"));
+        assert_eq!((util::width(&label), label.len()), (LABEL_WIDTH, LABEL_BYTES));
+        assert_eq!(clean_label(&label), Some(label));
     }
 
     mod labels {
         use super::*;
         use proptest::prelude::*;
+
+        /// Text that runs past both limits, made of what a cut can change: emoji with their
+        /// selectors and joiners, combining marks, wide characters and spaces.
+        fn long_label() -> impl Strategy<Value = String> {
+            let parts = [
+                "x",
+                " ",
+                "日",
+                "e\u{301}",
+                "\u{301}\u{301}\u{301}",
+                "⌚\u{fe0e}",
+                "⚠\u{fe0f}",
+                "👩\u{200d}💻",
+                "👍\u{200d}",
+                "🇬🇷",
+            ];
+            prop::collection::vec(prop::sample::select(parts.to_vec()), 100..400)
+                .prop_map(|v| v.concat())
+        }
 
         proptest! {
             #![proptest_config(ProptestConfig::with_cases(128))]
@@ -957,10 +1041,25 @@ mod tests {
                 prop_assert!(util::width(&short) <= REASON_WIDTH);
             }
 
+            /// However long the repository's name, the command that fixes it stays whole.
+            #[test]
+            fn a_reasons_fix_stays_whole(repo in "[a-z0-9-]{1,39}/[a-z0-9._-]{1,100}") {
+                let fix = "; run gh auth refresh -h github.com";
+                let error = format!(
+                    "{repo}'s organization needs gh's token authorized for its single sign-on{fix}"
+                );
+                let short = short_reason(&error);
+                prop_assert!(short.ends_with(fix), "{}", short);
+                prop_assert!(util::width(&short) <= REASON_WIDTH);
+            }
+
             /// Whatever comes in, what's saved is one clean line of a bounded width, which
             /// cleaning again leaves as it is.
             #[test]
-            fn a_label_is_one_clean_line(text in "(\\PC|[\\x00-\\x1f\\u{200b}\\u{202e}\\u{e0001}]){0,300}") {
+            fn a_label_is_one_clean_line(text in prop_oneof![
+                "(\\PC|[\\x00-\\x1f\\u{200b}\\u{202e}\\u{e0001}]){0,300}".boxed(),
+                long_label().boxed(),
+            ]) {
                 if let Some(label) = clean_label(&text) {
                     prop_assert!(!label.is_empty() && !label.contains(char::is_control));
                     prop_assert!(util::width(&label) <= LABEL_WIDTH);
