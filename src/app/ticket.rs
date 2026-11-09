@@ -476,6 +476,19 @@ impl TicketView {
         }
     }
 
+    /// Whether its card spins as working (`ui::state_badge`), not as handing off: a turn running,
+    /// here or in another terminal. A folded project's header and the "N more" rows that hide it
+    /// show the spinner too. A session being handed off (`Away::Leaving`) has a spinner of its own
+    /// but is left out on purpose: it's waiting for its CLI to quit, not working on a turn.
+    pub fn working(&self) -> bool {
+        self.status.state == AgentState::Working
+            && match self.away {
+                None => !self.asleep,
+                Some(Away::Outside) => true,
+                Some(Away::Leaving(_) | Away::HandedOff | Away::Back) => false,
+            }
+    }
+
     /// A title worth showing: the ticket's own (`Ticket::label`), else the tracker summary, else
     /// Claude's window title without its status glyph. None when there's only something generic
     /// like "Claude Code".
