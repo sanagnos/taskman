@@ -279,6 +279,12 @@ fn state_badge(tv: &TicketView) -> Span<'static> {
     }
 }
 
+/// The working badge's spinner alone, as a folded project's header shows it for its sessions:
+/// shared, so the two look the same.
+fn working_glyph() -> Span<'static> {
+    Span::styled(spinner(), Style::new().fg(accent()))
+}
+
 /// A session stopped to save memory (`TicketView::sleep`), a quiet state: a glyph only.
 fn asleep() -> Span<'static> {
     Span::styled("☾", dim())
@@ -295,7 +301,8 @@ fn badge(state: AgentState, seen: bool, new: bool) -> Span<'static> {
         }
         AgentState::Done => Span::styled(format!("✓ {word}"), Style::new().fg(Color::Green)),
         AgentState::Working => {
-            Span::styled(format!("{} {word}", spinner()), Style::new().fg(accent()))
+            let glyph = working_glyph();
+            Span::styled(format!("{} {word}", glyph.content), glyph.style)
         }
         // Added by `taskman add` and not looked at yet.
         AgentState::Idle | AgentState::NotStarted if new => {
@@ -416,6 +423,56 @@ mod tests {
         }
         draw(&mut app, 160, 40);
         assert!(!animated());
+    }
+
+    /// acme folded with ENG-61 the only session working: its header's spinner alone keeps the
+    /// frames coming.
+    #[test]
+    fn a_folded_project_with_a_working_session_asks_for_the_next_frame_soon() {
+        let mut app = acme_app();
+        app.projects[0].collapsed = true;
+        for tv in &mut app.tickets {
+            if tv.t.key != "ENG-61" {
+                tv.status.state = AgentState::Idle;
+            }
+        }
+        draw(&mut app, 160, 40);
+        assert!(animated());
+    }
+
+    /// `TicketView::working`, which a folded project's header and the "N more" rows go by, holds
+    /// exactly when the card's badge spins as working.
+    #[test]
+    fn working_is_what_the_card_shows_as_working() {
+        use crate::app::Away;
+        let mut app = acme_app();
+        let tv = &mut app.tickets[0];
+        let aways = [
+            None,
+            Some(Away::Leaving(std::time::Instant::now())),
+            Some(Away::HandedOff),
+            Some(Away::Outside),
+            Some(Away::Back),
+        ];
+        let states = [
+            AgentState::Working,
+            AgentState::Needs,
+            AgentState::Done,
+            AgentState::Idle,
+            AgentState::NotStarted,
+            AgentState::Exited,
+        ];
+        for away in aways {
+            for state in states {
+                for asleep in [false, true] {
+                    (tv.away, tv.status.state, tv.asleep) = (away, state, asleep);
+                    let badge = state_badge(tv).content.to_string();
+                    let spinning = SPINNER.iter().any(|f| badge.starts_with(f));
+                    let spins = spinning && badge.contains(AgentState::Working.word());
+                    assert_eq!(tv.working(), spins, "{away:?} {state:?} asleep {asleep}: {badge}");
+                }
+            }
+        }
     }
 
     #[test]

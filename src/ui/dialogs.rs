@@ -1,6 +1,6 @@
 //! What draws over the screen: confirm dialogs, links, forms, settings and help.
 
-use super::sidebar::{more_line, scroll_to_show, shown_rows};
+use super::sidebar::{Mark, more_line, scroll_to_show, shown_rows};
 use super::{accent, asleep, badge, dim, selection_bg, spinner};
 use crate::app::{AgentAsk, AgentState, App, Form, Level, Mode, Scroll, SettingsItem, toasts};
 use crate::events_log::{Entry, Message, Turn};
@@ -237,14 +237,14 @@ fn draw_links(f: &mut Frame, app: &mut App) {
     let mut text = Vec::new();
     if first > 0 {
         let above = at.iter().filter(|&&r| r < first).count();
-        text.push(more_line("↑", above, false, room));
+        text.push(more_line("↑", above, None, room));
     }
     for (r, line) in rows.into_iter().enumerate().take(end).skip(first) {
         text.push(if cut(r) { Line::from("") } else { line });
     }
     if end < total {
         let below = at.iter().filter(|&&r| r + 2 > end).count();
-        text.push(more_line("↓", below, false, room));
+        text.push(more_line("↓", below, None, room));
     }
     text.push(Line::from(""));
     let keys = [("↑/↓", "choose"), ("Enter", "open"), ("c", "copy"), ("Esc", "close")];
@@ -395,10 +395,12 @@ fn draw_find_picker(f: &mut Frame, app: &mut App) {
     if total == 0 {
         text.push(Line::from(Span::styled("No matches", dim())));
     }
-    let hidden = |tvs: &[&crate::app::TicketView]| tvs.iter().any(|tv| tv.needs_attention());
+    let hidden = |tvs: &[&crate::app::TicketView]| {
+        Mark::of(tvs.iter().any(|tv| tv.needs_attention()), tvs.iter().any(|tv| tv.working()))
+    };
     if first > 0 {
-        // `more_line` ends its ● a column short of the edge, where the sidebar's badges end; here
-        // they end at the edge.
+        // `more_line` ends its mark a column short of the edge, where the sidebar's badges end;
+        // here they end at the edge.
         text.push(more_line("↑", first, hidden(&rows[..first]), room + 1));
     }
     for (n, tv) in rows[first..end].iter().enumerate() {
@@ -1283,7 +1285,7 @@ fn draw_scrolled(f: &mut Frame, area: Rect, text: &Scrolled, view: &mut Scroll) 
             // As the sidebar's, but in line with the text rather than a column in.
             Some(starts) => {
                 let n = starts.iter().filter(|&&l| rows.contains(&row_of[l])).count();
-                more_line(arrow, n, false, 0).to_string().trim_start().to_string()
+                more_line(arrow, n, None, 0).to_string().trim_start().to_string()
             }
             None => {
                 let n = rows.len();
@@ -1720,11 +1722,11 @@ fn draw_settings(f: &mut Frame, app: &mut App) {
     let hidden = |rows: std::ops::Range<usize>| at.iter().filter(|(r, _)| rows.contains(r)).count();
     let mut shown = Vec::new();
     if first > 0 {
-        shown.push(more_line("↑", hidden(0..first), false, w));
+        shown.push(more_line("↑", hidden(0..first), None, w));
     }
     shown.extend(lines.drain(first..end));
     if end < total {
-        shown.push(more_line("↓", hidden(end..total), false, w));
+        shown.push(more_line("↓", hidden(end..total), None, w));
     }
     f.render_widget(Paragraph::new(shown), list);
 
