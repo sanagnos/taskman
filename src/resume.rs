@@ -437,7 +437,8 @@ fn find_agent<'a>(
 }
 
 /// Why `t`'s session can't start while a folder of its is `gone`. The project's name and the
-/// folders are others' text, kept to one line.
+/// folders are others' text: `Gone::what` keeps the name to one line and shows the folder as
+/// it's named (`untrusted::path`).
 fn gone_error(gone: app::Gone, t: &Ticket, name: &str, saved: &Saved) -> String {
     let project = saved.projects.iter().find(|p| p.repo == t.repo);
     let project = project.map_or_else(|| store::project_name(&t.repo), |p| p.name.clone());
