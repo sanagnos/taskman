@@ -1233,15 +1233,16 @@ mod tests {
         }
     }
 
-    /// Whether an expression (`${{ … }}`) in `text` reads `secrets`, as `secrets.X`,
-    /// `secrets['X']` or `toJSON(secrets)`.
+    /// Whether an expression (`${{ … }}`) in `text` reads `secrets`, in any case, as `secrets.X`,
+    /// `secrets['X']` or `toJSON(secrets)`. It looks from the first `${{` to the last `}}`, so a
+    /// `}}` inside a string in the expression can't end it early.
     fn reads_secrets(text: &str) -> bool {
+        let Some(start) = text.find("${{") else { return false };
+        let end = text.rfind("}}").filter(|&end| end > start).map_or(text.len(), |end| end + 2);
+        let expressions = text[start..end].to_ascii_lowercase();
         let word = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
-        text.split("${{").skip(1).any(|expression| {
-            let expression = expression.split("}}").next().unwrap_or(expression);
-            expression.match_indices("secrets").any(|(at, _)| {
-                !expression[..at].ends_with(word) && !expression[at + 7..].starts_with(word)
-            })
+        expressions.match_indices("secrets").any(|(at, _)| {
+            !expressions[..at].ends_with(word) && !expressions[at + 7..].starts_with(word)
         })
     }
 
@@ -1275,7 +1276,8 @@ mod tests {
         let docs = YamlLoader::load_from_str(include_str!("../.github/workflows/release.yml"));
         let [workflow] = &docs.expect("release.yml is YAML")[..] else { panic!("one document") };
         for key in yaml_keys(workflow) {
-            let known = ["name", "run-name", "on", "permissions", "concurrency", "jobs"];
+            let known =
+                ["name", "run-name", "on", "permissions", "concurrency", "defaults", "jobs"];
             assert!(known.contains(&key), "release.yml's {key}");
         }
         assert!(!has_merge_key(workflow), "release.yml has a merge key (<<)");
@@ -1288,6 +1290,33 @@ mod tests {
         assert_eq!(events, ["pull_request", "push", "workflow_dispatch"]);
 
         let jobs = workflow["jobs"].as_hash().expect("jobs");
+        // GitHub's keys for a job, so `Permissions:` or `Secrets:` can't stand in for one.
+        let job_keys = [
+            "name",
+            "needs",
+            "if",
+            "runs-on",
+            "permissions",
+            "environment",
+            "concurrency",
+            "outputs",
+            "env",
+            "defaults",
+            "steps",
+            "timeout-minutes",
+            "strategy",
+            "continue-on-error",
+            "container",
+            "services",
+            "uses",
+            "with",
+            "secrets",
+        ];
+        for (name, job) in jobs {
+            for key in yaml_keys(job) {
+                assert!(job_keys.contains(&key), "{name:?} has {key}:, which isn't a job's key");
+            }
+        }
         let release = Yaml::String("release".into());
         let job = &jobs[&release];
         assert_eq!(
@@ -1337,8 +1366,10 @@ mod tests {
         }
     }
 
+    /// How yaml-rust2 reads what the test above relies on. That GitHub reads each the same way
+    /// isn't checked here.
     #[test]
-    fn reads_workflows_as_github_does() {
+    fn the_parser_reads_aliases_and_odd_keys_as_written() {
         // An alias is a copy of what its anchor names.
         let docs = YamlLoader::load_from_str("a: &w {contents: write}\nb: *w\n").unwrap();
         assert_eq!(docs[0]["b"]["contents"].as_str(), Some("write"));
@@ -1360,6 +1391,9 @@ mod tests {
         assert!(reads_secrets("${{ secrets['TOKEN'] }}"));
         assert!(!reads_secrets("secrets.TOKEN without an expression"));
         assert!(!reads_secrets("${{ inputs.no_secrets }} ${{ my-secrets }}"));
+        assert!(reads_secrets("${{ SECRETS.TOKEN }}"));
+        assert!(reads_secrets("${{ format('}}') }}${{ secrets.TOKEN }}"));
+        assert!(reads_secrets("${{ format('}}', secrets.TOKEN) }}"));
     }
 
     #[test]
