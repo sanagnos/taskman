@@ -92,7 +92,7 @@ What stays, because it's yours, and the command lists it:
 - Your repositories and branches.
 - The worktrees taskman made that are still there, each with the command that removes it (`git -C <repository> worktree remove <path>`), for once you've kept what you need from it. When a project put them in the repository's folder, taskman added a `# taskman worktrees` line and the folder under it to `.git/info/exclude`; delete both if you like.
 - The sessions' conversations in `~/.claude` and `~/.codex`, which belong to Claude Code and Codex.
-- **Lines you added yourself** to your shell's startup file: an `export …_TOKEN=` or `export …_API_KEY=` line, and the PATH line the install script suggested (it never writes one). fish keeps them in variables instead: a token you set with `set -Ux`, and the folder `fish_add_path` added to `$fish_user_paths`; the command prints the line that takes the folder out.
+- **Lines you added yourself** to your shell's startup file: an `export …_TOKEN=` or `export …_API_KEY=` line, and the PATH line the install script suggested (it never writes one). fish keeps them in variables instead: a token you set with `set -Ux`, and the folder `fish_add_path` added to `$fish_user_paths`; the command prints the line that takes the folder out. A `fish_add_path` line in `~/.config/fish/config.fish`, if you put one there, adds the folder back in each new shell: remove it too.
 
 To remove the data later, once the program is gone, or to remove taskman by hand (quit it first):
 

@@ -418,12 +418,11 @@ fn print(plan: &Plan, keychain: &Keychain, purge: bool) {
 /// `contains -i` reads the universal list it erases from, not a global that hides it. Not
 /// `fish -N`: with no config, fish loads no universal variables either. It compares the folder as
 /// text, not as a pattern, and changes nothing when it isn't there; the folder comes as an
-/// argument, so it's quoted once, for the fish the user types it into. Tried in fish 3.7.0, typed
-/// into an interactive fish and through `fish -c`, with HOME and the XDG folders apart: of two
-/// folders added with `fish_add_path -U`, only the one named goes, from a fresh shell's PATH too;
-/// with `fish_add_path -g` of a third in config.fish, or a global list in another order, the right
-/// universal entry goes and the global is kept; a folder not in the list, or no list, changes
-/// nothing and prints nothing (status 1); and folders with a space, `'`, `\`, both, and `*?[]`.
+/// argument, so it's quoted once, for the fish the user types it into. Tried in fish 3.7.0, the
+/// line passed to `fish -c` from a fish that loaded the config, and once typed into `fish -i`:
+/// the named folder goes and nothing else, also with a global list in config.fish, which stays.
+/// A `fish_add_path` line in config.fish puts the folder back in each new shell, so the next line
+/// says to remove that too.
 fn shell_lines(dir: Option<(String, String)>, fish: bool) -> Vec<String> {
     if !fish {
         let path = dir.map(|(shown, _)| format!(", and the PATH line for {shown}"));
@@ -439,6 +438,9 @@ fn shell_lines(dir: Option<(String, String)>, fish: bool) -> Vec<String> {
         let dir = fish_quote(&dir);
         lines.push(format!(
             "{shown} in $fish_user_paths, if fish_add_path put it there: fish -c 'set -eg fish_user_paths; set -l i (contains -i -- $argv[1] $fish_user_paths); and set -Ue fish_user_paths[$i]' {dir}"
+        ));
+        lines.push(format!(
+            "a `fish_add_path` line for {shown} in ~/.config/fish/config.fish, if you put one there: it adds the folder back in each new shell"
         ));
     }
     lines
@@ -581,6 +583,10 @@ mod tests {
         let odd = &shell_lines(odd, true)[1];
         let removes = "$fish_user_paths); and set -Ue fish_user_paths[$i]' '/home/tester/my bin'";
         assert!(odd.ends_with(removes), "{odd}");
+        assert_eq!(
+            fish[2],
+            "a `fish_add_path` line for ~/.local/bin in ~/.config/fish/config.fish, if you put one there: it adds the folder back in each new shell"
+        );
         assert!(fish.iter().all(|l| !l.contains("startup file")), "{fish:?}");
         assert_eq!(shell_lines(None, true).len(), 1);
     }

@@ -353,6 +353,7 @@ fn a_failed_start_keeps_the_notice_of_a_kill() {
     if !ended {
         // Not left running past the test.
         let _ = child.kill();
+        let _ = child.wait();
     }
     assert!(ended, "the start that couldn't take the terminal didn't end; it said:\n{said}");
     assert_eq!(status.and_then(|s| s.code()), Some(1), "{said}");
