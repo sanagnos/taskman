@@ -958,15 +958,18 @@ const SEE_GUIDE: &str = "see Storing a token in taskman's guide";
 pub(crate) const NOT_IN_THE_SHELL: &str = " in the shell taskman started from";
 
 /// The startup file bash reads in a new terminal. On macOS (`mac`), Terminal starts it as a login
-/// shell, which reads the first of ~/.bash_profile, ~/.bash_login and ~/.profile there is in
-/// `home`, and not ~/.bashrc: adding to a ~/.bash_profile that isn't there would make it, and bash
-/// would stop reading an existing ~/.profile.
+/// shell, which reads the first of ~/.bash_profile, ~/.bash_login and ~/.profile in `home` that
+/// exists and is readable, and not ~/.bashrc: adding to a ~/.bash_profile that isn't there would
+/// make it, and bash would stop reading an existing ~/.profile.
 fn bash_file(mac: bool, home: &Path) -> &'static str {
     if !mac {
         return "~/.bashrc";
     }
-    let read =
-        [".bash_profile", ".bash_login", ".profile"].into_iter().find(|f| home.join(f).exists());
+    let readable = |f: &&str| {
+        let path = home.join(f);
+        path.is_file() && std::fs::File::open(&path).is_ok()
+    };
+    let read = [".bash_profile", ".bash_login", ".profile"].into_iter().find(readable);
     match read {
         Some(".bash_login") => "~/.bash_login",
         Some(".profile") => "~/.profile",
@@ -1784,8 +1787,21 @@ mod tests {
         assert_eq!(bash_file(false, &home), "~/.bashrc");
         std::fs::write(home.join(".bash_login"), "").unwrap();
         assert_eq!(bash_file(true, &home), "~/.bash_login");
-        std::fs::write(home.join(".bash_profile"), "").unwrap();
+        // One bash can't read, it skips, as root can read anything.
+        use std::os::unix::fs::PermissionsExt;
+        let profile = home.join(".bash_profile");
+        std::fs::write(&profile, "").unwrap();
+        std::fs::set_permissions(&profile, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // SAFETY: geteuid only returns this process's effective user id.
+        if unsafe { libc::geteuid() } != 0 {
+            assert_eq!(bash_file(true, &home), "~/.bash_login");
+        }
+        std::fs::set_permissions(&profile, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert_eq!(bash_file(true, &home), "~/.bash_profile");
+        // A folder by that name isn't one.
+        std::fs::remove_file(&profile).unwrap();
+        std::fs::create_dir(&profile).unwrap();
+        assert_eq!(bash_file(true, &home), "~/.bash_login");
     }
 
     #[test]

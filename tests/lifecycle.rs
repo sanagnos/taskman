@@ -304,16 +304,26 @@ fn a_failed_start_keeps_the_notice_of_a_kill() {
             Ok(())
         });
     }
-    let out = no_terminal.stdin(Stdio::null()).output().unwrap();
+    let child = no_terminal.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let child = child.spawn().unwrap();
+    let failed_pid = child.id();
+    let out = child.wait_with_output().unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("taskman needs a terminal"), "{err}");
     assert!(alive.exists(), "the notice was used up without a terminal");
+    // Its own heartbeat by now, but stale: fresh, with its pid, a start that got the same pid, or
+    // one on another machine sharing the folder, would be refused for a few seconds.
+    let left = std::fs::read_to_string(&alive).unwrap();
+    assert!(left.contains(&format!("\"pid\":{failed_pid}")), "{left}");
+    let age = std::fs::metadata(&alive).unwrap().modified().unwrap().elapsed().unwrap();
+    assert!(age > Duration::from_secs(3600), "the heartbeat is only {age:?} old");
 
+    // Started straight after, it isn't refused: it fails on the file, as it would anyway.
     let saved = std::fs::read(&tickets).unwrap();
     std::fs::write(&tickets, "{\"projects\": [").unwrap();
     let out = taskman(&dir).stdin(Stdio::null()).output().unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("tickets.json"), "{err}");
+    assert!(err.contains("tickets.json") && !err.contains("already running"), "{err}");
     assert!(alive.exists(), "the notice was used up by an unreadable tickets.json");
     std::fs::write(&tickets, saved).unwrap();
 

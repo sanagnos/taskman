@@ -281,13 +281,18 @@ fn resolved(p: &Path) -> PathBuf {
 /// program's path has its links resolved (`current_exe`), and $HOME may be reached through a link
 /// (macOS's /var is /private/var).
 fn tilde(p: &Path) -> String {
-    let home = store::home();
-    if p.starts_with(&home) {
-        return store::tilde(p);
+    store::tilde(&under(p, &store::home()))
+}
+
+/// `p` spelled through `home` when it's under it, whichever way either is spelled, as the user
+/// typed it; otherwise as it is.
+fn under(p: &Path, home: &Path) -> PathBuf {
+    if p.starts_with(home) {
+        return p.to_path_buf();
     }
-    match resolved(p).strip_prefix(real(&home)) {
-        Ok(rest) => store::tilde(&home.join(rest)),
-        Err(_) => store::tilde(p),
+    match resolved(p).strip_prefix(real(home)) {
+        Ok(rest) => home.join(rest),
+        Err(_) => p.to_path_buf(),
     }
 }
 
@@ -396,15 +401,18 @@ fn print(plan: &Plan, keychain: &Keychain, purge: bool) {
     }
     let dir = plan.program.as_ref().and_then(|exe| exe.parent());
     let fish = std::env::var("SHELL").is_ok_and(|s| s.ends_with("/fish"));
-    for line in shell_lines(dir.map(|d| (tilde(d), d.display().to_string())), fish) {
+    // fish_add_path keeps the folder as typed, through $HOME, not with its links resolved as the
+    // program's path is (/var/home on some systems, /private/var on macOS).
+    let typed = dir.map(|d| (tilde(d), under(d, &store::home()).display().to_string()));
+    for line in shell_lines(typed, fish) {
         out!("  - {line}");
     }
 }
 
 /// What the user may have added to their shell for taskman: tokens, and the program's folder
-/// (`dir`, as shown and as it is) on PATH. fish keeps both in universal variables rather than a
+/// (`dir`, as shown and as typed) on PATH. fish keeps both in universal variables rather than a
 /// startup file: `fish_add_path`, which the install script suggests, adds the folder to
-/// `$fish_user_paths`.
+/// `$fish_user_paths`. The line that takes it out leaves the list as it is when it isn't there.
 fn shell_lines(dir: Option<(String, String)>, fish: bool) -> Vec<String> {
     if !fish {
         let path = dir.map(|(shown, _)| format!(", and the PATH line for {shown}"));
@@ -419,7 +427,7 @@ fn shell_lines(dir: Option<(String, String)>, fish: bool) -> Vec<String> {
     if let Some((shown, dir)) = dir {
         let dir = resume::quote(&dir);
         lines.push(format!(
-            "{shown} in $fish_user_paths, if fish_add_path put it there: set -e fish_user_paths[(contains -i {dir} $fish_user_paths)]"
+            "{shown} in $fish_user_paths, if fish_add_path put it there: set -U fish_user_paths (string match -v -- {dir} $fish_user_paths)"
         ));
     }
     lines
@@ -501,6 +509,25 @@ fn remove(plan: &Plan, keychain: &Keychain, purge: bool) -> bool {
 mod tests {
     use super::*;
 
+    /// The program's path comes with its links resolved; the folder on PATH is as typed, through
+    /// $HOME, which may itself be reached through a link (/home → /var/home).
+    #[test]
+    fn a_path_under_a_linked_home_is_spelled_through_it() {
+        let dir =
+            std::env::temp_dir().join(format!("taskman-uninstall-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let real_home = dir.join("var/home/ana");
+        std::fs::create_dir_all(real_home.join(".local/bin")).unwrap();
+        std::os::unix::fs::symlink(dir.join("var/home"), dir.join("home")).unwrap();
+        let home = dir.join("home/ana");
+        let exe_dir = real(&real_home).join(".local/bin");
+        assert_eq!(under(&exe_dir, &home), home.join(".local/bin"));
+        assert_eq!(under(&home.join(".local/bin"), &home), home.join(".local/bin"));
+        let elsewhere = real(&dir).join("opt/bin");
+        assert_eq!(under(&elsewhere, &home), elsewhere);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// fish keeps the PATH and the tokens in universal variables, not a startup file.
     #[test]
     fn says_where_each_shell_keeps_what_you_added() {
@@ -516,7 +543,12 @@ mod tests {
         assert!(fish[0].starts_with("fish variables you set: a `set -Ux …_TOKEN`"), "{fish:?}");
         assert_eq!(
             fish[1],
-            "~/.local/bin in $fish_user_paths, if fish_add_path put it there: set -e fish_user_paths[(contains -i /home/tester/.local/bin $fish_user_paths)]"
+            "~/.local/bin in $fish_user_paths, if fish_add_path put it there: set -U fish_user_paths (string match -v -- /home/tester/.local/bin $fish_user_paths)"
+        );
+        let odd = Some(("~/my bin".to_string(), "/home/tester/my bin".to_string()));
+        assert!(
+            shell_lines(odd, true)[1]
+                .ends_with("(string match -v -- '/home/tester/my bin' $fish_user_paths)")
         );
         assert!(fish.iter().all(|l| !l.contains("startup file")), "{fish:?}");
         assert_eq!(shell_lines(None, true).len(), 1);

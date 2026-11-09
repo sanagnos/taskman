@@ -263,8 +263,8 @@ main() {
     *)
       say "Note: $bin_dir isn't on your PATH yet. Add it, then open a new terminal:"
       # The startup file the shell reads in a new terminal: macOS's open login shells, which for
-      # bash read the first of ~/.bash_profile, ~/.bash_login and ~/.profile there is, not
-      # ~/.bashrc. Appending to ~/.bash_profile when there isn't one would make it, and bash would
+      # bash read the first of ~/.bash_profile, ~/.bash_login and ~/.profile that exists and is
+      # readable, not ~/.bashrc. Appending to ~/.bash_profile when there isn't one would make it, and bash would
       # stop reading an existing ~/.profile. fish reads neither, and keeps the path itself.
       rc="~/.profile"
       case "${SHELL:-}" in
@@ -274,7 +274,7 @@ main() {
           if [ "$os" = Darwin ]; then
             rc="~/.bash_profile"
             for f in .bash_profile .bash_login .profile; do
-              if [ -f "$HOME/$f" ]; then rc="~/$f"; break; fi
+              if [ -n "${HOME:-}" ] && [ -f "$HOME/$f" ] && [ -r "$HOME/$f" ]; then rc="~/$f"; break; fi
             done
           else
             rc="~/.bashrc"

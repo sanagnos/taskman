@@ -377,7 +377,7 @@ pub enum Before {
     Running(Option<u32>, Option<String>),
     /// It was killed or crashed, leaving `alive` behind. The file stays until this TUI has the
     /// terminal and has said so (`main`), so a start that fails before then doesn't use up the
-    /// notice.
+    /// notice, but leaves it stale (`stale`).
     Crashed,
 }
 
@@ -385,9 +385,10 @@ pub enum Before {
 /// the lock, so nothing that holds the same lock file is running. A TUI that takes it removes
 /// `alive` as it quits, so a file still there was left by one that didn't quit (a kill -9, an OOM
 /// kill or a panic, which leave a heartbeat under `ALIVE` old to a taskman started straight
-/// after), unless its process still runs: then the lock file was removed and made again under it,
-/// or flock doesn't work in the state folder (some network folders), or it runs on another machine
-/// that shares the folder, where its pid can't be checked from here.
+/// after, or a start that failed before it had the terminal after one of those, which leaves the
+/// file stale), unless its process still runs: then the lock file was removed and made again
+/// under it, or flock doesn't work in the state folder (some network folders), or it runs on
+/// another machine that shares the folder, where its pid can't be checked from here.
 pub fn before() -> Before {
     let Ok(modified) = std::fs::metadata(alive_file()).and_then(|m| m.modified()) else {
         return Before::Quit;
@@ -450,6 +451,15 @@ fn pid_alive(pid: u32) -> bool {
 /// The TUI is quitting: commands from now on queue without waiting.
 pub fn stopped() {
     let _ = std::fs::remove_file(alive_file());
+}
+
+/// Leaves `alive` for the next start to say the one before crashed, but stale (written at the
+/// epoch): it then names no running taskman, to a start (`before`) or a command (`tui_running`),
+/// whatever its pid and machine.
+pub fn stale() {
+    if let Ok(f) = std::fs::File::options().write(true).open(alive_file()) {
+        let _ = f.set_modified(SystemTime::UNIX_EPOCH);
+    }
 }
 
 /// `main` is ending, however it ends; called before the state folder's lock goes. As `stopped`,
@@ -1588,6 +1598,32 @@ mod tests {
         let f = std::fs::File::options().write(true).open(alive_file()).unwrap();
         f.set_modified(SystemTime::now() - Duration::from_secs(60)).unwrap();
         assert_eq!(before(), Before::Crashed);
+    }
+
+    /// A start that fails after a crash, before it has said so, leaves `alive` stale: whatever pid
+    /// and machine it names, it says no taskman runs, to a command or a start, and the next start
+    /// still finds the crash.
+    #[test]
+    fn a_stale_heartbeat_names_no_running_taskman() {
+        let write = |pid, host: &str| {
+            let alive = Alive { pid: Some(pid), host: Some(host.into()), ..Alive::new() };
+            store::write_unsynced(&alive_file(), &serde_json::to_vec(&alive).unwrap()).unwrap();
+        };
+        let here = hostname().expect("this machine's name");
+        // A pid that runs here (init), and another machine's.
+        let named = [(1, here.clone()), (ended_pid(), format!("{here}-other"))];
+        for (pid, host) in &named {
+            write(*pid, host);
+            assert!(tui_running(), "fresh, pid {pid} on {host}");
+            stale();
+            assert!(!tui_running(), "stale, pid {pid} on {host}");
+        }
+        let _lock = store::lock().unwrap();
+        for (pid, host) in &named {
+            write(*pid, host);
+            stale();
+            assert_eq!(before(), Before::Crashed, "pid {pid} on {host}");
+        }
     }
 
     /// `main` ending removes `alive`, but not on a panic, so the next start says it crashed.

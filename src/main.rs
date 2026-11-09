@@ -483,8 +483,6 @@ fn main() -> anyhow::Result<()> {
     if before == add::Before::Crashed {
         app.warn("taskman didn't quit cleanly last time: it was killed or crashed");
     }
-    // Said, as the TUI holds the terminal now: the heartbeat goes as usual from here.
-    running.crash_unsaid = false;
     app.check_prefix_tip();
     watchdog(tty.try_clone()?, signals.hangup.clone(), signals.stops.clone())?;
     set_panic_hook();
@@ -500,6 +498,9 @@ fn main() -> anyhow::Result<()> {
     let enhanced = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
     ENHANCED.store(enhanced, Ordering::Relaxed);
     let result = take_terminal(enhanced).map_err(anyhow::Error::from).and_then(|()| {
+        // The TUI holds the terminal, and its first frame shows the notice: the heartbeat goes as
+        // usual from here.
+        running.crash_unsaid = false;
         let mut terminal =
             ratatui::Terminal::new(backend::Backend::new(links::Runs::new(std::io::stdout())))?;
         let result = run(&mut terminal, &mut app, enhanced, &signals, &tty);
@@ -557,9 +558,11 @@ fn detach_output() {
 
 /// The state folder's lock, held while the TUI runs, and the inbox's heartbeat that says so,
 /// removed before the lock goes however `main` ends (an error, say), so that commands queue and
-/// the next taskman doesn't take it for one that crashed; but kept after a panic, so that it does,
-/// and when the one before crashed and this one ends before it has said so (no terminal, say), so
-/// that the next start still does. Its pid ends with the process, so the file says nothing runs.
+/// the next taskman doesn't take it for one that crashed; but kept after a panic, so that it does.
+/// When the one before crashed and this one ends before it has said so (no terminal, say), it's
+/// kept too, so the next start still says so, but made stale (`add::stale`): fresh, with this
+/// process's pid and machine, it would read as a taskman running for a few seconds, refusing a
+/// start whose pid is the same by chance, or one on another machine sharing the folder.
 struct Running {
     _lock: store::Lock,
     /// The one before crashed, and this one hasn't said so yet.
@@ -568,7 +571,9 @@ struct Running {
 
 impl Drop for Running {
     fn drop(&mut self) {
-        if !self.crash_unsaid {
+        if self.crash_unsaid {
+            add::stale();
+        } else {
             add::ending();
         }
     }
