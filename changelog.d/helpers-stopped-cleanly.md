@@ -1,1 +1,0 @@
-- A git fetch or other git command that taskman stops at its time limit is asked to stop first, so it no longer leaves a ref or index lock that fails your next git command there. A command still running when you quit no longer leaves what it started running in the background.

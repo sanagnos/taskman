@@ -2,6 +2,13 @@
 
 What changed in each release; a release's notes on GitHub are its section here. What's merged but not released yet is in [changelog.d/](changelog.d/), a file for each change, which the release moves in here. Versions follow Cargo's rule for 0.x: the patch number (0.1.1) for anything compatible, fixes and new features alike, and the minor (0.2.0) for breaking changes, such as changed keys, config or saved-state format, or a removed command.
 
+## 0.1.40 - 2026-11-08
+
+- A git fetch or other git command that taskman stops at its time limit is asked to stop first, so it no longer leaves a ref or index lock that fails your next git command there. A command still running when you quit no longer leaves what it started running in the background.
+- When a session asks for another project and is refused, the message no longer promises that Claude asks you first: it says your permission settings decide, as auto mode or a rule of yours can let `env -u TASKMAN_REPO` through unasked.
+- `taskman status` and `taskman resume` keep a project's or agent's name, a folder and a session's message on one line, even if it holds a line break, and so do the errors any command gives when it picks or refuses a project.
+- `taskman close` and `taskman title` read a ticket only from a whole argument: a number, a key, `'#52'` on GitHub Issues, or a link that names the ticket. A key inside a phrase, like `taskman close "Fix ENG-52 now"`, used to close ENG-52 and is now refused, and so is a GitHub link to another project's issue, naming that project.
+
 ## 0.1.39 - 2026-11-08
 
 - `taskman status --all-projects` shows every project from any folder. A session taskman started is refused unless the command has `env -u TASKMAN_REPO` in front, which Claude asks you about first (in Codex, its sandbox and approval settings decide).
