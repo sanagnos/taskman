@@ -414,10 +414,16 @@ fn print(plan: &Plan, keychain: &Keychain, purge: bool) {
 /// startup file: `fish_add_path`, which the install script suggests, adds the folder to
 /// `$fish_user_paths`, a universal variable by default. The line that takes it out covers that,
 /// not a global one (`fish_add_path -g`, which a line in config.fish sets again in each shell).
-/// It runs in a fish with no config (`-N`), so that the global, when there is one, doesn't hide
-/// the universal one it erases from: `contains -i` would read the global's index. It compares the
-/// folder as text, not as a pattern, and changes nothing when it isn't there; the folder comes as
-/// an argument, so it's quoted once, for the fish the user types it into.
+/// It runs in a fish of its own, which erases the global there first (`set -eg`), so that
+/// `contains -i` reads the universal list it erases from, not a global that hides it. Not
+/// `fish -N`: with no config, fish loads no universal variables either. It compares the folder as
+/// text, not as a pattern, and changes nothing when it isn't there; the folder comes as an
+/// argument, so it's quoted once, for the fish the user types it into. Tried in fish 3.7.0, typed
+/// into an interactive fish and through `fish -c`, with HOME and the XDG folders apart: of two
+/// folders added with `fish_add_path -U`, only the one named goes, from a fresh shell's PATH too;
+/// with `fish_add_path -g` of a third in config.fish, or a global list in another order, the right
+/// universal entry goes and the global is kept; a folder not in the list, or no list, changes
+/// nothing and prints nothing (status 1); and folders with a space, `'`, `\`, both, and `*?[]`.
 fn shell_lines(dir: Option<(String, String)>, fish: bool) -> Vec<String> {
     if !fish {
         let path = dir.map(|(shown, _)| format!(", and the PATH line for {shown}"));
@@ -432,7 +438,7 @@ fn shell_lines(dir: Option<(String, String)>, fish: bool) -> Vec<String> {
     if let Some((shown, dir)) = dir {
         let dir = fish_quote(&dir);
         lines.push(format!(
-            "{shown} in $fish_user_paths, if fish_add_path put it there: fish -N -c 'set -l i (contains -i -- $argv[1] $fish_user_paths); and set -Ue fish_user_paths[$i]' {dir}"
+            "{shown} in $fish_user_paths, if fish_add_path put it there: fish -c 'set -eg fish_user_paths; set -l i (contains -i -- $argv[1] $fish_user_paths); and set -Ue fish_user_paths[$i]' {dir}"
         ));
     }
     lines
@@ -569,7 +575,7 @@ mod tests {
         assert!(fish[0].starts_with("fish variables you set: a `set -Ux …_TOKEN`"), "{fish:?}");
         assert_eq!(
             fish[1],
-            "~/.local/bin in $fish_user_paths, if fish_add_path put it there: fish -N -c 'set -l i (contains -i -- $argv[1] $fish_user_paths); and set -Ue fish_user_paths[$i]' /home/tester/.local/bin"
+            "~/.local/bin in $fish_user_paths, if fish_add_path put it there: fish -c 'set -eg fish_user_paths; set -l i (contains -i -- $argv[1] $fish_user_paths); and set -Ue fish_user_paths[$i]' /home/tester/.local/bin"
         );
         let odd = Some(("~/my bin".to_string(), "/home/tester/my bin".to_string()));
         let odd = &shell_lines(odd, true)[1];
