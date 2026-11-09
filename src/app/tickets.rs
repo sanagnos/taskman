@@ -37,9 +37,11 @@ fn closed_while_created(key: &str, w: &close::Worktree) -> String {
     let what = format!("{key} closed while its worktree was being created");
     match w {
         close::Worktree::Removed(done) => format!("{what}. {done}"),
-        close::Worktree::Kept(path, why) => format!("{what}. Kept {}: {why}", store::tilde(path)),
+        close::Worktree::Kept(path, why) => {
+            format!("{what}. Kept {}: {why}", untrusted::path(path))
+        }
         close::Worktree::Asked(path) | close::Worktree::NotOurs(path) => {
-            format!("{what}. Kept {}", store::tilde(path))
+            format!("{what}. Kept {}", untrusted::path(path))
         }
         close::Worktree::None => what,
     }
@@ -118,7 +120,7 @@ impl App {
         }
         let proj = &self.projects[p];
         Err(match self.tickets.iter().find(|tv| tv.t.is(&proj.repo, key) && tv.t.agent.is_none()) {
-            None => format!("{key} isn't open in {}; add it first", proj.name),
+            None => format!("{key} isn't open in {}; add it first", untrusted::line(&proj.name)),
             Some(tv) if tv.creating => {
                 format!("{key}'s worktree is still being created; try again in a moment")
             }

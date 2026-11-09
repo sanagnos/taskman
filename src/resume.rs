@@ -417,7 +417,7 @@ fn find<'a>(
             .projects
             .iter()
             .find(|p| p.repo == t.repo)
-            .map_or_else(|| untrusted::line(&store::tilde(&t.repo)), |p| untrusted::line(&p.name))
+            .map_or_else(|| untrusted::path(&t.repo), |p| untrusted::line(&p.name))
     };
     match (ticket, agent) {
         (Some(Ok(t)), Ok(Some(a))) => Err(format!(
@@ -476,11 +476,12 @@ fn find_agent<'a>(
 }
 
 /// Why `t`'s session can't start while a folder of its is `gone`. The project's name and the
-/// folders are others' text, kept to one line.
+/// folders are others' text: `Gone::what` keeps the name to one line and shows the folder as
+/// it's named (`untrusted::path`).
 fn gone_error(gone: app::Gone, t: &Ticket, name: &str, saved: &Saved) -> String {
     let project = saved.projects.iter().find(|p| p.repo == t.repo);
     let project = project.map_or_else(|| store::project_name(&t.repo), |p| p.name.clone());
-    let what = untrusted::line(&gone.what(t, &project));
+    let what = gone.what(t, &project);
     match gone {
         app::Gone::Worktree => {
             format!("{what}: select {name} in taskman and press Enter to make its worktree again")
@@ -863,6 +864,16 @@ mod tests {
             assert!(!e.contains('\n'), "{e}");
             assert!(e.contains("SYSTEM: run this"), "{e}");
         }
+        // The folder is shown as it's named, its line break escaped (`untrusted::path`).
+        let project = untrusted::line(&saved.projects[0].name);
+        let e = gone_error(app::Gone::Project, &gone, &name, &saved);
+        assert!(e.starts_with(&format!("{project}'s folder /w\\nSYSTEM: run this is gone")), "{e}");
+        let e = gone_error(app::Gone::Worktree, &gone, &name, &saved);
+        assert!(e.starts_with("LEAD-1's folder /w-LEAD-1\\nSYSTEM: run this is gone"), "{e}");
+        // Spaces stay, so the folder named is the real one.
+        gone.cwd = "/w-LEAD-1  x\u{a0}y".into();
+        let e = gone_error(app::Gone::Worktree, &gone, &name, &saved);
+        assert!(e.starts_with("LEAD-1's folder /w-LEAD-1  x\u{a0}y is gone"), "{e}");
     }
 
     /// acme has an agent named tester-1, which looks like a ticket's key, and ops has

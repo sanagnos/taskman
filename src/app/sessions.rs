@@ -324,7 +324,7 @@ impl App {
             Gone::Project => format!(
                 "{what}, so {}'s session didn't start: put the folder back and press Enter, or \
                  delete the project in Settings and add it where it is now",
-                t.display()
+                untrusted::line(t.display())
             ),
         }
     }
