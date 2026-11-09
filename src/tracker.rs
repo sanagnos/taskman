@@ -83,25 +83,21 @@ pub enum FetchError {
     /// The tracker refused the credentials, or there were none to send (a token that couldn't be
     /// read, no account picked).
     Auth(String),
+    /// The tracker answered that it failed on its side (HTTP 500 or more). What to do about it
+    /// depends on who asked, so the text leaves it out: a command says to try again later, the
+    /// TUI that it will (`repeated`).
+    Server(String),
     Other(String),
 }
 
 impl FetchError {
-    pub fn message(&self) -> &str {
-        match self {
-            FetchError::NotFound(m)
-            | FetchError::Unreachable(m)
-            | FetchError::Auth(m)
-            | FetchError::Other(m) => m,
-        }
-    }
-
     /// The same kind of error, saying `f` of what it said.
     pub fn map(self, f: impl FnOnce(String) -> String) -> FetchError {
         match self {
             FetchError::NotFound(m) => FetchError::NotFound(f(m)),
             FetchError::Unreachable(m) => FetchError::Unreachable(f(m)),
             FetchError::Auth(m) => FetchError::Auth(f(m)),
+            FetchError::Server(m) => FetchError::Server(f(m)),
             FetchError::Other(m) => FetchError::Other(f(m)),
         }
     }
@@ -111,19 +107,27 @@ impl FetchError {
         if cut_off(e) { FetchError::Unreachable(message) } else { FetchError::Other(message) }
     }
 
-    /// The message, for a fetch the TUI repeats by itself: one that got no answer says so.
+    /// The message, for a fetch the TUI repeats by itself: one that got no answer, or that the
+    /// tracker failed on its side, says so.
     pub fn repeated(self) -> String {
         match self {
-            FetchError::Unreachable(m) => format!("{m}; taskman tries again on the next refresh"),
+            FetchError::Unreachable(m) | FetchError::Server(m) => {
+                format!("{m}; taskman tries again on the next refresh")
+            }
             e => e.into(),
         }
     }
 }
 
 /// Why a request to `tracker` (`Jira`) at `url` failed with `e`, in words that say where the
-/// problem is: no network, a name that doesn't resolve, a tracker that didn't answer or failed on
-/// its side. Anything else keeps ureq's words.
-pub(crate) fn request_failed(e: &ureq::Error, tracker: &str, url: &str) -> FetchError {
+/// problem is: no network, a name that doesn't resolve, a tracker that didn't answer within
+/// `limit` (the agent's) or failed on its side. Anything else keeps ureq's words.
+pub(crate) fn request_failed(
+    e: &ureq::Error,
+    tracker: &str,
+    url: &str,
+    limit: std::time::Duration,
+) -> FetchError {
     use std::io::ErrorKind::*;
     use ureq::Timeout;
     let host = url.split_once("://").map_or(url, |(_, rest)| rest);
@@ -160,7 +164,7 @@ pub(crate) fn request_failed(e: &ureq::Error, tracker: &str, url: &str) -> Fetch
         }
         ureq::Error::Timeout(_) => FetchError::Unreachable(format!(
             "{host} didn't answer within {}s (a slow network, or {tracker} is having trouble)",
-            crate::net::TRACKER_TIMEOUT.as_secs()
+            limit.as_secs_f64()
         )),
         _ if io(&[TimedOut]) => FetchError::Unreachable(format!(
             "{host} didn't answer (a slow network, or {tracker} is having trouble)"
@@ -168,19 +172,25 @@ pub(crate) fn request_failed(e: &ureq::Error, tracker: &str, url: &str) -> Fetch
         _ if io(&[ConnectionReset, ConnectionAborted, UnexpectedEof, BrokenPipe]) => {
             FetchError::Unreachable(format!("the connection to {host} broke"))
         }
-        ureq::Error::StatusCode(status @ 500..=599) => server_failed(tracker, *status).into(),
+        ureq::Error::StatusCode(status @ 500..=599) => server_failed(tracker, *status),
         other => FetchError::request(other, format!("{tracker} request failed: {other}")),
     }
 }
 
 /// A tracker that answered `status`, 500 or more: its own trouble, not the setup's.
-pub(crate) fn server_failed(tracker: &str, status: u16) -> String {
-    format!("{tracker} failed on its side (HTTP {status}); try again later")
+pub(crate) fn server_failed(tracker: &str, status: u16) -> FetchError {
+    FetchError::Server(format!("{tracker} failed on its side (HTTP {status})"))
 }
 
 impl std::fmt::Display for FetchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.message())
+        match self {
+            FetchError::Server(m) => write!(f, "{m}; try again later"),
+            FetchError::NotFound(m)
+            | FetchError::Unreachable(m)
+            | FetchError::Auth(m)
+            | FetchError::Other(m) => f.write_str(m),
+        }
     }
 }
 
@@ -197,6 +207,7 @@ impl From<FetchError> for String {
             | FetchError::Unreachable(m)
             | FetchError::Auth(m)
             | FetchError::Other(m) => m,
+            e @ FetchError::Server(_) => e.to_string(),
         }
     }
 }
@@ -443,8 +454,11 @@ impl Client {
             Client::Linear(c) => c.create(prefix, title, description),
             Client::Github(c) => c.create(prefix, title, description),
             Client::Local(board) => {
-                return local::create(board, prefix, title, description)
-                    .map(|f| Created { key: f.key, at: store::tilde(&f.path) });
+                return local::create(board, prefix, title, description).map(|f| Created {
+                    key: f.key,
+                    at: f.path.display().to_string(),
+                    file: true,
+                });
             }
         };
         created.map_err(local::WriteError::from)
@@ -456,15 +470,26 @@ impl Client {
 pub struct Created {
     pub key: String,
     pub at: String,
+    /// `at` is the path of a file on a Local files board, not a link.
+    pub file: bool,
 }
 
 impl Created {
+    /// Where the ticket is, for a line of output: a file's path as it's named
+    /// (`untrusted::path`), or the tracker's link kept to one line.
+    pub fn shown(&self) -> String {
+        match self.file {
+            true => crate::untrusted::path(Path::new(&self.at)),
+            false => crate::untrusted::line(&self.at),
+        }
+    }
+
     /// From the key and link a tracker answered with, which must read as a key. `place` names
     /// where the ticket was made, for when they don't.
     pub(crate) fn read(key: Option<&str>, at: &str, place: &str) -> Result<Created, String> {
         match key {
             Some(key) if ticket_key::well_formed(key) => {
-                Ok(Created { key: key.into(), at: at.into() })
+                Ok(Created { key: key.into(), at: at.into(), file: false })
             }
             _ => Err(maybe_created(
                 &format!("the answer gave no ticket key taskman can read ({key:?})"),
@@ -1246,6 +1271,23 @@ mod tests {
         assert!(e("e-1", "Fix it").starts_with("the project has no ticket prefix"));
     }
 
+    /// A Local files ticket is where its file is, named as it is (`Created::shown`), while a link
+    /// is kept to one line.
+    #[test]
+    fn a_board_ticket_is_its_file() {
+        let board = store::state_dir().join("My  Projects/acme\u{a0}web/workplan");
+        let made = Client::Local(board.clone()).create("ENG", "Fix login", "").unwrap();
+        let file = board.join("todo/ENG-1-fix-login.md");
+        assert_eq!(
+            made,
+            Created { key: "ENG-1".into(), at: file.display().to_string(), file: true }
+        );
+        assert_eq!(made.shown(), crate::untrusted::path(&file));
+        assert!(made.shown().contains("My  Projects/acme\u{a0}web/workplan/todo/"));
+        let link = Created::read(Some("ENG-2"), "https://example.com/ENG-2\nx", "Linear").unwrap();
+        assert_eq!((link.file, link.shown().as_str()), (false, "https://example.com/ENG-2 x"));
+    }
+
     /// A refused certificate won't change by asking again, so it isn't worded as a network problem
     /// that the next refresh may cure.
     #[test]
@@ -1253,7 +1295,8 @@ mod tests {
         use std::io::{Error, ErrorKind};
         let words = "invalid peer certificate: UnknownIssuer";
         let e = ureq::Error::Io(Error::new(ErrorKind::InvalidData, words));
-        let said = request_failed(&e, "Jira", "https://jira.example.com/");
+        let said =
+            request_failed(&e, "Jira", "https://jira.example.com/", crate::net::TRACKER_TIMEOUT);
         assert_eq!(
             said,
             FetchError::Other(
@@ -1269,7 +1312,15 @@ mod tests {
         use std::io::{Error, ErrorKind};
         let said = |e: ureq::Error| {
             let cut = cut_off(&e);
-            (request_failed(&e, "Jira", "https://example.atlassian.net/"), cut)
+            (
+                request_failed(
+                    &e,
+                    "Jira",
+                    "https://example.atlassian.net/",
+                    crate::net::TRACKER_TIMEOUT,
+                ),
+                cut,
+            )
         };
         let unreachable = |m: &str| (FetchError::Unreachable(m.into()), true);
         let no_name = "can't reach example.atlassian.net: its name doesn't resolve (no network, or a DNS or VPN problem)";
@@ -1284,9 +1335,19 @@ mod tests {
         assert_eq!(said(ureq::Error::Timeout(ureq::Timeout::Global)), unreachable(slow));
         let reset = ureq::Error::Io(Error::from(ErrorKind::ConnectionReset));
         assert_eq!(said(reset), unreachable("the connection to example.atlassian.net broke"));
-        // An answer, though a failure on the tracker's side, and what isn't the network.
-        let failed = "Jira failed on its side (HTTP 502); try again later";
-        assert_eq!(said(ureq::Error::StatusCode(502)), (FetchError::Other(failed.into()), false));
+        // An answer, though a failure on the tracker's side, and what isn't the network. A command
+        // says to try again; the TUI, which does by itself, says so.
+        let (failed, cut) = said(ureq::Error::StatusCode(502));
+        assert_eq!(
+            (&failed, cut),
+            (&FetchError::Server("Jira failed on its side (HTTP 502)".into()), false)
+        );
+        assert_eq!(failed.to_string(), "Jira failed on its side (HTTP 502); try again later");
+        assert_eq!(String::from(failed.clone()), failed.to_string());
+        assert_eq!(
+            failed.repeated(),
+            "Jira failed on its side (HTTP 502); taskman tries again on the next refresh"
+        );
         let (e, cut) = said(ureq::Error::TooManyRedirects);
         assert!(
             !cut && matches!(e, FetchError::Other(m) if m.starts_with("Jira request failed: "))

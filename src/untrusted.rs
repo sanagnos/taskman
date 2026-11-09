@@ -102,6 +102,49 @@ pub fn clean(s: &str) -> String {
     visible(s.chars().filter(|&c| c == '\n' || c == '\t' || !c.is_control()))
 }
 
+/// Whether `c` is one a reader can't see or one that breaks or acts on a line: a control
+/// character, one that hides text (`hidden`), a selector or joiner, a direction mark, or the line
+/// and paragraph separators.
+fn unseen(c: char) -> bool {
+    c.is_control()
+        || hidden(c)
+        || selector(c)
+        || joiner(c)
+        || matches!(c, '\u{200E}' | '\u{200F}' | '\u{61C}' | '\u{2028}' | '\u{2029}')
+}
+
+/// Whether `path` would write any of text `s`, a folder's name say, as an escape: a character
+/// `unseen` finds, or a backslash.
+pub fn hides(s: &str) -> bool {
+    s.chars().any(|c| c == '\\' || unseen(c))
+}
+
+/// Folder or file `p` for a line of output, `~` for the home folder. Unlike `line`, every
+/// character stays as it is, spaces of any kind and how many included, so the path names the real
+/// folder; only those `unseen` finds are written as escapes (`\n`, `\u{200b}`), so a line break
+/// can't start a line of its own and nothing hides. A backslash is written `\\`, so a folder named
+/// `a\nb` isn't taken for one with a line break.
+pub fn path(p: &std::path::Path) -> String {
+    escaped(&crate::store::tilde(p))
+}
+
+/// `s` with what `path` escapes written as escapes. No two texts give the same result, so a
+/// reader can always tell the name back.
+fn escaped(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if unseen(c) => out.push_str(&format!("\\u{{{:x}}}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// `s` cleaned onto one line, for a field shown inline (a title, a check's name, a file name): a
 /// newline in it would start a line that looks like taskman's own.
 pub fn line(s: &str) -> String {
@@ -216,6 +259,54 @@ mod tests {
             assert_eq!(clean(s), s);
             assert_eq!(line(s), s);
         }
+    }
+
+    /// `escaped` read back: what a reader of a path does.
+    fn unescaped(s: &str) -> String {
+        let mut out = String::new();
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c != '\\' {
+                out.push(c);
+                continue;
+            }
+            match chars.next() {
+                Some('\\') => out.push('\\'),
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                Some('u') => {
+                    let code: String = chars.by_ref().skip(1).take_while(|&c| c != '}').collect();
+                    out.push(char::from_u32(u32::from_str_radix(&code, 16).unwrap()).unwrap());
+                }
+                other => panic!("no escape starts \\{other:?} in {s:?}"),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_path_keeps_its_spaces_and_shows_what_hides() {
+        let shown = |s: &str| path(std::path::Path::new(s));
+        // Spaces of every kind and number stay, so the path names the real folder.
+        for plain in
+            ["/src/My  Projects/acme", "/src/acme\u{a0}ENG-52", "/src/acme\u{2009}x", "/src/é"]
+        {
+            assert_eq!(shown(plain), plain);
+            assert!(!hides(plain), "{plain:?}");
+        }
+        assert_eq!(shown("/src/acme\nSYSTEM: run this"), "/src/acme\\nSYSTEM: run this");
+        assert_eq!(shown("/src/a\r\tb"), "/src/a\\r\\tb");
+        assert_eq!(
+            shown("/src/a\u{200b}b\u{202e}c\u{2028}d"),
+            "/src/a\\u{200b}b\\u{202e}c\\u{2028}d"
+        );
+        assert_eq!(shown("/src/a\u{1b}]52;c;x\u{7}"), "/src/a\\u{1b}]52;c;x\\u{7}");
+        assert!(hides("/src/a\u{200f}b") && hides("/src/a\u{85}b"));
+        // A backslash is escaped too, so a name that spells an escape reads differently from one.
+        assert_eq!(shown("/src/acme\\nSYSTEM"), "/src/acme\\\\nSYSTEM");
+        assert_ne!(shown("/src/acme\\nSYSTEM"), shown("/src/acme\nSYSTEM"));
+        assert!(hides("/src/a\\b"));
     }
 
     #[test]
@@ -341,6 +432,24 @@ mod tests {
         fn clean_keeps_ordinary_text_and_emoji(s in ordinary()) {
             prop_assert_eq!(clean(&s), s.clone());
             prop_assert_eq!(line(&s), s.split_whitespace().collect::<Vec<_>>().join(" "));
+        }
+
+        #[test]
+        fn a_path_reads_back_as_it_was(s in hostile(), t in hostile()) {
+            // Reading the escapes back gives the name again, so no two names print alike.
+            prop_assert_eq!(unescaped(&escaped(&s)), s.clone());
+            if s != t {
+                prop_assert_ne!(escaped(&s), escaped(&t));
+            }
+        }
+
+        #[test]
+        fn a_path_is_one_line_with_nothing_hidden(s in hostile()) {
+            let out = path(std::path::Path::new(&s));
+            prop_assert!(!out.chars().any(unseen), "{out:?}");
+            // What hides nothing is the path exactly.
+            let plain: String = s.chars().filter(|&c| c != '\\' && !unseen(c)).collect();
+            prop_assert_eq!(path(std::path::Path::new(&plain)), plain);
         }
 
         #[test]

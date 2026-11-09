@@ -564,6 +564,39 @@ fn every_project_folded() {
     assert_snapshot!(draw(&mut app, 160, 40));
 }
 
+/// Sets the state of the session with `key`, without selecting it (which would unfold its
+/// project).
+fn set_state(app: &mut crate::app::App, key: &str, state: AgentState) {
+    let tv = app.tickets.iter_mut().find(|tv| tv.t.key == key).unwrap();
+    tv.status.state = state;
+}
+
+/// notes is folded and notes-writer working: its header shows the working cards' spinner.
+#[test]
+fn folded_project_with_a_working_session() {
+    let mut app = acme_app();
+    set_state(&mut app, "notes-writer", AgentState::Working);
+    assert_snapshot!(draw(&mut app, 160, 40));
+}
+
+/// acme folded, ENG-61 working and ENG-53 needing you: the ● wins over the spinner.
+#[test]
+fn folded_project_with_a_working_and_a_waiting_session() {
+    let mut app = acme_app();
+    app.projects[0].collapsed = true;
+    set_state(&mut app, "notes-writer", AgentState::Idle);
+    assert_snapshot!(draw(&mut app, 160, 40));
+}
+
+/// The cards below the view: none needs you and ENG-90 is working, so the edge row spins.
+#[test]
+fn folded_long_sidebar_with_a_working_card_below() {
+    let mut app = long_sidebar(20);
+    set_state(&mut app, "ENG-90", AgentState::Working);
+    set_state(&mut app, "notes-writer", AgentState::Idle);
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
 /// Move mode: the card steps down one place, and the footer says how to go on.
 #[test]
 fn moving_a_card_with_the_keys() {
@@ -1472,6 +1505,24 @@ fn find_picker_in_a_short_window() {
 #[test]
 fn find_picker_scrolled() {
     let mut app = long_sidebar(20);
+    draw(&mut app, 80, 24);
+    app.on_key(crate::app::test_support::ctrl('a'));
+    app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char('/')));
+    for _ in 0..app.tickets.len() {
+        app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Down));
+    }
+    assert_snapshot!(draw(&mut app, 80, 24));
+}
+
+/// As `find_picker_scrolled`, with no card needing you and ENG-61, above the view, working: the
+/// top row shows the working spinner in place of the ●.
+#[test]
+fn find_picker_scrolled_past_a_working_card() {
+    let mut app = long_sidebar(20);
+    for tv in &mut app.tickets {
+        let working = tv.t.key == "ENG-61";
+        tv.status.state = if working { AgentState::Working } else { AgentState::Idle };
+    }
     draw(&mut app, 80, 24);
     app.on_key(crate::app::test_support::ctrl('a'));
     app.on_key(crate::app::test_support::key(crossterm::event::KeyCode::Char('/')));

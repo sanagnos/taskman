@@ -37,9 +37,11 @@ fn closed_while_created(key: &str, w: &close::Worktree) -> String {
     let what = format!("{key} closed while its worktree was being created");
     match w {
         close::Worktree::Removed(done) => format!("{what}. {done}"),
-        close::Worktree::Kept(path, why) => format!("{what}. Kept {}: {why}", store::tilde(path)),
+        close::Worktree::Kept(path, why) => {
+            format!("{what}. Kept {}: {why}", untrusted::path(path))
+        }
         close::Worktree::Asked(path) | close::Worktree::NotOurs(path) => {
-            format!("{what}. Kept {}", store::tilde(path))
+            format!("{what}. Kept {}", untrusted::path(path))
         }
         close::Worktree::None => what,
     }
@@ -118,7 +120,7 @@ impl App {
         }
         let proj = &self.projects[p];
         Err(match self.tickets.iter().find(|tv| tv.t.is(&proj.repo, key) && tv.t.agent.is_none()) {
-            None => format!("{key} isn't open in {}; add it first", proj.name),
+            None => format!("{key} isn't open in {}; add it first", untrusted::line(&proj.name)),
             Some(tv) if tv.creating => {
                 format!("{key}'s worktree is still being created; try again in a moment")
             }
@@ -515,7 +517,7 @@ impl App {
     /// Sets the title of ticket `key` in the project in `repo`, or clears it with `text` empty, as
     /// `prefix e` and `taskman title` do. The session isn't touched: unlike an agent's name, this
     /// is only what the card shows. Returns the title as saved; Err, with nothing changed, for what
-    /// isn't an open ticket, or text with nothing left to show once cleaned.
+    /// isn't an open ticket, or text with nothing left to show once cleaned or cut.
     pub(super) fn set_label(
         &mut self,
         repo: &Path,
@@ -531,7 +533,16 @@ impl App {
         }
         let label = clean_label(text);
         if label.is_none() && !text.is_empty() {
-            return Err(format!("{shown}'s title would be empty once cleaned"));
+            // Visible, but not in what fits: hundreds of combining marks ahead of the text.
+            if !util::blank(&untrusted::line(text)) {
+                return Err(format!(
+                    "{shown}'s title would show nothing once cut to fit: put the words first"
+                ));
+            }
+            return Err(format!(
+                "{shown}'s title would be empty once cleaned: give it words to show, or leave it \
+                 empty to clear it"
+            ));
         }
         tv.t.label.clone_from(&label);
         self.save();

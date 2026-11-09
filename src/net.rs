@@ -52,6 +52,11 @@ impl TrackerAgent {
         Self { timeout, agent: Arc::default() }
     }
 
+    /// How long each request may take.
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
     pub fn ready(&self) -> &ureq::Agent {
         self.agent.get_or_init(|| {
             let config = config(self.timeout).http_status_as_error(false);

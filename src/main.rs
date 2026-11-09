@@ -73,6 +73,16 @@ static ENHANCED: AtomicBool = AtomicBool::new(false);
 /// that long.
 static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
+/// The taskman before this one didn't quit cleanly, and this one hasn't said so yet: it says so
+/// in its first frame, once it holds the terminal. Until then, however it ends, it leaves `alive`
+/// for the next start to say so (`Running`, `quitting`).
+static CRASH_UNSAID: AtomicBool = AtomicBool::new(false);
+
+/// Commands queue from now on: `alive` goes, or while the last crash is unsaid, is made stale.
+fn quitting() {
+    if CRASH_UNSAID.load(Ordering::Relaxed) { add::stale() } else { add::stopped() }
+}
+
 /// How long the terminal must stay gone before the watchdog ends taskman. The loop notices within
 /// 16ms and stopping the sessions takes a fraction of a second, so this is only reached when
 /// something hangs.
@@ -299,7 +309,7 @@ fn watchdog(tty: Tty, hangup: Arc<AtomicBool>, stops: Arc<AtomicUsize>) -> std::
             let second = stops.load(Ordering::Relaxed) >= 2;
             if gone.for_at_least(left, now, grace) || again.for_at_least(second, now, SECOND_SIGNAL)
             {
-                add::stopped();
+                quitting();
                 proc::stop_all();
                 // SAFETY: _exit ends the process without running destructors or touching memory.
                 unsafe { libc::_exit(1) };
@@ -500,6 +510,10 @@ fn main() -> anyhow::Result<()> {
     let result = take_terminal(enhanced).map_err(anyhow::Error::from).and_then(|()| {
         let mut terminal =
             ratatui::Terminal::new(backend::Backend::new(links::Runs::new(std::io::stdout())))?;
+        // The notice counts as given from here, with the terminal taken, though the first frame
+        // draws it: a run that ends before that still spends it, a tiny window. The heartbeat goes
+        // as usual from here.
+        CRASH_UNSAID.store(false, Ordering::Relaxed);
         let result = run(&mut terminal, &mut app, enhanced, &signals, &tty);
         if tty.wait(Duration::ZERO) == Input::Gone {
             detach_output();
@@ -522,7 +536,7 @@ fn main() -> anyhow::Result<()> {
 /// the loop has already waited (`App::may_quit`), on screen.
 fn shutdown(mut app: app::App, signals: &Signals) {
     SHUTTING_DOWN.store(true, Ordering::Relaxed);
-    add::stopped();
+    quitting();
     app.request_quit();
     app.stop_sessions();
     let until = Instant::now() + QUIT_WAIT;
@@ -556,13 +570,22 @@ fn detach_output() {
 /// The state folder's lock, held while the TUI runs, and the inbox's heartbeat that says so,
 /// removed before the lock goes however `main` ends (an error, say), so that commands queue and
 /// the next taskman doesn't take it for one that crashed; but kept after a panic, so that it does.
+/// When the one before crashed and this one ends before it has said so (`CRASH_UNSAID`: no
+/// terminal, say), it's kept too, so the next start still says so, but made stale (`add::stale`),
+/// here and wherever else it would go (`quitting`): fresh, with this process's pid and machine, it
+/// would read as a taskman running for a few seconds, refusing a start whose pid is the same by
+/// chance, or one on another machine sharing the folder.
 struct Running {
     _lock: store::Lock,
 }
 
 impl Drop for Running {
     fn drop(&mut self) {
-        add::ending();
+        if CRASH_UNSAID.load(Ordering::Relaxed) {
+            add::stale();
+        } else {
+            add::ending();
+        }
     }
 }
 
@@ -591,6 +614,7 @@ fn open_state() -> Result<(Running, store::Saved, store::Config, add::Before), S
     let (saved, config) = (store::load()?, store::load_config()?);
     // Commands count taskman as running from here, before its first frame (`add::tui_running`).
     add::heartbeat();
+    CRASH_UNSAID.store(before == add::Before::Crashed, Ordering::Relaxed);
     Ok((Running { _lock: lock }, saved, config, before))
 }
 

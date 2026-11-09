@@ -281,13 +281,18 @@ fn resolved(p: &Path) -> PathBuf {
 /// program's path has its links resolved (`current_exe`), and $HOME may be reached through a link
 /// (macOS's /var is /private/var).
 fn tilde(p: &Path) -> String {
-    let home = store::home();
-    if p.starts_with(&home) {
-        return store::tilde(p);
+    store::tilde(&under(p, &store::home()))
+}
+
+/// `p` spelled through `home` when it's under it, whichever way either is spelled, as the user
+/// typed it; otherwise as it is.
+fn under(p: &Path, home: &Path) -> PathBuf {
+    if p.starts_with(home) {
+        return p.to_path_buf();
     }
-    match resolved(p).strip_prefix(real(&home)) {
-        Ok(rest) => store::tilde(&home.join(rest)),
-        Err(_) => store::tilde(p),
+    match resolved(p).strip_prefix(real(home)) {
+        Ok(rest) => home.join(rest),
+        Err(_) => p.to_path_buf(),
     }
 }
 
@@ -394,15 +399,59 @@ fn print(plan: &Plan, keychain: &Keychain, purge: bool) {
     if let Some(e) = &plan.unread {
         out!("  - the worktrees taskman made, which it can't list: {e}");
     }
-    let path = plan
-        .program
-        .as_ref()
-        .and_then(|exe| exe.parent())
-        .map(|dir| format!(", and the PATH line for {}", tilde(dir)))
-        .unwrap_or_default();
-    out!(
-        "  - lines you added to your shell's startup file: an `export …_TOKEN=` or `export …_API_KEY=` line{path}"
-    );
+    let dir = plan.program.as_ref().and_then(|exe| exe.parent());
+    let fish = std::env::var("SHELL").is_ok_and(|s| s.ends_with("/fish"));
+    // fish_add_path keeps the folder as typed, through $HOME, not with its links resolved as the
+    // program's path is (/var/home on some systems, /private/var on macOS).
+    let typed = dir.map(|d| (tilde(d), under(d, &store::home()).display().to_string()));
+    for line in shell_lines(typed, fish) {
+        out!("  - {line}");
+    }
+}
+
+/// What the user may have added to their shell for taskman: tokens, and the program's folder
+/// (`dir`, as shown and as typed) on PATH. fish keeps both in universal variables rather than a
+/// startup file: `fish_add_path`, which the install script suggests, adds the folder to
+/// `$fish_user_paths`, a universal variable by default. The line that takes it out covers that,
+/// not a global one (`fish_add_path -g`, which a line in config.fish sets again in each shell).
+/// It runs in a fish of its own, which erases the global there first (`set -eg`), so that
+/// `contains -i` reads the universal list it erases from, not a global that hides it. Not
+/// `fish -N`: with no config, fish loads no universal variables either. It compares the folder as
+/// text, not as a pattern, and changes nothing when it isn't there; the folder comes as an
+/// argument, so it's quoted once, for the fish the user types it into. Tried in fish 3.7.0, the
+/// line passed to `fish -c` from a fish that loaded the config, and once typed into `fish -i`:
+/// the named folder goes and nothing else, also with a global list in config.fish, which stays.
+/// A `fish_add_path` line in config.fish puts the folder back in each new shell, so the next line
+/// says to remove that too.
+fn shell_lines(dir: Option<(String, String)>, fish: bool) -> Vec<String> {
+    if !fish {
+        let path = dir.map(|(shown, _)| format!(", and the PATH line for {shown}"));
+        return vec![format!(
+            "lines you added to your shell's startup file: an `export …_TOKEN=` or `export …_API_KEY=` line{}",
+            path.unwrap_or_default()
+        )];
+    }
+    let mut lines = vec![
+        "fish variables you set: a `set -Ux …_TOKEN` or `…_API_KEY` (or a `set -x` line in ~/.config/fish/config.fish)".to_string(),
+    ];
+    if let Some((shown, dir)) = dir {
+        let dir = fish_quote(&dir);
+        lines.push(format!(
+            "{shown} in $fish_user_paths, if fish_add_path put it there: fish -c 'set -eg fish_user_paths; set -l i (contains -i -- $argv[1] $fish_user_paths); and set -Ue fish_user_paths[$i]' {dir}"
+        ));
+        lines.push(format!(
+            "a `fish_add_path` line for {shown} in ~/.config/fish/config.fish, if you put one there: it adds the folder back in each new shell"
+        ));
+    }
+    lines
+}
+
+/// `s` as one word for fish: inside its single quotes, `\\` and `\'` are escapes, unlike sh's.
+fn fish_quote(s: &str) -> String {
+    if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_./:@%+=,".contains(c)) {
+        return s.to_string();
+    }
+    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
 }
 
 /// Asks `question` on the terminal; anything but yes is no.
@@ -480,6 +529,67 @@ fn remove(plan: &Plan, keychain: &Keychain, purge: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The program's path comes with its links resolved; the folder on PATH is as typed, through
+    /// $HOME, which may itself be reached through a link (/home → /var/home).
+    #[test]
+    fn a_path_under_a_linked_home_is_spelled_through_it() {
+        let dir =
+            std::env::temp_dir().join(format!("taskman-uninstall-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let real_home = dir.join("var/home/ana");
+        std::fs::create_dir_all(real_home.join(".local/bin")).unwrap();
+        std::os::unix::fs::symlink(dir.join("var/home"), dir.join("home")).unwrap();
+        let home = dir.join("home/ana");
+        let exe_dir = real(&real_home).join(".local/bin");
+        assert_eq!(under(&exe_dir, &home), home.join(".local/bin"));
+        assert_eq!(under(&home.join(".local/bin"), &home), home.join(".local/bin"));
+        let elsewhere = real(&dir).join("opt/bin");
+        assert_eq!(under(&elsewhere, &home), elsewhere);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// fish's single quotes take `\\` and `\'` as escapes, so both are escaped; a glob character
+    /// needs nothing, as `contains` compares text.
+    #[test]
+    fn quotes_a_folder_for_fish() {
+        assert_eq!(fish_quote("/home/tester/.local/bin"), "/home/tester/.local/bin");
+        assert_eq!(fish_quote("/home/tester/my bin"), "'/home/tester/my bin'");
+        assert_eq!(fish_quote(r"/home/tester/a\b"), r"'/home/tester/a\\b'");
+        assert_eq!(fish_quote("/home/tester/it's"), r"'/home/tester/it\'s'");
+        assert_eq!(fish_quote(r"/x/\'"), r"'/x/\\\''");
+        assert_eq!(fish_quote("/home/tester/b*n?"), "'/home/tester/b*n?'");
+        assert_eq!(fish_quote(""), "''");
+    }
+
+    /// fish keeps the PATH and the tokens in universal variables, not a startup file.
+    #[test]
+    fn says_where_each_shell_keeps_what_you_added() {
+        let dir = || Some(("~/.local/bin".to_string(), "/home/tester/.local/bin".to_string()));
+        assert_eq!(
+            shell_lines(dir(), false),
+            [
+                "lines you added to your shell's startup file: an `export …_TOKEN=` or `export …_API_KEY=` line, and the PATH line for ~/.local/bin"
+            ]
+        );
+        assert!(!shell_lines(None, false)[0].contains("PATH"));
+        let fish = shell_lines(dir(), true);
+        assert!(fish[0].starts_with("fish variables you set: a `set -Ux …_TOKEN`"), "{fish:?}");
+        assert_eq!(
+            fish[1],
+            "~/.local/bin in $fish_user_paths, if fish_add_path put it there: fish -c 'set -eg fish_user_paths; set -l i (contains -i -- $argv[1] $fish_user_paths); and set -Ue fish_user_paths[$i]' /home/tester/.local/bin"
+        );
+        let odd = Some(("~/my bin".to_string(), "/home/tester/my bin".to_string()));
+        let odd = &shell_lines(odd, true)[1];
+        let removes = "$fish_user_paths); and set -Ue fish_user_paths[$i]' '/home/tester/my bin'";
+        assert!(odd.ends_with(removes), "{odd}");
+        assert_eq!(
+            fish[2],
+            "a `fish_add_path` line for ~/.local/bin in ~/.config/fish/config.fish, if you put one there: it adds the folder back in each new shell"
+        );
+        assert!(fish.iter().all(|l| !l.contains("startup file")), "{fish:?}");
+        assert_eq!(shell_lines(None, true).len(), 1);
+    }
 
     #[test]
     fn reads_yes_and_purge_and_refuses_the_rest() {

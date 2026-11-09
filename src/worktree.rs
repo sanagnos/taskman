@@ -1,8 +1,8 @@
 //! Creating a ticket's worktree: its branch and folder names from the project's formats, and the
 //! git commands that make it.
 
-use crate::resume::Hold;
-use crate::store::{self, Provider};
+use crate::resume::{self, Hold};
+use crate::store::Provider;
 use crate::{git, github, proc, untrusted};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -146,9 +146,9 @@ pub fn create(
         if !ok(&out) {
             return Err(match (&w.locked, out) {
                 (Some(_), _) => format!(
-                    "git keeps {} as a locked worktree; unlock it with git -C {} worktree unlock {f}",
-                    store::tilde(folder),
-                    store::tilde(repo)
+                    "git keeps {} as a locked worktree; {}",
+                    untrusted::path(folder),
+                    git_to_copy(repo, "worktree unlock", folder, "unlock it")
                 ),
                 (None, Ok(o)) => git_error(&o),
                 (None, Err(e)) => format!("could not run git: {e}"),
@@ -162,7 +162,7 @@ pub fn create(
             _ => {
                 return Err(format!(
                     "{} already exists; move it, or change Folder in Project settings",
-                    store::tilde(folder)
+                    untrusted::path(folder)
                 ));
             }
         }
@@ -188,7 +188,8 @@ pub fn create(
     let out = if local {
         add(repo, &[&f, branch])
     } else if remote {
-        add(repo, &["--track", "-b", branch, &f, &format!("origin/{branch}")])
+        // The full ref: a local branch named `origin/<branch>` makes `origin/<branch>` ambiguous.
+        add(repo, &["--track", "-b", branch, &f, &format!("refs/remotes/origin/{branch}")])
     } else {
         let start = base.and_then(|b| {
             let start = start_point(repo, b, has_origin);
@@ -242,10 +243,30 @@ fn remove_unfinished(repo: &Path, folder: &Path) -> Result<(), String> {
         return Ok(());
     }
     Err(format!(
-        "{} is a worktree git never finished making; remove it with \
-         git worktree remove --force --force {f}",
-        store::tilde(folder)
+        "{} is a worktree git never finished making; {}",
+        untrusted::path(folder),
+        git_to_copy(repo, "worktree remove --force --force", folder, "remove it")
     ))
+}
+
+/// What to run to `act` on worktree `folder` of `repo`, for the user to copy: `act with git -C
+/// <repo> <args> <folder>`. The command names the real folders, quoted for the shell, so a folder
+/// is left out of it when it holds a character `untrusted::path` would have to escape, which a
+/// copied command would get wrong; that includes a backslash, which fish reads as an escape even
+/// in single quotes. Then it says how to find the folder.
+fn git_to_copy(repo: &Path, args: &str, folder: &Path, act: &str) -> String {
+    let plain = |p: &Path| p.to_str().filter(|s| !untrusted::hides(s)).map(resume::quote);
+    match (plain(repo), plain(folder)) {
+        (Some(r), Some(f)) => format!("{act} with git -C {r} {args} {f}"),
+        (Some(r), None) => {
+            format!(
+                "{act} with git -C {r} {args} FOLDER, taking FOLDER from git -C {r} worktree list"
+            )
+        }
+        _ => format!(
+            "{act} with git {args} FOLDER in the repository, taking FOLDER from git worktree list"
+        ),
+    }
 }
 
 /// Where a branch stacked on `base` starts: the newer of the local branch and origin's copy, as
@@ -320,11 +341,12 @@ pub fn some_of(names: &[String]) -> String {
 /// Checks the worktree at `path` for anything removing it would lose: uncommitted, untracked or
 /// ignored files (`git status` leaves ignored ones out, and `git worktree remove` deletes them
 /// without asking), and commits that are on no remote (with no remote at all, not on the main
-/// checkout's branch) and not in `merged`, the head commit of the ticket's merged PR (a squash merge leaves the branch's own commits on no remote once GitHub
-/// deletes the branch, but commits made after the merge are in neither). Ok(None) when there's
-/// no worktree there to remove; Err when git couldn't be run or failed, with what went wrong,
-/// since the folder stays then and the reply says why. Local git only, so it's quick enough to
-/// run as the dialog opens.
+/// checkout's branch, or on no other branch while that's detached) and not in `merged`, the head
+/// commit of the ticket's merged PR (a squash merge leaves the branch's own commits on no remote
+/// once GitHub deletes the branch, but commits made after the merge are in neither). Ok(None) when
+/// there's no worktree there to remove; Err when git couldn't be run or failed, with what went
+/// wrong, since the folder stays then and the reply says why. Local git only, so it's quick enough
+/// to run as the dialog opens.
 pub fn removal_check(
     repo: &Path,
     path: &Path,
@@ -356,16 +378,14 @@ pub fn removal_check(
     // branch, where the worktree started (`create`) and where it's merged locally.
     let remotes = checked(repo, &["remote"])?;
     let local = String::from_utf8_lossy(&remotes.stdout).trim().is_empty();
-    let base = if local {
-        checkout_branch(repo).map(|b| format!("refs/heads/{b}"))
-    } else {
-        local_default_branch(repo)
-    };
+    let base = if local { checkout_branch(repo) } else { local_default_branch(repo) };
     let mut args = vec!["rev-list", "--count", head.as_str(), "--not"];
+    let own = listed.branch.as_ref().map(|b| format!("--exclude={b}"));
     match (local, &base) {
         (false, _) => args.push("--remotes"),
         (true, Some(b)) => args.push(b),
-        (true, None) => {}
+        // A detached main checkout is on no branch: a commit on another one isn't lost.
+        (true, None) => args.extend(own.as_deref().into_iter().chain(["--branches"])),
     }
     args.extend(pr_head.as_deref());
     let o = checked(path, &args)?;
@@ -389,10 +409,11 @@ pub fn removal_check(
         problems.push(match (local, &base) {
             (false, _) => plural(unpushed, "unpushed commit"),
             (true, Some(b)) => {
-                let b = b.strip_prefix("refs/heads/").unwrap_or(b);
-                format!("{} not on {b} (no remote)", plural(unpushed, "commit"))
+                format!("{} not on {} (no remote)", plural(unpushed, "commit"), short_branch(b))
             }
-            (true, None) => format!("{} on no remote or branch", plural(unpushed, "commit")),
+            (true, None) => {
+                format!("{} on no other branch (no remote)", plural(unpushed, "commit"))
+            }
         });
     }
     let within = |tip: &str| ok(&git(repo, &["merge-base", "--is-ancestor", &head, tip]));
@@ -578,7 +599,7 @@ pub fn remove(
     merged: Option<&str>,
     hold: &Hold,
 ) -> Result<String, String> {
-    let place = store::tilde(&check.path);
+    let place = untrusted::path(&check.path);
     let now = removal_check(repo, &check.path, merged)?
         .ok_or_else(|| format!("{place} isn't a worktree any more"))?;
     if !now.problems.is_empty() {
@@ -664,8 +685,9 @@ pub struct DefaultBranch {
 /// As `DefaultBranch` says. Quick: no network.
 pub fn default_branch_of(repo: &Path) -> DefaultBranch {
     if let Some(b) = local_default_branch(repo) {
-        let name = b.strip_prefix("origin/").unwrap_or(&b).to_string();
-        return DefaultBranch { name, start: b };
+        let name = b.strip_prefix("refs/remotes/origin/").unwrap_or(&b).to_string();
+        let start = b.strip_prefix("refs/remotes/").unwrap_or(&b).to_string();
+        return DefaultBranch { name, start };
     }
     let unknown = || DefaultBranch { name: "main".into(), start: "origin/main".into() };
     if !ok(&git(repo, &["rev-parse", "--git-dir"])) {
@@ -675,31 +697,40 @@ pub fn default_branch_of(repo: &Path) -> DefaultBranch {
         // `create` asks the remote, which the form can't wait for.
         return DefaultBranch { start: "origin's default branch".into(), ..unknown() };
     }
-    match checkout_branch(repo) {
-        Some(b) => DefaultBranch { start: format!("HEAD ({b}): no remote"), name: b },
+    match checkout_branch(repo).as_deref().map(short_branch) {
+        Some(b) => DefaultBranch { start: format!("HEAD ({b}): no remote"), name: b.to_string() },
         None => DefaultBranch { start: "HEAD: no remote".into(), ..unknown() },
     }
 }
 
-/// `origin/HEAD` as git last saw it, like `origin/main`, without asking the remote.
+/// `origin/HEAD` as git last saw it, as its ref, like `refs/remotes/origin/main`, without asking
+/// the remote. Not `--short`, which says `remotes/origin/main` when a local branch is named
+/// `origin/main` too, and as `origin/main` git would take that branch instead.
 fn local_default_branch(repo: &Path) -> Option<String> {
-    let o = git(repo, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])
+    let o = git(repo, &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])
         .ok()
         .filter(|o| o.status.success())?;
-    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+    let b = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    b.starts_with("refs/remotes/origin/").then_some(b)
 }
 
-/// The branch the main checkout at `repo` is on, like `main`. None when its HEAD is detached.
+/// The branch the main checkout at `repo` is on, as its ref, like `refs/heads/main`. None when its
+/// HEAD is detached. Not `--short`, which says `heads/main` when a tag is named `main` too.
 fn checkout_branch(repo: &Path) -> Option<String> {
-    git(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+    git(repo, &["symbolic-ref", "--quiet", "HEAD"])
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|b| !b.is_empty())
+        .filter(|b| b.starts_with("refs/heads/"))
 }
 
-/// Origin's default branch, like `origin/main`: from `origin/HEAD`, or by asking the remote when a
-/// remote added by hand never set it.
+/// A branch's name from its ref: `main` from `refs/heads/main`.
+fn short_branch(r: &str) -> &str {
+    r.strip_prefix("refs/heads/").unwrap_or(r)
+}
+
+/// Origin's default branch, as its ref, like `refs/remotes/origin/main`: from `origin/HEAD`, or by
+/// asking the remote when a remote added by hand never set it.
 fn default_branch(repo: &Path) -> Option<String> {
     if let Some(b) = local_default_branch(repo) {
         return Some(b);
@@ -710,7 +741,7 @@ fn default_branch(repo: &Path) -> Option<String> {
     let text = String::from_utf8_lossy(&o.stdout);
     let head =
         text.lines().find_map(|l| l.strip_prefix("ref: refs/heads/")?.split_whitespace().next())?;
-    let b = format!("origin/{head}");
+    let b = format!("refs/remotes/origin/{head}");
     ok(&git(repo, &["rev-parse", "--verify", "--quiet", &b])).then_some(b)
 }
 
@@ -1036,6 +1067,66 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A local branch named `origin/main` makes `symbolic-ref --short` say `remotes/origin/main`,
+    /// and `origin/main` ambiguous: the default branch, a new worktree's start (also when
+    /// `origin/HEAD` was never set and the remote is asked) and the removal check still go by
+    /// origin's, and a branch only origin has is still checked out from origin's.
+    #[test]
+    fn a_local_branch_named_like_origins_changes_nothing() {
+        let (root, repo) = scratch_repo("shadowed");
+        let lock = hold(&root);
+        let sh = |dir: &Path, cmd: &str| {
+            assert!(
+                Command::new("sh").arg("-c").arg(cmd).current_dir(dir).status().unwrap().success(),
+                "{cmd}"
+            );
+        };
+        let id = "-c user.name=t -c user.email=t@example.com";
+        // The local branch is a commit ahead of origin's, which nobody pushed.
+        sh(
+            &repo,
+            &format!(
+                "git {id} commit -q --allow-empty -m ahead && git branch origin/main && \
+                 git branch origin/eng-8-remote && git reset -q --hard HEAD~1"
+            ),
+        );
+        let main = DefaultBranch { name: "main".into(), start: "origin/main".into() };
+        assert_eq!(default_branch_of(&repo), main);
+        assert_eq!(local_default_branch(&repo).as_deref(), Some("refs/remotes/origin/main"));
+        let wt =
+            create(&repo, &folder_path(BESIDE, &repo, "ENG-1"), "ENG-1", None, false).unwrap().path;
+        let head = |dir: &Path, r: &str| {
+            String::from_utf8_lossy(&git(dir, &["rev-parse", r]).unwrap().stdout).to_string()
+        };
+        assert_eq!(head(&wt, "HEAD"), head(&repo, "refs/remotes/origin/main"));
+        let check = removal_check(&repo, &wt, None).unwrap().unwrap();
+        assert_eq!((check.safe(), check.branch.as_deref()), (true, Some("ENG-1")));
+        assert!(remove(&repo, &check, None, &lock).unwrap().starts_with("Removed"));
+        // From git 2.48 a fetch sets `origin/HEAD` again unless told not to; older git ignores
+        // the setting.
+        sh(
+            &repo,
+            "git config remote.origin.followRemoteHEAD never && git remote set-head origin -d",
+        );
+        let asked =
+            create(&repo, &folder_path(BESIDE, &repo, "ENG-2"), "ENG-2", None, false).unwrap().path;
+        assert_eq!(head(&asked, "HEAD"), head(&repo, "refs/remotes/origin/main"));
+        assert!(local_default_branch(&repo).is_none(), "the remote was asked");
+        let tracking =
+            create(&repo, &folder_path(BESIDE, &repo, "eng-8"), "eng-8-remote", None, false)
+                .unwrap()
+                .path;
+        assert_eq!(head(&tracking, "HEAD"), head(&repo, "refs/remotes/origin/eng-8-remote"));
+        let config = |key: &str| {
+            String::from_utf8_lossy(&git(&repo, &["config", key]).unwrap().stdout)
+                .trim()
+                .to_string()
+        };
+        assert_eq!(config("branch.eng-8-remote.remote"), "origin");
+        assert_eq!(config("branch.eng-8-remote.merge"), "refs/heads/eng-8-remote");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn creates_worktrees() {
         let (root, repo) = scratch_repo("create");
@@ -1116,9 +1207,80 @@ mod tests {
         assert!(ok(&git(&repo, &["worktree", "lock", &folder.to_string_lossy()])));
         std::fs::remove_dir_all(&folder).unwrap();
         let e = create(&repo, &folder, "ENG-52-fix-login", None, false).unwrap_err();
-        assert!(e.contains("locked worktree; unlock it with git -C"), "{e}");
+        let (r, f) = (repo.to_str().unwrap(), folder.to_str().unwrap());
+        assert_eq!(
+            e,
+            format!(
+                "git keeps {} as a locked worktree; unlock it with git -C {} worktree unlock {}",
+                untrusted::path(&folder),
+                resume::quote(r),
+                resume::quote(f)
+            )
+        );
         assert!(!folder.exists());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A folder's name is shown as it is, two spaces and all, with only a hidden character
+    /// escaped; a command to copy is given only when it would name the real folder.
+    #[test]
+    fn names_a_folder_as_it_is_called() {
+        let (root, repo) = scratch_repo("odd-folder");
+        let lock = hold(&root);
+        let spaced = root.join("acme  ENG-1\u{a0}x");
+        // A zero-width space: git lists the folder, which it can't for one with a line break.
+        let odd = root.join("acme ENG-2\u{200b}x");
+        let made = create(&repo, &spaced, "ENG-1", None, false).unwrap().path;
+        let check = removal_check(&repo, &made, None).unwrap().unwrap();
+        let removed = remove(&repo, &check, None, &lock).unwrap();
+        assert!(removed.starts_with(&format!("Removed {}", spaced.display())), "{removed}");
+        let made = create(&repo, &odd, "ENG-2", None, false).unwrap().path;
+        let check = removal_check(&repo, &made, None).unwrap().unwrap();
+        let removed = remove(&repo, &check, None, &lock).unwrap();
+        let escaped = format!("Removed {}/acme ENG-2\\u{{200b}}x", root.display());
+        assert!(removed.starts_with(&escaped), "{removed}");
+
+        // Locked and gone: the command can't name the folder, so it names the repository and how
+        // to find the folder there.
+        create(&repo, &odd, "ENG-2", None, false).unwrap();
+        assert!(ok(&git(&repo, &["worktree", "lock", &odd.to_string_lossy()])));
+        std::fs::remove_dir_all(&odd).unwrap();
+        let e = create(&repo, &odd, "ENG-2", None, false).unwrap_err();
+        let r = resume::quote(repo.to_str().unwrap());
+        assert!(
+            e.ends_with(&format!(
+                "as a locked worktree; unlock it with git -C {r} worktree unlock FOLDER, taking \
+                 FOLDER from git -C {r} worktree list"
+            )),
+            "{e}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_command_to_copy_names_the_real_folders() {
+        let (repo, folder) = (Path::new("/src/My  Projects/acme"), Path::new("/src/acme-ENG-1"));
+        assert_eq!(
+            git_to_copy(repo, "worktree unlock", folder, "unlock it"),
+            "unlock it with git -C '/src/My  Projects/acme' worktree unlock /src/acme-ENG-1"
+        );
+        let hidden = Path::new("/src/acme\u{202e}1-GNE");
+        assert_eq!(
+            git_to_copy(repo, "worktree remove --force --force", hidden, "remove it"),
+            "remove it with git -C '/src/My  Projects/acme' worktree remove --force --force \
+             FOLDER, taking FOLDER from git -C '/src/My  Projects/acme' worktree list"
+        );
+        // A backslash: fish reads it as an escape even in single quotes.
+        for (repo, folder) in [(Path::new("/src/a\\b"), folder), (hidden, folder)] {
+            assert_eq!(
+                git_to_copy(repo, "worktree unlock", folder, "unlock it"),
+                "unlock it with git worktree unlock FOLDER in the repository, taking FOLDER \
+                 from git worktree list"
+            );
+        }
+        let slashed = git_to_copy(repo, "worktree unlock", Path::new("/src/acme\\"), "unlock it");
+        let taking = "FOLDER, taking FOLDER from git -C '/src/My  Projects/acme' worktree list";
+        assert!(slashed.ends_with(taking), "{slashed}");
     }
 
     #[test]
@@ -1216,11 +1378,42 @@ mod tests {
         assert!(remove(&repo, &merged, None, &lock).unwrap().starts_with("Removed"));
         assert!(!ok(&git(&repo, &["rev-parse", "--verify", "--quiet", "refs/heads/ENG-2"])));
 
-        // A detached main checkout is on no branch to check against: everything counts.
+        // A detached main checkout is on no branch: the other branches count instead, main among
+        // them, while the worktree's own doesn't.
         let detached = add("ENG-3");
         sh(&repo, "git checkout -q --detach");
         let check = removal_check(&repo, &detached, None).unwrap().unwrap();
-        assert_eq!(check.problems, ["2 commits on no remote or branch"]);
+        assert_eq!((check.safe(), check.branch.as_deref()), (true, None));
+        sh(&detached, &format!("git {id} commit -q --allow-empty -m work"));
+        let check = removal_check(&repo, &detached, None).unwrap().unwrap();
+        assert_eq!(check.problems, ["1 commit on no other branch (no remote)"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A tag named like the main checkout's branch makes `symbolic-ref --short` say `heads/main`:
+    /// the check and the default branch still find `main`.
+    #[test]
+    fn without_a_remote_a_tag_named_like_the_branch_changes_nothing() {
+        let (root, repo) = scratch_repo("tagged");
+        let id = "-c user.name=t -c user.email=t@example.com";
+        let sh = |dir: &Path, cmd: &str| {
+            assert!(
+                Command::new("sh").arg("-c").arg(cmd).current_dir(dir).status().unwrap().success(),
+                "{cmd}"
+            );
+        };
+        sh(&repo, "git remote remove origin && git tag main");
+        let wt =
+            create(&repo, &folder_path(BESIDE, &repo, "ENG-1"), "ENG-1", None, false).unwrap().path;
+        let check = removal_check(&repo, &wt, None).unwrap().unwrap();
+        assert_eq!((check.safe(), check.branch.as_deref()), (true, Some("ENG-1")));
+        sh(&wt, &format!("git {id} commit -q --allow-empty -m work"));
+        let check = removal_check(&repo, &wt, None).unwrap().unwrap();
+        assert_eq!(check.problems, ["1 commit not on main (no remote)"]);
+        assert_eq!(
+            default_branch_of(&repo),
+            DefaultBranch { name: "main".into(), start: "HEAD (main): no remote".into() }
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
