@@ -1,6 +1,9 @@
 //! The sidebar: the projects, their cards, and the list's scrolling.
 
-use super::{accent, dim, new_total, pr_spans, selection_bg, sidebar_badge, state_badge, yellow};
+use super::{
+    accent, dim, new_total, pr_spans, selection_bg, sidebar_badge, state_badge, working_glyph,
+    yellow,
+};
 use crate::app::{App, Hit, Mode, Piece, TicketView};
 use crate::keys::prefix;
 use crate::untrusted;
@@ -48,6 +51,37 @@ struct SidebarRow {
     /// The row's ticket needs the user, or it's a folded project's header with one that does: an
     /// edge row hiding it shows ●.
     attention: bool,
+    /// Likewise for a session that's working: an edge row hiding it shows the spinner, unless
+    /// one it hides needs the user.
+    working: bool,
+}
+
+/// What a row standing for sessions out of sight (a folded project's header, an edge row of the
+/// sidebar or the find picker) ends with: ● when one needs the user, which matters more, else the
+/// working cards' spinner when one is working.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Mark {
+    Attention,
+    Working,
+}
+
+impl Mark {
+    pub(super) fn of(attention: bool, working: bool) -> Option<Mark> {
+        if attention {
+            Some(Mark::Attention)
+        } else if working {
+            Some(Mark::Working)
+        } else {
+            None
+        }
+    }
+
+    fn span(self) -> Span<'static> {
+        match self {
+            Mark::Attention => Span::styled("●", Style::new().fg(yellow()).bold()),
+            Mark::Working => working_glyph(),
+        }
+    }
 }
 
 pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
@@ -110,22 +144,24 @@ pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
     let top = scroll.top;
     let (first, end) = shown_rows(top, rows.len(), view_h);
 
-    // What an edge row stands for: the entries hidden past it, and whether one needs the user.
+    // What an edge row stands for: the entries hidden past it, and whether one needs the user or
+    // is working.
     let hidden = |rows: &[SidebarRow]| {
         let mut entries: Vec<Hit> = rows.iter().filter(|r| r.entry).filter_map(|r| r.hit).collect();
         entries.dedup();
-        (entries.len(), rows.iter().any(|r| r.attention))
+        let mark = Mark::of(rows.iter().any(|r| r.attention), rows.iter().any(|r| r.working));
+        (entries.len(), mark)
     };
     let above = (first > 0).then(|| hidden(&rows[..first]));
     let below = (end < rows.len()).then(|| hidden(&rows[end..]));
     let sel_bg = Style::new().bg(selection_bg());
     let bottom = view.bottom();
     let mut y = view.y;
-    if let Some((n, attention)) = above
+    if let Some((n, mark)) = above
         && y < bottom
     {
         let r = Rect { y, height: 1, ..view };
-        f.render_widget(Paragraph::new(more_line("↑", n, attention, w)), r);
+        f.render_widget(Paragraph::new(more_line("↑", n, mark, w)), r);
         y += 1;
     }
     for row in rows.into_iter().skip(first).take(end - first) {
@@ -147,11 +183,11 @@ pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
         }
         y += 1;
     }
-    if let Some((n, attention)) = below
+    if let Some((n, mark)) = below
         && y < bottom
     {
         let r = Rect { y, height: 1, ..view };
-        f.render_widget(Paragraph::new(more_line("↓", n, attention, w)), r);
+        f.render_widget(Paragraph::new(more_line("↓", n, mark, w)), r);
     }
     // The line a dragged card would land on, from the hits just made.
     app.retarget();
@@ -234,6 +270,7 @@ fn sidebar_rows(
         selected: false,
         entry: false,
         attention: false,
+        working: false,
     };
     let blank = || plain(Line::default());
     // Every project shows folded while one is moved, so each step passes one project.
@@ -253,12 +290,17 @@ fn sidebar_rows(
             }
         }
         let folded = (proj.collapsed || all_folded) && narrowed.is_none();
-        // Group header: ▾ name   (folded: ▸ name (3) ……… ●)
+        // Group header: ▾ name   (folded: ▸ name (3) ……… ●, or the spinner)
         let arrow = if folded { "▸ " } else { "▾ " };
         let count = if folded { format!(" ({})", members.len()) } else { String::new() };
         let waiting = folded && members.iter().any(|&i| app.tickets[i].needs_attention());
-        // The ● ends one column from the edge, where the cards' badges end.
-        let room = w.saturating_sub(2 + width(&count) + if waiting { 3 } else { 0 });
+        let working = folded && members.iter().any(|&i| app.tickets[i].working());
+        let mark = Mark::of(waiting, working);
+        // The mark ends one column from the edge, where the cards' badges end. A folded header
+        // with sessions keeps its columns while it shows no mark, so the name stays put as they
+        // start and stop; one with none can't show a mark.
+        let keep = folded && !members.is_empty();
+        let room = w.saturating_sub(2 + width(&count) + if keep { 3 } else { 0 });
         let name_style = if held(p) { dim() } else { Style::new().bold() };
         let name = truncate(&proj.name, room);
         let used = 2 + width(&name) + width(&count);
@@ -267,9 +309,9 @@ fn sidebar_rows(
             Span::styled(name, name_style),
             Span::styled(count.clone(), dim()),
         ];
-        if waiting {
+        if let Some(mark) = mark {
             header.push(Span::raw(" ".repeat(w.saturating_sub(used + 2).max(1))));
-            header.push(Span::styled("●", Style::new().fg(yellow()).bold()));
+            header.push(mark.span());
         }
         rows.push(SidebarRow {
             line: Line::from(header),
@@ -278,6 +320,7 @@ fn sidebar_rows(
             selected: all_folded && mine == Some(p) && app.dragged().is_none(),
             entry: folded,
             attention: waiting,
+            working,
         });
         if folded {
             rows.push(blank());
@@ -380,7 +423,7 @@ fn sidebar_rows(
                     lines.push(Line::from(pr));
                 }
             }
-            let attention = tv.needs_attention();
+            let (attention, working) = (tv.needs_attention(), tv.working());
             // The card being dragged stays where it is, dimmed.
             let lifted =
                 matches!(app.dragged(), Some(Piece::Card((repo, key))) if tv.t.is(repo, key));
@@ -390,7 +433,14 @@ fn sidebar_rows(
                         span.style = span.style.fg(Color::DarkGray).add_modifier(Modifier::DIM);
                     }
                 }
-                SidebarRow { line, hit: Some(Hit::Ticket(i)), selected, entry: true, attention }
+                SidebarRow {
+                    line,
+                    hit: Some(Hit::Ticket(i)),
+                    selected,
+                    entry: true,
+                    attention,
+                    working,
+                }
             }));
             if !collapsed {
                 rows.push(blank());
@@ -460,15 +510,20 @@ pub(super) fn scroll_to_show(
 }
 
 /// An edge row where the list goes on past the view: how many entries (cards, folded projects)
-/// are hidden there, the arrow alone when only an open project's header is, with ● when one of
-/// them needs the user.
-pub(super) fn more_line(arrow: &str, entries: usize, attention: bool, w: usize) -> Line<'static> {
+/// are hidden there, the arrow alone when only an open project's header is, with `mark` for what
+/// they hide.
+pub(super) fn more_line(
+    arrow: &str,
+    entries: usize,
+    mark: Option<Mark>,
+    w: usize,
+) -> Line<'static> {
     let text = if entries > 0 { format!(" {arrow} {entries} more") } else { format!(" {arrow}") };
     let used = width(&text);
     let mut spans = vec![Span::styled(text, dim())];
-    if attention {
+    if let Some(mark) = mark {
         spans.push(Span::raw(" ".repeat(w.saturating_sub(used + 2).max(1))));
-        spans.push(Span::styled("●", Style::new().fg(yellow()).bold()));
+        spans.push(mark.span());
     }
     Line::from(spans)
 }
@@ -509,6 +564,35 @@ mod tests {
                 prop_assert!(line_width(&row.line) <= 29, "{:?}", row.line);
             }
         }
+    }
+
+    /// notes is folded: its header's name is cut the same whether its session needs you, is
+    /// working or is idle, so it never moves as turns start and stop. In the folded sidebar,
+    /// where it's cut.
+    #[test]
+    fn a_folded_headers_name_stays_put_as_its_mark_comes_and_goes() {
+        use crate::app::AgentState;
+        let mut app = acme_app();
+        let i = app.tickets.iter().position(|tv| tv.t.key == "notes-writer").unwrap();
+        // The name as drawn, and the mark after it.
+        let header = |app: &App| {
+            let rows = sidebar_rows(app, 12, true, None);
+            let notes = rows.iter().find(|r| r.line.to_string().starts_with("▸ no")).unwrap();
+            let name: String = notes.line.spans[..3].iter().map(|s| s.content.as_ref()).collect();
+            let mark = notes.line.spans.get(4).map(|s| s.content.to_string());
+            (name, mark)
+        };
+        let spins = |mark: &Option<String>| {
+            mark.as_deref().is_some_and(|m| crate::ui::SPINNER.contains(&m))
+        };
+        app.tickets[i].status.state = AgentState::Needs;
+        let (name, mark) = header(&app);
+        assert_eq!((name.as_str(), mark.as_deref()), ("▸ no… (1)", Some("●")));
+        app.tickets[i].status.state = AgentState::Working;
+        let (name, mark) = header(&app);
+        assert!(name == "▸ no… (1)" && spins(&mark), "{name} {mark:?}");
+        app.tickets[i].status.state = AgentState::Idle;
+        assert_eq!(header(&app), ("▸ no… (1)".to_string(), None));
     }
 
     #[test]

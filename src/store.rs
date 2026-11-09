@@ -920,7 +920,7 @@ fn resolve_token(source: &str, limit: std::time::Duration) -> Result<String, Str
         let var = var.trim();
         return std::env::var(var).ok().filter(|v| !v.trim().is_empty()).ok_or_else(|| {
             let shell = std::env::var("SHELL").unwrap_or_default();
-            unset(var, &shell, cfg!(target_os = "macos"))
+            unset(var, &shell, bash_file(cfg!(target_os = "macos"), &home()))
         });
     }
     if let Some(name) = crate::keychain::name_of(source) {
@@ -957,11 +957,30 @@ const SEE_GUIDE: &str = "see Storing a token in taskman's guide";
 /// Where a variable a token needs wasn't set, in that error; the title form stops there.
 pub(crate) const NOT_IN_THE_SHELL: &str = " in the shell taskman started from";
 
-/// Why the variable `var` gave no token, and what to do: set it where `shell` reads it at start,
-/// then start taskman from a new terminal, which has it. On macOS (`mac`), Terminal starts bash as
-/// a login shell, which reads ~/.bash_profile and not ~/.bashrc.
-fn unset(var: &str, shell: &str, mac: bool) -> String {
-    let bash = if mac { "~/.bash_profile" } else { "~/.bashrc" };
+/// The startup file bash reads in a new terminal. On macOS (`mac`), Terminal starts it as a login
+/// shell, which reads, as bash's manual puts it, the first of ~/.bash_profile, ~/.bash_login and
+/// ~/.profile in `home` that exists and is readable, and not ~/.bashrc: adding to a
+/// ~/.bash_profile that isn't there would make it, and bash would stop reading an existing
+/// ~/.profile.
+fn bash_file(mac: bool, home: &Path) -> &'static str {
+    if !mac {
+        return "~/.bashrc";
+    }
+    let readable = |f: &&str| {
+        let path = home.join(f);
+        path.is_file() && std::fs::File::open(&path).is_ok()
+    };
+    let read = [".bash_profile", ".bash_login", ".profile"].into_iter().find(readable);
+    match read {
+        Some(".bash_login") => "~/.bash_login",
+        Some(".profile") => "~/.profile",
+        _ => "~/.bash_profile",
+    }
+}
+
+/// Why the variable `var` gave no token, and what to do: set it where `shell` reads it at start
+/// (`bash`, `bash_file`'s, for bash), then start taskman from a new terminal, which has it.
+fn unset(var: &str, shell: &str, bash: &str) -> String {
     let file = match shell.rsplit('/').next() {
         Some("zsh") => "~/.zshrc".to_string(),
         Some("bash") => bash.to_string(),
@@ -1757,21 +1776,50 @@ mod tests {
         assert!(raw.contains("env:VAR or cmd:COMMAND") && !raw.contains("lin_api_raw"), "{raw}");
     }
 
+    /// Terminal on macOS starts bash as a login shell, which skips ~/.bashrc and reads the first
+    /// of its login files there is; a new ~/.bash_profile would hide ~/.profile.
+    #[test]
+    fn bash_on_macos_is_told_the_file_it_reads() {
+        let home = scratch("bash-home");
+        assert_eq!(bash_file(false, &home), "~/.bashrc");
+        assert_eq!(bash_file(true, &home), "~/.bash_profile", "none yet");
+        std::fs::write(home.join(".profile"), "").unwrap();
+        assert_eq!(bash_file(true, &home), "~/.profile");
+        assert_eq!(bash_file(false, &home), "~/.bashrc");
+        std::fs::write(home.join(".bash_login"), "").unwrap();
+        assert_eq!(bash_file(true, &home), "~/.bash_login");
+        // One that can't be read is passed over, as the manual says (unless run as root, which
+        // can read anything).
+        use std::os::unix::fs::PermissionsExt;
+        let profile = home.join(".bash_profile");
+        std::fs::write(&profile, "").unwrap();
+        std::fs::set_permissions(&profile, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // SAFETY: geteuid only returns this process's effective user id.
+        if unsafe { libc::geteuid() } != 0 {
+            assert_eq!(bash_file(true, &home), "~/.bash_login");
+        }
+        std::fs::set_permissions(&profile, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(bash_file(true, &home), "~/.bash_profile");
+        // A folder by that name isn't one.
+        std::fs::remove_file(&profile).unwrap();
+        std::fs::create_dir(&profile).unwrap();
+        assert_eq!(bash_file(true, &home), "~/.bash_login");
+    }
+
     #[test]
     fn an_unset_variable_says_where_to_set_it() {
-        let e = unset("JIRA_API_TOKEN", "/bin/zsh", false);
+        let e = unset("JIRA_API_TOKEN", "/bin/zsh", "~/.bashrc");
         assert_eq!(
             e,
             "JIRA_API_TOKEN isn't set in the shell taskman started from: add export JIRA_API_TOKEN=… to ~/.zshrc, then open a new terminal and start taskman there"
         );
-        assert_eq!(unset("JIRA_API_TOKEN", "/bin/zsh", true), e);
-        // Terminal on macOS starts bash as a login shell, which skips ~/.bashrc.
-        assert!(unset("X", "/bin/bash", true).contains("export X=… to ~/.bash_profile,"));
-        assert!(unset("X", "/usr/bin/bash", false).contains("export X=… to ~/.bashrc,"));
+        assert_eq!(unset("JIRA_API_TOKEN", "/bin/zsh", "~/.bash_profile"), e);
+        assert!(unset("X", "/bin/bash", "~/.profile").contains("export X=… to ~/.profile,"));
+        assert!(unset("X", "/usr/bin/bash", "~/.bashrc").contains("export X=… to ~/.bashrc,"));
         let other = "to your shell's startup file (~/.zshrc for zsh, ~/.bash_profile for bash),";
-        assert!(unset("X", "/usr/local/bin/fish", true).contains(other));
+        assert!(unset("X", "/usr/local/bin/fish", "~/.bash_profile").contains(other));
         let other = "to your shell's startup file (~/.zshrc for zsh, ~/.bashrc for bash),";
-        assert!(unset("X", "", false).contains(other));
+        assert!(unset("X", "", "~/.bashrc").contains(other));
         let read = resolve_token("env:TASKMAN_TEST_UNSET_TOKEN", std::time::Duration::from_secs(1));
         assert!(read.unwrap_err().starts_with("TASKMAN_TEST_UNSET_TOKEN isn't set"));
     }

@@ -275,7 +275,7 @@ impl JiraConfig {
             ureq::Error::StatusCode(404) if !key.is_empty() => {
                 FetchError::NotFound(format!("{key} not found, or not visible to this account"))
             }
-            other => tracker::request_failed(&other, "Jira", &self.base),
+            other => tracker::request_failed(&other, "Jira", &self.base, self.agent.timeout()),
         }
     }
 
@@ -701,7 +701,7 @@ fn walk(node: &Value, out: &mut String, depth: usize) {
 mod tests {
     use super::*;
     use crate::replay;
-    use crate::tracker::FetchError::{Auth, NotFound, Other, Unreachable};
+    use crate::tracker::FetchError::{Auth, NotFound, Other, Server, Unreachable};
     use crate::tracker::{Client, Text};
     use proptest::prelude::*;
     use serde_json::json;
@@ -812,7 +812,7 @@ mod tests {
         let rejected = Auth("Jira rejected the credentials (check the email and API token)".into());
         assert_eq!(fetch(401), rejected);
         assert_eq!(fetch(403), rejected);
-        assert_eq!(fetch(500), Other("Jira failed on its side (HTTP 500); try again later".into()));
+        assert_eq!(fetch(500), Server("Jira failed on its side (HTTP 500)".into()));
         // The comments request fails after the issue's.
         let server = replay::serve(vec![
             (200, include_str!("../tests/fixtures/jira/issue-many-comments.json")),
@@ -820,7 +820,7 @@ mod tests {
         ]);
         assert_eq!(
             client(&server).fetch("ENG-53", Text::Plain).unwrap_err(),
-            Other("Jira failed on its side (HTTP 503); try again later".into())
+            Server("Jira failed on its side (HTTP 503)".into())
         );
         // Not JSON, from a proxy say.
         let server = replay::serve(vec![(200, "<html>sign in</html>")]);
@@ -853,8 +853,9 @@ mod tests {
             JiraConfig { agent: quick, ..JiraConfig::new(&server.url, "ana@example.com", "t") };
         let host = server.url.trim_start_matches("http://");
         let e = super::fetch(&cfg, "ENG-52").unwrap_err();
+        // The limit the request had, not the usual one.
         let said =
-            format!("{host} didn't answer within 20s (a slow network, or Jira is having trouble)");
+            format!("{host} didn't answer within 0.3s (a slow network, or Jira is having trouble)");
         assert_eq!(e, Unreachable(said));
         // The TUI tries again by itself, and says so.
         assert!(e.repeated().ends_with("; taskman tries again on the next refresh"));
