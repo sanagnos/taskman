@@ -607,9 +607,11 @@ fn fit_reason(clause: &str, fix_at: Option<usize>, width: usize) -> String {
     }
     if let Some(at) = fix_at {
         let (what, fix) = clause.split_at(at);
-        let room = width.saturating_sub(util::width(fix));
-        let short = format!("{}{fix}", util::truncate(what, room));
-        if room > 1 && util::width(&short) <= width {
+        let what = util::truncate(what, width.saturating_sub(util::width(fix)));
+        // Some of what's before it, not just the `…`, however wide its first character.
+        if !what.is_empty() && what != "…" {
+            let short = format!("{what}{fix}");
+            debug_assert!(util::width(&short) <= width, "{short}");
             return short;
         }
     }
@@ -617,25 +619,31 @@ fn fit_reason(clause: &str, fix_at: Option<usize>, width: usize) -> String {
 }
 
 /// `text` as a ticket's own title (`Ticket::label`): on one line, without what hides text from a
-/// reader, and cut to `LABEL_WIDTH` and `LABEL_BYTES`. None when that leaves nothing to see. A
-/// session can write it, so it counts as untrusted however it came.
+/// reader, and cut to `LABEL_WIDTH` and `LABEL_BYTES`. None when what's left has nothing to see:
+/// all of it, or all the cut leaves, is blank (`util::blank`). A session can write it, so it
+/// counts as untrusted however it came.
 pub(super) fn clean_label(text: &str) -> Option<String> {
-    let fits = |l: &str| util::width(l) <= LABEL_WIDTH && l.len() <= LABEL_BYTES;
     let label = untrusted::line(text);
-    // Cleaned again after a cut, which can leave a joiner or a space at its end, and measured
-    // again: the limits are for what's saved, so that saving it again changes nothing.
-    let label = if fits(&label) { label } else { untrusted::line(&cut_label(&label)) };
-    Some(label).filter(|l| fits(l) && !util::blank(l))
+    let label = if label_fits(&label) { label } else { cut_label(&label) };
+    Some(label).filter(|l| label_fits(l) && !util::blank(l))
 }
 
-/// `label` cut to `LABEL_WIDTH` and `LABEL_BYTES`, ended with `…` where the columns ran out. In
-/// whole graphemes, never at a character's edge: a cut between an emoji and its U+FE0E would
-/// leave it a column wider (⌚︎ is one column, ⌚ two). A first grapheme with more bytes than
-/// that, all combining marks, is the exception, cut inside rather than dropped.
+/// Whether `label`, cleaned, is within both limits.
+fn label_fits(label: &str) -> bool {
+    util::width(label) <= LABEL_WIDTH && label.len() <= LABEL_BYTES
+}
+
+/// `label`, a clean line too wide or too long, cut to fit and cleaned again (a cut can leave a
+/// joiner or a space at its end), ended with `…` where the columns ran out. In whole graphemes
+/// where it can be: a cut between an emoji and its U+FE0E would leave it a column wider (⌚︎ is
+/// one column, ⌚ two), so a title saved again would change. A first grapheme that doesn't fit
+/// on its own is cut inside instead, rather than lose the title: a run of Hangul jamo or of
+/// prepended marks, a long chain of joined emoji, a letter with hundreds of combining marks.
 fn cut_label(label: &str) -> String {
     use unicode_segmentation::UnicodeSegmentation;
     let more = if util::width(label) > LABEL_WIDTH { "…" } else { "" };
     let (cols, bytes) = (LABEL_WIDTH - util::width(more), LABEL_BYTES - more.len());
+    let cut = |end: usize| untrusted::line(&format!("{}{more}", &label[..end]));
     let (mut used, mut end) = (0, 0);
     for (at, g) in label.grapheme_indices(true) {
         used += util::width(g);
@@ -644,13 +652,23 @@ fn cut_label(label: &str) -> String {
         }
         end = at + g.len();
     }
-    if end == 0 {
-        end = bytes.min(label.len());
-        while !label.is_char_boundary(end) {
-            end -= 1;
-        }
+    if end > 0 {
+        return cut(end);
     }
-    format!("{}{more}", &label[..end])
+    // Inside the first grapheme, where columns don't add up character by character: the last
+    // character's edge where what's saved fits, never before a selector. A few hundred tries at
+    // most, as the bytes allowed bound them.
+    let selector = ['\u{fe0e}', '\u{fe0f}'];
+    label
+        .char_indices()
+        .map(|(at, _)| at)
+        .skip(1)
+        .take_while(|&at| at <= bytes)
+        .filter(|&at| !label[at..].starts_with(selector))
+        .map(cut)
+        .filter(|l| label_fits(l))
+        .last()
+        .unwrap_or_default()
 }
 
 /// Whether `id` arrived after `seen` was first filled; nothing is new before the first fetch.
@@ -1004,6 +1022,21 @@ mod tests {
         assert_eq!(label, format!("{before}…"));
         assert_eq!((util::width(&label), label.len()), (LABEL_WIDTH, LABEL_BYTES));
         assert_eq!(clean_label(&label), Some(label));
+        // A first grapheme too wide or too long on its own is cut inside, not lost: Hangul jamo
+        // join into one (two columns each), prepended marks join what follows, and so do emoji
+        // joined by U+200D, whose selectors stay with them.
+        for text in [
+            "\u{1100}".repeat(150),
+            format!("{}x", "\u{600}".repeat(250)),
+            "⌚\u{fe0e}\u{200d}".repeat(100),
+        ] {
+            let label = clean_label(&text).unwrap_or_else(|| panic!("{text:?}"));
+            assert!(label_fits(&label) && text.starts_with(label.trim_end_matches('…')));
+            assert!(!label.ends_with('⌚'), "{label:?}");
+            assert_eq!(clean_label(&label), Some(label));
+        }
+        let jamo = clean_label(&"\u{1100}".repeat(150)).unwrap();
+        assert_eq!(jamo, format!("{}…", "\u{1100}".repeat(99)));
     }
 
     mod labels {
@@ -1013,7 +1046,7 @@ mod tests {
         /// Text that runs past both limits, made of what a cut can change: emoji with their
         /// selectors and joiners, combining marks, wide characters and spaces.
         fn long_label() -> impl Strategy<Value = String> {
-            let parts = [
+            let mut parts = [
                 "x",
                 " ",
                 "日",
@@ -1024,9 +1057,17 @@ mod tests {
                 "👩\u{200d}💻",
                 "👍\u{200d}",
                 "🇬🇷",
-            ];
-            prop::collection::vec(prop::sample::select(parts.to_vec()), 100..400)
-                .prop_map(|v| v.concat())
+            ]
+            .map(String::from)
+            .to_vec();
+            // One grapheme too wide on its own (240 columns), one too long (900 bytes), and a run
+            // that joins what follows.
+            parts.extend([
+                "\u{1100}".repeat(120),
+                "⌚\u{fe0e}\u{200d}".repeat(100),
+                "\u{600}".repeat(50),
+            ]);
+            prop::collection::vec(prop::sample::select(parts), 100..400).prop_map(|v| v.concat())
         }
 
         proptest! {
@@ -1060,7 +1101,10 @@ mod tests {
                 "(\\PC|[\\x00-\\x1f\\u{200b}\\u{202e}\\u{e0001}]){0,300}".boxed(),
                 long_label().boxed(),
             ]) {
-                if let Some(label) = clean_label(&text) {
+                // Lost only when there's nothing to see.
+                let label = clean_label(&text);
+                prop_assert!(label.is_some() || util::blank(&untrusted::line(&text)), "{:?}", text);
+                if let Some(label) = label {
                     prop_assert!(!label.is_empty() && !label.contains(char::is_control));
                     prop_assert!(util::width(&label) <= LABEL_WIDTH);
                     prop_assert!(label.len() <= LABEL_BYTES);
