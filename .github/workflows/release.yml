@@ -10,11 +10,11 @@
 # by hand) and passed:
 #   gh workflow run release.yml --ref v1.2.3
 # A release runs on its tag, started either way: the release job's condition lets nothing else
-# through, and only version tags may deploy to its environment. Started by hand on a tag, it runs
-# the workflow as it is at the tag, as the tag push does (GitHub runs the copy at the ref it's
-# given; the first hand start after this changed is the first to show it). A run for a tag that
-# already has a published release builds nothing and ends green: that's the tag push GitHub
-# delivered late, after the release script had started a run by hand.
+# through, and its environment, once set up, lets only version tags deploy. Started by hand on a
+# tag, it runs the workflow as it is at the tag, as the tag push does (GitHub runs the copy at the
+# ref it's given; the first hand start after this changed is the first to show it). A run for a
+# tag that already has a published release builds nothing and ends green: that's the tag push
+# GitHub delivered late, after the release script had started a run by hand.
 #
 # A dry run builds, runs and checks every binary and archive as a release would, for Cargo.toml's
 # version, and keeps the archives and SHA256SUMS as the run's artifacts; it needs no tag, doesn't
@@ -481,8 +481,9 @@ jobs:
     needs: [version, ci, check]
     # On one line, which the unit test reads as it is: a folded block's lines are all the string's.
     if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/tags/v') && needs.version.outputs.dry_run == 'false' }}
-    # Only version tags may deploy to it (the repository's settings), a guard that doesn't depend on
-    # the condition above being right.
+    # Once set up in the repository's settings to let only version tags deploy, a guard that doesn't
+    # depend on the condition above being right. Until then it guards nothing: GitHub creates a
+    # missing environment on first use, with no rule.
     environment: release
     runs-on: ubuntu-24.04
     timeout-minutes: 15
