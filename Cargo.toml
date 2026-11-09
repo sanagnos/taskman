@@ -100,3 +100,5 @@ proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 # A local TLS server behind a private CA made per run (tests/tls.rs).
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
+# Reads .github/workflows/release.yml in update.rs's tests, which check what its jobs may do.
+yaml-rust2 = { version = "0.13.0", default-features = false }
