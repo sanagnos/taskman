@@ -637,10 +637,11 @@ fn label_fits(label: &str) -> bool {
 /// joiner or a space at its end), ended with `…` where the columns ran out. None when what it
 /// keeps is blank. In whole graphemes where it can be: a cut between an emoji and its U+FE0E
 /// would leave it a column wider (⌚︎ is one column, ⌚ two), so a title saved again would change.
-/// The grapheme at the edge is cut inside instead when it's wider than two columns (a run of
-/// Hangul jamo or of prepended marks, characters drawn side by side), or when it's the first,
-/// rather than lose the title (a long chain of joined emoji, a letter with hundreds of combining
-/// marks). An ordinary one, such as a flag or 👩‍💻, is left out whole.
+/// The grapheme at the edge is cut inside only when it couldn't be shown whole even on its own,
+/// being wider or longer than the limits allow (a run of Hangul jamo or of prepended marks, a long
+/// chain of joined emoji, a letter with hundreds of combining marks), or when nothing visible
+/// comes before it, rather than lose the title. Any other, such as a flag, 🏃‍♂ or a Devanagari
+/// conjunct, is left out whole: cut, it would draw as something else.
 fn cut_label(label: &str) -> Option<String> {
     use unicode_segmentation::UnicodeSegmentation;
     let more = if util::width(label) > LABEL_WIDTH { "…" } else { "" };
@@ -658,7 +659,8 @@ fn cut_label(label: &str) -> Option<String> {
         }
         end = at + g.len();
     }
-    if end > 0 && util::width(edge) <= 2 {
+    let whole = util::width(edge) <= cols && edge.len() <= bytes;
+    if whole && !util::blank(&label[..end]) {
         return cut(end);
     }
     // Inside it, where columns don't add up character by character: the last character's edge
@@ -1024,10 +1026,10 @@ mod tests {
         assert_eq!(label, format!("{before}…"));
         assert_eq!((util::width(&label), label.len()), (LABEL_WIDTH, LABEL_BYTES));
         assert_eq!(clean_label(&label), Some(label));
-        // A grapheme at the edge is cut inside, not lost, when it's the first or wider than two
-        // columns: Hangul jamo join into one (two columns each), prepended marks join what
-        // follows, and so do emoji joined by U+200D, whose selectors stay with them (in the
-        // last, the byte limit falls between ⌚ and its U+FE0E).
+        // A grapheme at the edge is cut inside, not lost, when it couldn't be shown whole or
+        // nothing visible comes before it: Hangul jamo join into one (two columns each),
+        // prepended marks join what follows, and so do emoji joined by U+200D, whose selectors
+        // stay with them (in the last, the byte limit falls between ⌚ and its U+FE0E).
         for text in [
             "\u{1100}".repeat(150),
             format!("Fix {}", "\u{1100}".repeat(150)),
@@ -1043,9 +1045,31 @@ mod tests {
         let jamo = |n| "\u{1100}".repeat(n);
         assert_eq!(clean_label(&jamo(150)), Some(format!("{}…", jamo(99))));
         assert_eq!(clean_label(&format!("Fix {}", jamo(150))), Some(format!("Fix {}…", jamo(97))));
-        // An ordinary one is left out whole, as the column cut always did.
-        let flags = format!("{}🇬🇷", "x".repeat(199));
-        assert_eq!(clean_label(&flags), Some(format!("{}…", "x".repeat(199))));
+        // A direction mark before it is nothing visible, so it's cut inside as if it came first:
+        // this chain fits the bytes on its own (798), but not after the mark.
+        let chain = format!("{}⌚\u{fe0e}", "⌚\u{fe0e}\u{200d}".repeat(88));
+        assert_eq!(chain.len(), LABEL_BYTES - 2);
+        let label = clean_label(&format!("\u{200e}{chain}")).unwrap();
+        assert!(label.starts_with("\u{200e}⌚\u{fe0e}") && label_fits(&label), "{label:?}");
+        assert_eq!(clean_label(&label), Some(label));
+        // One that could be shown whole is left out whole, as the column cut always did, however
+        // wide: cut, a flag, an emoji sequence without its U+FE0F (three columns) or a conjunct
+        // would draw as something else.
+        let x = |n| "x".repeat(n);
+        for edge in ["🇬🇷", "🏃\u{200d}♂", "प्रो", "स्त्री"] {
+            assert_eq!(clean_label(&format!("{}{edge}", x(199))), Some(format!("{}…", x(199))));
+            let kept = format!("{}{edge}{}", x(190), x(20));
+            let label = clean_label(&kept).unwrap();
+            assert!(label.starts_with(&format!("{}{edge}", x(190))), "{label:?}");
+        }
+        // And so is one that runs past the bytes but would fit them on its own: only one that
+        // couldn't is cut inside.
+        let marks = |n| "\u{301}".repeat(n);
+        assert_eq!(clean_label(&format!("{}e{}", x(700), marks(100))), Some(x(700)));
+        assert_eq!(
+            clean_label(&format!("Fix e{}", marks(1000))),
+            Some(format!("Fix e{}", marks(397)))
+        );
         // A cut that keeps nothing to see loses the title, whatever comes after.
         assert_eq!(clean_label(&format!("{}{}", "\u{301}".repeat(1000), "x".repeat(300))), None);
     }
@@ -1112,9 +1136,14 @@ mod tests {
                 "(\\PC|[\\x00-\\x1f\\u{200b}\\u{202e}\\u{e0001}]){0,300}".boxed(),
                 long_label().boxed(),
             ]) {
-                // Lost only when there's nothing to see.
+                // Lost only when there's nothing to see in what the bytes allowed can keep.
                 let label = clean_label(&text);
-                prop_assert!(label.is_some() || util::blank(&untrusted::line(&text)), "{:?}", text);
+                let line = untrusted::line(&text);
+                let mut end = line.len().min(LABEL_BYTES);
+                while !line.is_char_boundary(end) {
+                    end -= 1;
+                }
+                prop_assert!(label.is_some() || util::blank(&line[..end]), "{:?}", text);
                 if let Some(label) = label {
                     prop_assert!(!label.is_empty() && !label.contains(char::is_control));
                     prop_assert!(util::width(&label) <= LABEL_WIDTH);

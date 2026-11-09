@@ -531,6 +531,10 @@ impl App {
         }
         let label = clean_label(text);
         if label.is_none() && !text.is_empty() {
+            // Visible, but not in what fits: hundreds of combining marks ahead of the text.
+            if !util::blank(&untrusted::line(text)) {
+                return Err(format!("{shown}'s title would show nothing once cut to fit"));
+            }
             return Err(format!("{shown}'s title would be empty once cleaned"));
         }
         tv.t.label.clone_from(&label);
