@@ -423,20 +423,16 @@ pub(super) fn take_leftover_status(
 }
 
 /// Removes a closed ticket's status files and the history `ctrl+a v` saved, and its owner file
-/// unless someone holds it: another terminal keeps its claim, so a ticket added again can't start
-/// a second copy, and a close's own hold removes the file as it lets go (`Hold::closing`). While
-/// another terminal or taskman runs the session, its history stays too. Stop its session first.
+/// unless someone holds it (`resume::remove`, under its lock): another terminal keeps its claim, so
+/// a ticket added again can't start a second copy, and a close's own hold removes the file as it
+/// lets go (`Hold::closing`). While another terminal or taskman runs the session, its history
+/// stays too. Stop its session first.
 pub(super) fn remove_status_files(t: &Ticket) {
     let status = store::status_file(&t.repo, &t.key);
     remove_status_at(&status);
     remove_log_at(&status);
-    let owner = resume::owner_file(&t.repo, &t.key);
-    let who = resume::peek(&owner);
-    if !who.elsewhere() {
+    if !resume::remove(&resume::owner_file(&t.repo, &t.key)).elsewhere() {
         let _ = std::fs::remove_file(store::history_file(&t.repo, &t.key));
-    }
-    if matches!(who, resume::Owner::Free | resume::Owner::Back) {
-        let _ = std::fs::remove_file(owner);
     }
 }
 
