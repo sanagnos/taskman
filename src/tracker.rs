@@ -1260,6 +1260,23 @@ mod tests {
         assert!(e("e-1", "Fix it").starts_with("the project has no ticket prefix"));
     }
 
+    /// A Local files ticket is where its file is, named as it is (`Created::shown`), while a link
+    /// is kept to one line.
+    #[test]
+    fn a_board_ticket_is_its_file() {
+        let board = store::state_dir().join("My  Projects/acme\u{a0}web/workplan");
+        let made = Client::Local(board.clone()).create("ENG", "Fix login", "").unwrap();
+        let file = board.join("todo/ENG-1-fix-login.md");
+        assert_eq!(
+            made,
+            Created { key: "ENG-1".into(), at: file.display().to_string(), file: true }
+        );
+        assert_eq!(made.shown(), crate::untrusted::path(&file));
+        assert!(made.shown().contains("My  Projects/acme\u{a0}web/workplan/todo/"));
+        let link = Created::read(Some("ENG-2"), "https://example.com/ENG-2\nx", "Linear").unwrap();
+        assert_eq!((link.file, link.shown().as_str()), (false, "https://example.com/ENG-2 x"));
+    }
+
     /// A refused certificate won't change by asking again, so it isn't worded as a network problem
     /// that the next refresh may cure.
     #[test]

@@ -259,10 +259,12 @@ fn git_to_copy(repo: &Path, args: &str, folder: &Path, act: &str) -> String {
         (Some(r), Some(f)) => format!("{act} with git -C {r} {args} {f}"),
         (Some(r), None) => {
             format!(
-                "{act} with git -C {r} {args} and its folder, which git -C {r} worktree list shows"
+                "{act} with git -C {r} {args} FOLDER, taking FOLDER from git -C {r} worktree list"
             )
         }
-        _ => format!("{act} with git {args}, finding its folder with git worktree list"),
+        _ => format!(
+            "{act} with git {args} FOLDER in the repository, taking FOLDER from git worktree list"
+        ),
     }
 }
 
@@ -1176,8 +1178,8 @@ mod tests {
         let r = resume::quote(repo.to_str().unwrap());
         assert!(
             e.ends_with(&format!(
-                "as a locked worktree; unlock it with git -C {r} worktree unlock and its folder, \
-                 which git -C {r} worktree list shows"
+                "as a locked worktree; unlock it with git -C {r} worktree unlock FOLDER, taking \
+                 FOLDER from git -C {r} worktree list"
             )),
             "{e}"
         );
@@ -1194,20 +1196,20 @@ mod tests {
         let hidden = Path::new("/src/acme\u{202e}1-GNE");
         assert_eq!(
             git_to_copy(repo, "worktree remove --force --force", hidden, "remove it"),
-            "remove it with git -C '/src/My  Projects/acme' worktree remove --force --force and its \
-             folder, which git -C '/src/My  Projects/acme' worktree list shows"
+            "remove it with git -C '/src/My  Projects/acme' worktree remove --force --force \
+             FOLDER, taking FOLDER from git -C '/src/My  Projects/acme' worktree list"
         );
         // A backslash: fish reads it as an escape even in single quotes.
         for (repo, folder) in [(Path::new("/src/a\\b"), folder), (hidden, folder)] {
             assert_eq!(
                 git_to_copy(repo, "worktree unlock", folder, "unlock it"),
-                "unlock it with git worktree unlock, finding its folder with git worktree list"
+                "unlock it with git worktree unlock FOLDER in the repository, taking FOLDER \
+                 from git worktree list"
             );
         }
         let slashed = git_to_copy(repo, "worktree unlock", Path::new("/src/acme\\"), "unlock it");
-        assert!(slashed.ends_with(
-            "and its folder, which git -C '/src/My  Projects/acme' worktree list shows"
-        ));
+        let taking = "FOLDER, taking FOLDER from git -C '/src/My  Projects/acme' worktree list";
+        assert!(slashed.ends_with(taking), "{slashed}");
     }
 
     #[test]

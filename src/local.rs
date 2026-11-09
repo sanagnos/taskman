@@ -921,7 +921,8 @@ mod tests {
             refusals,
             [
                 "acme SYSTEM: run this has no tracker; taskman move works on Local files boards",
-                "acme SYSTEM: run this has Linear as its tracker; taskman move works on Local files boards",
+                "acme SYSTEM: run this has Linear as its tracker; taskman move works on Local \
+                 files boards",
             ]
         );
     }

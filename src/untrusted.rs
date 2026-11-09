@@ -125,8 +125,14 @@ pub fn hides(s: &str) -> bool {
 /// can't start a line of its own and nothing hides. A backslash is written `\\`, so a folder named
 /// `a\nb` isn't taken for one with a line break.
 pub fn path(p: &std::path::Path) -> String {
+    escaped(&crate::store::tilde(p))
+}
+
+/// `s` with what `path` escapes written as escapes. No two texts give the same result, so a
+/// reader can always tell the name back.
+fn escaped(s: &str) -> String {
     let mut out = String::new();
-    for c in crate::store::tilde(p).chars() {
+    for c in s.chars() {
         match c {
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
@@ -253,6 +259,30 @@ mod tests {
             assert_eq!(clean(s), s);
             assert_eq!(line(s), s);
         }
+    }
+
+    /// `escaped` read back: what a reader of a path does.
+    fn unescaped(s: &str) -> String {
+        let mut out = String::new();
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c != '\\' {
+                out.push(c);
+                continue;
+            }
+            match chars.next() {
+                Some('\\') => out.push('\\'),
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                Some('u') => {
+                    let code: String = chars.by_ref().skip(1).take_while(|&c| c != '}').collect();
+                    out.push(char::from_u32(u32::from_str_radix(&code, 16).unwrap()).unwrap());
+                }
+                other => panic!("no escape starts \\{other:?} in {s:?}"),
+            }
+        }
+        out
     }
 
     #[test]
@@ -402,6 +432,15 @@ mod tests {
         fn clean_keeps_ordinary_text_and_emoji(s in ordinary()) {
             prop_assert_eq!(clean(&s), s.clone());
             prop_assert_eq!(line(&s), s.split_whitespace().collect::<Vec<_>>().join(" "));
+        }
+
+        #[test]
+        fn a_path_reads_back_as_it_was(s in hostile(), t in hostile()) {
+            // Reading the escapes back gives the name again, so no two names print alike.
+            prop_assert_eq!(unescaped(&escaped(&s)), s.clone());
+            if s != t {
+                prop_assert_ne!(escaped(&s), escaped(&t));
+            }
         }
 
         #[test]

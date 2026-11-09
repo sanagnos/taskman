@@ -74,11 +74,18 @@ impl Gone {
         }
     }
 
-    /// "ENG-52's folder ~/src/acme-ENG-52 is gone", or the project's, named `project`.
+    /// "ENG-52's folder ~/src/acme-ENG-52 is gone", or the project's, named `project`. The names
+    /// are kept to one line and the folder is shown as it's named (`untrusted::path`).
     pub fn what(self, t: &Ticket, project: &str) -> String {
         match self {
-            Gone::Worktree => format!("{}'s folder {} is gone", t.display(), store::tilde(&t.cwd)),
-            Gone::Project => format!("{project}'s folder {} is gone", store::tilde(&t.repo)),
+            Gone::Worktree => {
+                let (name, folder) = (untrusted::line(t.display()), untrusted::path(&t.cwd));
+                format!("{name}'s folder {folder} is gone")
+            }
+            Gone::Project => {
+                let (name, folder) = (untrusted::line(project), untrusted::path(&t.repo));
+                format!("{name}'s folder {folder} is gone")
+            }
         }
     }
 }
