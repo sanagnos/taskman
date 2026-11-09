@@ -181,8 +181,9 @@ trap - EXIT
 echo "Pushed $tag."
 
 # The tag push should start the Release workflow. If no run for the tag has started within three
-# minutes (GitHub sometimes starts it late, or not at all, for a tag push), start one by hand. A
-# late push's run then finds the tag released and builds nothing.
+# minutes (GitHub sometimes starts it late, or not at all, for a tag push), start one by hand on
+# the tag, where a release has to run. A late push's run then finds the tag released and builds
+# nothing.
 started=""
 for _ in $(seq 1 36); do
   started="$(gh run list -R "$repo" --workflow release.yml --limit 20 --json displayTitle,event \
@@ -196,7 +197,7 @@ elif [ -n "$started" ]; then
   echo "The Release workflow is already running for $tag ($started)."
 else
   echo "The tag push didn't start the Release workflow; starting it by hand for $tag."
-  gh workflow run release.yml -R "$repo" -f tag="$tag"
+  gh workflow run release.yml -R "$repo" --ref "$tag"
 fi
 
 # The push to main should start CI on the release commit, which the Release workflow waits for

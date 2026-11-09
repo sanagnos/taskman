@@ -28,8 +28,8 @@ main() {
   # fall back. REQUIRE_ATTESTATION_FROM in src/update.rs is the same switch.
   require_from=v0.1.0
   # The refs the release workflow may have run from when it signed an attestation, as a regular
-  # expression: a version tag, or main, where release.sh starts it by hand for a tag. SIGNER_REFS in
-  # src/update.rs is the same.
+  # expression: a version tag, or main, where a release started by hand ran before it ran on its
+  # tag. SIGNER_REFS in src/update.rs is the same.
   signer_refs='refs/(tags/v[0-9]+\.[0-9]+\.[0-9]+|heads/main)'
   base="${TASKMAN_RELEASES_URL:-https://github.com/$repo/releases}"
   base="${base%/}"

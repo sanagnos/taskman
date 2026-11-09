@@ -26,8 +26,8 @@ const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(60);
 /// The workflow that builds releases, in the repository: the only signer an attestation may have.
 const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
-/// The refs it may have run from, as a regular expression: a version tag, or main, where
-/// release.sh starts it by hand for a tag. install.sh's `signer_refs` is the same.
+/// The refs it may have run from, as a regular expression: a version tag, or main, where a release
+/// started by hand ran before it ran on its tag. install.sh's `signer_refs` is the same.
 const SIGNER_REFS: &str = r"refs/(tags/v[0-9]+\.[0-9]+\.[0-9]+|heads/main)";
 /// The first release that must have an attestation: one without is refused rather than installed
 /// on its checksum, as a replaced archive would have none. v0.1.0 is the first built on the public
@@ -1141,6 +1141,7 @@ fn work(mut state: State, check: bool, exe: Option<PathBuf>, failed: &[String]) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use yaml_rust2::{Yaml, YamlLoader};
 
     #[test]
     fn parses_arguments() {
@@ -1217,6 +1218,182 @@ mod tests {
         assert!(released[build..].starts_with(
             "- run: cargo build --profile dist --locked --target \"$TARGET\"\n        env:\n          TASKMAN_RELEASE_BUILD: \"1\"\n"
         ));
+    }
+
+    /// Every string in a YAML node, keys included.
+    fn yaml_strings<'a>(node: &'a Yaml, out: &mut Vec<&'a str>) {
+        match node {
+            Yaml::String(s) => out.push(s),
+            Yaml::Array(items) => items.iter().for_each(|item| yaml_strings(item, out)),
+            Yaml::Hash(map) => map.iter().for_each(|(key, value)| {
+                yaml_strings(key, out);
+                yaml_strings(value, out);
+            }),
+            _ => {}
+        }
+    }
+
+    /// Whether an expression (`${{ … }}`) in `text` reads `secrets`, in any case, as `secrets.X`,
+    /// `secrets['X']` or `toJSON(secrets)`. It looks from the first `${{` to the last `}}`, so a
+    /// `}}` inside a string in the expression can't end it early.
+    fn reads_secrets(text: &str) -> bool {
+        let Some(start) = text.find("${{") else { return false };
+        let end = text.rfind("}}").filter(|&end| end > start).map_or(text.len(), |end| end + 2);
+        let expressions = text[start..end].to_ascii_lowercase();
+        let word = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
+        expressions.match_indices("secrets").any(|(at, _)| {
+            !expressions[..at].ends_with(word) && !expressions[at + 7..].starts_with(word)
+        })
+    }
+
+    /// Whether a YAML node has a merge key (`<<`) anywhere. The parser reads one as a plain key, so
+    /// what it merges in would go unchecked.
+    fn has_merge_key(node: &Yaml) -> bool {
+        match node {
+            Yaml::Array(items) => items.iter().any(has_merge_key),
+            Yaml::Hash(map) => map.iter().any(|(key, value)| {
+                key.as_str() == Some("<<") || has_merge_key(key) || has_merge_key(value)
+            }),
+            _ => false,
+        }
+    }
+
+    /// The keys of a YAML map, as strings; anything else in a key's place is an error.
+    fn yaml_keys(map: &Yaml) -> Vec<&str> {
+        let map = map.as_hash().unwrap_or_else(|| panic!("not a map: {map:?}"));
+        map.keys().map(|k| k.as_str().unwrap_or_else(|| panic!("a key: {k:?}"))).collect()
+    }
+
+    /// Only a run on a version tag may publish. A pull request's dry run runs release.yml as the
+    /// pull request has it, and Dependabot's get the write permissions the jobs ask for, so the
+    /// release job's condition must name what may publish, and no other job may write or read a
+    /// secret. The workflow is read with a YAML parser, which resolves anchors and aliases (an
+    /// alias is a copy of what it names) and refuses a key twice, so the checks see the values
+    /// GitHub would. This keeps an honest edit to the workflow within those lines; it isn't a
+    /// guard, as a pull request can change the test too.
+    #[test]
+    fn only_a_version_tag_publishes() {
+        let docs = YamlLoader::load_from_str(include_str!("../.github/workflows/release.yml"));
+        let [workflow] = &docs.expect("release.yml is YAML")[..] else { panic!("one document") };
+        for key in yaml_keys(workflow) {
+            let known =
+                ["name", "run-name", "on", "permissions", "concurrency", "defaults", "jobs"];
+            assert!(known.contains(&key), "release.yml's {key}");
+        }
+        assert!(!has_merge_key(workflow), "release.yml has a merge key (<<)");
+        // Nothing can write but what a job asks for.
+        assert_eq!(workflow["permissions"], Yaml::Hash(Default::default()));
+        // pull_request_target, workflow_run or issue_comment would run with a write token on what
+        // others wrote.
+        let mut events = yaml_keys(&workflow["on"]);
+        events.sort_unstable();
+        assert_eq!(events, ["pull_request", "push", "workflow_dispatch"]);
+
+        let jobs = workflow["jobs"].as_hash().expect("jobs");
+        // GitHub's keys for a job, so `Permissions:` or `Secrets:` can't stand in for one.
+        let job_keys = [
+            "name",
+            "needs",
+            "if",
+            "runs-on",
+            "permissions",
+            "environment",
+            "concurrency",
+            "outputs",
+            "env",
+            "defaults",
+            "steps",
+            "timeout-minutes",
+            "strategy",
+            "continue-on-error",
+            "container",
+            "services",
+            "uses",
+            "with",
+            "secrets",
+        ];
+        for (name, job) in jobs {
+            for key in yaml_keys(job) {
+                assert!(job_keys.contains(&key), "{name:?} has {key}:, which isn't a job's key");
+            }
+        }
+        let release = Yaml::String("release".into());
+        let job = &jobs[&release];
+        assert_eq!(
+            job["if"].as_str(),
+            Some(
+                "${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') \
+                 && startsWith(github.ref, 'refs/tags/v') \
+                 && needs.version.outputs.dry_run == 'false' }}"
+            )
+        );
+        let environment = &job["environment"];
+        assert!(
+            environment.as_str() == Some("release")
+                || (yaml_keys(environment) == ["name"]
+                    && environment["name"].as_str() == Some("release")),
+            "{environment:?}"
+        );
+
+        // Everything but the release job, its keys included: the other jobs, run-name, concurrency.
+        let mut strings = vec![];
+        for (key, value) in workflow.as_hash().unwrap() {
+            if key.as_str() != Some("jobs") {
+                yaml_strings(key, &mut strings);
+                yaml_strings(value, &mut strings);
+            }
+        }
+        for (name, job) in jobs.iter().filter(|(name, _)| **name != release) {
+            let name = name.as_str().expect("a job's name");
+            yaml_strings(job, &mut strings);
+            let keys = yaml_keys(job);
+            assert!(!keys.contains(&"environment"), "{name} has an environment");
+            assert!(!keys.contains(&"secrets"), "{name} passes secrets on");
+            // Its permissions, if any, read or none: `{}`, `read-all`, or `scope: read|none`.
+            let permissions = &job["permissions"];
+            let reads = match permissions {
+                Yaml::BadValue => true,
+                Yaml::String(all) => all == "read-all",
+                Yaml::Hash(scopes) => {
+                    scopes.values().all(|access| matches!(access.as_str(), Some("read" | "none")))
+                }
+                _ => false,
+            };
+            assert!(reads, "{name} may only read: {permissions:?}");
+        }
+        for text in strings {
+            assert!(!reads_secrets(text), "reads a secret: {text}");
+        }
+    }
+
+    /// How yaml-rust2 reads what the test above relies on. That GitHub reads each the same way
+    /// isn't checked here.
+    #[test]
+    fn the_parser_reads_aliases_and_odd_keys_as_written() {
+        // An alias is a copy of what its anchor names.
+        let docs = YamlLoader::load_from_str("a: &w {contents: write}\nb: *w\n").unwrap();
+        assert_eq!(docs[0]["b"]["contents"].as_str(), Some("write"));
+        // A key spelled another way is the same key, and a key twice is an error.
+        let docs = YamlLoader::load_from_str("? permissions\n: write-all\n\"x\" : 1\n").unwrap();
+        assert_eq!(docs[0]["permissions"].as_str(), Some("write-all"));
+        assert_eq!(docs[0]["x"], Yaml::Integer(1));
+        assert!(YamlLoader::load_from_str("a: 1\na: 2\n").is_err());
+        // A merge key stays a key, merging nothing, so the test refuses one.
+        let docs = YamlLoader::load_from_str("a: &w {contents: write}\nb:\n  - <<: *w\n").unwrap();
+        assert!(docs[0]["b"][0]["contents"].is_badvalue());
+        assert!(has_merge_key(&docs[0]));
+        assert!(!has_merge_key(&YamlLoader::load_from_str("a: {b: [c]}\n").unwrap()[0]));
+        // An escape or a tag makes the same string.
+        let docs = YamlLoader::load_from_str("a: \"\\x77rite\"\nb: !!str write\n").unwrap();
+        assert_eq!((docs[0]["a"].as_str(), docs[0]["b"].as_str()), (Some("write"), Some("write")));
+        assert!(reads_secrets("echo ${{ secrets.TOKEN }}"));
+        assert!(reads_secrets("${{toJSON(secrets)}}"));
+        assert!(reads_secrets("${{ secrets['TOKEN'] }}"));
+        assert!(!reads_secrets("secrets.TOKEN without an expression"));
+        assert!(!reads_secrets("${{ inputs.no_secrets }} ${{ my-secrets }}"));
+        assert!(reads_secrets("${{ SECRETS.TOKEN }}"));
+        assert!(reads_secrets("${{ format('}}') }}${{ secrets.TOKEN }}"));
+        assert!(reads_secrets("${{ format('}}', secrets.TOKEN) }}"));
     }
 
     #[test]
