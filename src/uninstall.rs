@@ -394,15 +394,35 @@ fn print(plan: &Plan, keychain: &Keychain, purge: bool) {
     if let Some(e) = &plan.unread {
         out!("  - the worktrees taskman made, which it can't list: {e}");
     }
-    let path = plan
-        .program
-        .as_ref()
-        .and_then(|exe| exe.parent())
-        .map(|dir| format!(", and the PATH line for {}", tilde(dir)))
-        .unwrap_or_default();
-    out!(
-        "  - lines you added to your shell's startup file: an `export …_TOKEN=` or `export …_API_KEY=` line{path}"
-    );
+    let dir = plan.program.as_ref().and_then(|exe| exe.parent());
+    let fish = std::env::var("SHELL").is_ok_and(|s| s.ends_with("/fish"));
+    for line in shell_lines(dir.map(|d| (tilde(d), d.display().to_string())), fish) {
+        out!("  - {line}");
+    }
+}
+
+/// What the user may have added to their shell for taskman: tokens, and the program's folder
+/// (`dir`, as shown and as it is) on PATH. fish keeps both in universal variables rather than a
+/// startup file: `fish_add_path`, which the install script suggests, adds the folder to
+/// `$fish_user_paths`.
+fn shell_lines(dir: Option<(String, String)>, fish: bool) -> Vec<String> {
+    if !fish {
+        let path = dir.map(|(shown, _)| format!(", and the PATH line for {shown}"));
+        return vec![format!(
+            "lines you added to your shell's startup file: an `export …_TOKEN=` or `export …_API_KEY=` line{}",
+            path.unwrap_or_default()
+        )];
+    }
+    let mut lines = vec![
+        "fish variables you set: a `set -Ux …_TOKEN` or `…_API_KEY` (or a `set -x` line in ~/.config/fish/config.fish)".to_string(),
+    ];
+    if let Some((shown, dir)) = dir {
+        let dir = resume::quote(&dir);
+        lines.push(format!(
+            "{shown} in $fish_user_paths, if fish_add_path put it there: set -e fish_user_paths[(contains -i {dir} $fish_user_paths)]"
+        ));
+    }
+    lines
 }
 
 /// Asks `question` on the terminal; anything but yes is no.
@@ -480,6 +500,27 @@ fn remove(plan: &Plan, keychain: &Keychain, purge: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// fish keeps the PATH and the tokens in universal variables, not a startup file.
+    #[test]
+    fn says_where_each_shell_keeps_what_you_added() {
+        let dir = || Some(("~/.local/bin".to_string(), "/home/tester/.local/bin".to_string()));
+        assert_eq!(
+            shell_lines(dir(), false),
+            [
+                "lines you added to your shell's startup file: an `export …_TOKEN=` or `export …_API_KEY=` line, and the PATH line for ~/.local/bin"
+            ]
+        );
+        assert!(!shell_lines(None, false)[0].contains("PATH"));
+        let fish = shell_lines(dir(), true);
+        assert!(fish[0].starts_with("fish variables you set: a `set -Ux …_TOKEN`"), "{fish:?}");
+        assert_eq!(
+            fish[1],
+            "~/.local/bin in $fish_user_paths, if fish_add_path put it there: set -e fish_user_paths[(contains -i /home/tester/.local/bin $fish_user_paths)]"
+        );
+        assert!(fish.iter().all(|l| !l.contains("startup file")), "{fish:?}");
+        assert_eq!(shell_lines(None, true).len(), 1);
+    }
 
     #[test]
     fn reads_yes_and_purge_and_refuses_the_rest() {

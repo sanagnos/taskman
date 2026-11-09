@@ -387,7 +387,7 @@ fn parse_open(d: &Value, prefix: &str) -> Result<Vec<Listed>, String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::tracker::FetchError::{Auth, NotFound, Other, Unreachable};
+    use crate::tracker::FetchError::{Auth, NotFound, Other, Server, Unreachable};
     use crate::tracker::{Client, Text};
     use proptest::prelude::*;
     use std::collections::VecDeque;
@@ -718,6 +718,7 @@ pub(crate) mod tests {
                 NotFound(_) => prop_assert!(lower.contains("could not resolve to an issue"), "{gh:?}"),
                 Unreachable(_) => prop_assert!(lower.contains("error connecting to"), "{gh:?}"),
                 Auth(m) | Other(m) => prop_assert!(!m.is_empty() || gh.trim().is_empty(), "{gh:?}"),
+                Server(_) => prop_assert!(false, "gh's words never read as a status: {gh:?}"),
             }
         }
 

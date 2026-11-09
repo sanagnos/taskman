@@ -463,7 +463,7 @@ fn main() -> anyhow::Result<()> {
 
     let exe = std::env::current_exe()?;
     // Before the alternate screen, so these stay on the terminal.
-    let (running, saved, config, before) = match open_state() {
+    let (mut running, saved, config, before) = match open_state() {
         Ok(state) => state,
         Err(e) => {
             eprintln!("taskman: {e}");
@@ -483,6 +483,8 @@ fn main() -> anyhow::Result<()> {
     if before == add::Before::Crashed {
         app.warn("taskman didn't quit cleanly last time: it was killed or crashed");
     }
+    // Said, as the TUI holds the terminal now: the heartbeat goes as usual from here.
+    running.crash_unsaid = false;
     app.check_prefix_tip();
     watchdog(tty.try_clone()?, signals.hangup.clone(), signals.stops.clone())?;
     set_panic_hook();
@@ -555,14 +557,20 @@ fn detach_output() {
 
 /// The state folder's lock, held while the TUI runs, and the inbox's heartbeat that says so,
 /// removed before the lock goes however `main` ends (an error, say), so that commands queue and
-/// the next taskman doesn't take it for one that crashed; but kept after a panic, so that it does.
+/// the next taskman doesn't take it for one that crashed; but kept after a panic, so that it does,
+/// and when the one before crashed and this one ends before it has said so (no terminal, say), so
+/// that the next start still does. Its pid ends with the process, so the file says nothing runs.
 struct Running {
     _lock: store::Lock,
+    /// The one before crashed, and this one hasn't said so yet.
+    crash_unsaid: bool,
 }
 
 impl Drop for Running {
     fn drop(&mut self) {
-        add::ending();
+        if !self.crash_unsaid {
+            add::ending();
+        }
     }
 }
 
@@ -591,7 +599,8 @@ fn open_state() -> Result<(Running, store::Saved, store::Config, add::Before), S
     let (saved, config) = (store::load()?, store::load_config()?);
     // Commands count taskman as running from here, before its first frame (`add::tui_running`).
     add::heartbeat();
-    Ok((Running { _lock: lock }, saved, config, before))
+    let running = Running { _lock: lock, crash_unsaid: before == add::Before::Crashed };
+    Ok((running, saved, config, before))
 }
 
 /// Why `Tty::open` failed, and what to do, on stderr. With no terminal at all (`ssh host taskman` without

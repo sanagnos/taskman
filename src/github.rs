@@ -329,7 +329,12 @@ impl Gh {
             Gh::NoRemote => "the repository has no GitHub remote",
             Gh::Missing => "gh isn't installed; get it from https://cli.github.com",
             Gh::LoggedOut => "gh isn't logged in; run gh auth login",
-            Gh::Unanswered => "gh didn't answer within 30s; check gh auth status",
+            Gh::Unanswered => {
+                static SAID: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+                    format!("gh didn't answer within {}s; check gh auth status", GH_LIMIT.as_secs())
+                });
+                &SAID
+            }
         }
     }
 

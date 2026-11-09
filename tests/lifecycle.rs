@@ -3,8 +3,9 @@
 //! worktree still being removed, which a second signal cuts short; ctrl+z never reaches a session;
 //! a panic in one session's reader ends that session alone, and its pane says so; a second taskman
 //! on the same state, its lock file removed or not, or a tickets.json this release can't read, is
-//! refused and nothing is overwritten, while one started straight after a kill -9 starts. Losing
-//! the terminal is tests/hangup.rs.
+//! refused and nothing is overwritten, while one started straight after a kill -9 starts and says
+//! the last one didn't quit cleanly, even after starts that failed before taking the terminal.
+//! Losing the terminal is tests/hangup.rs.
 
 mod common;
 
@@ -272,6 +273,51 @@ fn a_taskman_started_straight_after_a_kill_starts() {
     assert!(age < Duration::from_secs(2), "the heartbeat is {age:?} old: not fresh enough to test");
 
     let mut tui = Tui::start("killed-again", &dir, stubbed(&dir), LIMIT);
+    tui.wait_text("taskman didn't quit cleanly last time");
+    tui.wait_text("stub ready for ENG-1");
+    tui.quit();
+    assert!(!alive.exists());
+}
+
+/// A start that fails after a kill -9, before it has the terminal (no terminal, as `ssh host
+/// taskman` without -t; a tickets.json it can't read), doesn't use up the notice: the next start
+/// that gets as far as the terminal says the last one didn't quit cleanly.
+#[test]
+fn a_failed_start_keeps_the_notice_of_a_kill() {
+    use std::os::unix::process::CommandExt;
+    let dir = scratch_dir("killed-failed");
+    project(&dir, &["ENG-1"]);
+    let alive = dir.join("state/taskman/inbox/alive");
+    let tickets = dir.join("state/taskman/tickets.json");
+    let mut killed = Tui::start("killed-failed", &dir, stubbed(&dir), LIMIT);
+    killed.wait_text("stub ready for ENG-1");
+    // SAFETY: sends a signal; no memory is involved.
+    unsafe { libc::kill(killed.child.id().cast_signed(), libc::SIGKILL) };
+    killed.wait_exit();
+    assert!(alive.exists());
+
+    let mut no_terminal = taskman(&dir);
+    // SAFETY: setsid only changes the child's session, between fork and exec.
+    unsafe {
+        no_terminal.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let out = no_terminal.stdin(Stdio::null()).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("taskman needs a terminal"), "{err}");
+    assert!(alive.exists(), "the notice was used up without a terminal");
+
+    let saved = std::fs::read(&tickets).unwrap();
+    std::fs::write(&tickets, "{\"projects\": [").unwrap();
+    let out = taskman(&dir).stdin(Stdio::null()).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("tickets.json"), "{err}");
+    assert!(alive.exists(), "the notice was used up by an unreadable tickets.json");
+    std::fs::write(&tickets, saved).unwrap();
+
+    let mut tui = Tui::start("killed-failed-again", &dir, stubbed(&dir), LIMIT);
     tui.wait_text("taskman didn't quit cleanly last time");
     tui.wait_text("stub ready for ENG-1");
     tui.quit();

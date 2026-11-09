@@ -375,7 +375,9 @@ pub enum Before {
     /// another: a release from before the lock, which keeps `alive` fresh and takes no lock, or one
     /// whose lock this one didn't meet.
     Running(Option<u32>, Option<String>),
-    /// It was killed or crashed, leaving `alive` behind, which is now removed.
+    /// It was killed or crashed, leaving `alive` behind. The file stays until this TUI has the
+    /// terminal and has said so (`main`), so a start that fails before then doesn't use up the
+    /// notice.
     Crashed,
 }
 
@@ -403,7 +405,6 @@ pub fn before() -> Before {
             Some(_) => {}
         }
     }
-    stopped();
     Before::Crashed
 }
 
@@ -1500,9 +1501,10 @@ mod tests {
     }
 
     /// A taskman that has just taken the lock trusts it over a heartbeat left by one that was
-    /// killed (kill -9, an OOM kill) a moment ago, but not over one from before the lock.
+    /// killed (kill -9, an OOM kill) a moment ago, but not over one from before the lock. The
+    /// heartbeat stays: `main` replaces it, and leaves it if the start fails before it has said so.
     #[test]
-    fn a_heartbeat_left_by_a_killed_taskman_is_cleared() {
+    fn a_heartbeat_left_by_a_killed_taskman_is_a_crash() {
         let write = |alive: &Alive| {
             store::write_unsynced(&alive_file(), &serde_json::to_vec(alive).unwrap()).unwrap();
         };
@@ -1510,7 +1512,7 @@ mod tests {
         assert_eq!(before(), Before::Quit, "nothing there");
         assert!(heartbeat());
         assert_eq!(before(), Before::Crashed, "fresh, from a release that takes the lock");
-        assert!(!alive_file().exists());
+        assert_eq!(before(), Before::Crashed, "asked again, as the next start would");
         // Releases out before `lock` was written, by their number.
         for version in ["0.1.28", "0.4.16", "0.4.34"] {
             write(&Alive { lock: false, ..alive(version, 5) });
@@ -1546,7 +1548,7 @@ mod tests {
         assert!(alive_file().exists());
         write(ended_pid());
         assert_eq!(before(), Before::Crashed);
-        assert!(!alive_file().exists());
+        assert!(alive_file().exists());
         write(std::process::id());
         assert_eq!(before(), Before::Crashed, "a killed taskman's pid, now this one's");
         // Once its heartbeat has stopped, the pid may be another program's by now.

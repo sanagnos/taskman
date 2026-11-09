@@ -360,11 +360,13 @@ said "there's no prebuilt taskman for Linux/armv7l yet. Build it from source ins
 check "refuses an OS with no build" 1 none on FreeBSD amd64 "" ""
 said "there's no prebuilt taskman for FreeBSD/amd64 yet."
 
-# The PATH advice for the shell in $SHELL: bash on macOS reads ~/.bash_profile in a new terminal,
-# not ~/.bashrc, and fish reads neither.
-advises() { # SHELL OS LINE
+# The PATH advice for the shell in $SHELL: bash on macOS reads the first of ~/.bash_profile,
+# ~/.bash_login and ~/.profile in a new terminal, not ~/.bashrc, and fish reads none of them.
+# HOME is an empty folder unless one is given.
+advises() { # SHELL OS LINE [HOME]
   local glibc=2.39; [ "$2" = Linux ] || glibc=""
-  check "advises for ${1:-no SHELL} on $2" 0 "taskman 1.2.0" on "$2" x86_64 "$glibc" "" SHELL="$1"
+  local home="${4:-$work/home-empty}"; mkdir -p "$home"
+  check "advises for ${1:-no SHELL} on $2 ($(basename "$home"))" 0 "taskman 1.2.0" on "$2" x86_64 "$glibc" "" SHELL="$1" HOME="$home"
   said "isn't on your PATH yet. Add it, then open a new terminal:"
   said "$3"
 }
@@ -374,6 +376,14 @@ not_said "export PATH"
 advises /opt/homebrew/bin/fish Darwin "  fish_add_path \"$bin\""
 advises /bin/bash Darwin "  $export_line ~/.bash_profile"
 not_said "~/.bashrc"
+# Writing to a ~/.bash_profile that isn't there would hide ~/.profile from bash.
+mkdir -p "$work/home-profile" "$work/home-both" "$work/home-login"
+touch "$work/home-profile/.profile" "$work/home-both/.profile" "$work/home-both/.bash_profile" "$work/home-login/.bash_login" "$work/home-login/.profile"
+advises /bin/bash Darwin "  $export_line ~/.profile" "$work/home-profile"
+not_said "~/.bash_profile"
+advises /bin/bash Darwin "  $export_line ~/.bash_profile" "$work/home-both"
+advises /bin/bash Darwin "  $export_line ~/.bash_login" "$work/home-login"
+advises /bin/bash Linux "  $export_line ~/.bashrc" "$work/home-profile"
 advises /bin/bash Linux "  $export_line ~/.bashrc"
 advises /bin/zsh Darwin "  $export_line ~/.zshrc"
 advises /usr/bin/zsh Linux "  $export_line ~/.zshrc"

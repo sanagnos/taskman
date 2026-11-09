@@ -45,6 +45,8 @@ fn run_as(program: &Path, dir: &Path) -> Command {
             None => cmd.env_remove(k),
         };
     }
+    // What it says to undo in the shell depends on which one: fish keeps the PATH elsewhere.
+    cmd.env("SHELL", "/bin/bash");
     cmd
 }
 
