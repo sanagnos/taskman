@@ -26,8 +26,8 @@ const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(60);
 /// The workflow that builds releases, in the repository: the only signer an attestation may have.
 const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
-/// The refs it may have run from, as a regular expression: a version tag, or main, where
-/// release.sh starts it by hand for a tag. install.sh's `signer_refs` is the same.
+/// The refs it may have run from, as a regular expression: a version tag, or main, where a release
+/// started by hand ran before it ran on its tag. install.sh's `signer_refs` is the same.
 const SIGNER_REFS: &str = r"refs/(tags/v[0-9]+\.[0-9]+\.[0-9]+|heads/main)";
 /// The first release that must have an attestation: one without is refused rather than installed
 /// on its checksum, as a replaced archive would have none. v0.1.0 is the first built on the public
@@ -1217,6 +1217,26 @@ mod tests {
         assert!(released[build..].starts_with(
             "- run: cargo build --profile dist --locked --target \"$TARGET\"\n        env:\n          TASKMAN_RELEASE_BUILD: \"1\"\n"
         ));
+    }
+
+    /// Only a run on a version tag may publish. A pull request's dry run runs release.yml as the
+    /// pull request has it, and Dependabot's get the write permissions the jobs ask for, so the
+    /// release job's condition must name what may publish, and no other job may write.
+    #[test]
+    fn only_a_version_tag_publishes() {
+        let released = include_str!("../.github/workflows/release.yml");
+        let start = released.find("\n  release:\n").unwrap();
+        let (before, job) = released.split_at(start);
+        assert!(job.contains(
+            "\n    if: >-\n      ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch')\n      && startsWith(github.ref, 'refs/tags/v') && needs.version.outputs.dry_run == 'false' }}\n"
+        ));
+        assert!(job.contains("\n    environment: release\n"));
+        assert!(!before.contains(": write") && !before.contains("environment:"));
+        // The last job, so its permissions are the only writes after `before`.
+        let job_header = |l: &str| l.starts_with("  ") && !l.starts_with("   ") && l.ends_with(':');
+        assert_eq!(job.lines().filter(|l| job_header(l)).count(), 1);
+        // It runs the base branch's file with a write token: never for a pull request's code.
+        assert!(!released.contains("pull_request_target"));
     }
 
     #[test]

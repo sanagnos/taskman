@@ -278,7 +278,7 @@ fresh
 : >"$work/release"
 release
 released
-grep -qx -- "workflow run release.yml -R acme/taskman -f tag=v0.2.0" "$work/dispatched" \
+grep -qx -- "workflow run release.yml -R acme/taskman --ref v0.2.0" "$work/dispatched" \
   || fail "$name: didn't start the Release workflow by hand for v0.2.0"
 [ "$(waited)" -ge 180 ] || fail "$name: started it by hand after $(waited)s"
 passed "$name"

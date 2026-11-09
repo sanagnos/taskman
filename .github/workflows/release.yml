@@ -5,37 +5,50 @@
 # build that install.sh and `taskman update` can ask for has its archive, and each binary that can
 # run on its runner said the tag's version.
 #
-# Runs when a version tag (v1.2.3) is pushed. It can also be started by hand for a tag without a
+# Runs when a version tag (v1.2.3) is pushed. It can also be started by hand on a tag without a
 # release, to build one again after deleting it or after CI on its commit was re-run (or started
 # by hand) and passed:
-#   gh workflow run release.yml -f tag=v1.2.3
-# A run for a tag that already has a published release builds nothing and ends green: that's the
-# tag push GitHub delivered late, after the release script had started a run by hand.
-# That runs this file as it is on main. A tag from before rust-toolchain.toml and the dist profile
-# needs the workflow it was tagged with: add --ref v1.2.3.
+#   gh workflow run release.yml --ref v1.2.3
+# A release runs on its tag, started either way, as only version tags may deploy to the release
+# job's environment. A run for a tag that already has a published release builds nothing and ends
+# green: that's the tag push GitHub delivered late, after the release script had started a run by
+# hand.
 #
-# A dry run builds, runs and checks every binary and archive as a release would, from a branch's
-# latest commit and for Cargo.toml's version, and keeps the archives and SHA256SUMS as the run's
-# artifacts; it needs no tag, doesn't wait for CI, and skips the release job, so it publishes and
-# attests nothing:
+# A dry run builds, runs and checks every binary and archive as a release would, for Cargo.toml's
+# version, and keeps the archives and SHA256SUMS as the run's artifacts; it needs no tag, doesn't
+# wait for CI, and skips the release job, so it publishes and attests nothing. A pull request that
+# changes what a release builds or reads (the paths below) gets one on its merge commit, and one
+# can be started on a branch's latest commit:
 #   gh workflow run release.yml --ref my-branch -f dry_run=true
 #
 # The build jobs run every dependency's build script, so they get a read-only token that isn't
-# kept in .git/config; only the release job, which runs no project code, can write or attest.
+# kept in .git/config; only the release job, which runs no project code, can write or attest, and
+# only for a version tag (its `if`, which a unit test in update.rs keeps).
 # Actions are pinned by commit; Dependabot proposes updates (.github/dependabot.yml).
 name: Release
 run-name: >-
-  ${{ inputs.dry_run && format('Release dry run on {0}', github.ref_name)
-  || format('Release {0}', inputs.tag || github.ref_name) }}
+  ${{ github.event_name == 'pull_request'
+  && format('Release dry run on PR #{0}', github.event.pull_request.number)
+  || inputs.dry_run && format('Release dry run on {0}', github.ref_name)
+  || format('Release {0}', github.ref_name) }}
 
 on:
   push:
     tags: ["v*"]
+  # What a release builds or reads that CI doesn't: the Linux builds on an older Ubuntu (glibc_min)
+  # and for musl, the Intel macOS and arm64 Linux builds, the dist profile, install.sh's builds,
+  # and the actions only this file uses, which Dependabot updates. The paths are compared with the
+  # commit the pull request left main at, so every push to one runs it again. It isn't a required
+  # check: a pull request these paths skip would wait for it forever.
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/install.sh
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Existing version tag to build and release, like v1.2.3 (none for a dry run)"
-        required: false
       dry_run:
         description: "Build and check the branch's latest commit, and publish nothing"
         type: boolean
@@ -44,21 +57,25 @@ on:
 permissions: {}
 
 concurrency:
-  # Dry runs are by commit, so one never waits on, or holds up, a release.
+  # Dry runs are by commit, so one never waits on, or holds up, a release; a pull request's are by
+  # pull request, a newer push replacing its run.
   group: >-
-    release-${{ inputs.dry_run && format('dry-run-{0}', github.sha)
-    || inputs.tag || github.ref_name }}
-  cancel-in-progress: false
+    release-${{ github.event_name == 'pull_request'
+    && format('pr-{0}', github.event.pull_request.number)
+    || inputs.dry_run && format('dry-run-{0}', github.sha) || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
   # Runs for one tag wait their turn, all of them: with the default queue of one, a third run
   # would cancel the one waiting, leaving a red run on the release commit.
   queue: max
 
 jobs:
-  # What to build: the tag's commit, or in a dry run the commit it was started on. Checked here,
-  # before a runner is taken for each build. Reads Cargo.toml through the API; runs no project code.
-  # Each job after it has the tag as TAG: the one pushed or given when started by hand, or in a
-  # dry run Cargo.toml's version as a tag, which names the archives and each binary must say.
-  # `done` is true when the tag already has a published release, and the other jobs then skip.
+  # What to build: the tag's commit, or in a dry run the commit it was started on, or a pull
+  # request's merge commit (what CI tests, and what would land). Checked here, before a runner is
+  # taken for each build. Reads Cargo.toml through the API; runs no project code. Each job after it
+  # has the tag as TAG: the one the run is on, or in a dry run Cargo.toml's version as a tag, which
+  # names the archives and each binary must say. `dry_run` is true or false, worked out here once,
+  # as a pull request's run is always one. `done` is true when the tag already has a published
+  # release, and the other jobs then skip.
   version:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -68,32 +85,34 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
       ref: ${{ steps.version.outputs.ref }}
       done: ${{ steps.version.outputs.done }}
+      dry_run: ${{ steps.version.outputs.dry_run }}
     steps:
       - name: Name the version
         id: version
         env:
           GH_TOKEN: ${{ github.token }}
-          DRY_RUN: ${{ inputs.dry_run }}
-          GIVEN: ${{ inputs.tag }}
+          DRY_RUN: ${{ inputs.dry_run || github.event_name == 'pull_request' }}
+          ON: >-
+            ${{ github.event_name == 'pull_request'
+            && format('PR #{0}', github.event.pull_request.number) || github.ref_name }}
         run: |
           if [ "$DRY_RUN" = true ]; then
-            if [ -n "$GIVEN" ]; then
-              echo "A dry run builds the commit it's started on: give --ref instead of a tag." >&2
-              exit 1
-            fi
+            dry_run=true
             ref="$GITHUB_SHA"
             # The version line in [package] is the first one in Cargo.toml (as release.sh says).
             version="$(gh api "repos/$GITHUB_REPOSITORY/contents/Cargo.toml?ref=$ref" \
               -H 'Accept: application/vnd.github.raw' \
               | sed -n 's/^version = "\(.*\)"$/\1/p' | head -1)"
             tag="v$version"
-            echo "Dry run of $tag at $ref ($GITHUB_REF_NAME): nothing is published."
-          elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ -z "$GIVEN" ]; then
-            echo "Give the tag to release (-f tag=v1.2.3), or -f dry_run=true for a dry run." >&2
-            exit 1
+            echo "Dry run of $tag at $ref ($ON): nothing is published."
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            dry_run=false
+            tag="$GITHUB_REF_NAME"
+            ref="$GITHUB_REF"
           else
-            tag="${GIVEN:-$GITHUB_REF_NAME}"
-            ref="refs/tags/$tag"
+            echo "A release runs on its tag (gh workflow run release.yml --ref v1.2.3)," \
+              "and a dry run takes -f dry_run=true." >&2
+            exit 1
           fi
           if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "$tag isn't a version tag like v1.2.3" >&2
@@ -101,12 +120,13 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$dry_run" >> "$GITHUB_OUTPUT"
           # A release's runs queue one after another (concurrency above), so one that finds the
           # tag released came after the run that released it: a tag push GitHub delivered after
           # the release script had given up on it and started a run by hand. Skipped, not failed
           # or cancelled, so the release commit stays green. A draft is a failed run's, which
           # this one replaces. Only a published release has draft false; a missing one is a 404.
-          if [ "$DRY_RUN" != true ] \
+          if [ "$dry_run" = false ] \
             && [ "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .draft 2>/dev/null)" = false ]; then
             echo "::notice title=Already released::$tag already has a published release, so this run builds nothing. To build it again, delete the release first (gh release delete $tag)."
             echo "done=true" >> "$GITHUB_OUTPUT"
@@ -119,14 +139,15 @@ jobs:
   # this waits for it. A run started by hand counts as well as a pushed one, for when GitHub drops
   # the push event or a run never ends. Runs no project code, alongside the builds. A dry run has
   # no tag: it looks once at CI on its own commit and branch, to show what a release would read,
-  # and doesn't fail on it.
+  # and doesn't fail on it. A pull request's skips this job: its merge commit is on no branch, and
+  # CI on the pull request is a check of its own.
   ci:
     needs: version
-    if: ${{ needs.version.outputs.done != 'true' }}
+    if: ${{ needs.version.outputs.done != 'true' && github.event_name != 'pull_request' }}
     runs-on: ubuntu-24.04
     env:
       TAG: ${{ needs.version.outputs.tag }}
-      DRY_RUN: ${{ inputs.dry_run }}
+      DRY_RUN: ${{ needs.version.outputs.dry_run }}
     # CI's slowest job has 30 minutes, after waiting for a runner.
     timeout-minutes: 60
     permissions:
@@ -446,11 +467,20 @@ jobs:
           path: SHA256SUMS
           if-no-files-found: error
 
-  # The only job that can write. Skipped in a dry run, for a tag already released, and whenever a
-  # build, the check or CI failed: nothing is published, attested or drafted.
+  # The only job that can write, and only for a version tag, pushed or started by hand on the tag:
+  # the condition says what may publish rather than what mayn't, as a pull request runs this file
+  # as the pull request has it, and Dependabot's get the write permissions asked for below (a
+  # fork's token is read-only whatever it asks for). Skipped too for a tag already released, and
+  # whenever a build, the check or CI failed: nothing is published, attested or drafted. A unit
+  # test in update.rs keeps the condition and the environment.
   release:
     needs: [version, ci, check]
-    if: ${{ !inputs.dry_run }}
+    if: >-
+      ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && startsWith(github.ref, 'refs/tags/v') && needs.version.outputs.dry_run == 'false' }}
+    # Only version tags may deploy to it (the repository's settings), a guard that doesn't depend on
+    # the condition above being right.
+    environment: release
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
