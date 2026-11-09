@@ -118,7 +118,15 @@ pub fn notified(dir: &Path) -> String {
 
 /// Starts `cmd` in a new pty, as its controlling terminal. Returns it and the pty's master side,
 /// which doesn't block.
-pub fn spawn_in_pty(mut cmd: Command) -> (std::process::Child, std::fs::File) {
+pub fn spawn_in_pty(cmd: Command) -> (std::process::Child, std::fs::File) {
+    spawn_in_pty_writing(cmd, None)
+}
+
+/// `spawn_in_pty`, with stdout going to `stdout` rather than the pty when given.
+pub fn spawn_in_pty_writing(
+    mut cmd: Command,
+    stdout: Option<Stdio>,
+) -> (std::process::Child, std::fs::File) {
     let _guard = SPAWN.lock().unwrap_or_else(|e| e.into_inner());
     let (mut m, mut s) = (-1, -1);
     // SAFETY: openpty writes two descriptors into `m` and `s`; the null name, termios and window
@@ -146,7 +154,7 @@ pub fn spawn_in_pty(mut cmd: Command) -> (std::process::Child, std::fs::File) {
     unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
     cmd.env("TERM", "xterm-256color")
         .stdin(Stdio::from(slave.try_clone().unwrap()))
-        .stdout(Stdio::from(slave.try_clone().unwrap()))
+        .stdout(stdout.unwrap_or_else(|| Stdio::from(slave.try_clone().unwrap())))
         .stderr(Stdio::from(slave));
     // Its own session with the pty as the controlling terminal, as in a terminal window.
     // SAFETY: the closure runs in the child between fork and exec; it allocates nothing and calls
@@ -324,6 +332,35 @@ impl Terminal {
 /// broken behaviour reaches it.
 pub const WAIT: Duration = Duration::from_secs(15);
 
+/// Waits up to `WAIT` for `done`; false if it never was. The caller says what it waited for, and
+/// what it saw meanwhile, when it asserts.
+#[must_use]
+pub fn wait_until(mut done: impl FnMut() -> bool) -> bool {
+    let until = Instant::now() + WAIT;
+    while !done() {
+        if Instant::now() >= until {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    true
+}
+
+/// Reads what's waiting on a pty's non-blocking master side into `out`: everything until nothing
+/// is (WouldBlock) or the other side has closed (EIO, or 0 on macOS), reading again after a signal
+/// cut a read short.
+pub fn read_pty(master: &mut std::fs::File, out: &mut Vec<u8>) {
+    let mut buf = [0u8; 4096];
+    loop {
+        match std::io::Read::read(master, &mut buf) {
+            Ok(0) => return,
+            Ok(n) => out.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return,
+        }
+    }
+}
+
 /// taskman in a pty, its output read into a `Terminal` on a thread: the screen is always current,
 /// terminal queries are answered, and taskman never blocks on output nobody reads (on macOS a
 /// process can't finish exiting while it does). Dropping it kills taskman and the stub CLIs and
@@ -466,12 +503,8 @@ impl Tui {
     }
 
     /// Waits for `done`, which looks at something other than the screen (a file, a process).
-    pub fn wait_until(&self, what: &str, mut done: impl FnMut() -> bool) {
-        let until = Instant::now() + WAIT;
-        while !done() {
-            assert!(Instant::now() < until, "{what} after {WAIT:?}; the screen:\n{}", self.text());
-            std::thread::sleep(Duration::from_millis(10));
-        }
+    pub fn wait_until(&self, what: &str, done: impl FnMut() -> bool) {
+        assert!(wait_until(done), "{what} after {WAIT:?}; the screen:\n{}", self.text());
     }
 
     /// Waits for taskman to end, and returns how it did.

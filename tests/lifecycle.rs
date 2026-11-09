@@ -3,12 +3,16 @@
 //! worktree still being removed, which a second signal cuts short; ctrl+z never reaches a session;
 //! a panic in one session's reader ends that session alone, and its pane says so; a second taskman
 //! on the same state, its lock file removed or not, or a tickets.json this release can't read, is
-//! refused and nothing is overwritten, while one started straight after a kill -9 starts. Losing
-//! the terminal is tests/hangup.rs.
+//! refused and nothing is overwritten, while one started straight after a kill -9 starts and says
+//! the last one didn't quit cleanly, even after starts that failed before taking the terminal.
+//! Losing the terminal is tests/hangup.rs.
 
 mod common;
 
-use common::{Tui, acme, project, scratch_dir, sh, slow_git, stub_file, stubbed, taskman};
+use common::{
+    Tui, acme, answer_queries, project, read_pty, scratch_dir, sh, slow_git, spawn_in_pty_writing,
+    stub_file, stubbed, taskman, wait_until,
+};
 use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -272,6 +276,94 @@ fn a_taskman_started_straight_after_a_kill_starts() {
     assert!(age < Duration::from_secs(2), "the heartbeat is {age:?} old: not fresh enough to test");
 
     let mut tui = Tui::start("killed-again", &dir, stubbed(&dir), LIMIT);
+    tui.wait_text("taskman didn't quit cleanly last time");
+    tui.wait_text("stub ready for ENG-1");
+    tui.quit();
+    assert!(!alive.exists());
+}
+
+/// A start that fails after a kill -9, before it has the terminal (no terminal, as `ssh host
+/// taskman` without -t; a tickets.json it can't read; a terminal it can't switch to its own
+/// screen), doesn't use up the notice: the next start that gets as far as the terminal says the
+/// last one didn't quit cleanly.
+#[test]
+fn a_failed_start_keeps_the_notice_of_a_kill() {
+    use std::os::unix::process::CommandExt;
+    let dir = scratch_dir("killed-failed");
+    project(&dir, &["ENG-1"]);
+    let alive = dir.join("state/taskman/inbox/alive");
+    let tickets = dir.join("state/taskman/tickets.json");
+    let mut killed = Tui::start("killed-failed", &dir, stubbed(&dir), LIMIT);
+    killed.wait_text("stub ready for ENG-1");
+    // SAFETY: sends a signal; no memory is involved.
+    unsafe { libc::kill(killed.child.id().cast_signed(), libc::SIGKILL) };
+    killed.wait_exit();
+    assert!(alive.exists());
+
+    let mut no_terminal = taskman(&dir);
+    // SAFETY: setsid only changes the child's session, between fork and exec.
+    unsafe {
+        no_terminal.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let child = no_terminal.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let child = child.spawn().unwrap();
+    let failed_pid = child.id();
+    let out = child.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("taskman needs a terminal"), "{err}");
+    assert!(alive.exists(), "the notice was used up without a terminal");
+    // Its own heartbeat by now, but stale: fresh, with its pid, a start that got the same pid, or
+    // one on another machine sharing the folder, would be refused for a few seconds.
+    let left = std::fs::read_to_string(&alive).unwrap();
+    assert!(left.contains(&format!("\"pid\":{failed_pid}")), "{left}");
+    let age = std::fs::metadata(&alive).unwrap().modified().unwrap().elapsed().unwrap();
+    assert!(age > Duration::from_secs(3600), "the heartbeat is only {age:?} old");
+
+    // Started straight after, it isn't refused: it fails on the file, as it would anyway.
+    let saved = std::fs::read(&tickets).unwrap();
+    std::fs::write(&tickets, "{\"projects\": [").unwrap();
+    let out = taskman(&dir).stdin(Stdio::null()).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("tickets.json") && !err.contains("already running"), "{err}");
+    assert!(alive.exists(), "the notice was used up by an unreadable tickets.json");
+    std::fs::write(&tickets, saved).unwrap();
+
+    // A terminal it opens, but can't take: its output goes to a pipe no one reads, so switching to
+    // the alternate screen fails. It ends as on a quit, which removes `alive` otherwise.
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let (mut child, mut master) = spawn_in_pty_writing(stubbed(&dir), Some(Stdio::from(writer)));
+    let (mut said, mut status) = (Vec::new(), None);
+    let ended = wait_until(|| {
+        // Read as it goes too, so a full pty can't hold it up, and answer what it asks there: its
+        // queries go to its output, which fails, but a terminal it asks through the pty would
+        // otherwise be waited for.
+        let before = said.len();
+        read_pty(&mut master, &mut said);
+        answer_queries(&mut master, &said[before..]);
+        status = child.try_wait().unwrap();
+        status.is_some()
+    });
+    // What it wrote last, the error, may still be waiting on the pty once it has ended.
+    read_pty(&mut master, &mut said);
+    let said = String::from_utf8_lossy(&said);
+    if !ended {
+        // Not left running past the test.
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    assert!(ended, "the start that couldn't take the terminal didn't end; it said:\n{said}");
+    assert_eq!(status.and_then(|s| s.code()), Some(1), "{said}");
+    assert!(said.contains("Broken pipe"), "{said}");
+    assert!(!dir.join("state/taskman/panics.log").exists(), "{said}");
+    assert!(alive.exists(), "the notice was used up by a terminal it couldn't take");
+    let age = std::fs::metadata(&alive).unwrap().modified().unwrap().elapsed().unwrap();
+    assert!(age > Duration::from_secs(3600), "the heartbeat is only {age:?} old");
+
+    let mut tui = Tui::start("killed-failed-again", &dir, stubbed(&dir), LIMIT);
     tui.wait_text("taskman didn't quit cleanly last time");
     tui.wait_text("stub ready for ENG-1");
     tui.quit();

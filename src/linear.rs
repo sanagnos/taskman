@@ -30,9 +30,14 @@ impl LinearConfig {
     /// A query, asked again if the connection drops: it changes nothing, unlike `create`'s
     /// mutation.
     fn query(&self, query: &str, variables: &Value) -> Result<Value, FetchError> {
-        let (status, v) = net::retry_dropped(|| self.send(query, variables))
-            .map_err(|e| failed(&e, &self.endpoint))?;
+        let (status, v) =
+            net::retry_dropped(|| self.send(query, variables)).map_err(|e| self.failed(&e))?;
         answer(status, &v)
+    }
+
+    /// A request that got no status back.
+    fn failed(&self, e: &ureq::Error) -> FetchError {
+        tracker::request_failed(e, "Linear", &self.endpoint, self.agent.timeout())
     }
 
     /// Posts a query; its status and body.
@@ -103,7 +108,7 @@ impl LinearConfig {
         let place = format!("team {team} in Linear");
         let maybe = |e: &str| tracker::maybe_created(e, &place);
         let (status, v) = self.send(CREATE, &json!({ "input": input })).map_err(|e| {
-            let e2 = failed(&e, &self.endpoint);
+            let e2 = self.failed(&e);
             if tracker::unsent(&e) { e2 } else { e2.map(|e| maybe(&e)) }
         })?;
         // A server failing is the one answer that doesn't say the issue wasn't made.
@@ -113,11 +118,6 @@ impl LinearConfig {
         let d = answer(status, &v)?;
         Ok(parse_created(&d, &place)?)
     }
-}
-
-/// A request to `endpoint` that got no status back.
-fn failed(e: &ureq::Error, endpoint: &str) -> FetchError {
-    tracker::request_failed(e, "Linear", endpoint)
 }
 
 /// What Linear's answer to a query holds, or why it failed. Linear answers a missing entity with
@@ -133,7 +133,7 @@ fn answer(status: u16, v: &Value) -> Result<Value, FetchError> {
         return Err(FetchError::Other(msg.to_string()));
     }
     if status >= 500 {
-        return Err(tracker::server_failed("Linear", status).into());
+        return Err(tracker::server_failed("Linear", status));
     }
     if status >= 400 {
         return Err(FetchError::Other(format!("Linear request failed: HTTP {status}")));
@@ -363,7 +363,7 @@ fn inline(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::replay;
-    use crate::tracker::FetchError::{Auth, NotFound, Other, Unreachable};
+    use crate::tracker::FetchError::{Auth, NotFound, Other, Server, Unreachable};
     use crate::tracker::{Client, Text};
     use proptest::prelude::*;
 
@@ -484,7 +484,7 @@ mod tests {
         assert_eq!(fetch(401, ""), rejected);
         assert_eq!(
             fetch(500, "<html>down</html>"),
-            Other("Linear failed on its side (HTTP 500); try again later".into())
+            Server("Linear failed on its side (HTTP 500)".into())
         );
         assert_eq!(
             fetch(400, r#"{"errors":[{"message":"Variable \"$id\" got invalid value"}]}"#),
@@ -502,7 +502,7 @@ mod tests {
         ]);
         assert_eq!(
             client(&server).fetch("ENG-52", Text::Plain).unwrap_err(),
-            Other("Linear failed on its side (HTTP 502); try again later".into())
+            Server("Linear failed on its side (HTTP 502)".into())
         );
         // Nothing listens.
         let closed = replay::closed();
