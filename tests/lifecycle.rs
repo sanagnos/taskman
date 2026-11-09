@@ -350,6 +350,10 @@ fn a_failed_start_keeps_the_notice_of_a_kill() {
     // What it wrote last, the error, may still be waiting on the pty once it has ended.
     read_pty(&mut master, &mut said);
     let said = String::from_utf8_lossy(&said);
+    if !ended {
+        // Not left running past the test.
+        let _ = child.kill();
+    }
     assert!(ended, "the start that couldn't take the terminal didn't end; it said:\n{said}");
     assert_eq!(status.and_then(|s| s.code()), Some(1), "{said}");
     assert!(said.contains("Broken pipe"), "{said}");
