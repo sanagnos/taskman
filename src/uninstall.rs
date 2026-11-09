@@ -413,8 +413,11 @@ fn print(plan: &Plan, keychain: &Keychain, purge: bool) {
 /// (`dir`, as shown and as typed) on PATH. fish keeps both in universal variables rather than a
 /// startup file: `fish_add_path`, which the install script suggests, adds the folder to
 /// `$fish_user_paths`, a universal variable by default. The line that takes it out covers that,
-/// not a folder added with `fish_add_path -g` (which lasts only as long as that shell); it
-/// compares the folder as text, not as a pattern, and changes nothing when it isn't there.
+/// not a global one (`fish_add_path -g`, which a line in config.fish sets again in each shell).
+/// It runs in a fish with no config (`-N`), so that the global, when there is one, doesn't hide
+/// the universal one it erases from: `contains -i` would read the global's index. It compares the
+/// folder as text, not as a pattern, and changes nothing when it isn't there; the folder comes as
+/// an argument, so it's quoted once, for the fish the user types it into.
 fn shell_lines(dir: Option<(String, String)>, fish: bool) -> Vec<String> {
     if !fish {
         let path = dir.map(|(shown, _)| format!(", and the PATH line for {shown}"));
@@ -429,7 +432,7 @@ fn shell_lines(dir: Option<(String, String)>, fish: bool) -> Vec<String> {
     if let Some((shown, dir)) = dir {
         let dir = fish_quote(&dir);
         lines.push(format!(
-            "{shown} in $fish_user_paths, if fish_add_path put it there: set -l i (contains -i -- {dir} $fish_user_paths); and set -Ue fish_user_paths[$i]"
+            "{shown} in $fish_user_paths, if fish_add_path put it there: fish -N -c 'set -l i (contains -i -- $argv[1] $fish_user_paths); and set -Ue fish_user_paths[$i]' {dir}"
         ));
     }
     lines
@@ -566,11 +569,11 @@ mod tests {
         assert!(fish[0].starts_with("fish variables you set: a `set -Ux …_TOKEN`"), "{fish:?}");
         assert_eq!(
             fish[1],
-            "~/.local/bin in $fish_user_paths, if fish_add_path put it there: set -l i (contains -i -- /home/tester/.local/bin $fish_user_paths); and set -Ue fish_user_paths[$i]"
+            "~/.local/bin in $fish_user_paths, if fish_add_path put it there: fish -N -c 'set -l i (contains -i -- $argv[1] $fish_user_paths); and set -Ue fish_user_paths[$i]' /home/tester/.local/bin"
         );
         let odd = Some(("~/my bin".to_string(), "/home/tester/my bin".to_string()));
         let odd = &shell_lines(odd, true)[1];
-        let removes = ": set -l i (contains -i -- '/home/tester/my bin' $fish_user_paths); and set -Ue fish_user_paths[$i]";
+        let removes = "$fish_user_paths); and set -Ue fish_user_paths[$i]' '/home/tester/my bin'";
         assert!(odd.ends_with(removes), "{odd}");
         assert!(fish.iter().all(|l| !l.contains("startup file")), "{fish:?}");
         assert_eq!(shell_lines(None, true).len(), 1);

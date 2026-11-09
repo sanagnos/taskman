@@ -332,21 +332,32 @@ impl Terminal {
 /// broken behaviour reaches it.
 pub const WAIT: Duration = Duration::from_secs(15);
 
-/// Waits for `done`, for a test with no `Tui` to print, and gives up after `WAIT` saying `what`.
-pub fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+/// Waits up to `WAIT` for `done`; false if it never was. The caller says what it waited for, and
+/// what it saw meanwhile, when it asserts.
+#[must_use]
+pub fn wait_until(mut done: impl FnMut() -> bool) -> bool {
     let until = Instant::now() + WAIT;
     while !done() {
-        assert!(Instant::now() < until, "{what} after {WAIT:?}");
+        if Instant::now() >= until {
+            return false;
+        }
         std::thread::sleep(Duration::from_millis(10));
     }
+    true
 }
 
 /// Reads what's waiting on a pty's non-blocking master side into `out`: everything until nothing
-/// is (WouldBlock) or the other side has closed (EIO, or 0 on macOS).
-pub fn drain(master: &mut std::fs::File, out: &mut Vec<u8>) {
+/// is (WouldBlock) or the other side has closed (EIO, or 0 on macOS), reading again after a signal
+/// cut a read short.
+pub fn read_pty(master: &mut std::fs::File, out: &mut Vec<u8>) {
     let mut buf = [0u8; 4096];
-    while let Ok(n @ 1..) = std::io::Read::read(master, &mut buf) {
-        out.extend_from_slice(&buf[..n]);
+    loop {
+        match std::io::Read::read(master, &mut buf) {
+            Ok(0) => return,
+            Ok(n) => out.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return,
+        }
     }
 }
 
@@ -492,12 +503,8 @@ impl Tui {
     }
 
     /// Waits for `done`, which looks at something other than the screen (a file, a process).
-    pub fn wait_until(&self, what: &str, mut done: impl FnMut() -> bool) {
-        let until = Instant::now() + WAIT;
-        while !done() {
-            assert!(Instant::now() < until, "{what} after {WAIT:?}; the screen:\n{}", self.text());
-            std::thread::sleep(Duration::from_millis(10));
-        }
+    pub fn wait_until(&self, what: &str, done: impl FnMut() -> bool) {
+        assert!(wait_until(done), "{what} after {WAIT:?}; the screen:\n{}", self.text());
     }
 
     /// Waits for taskman to end, and returns how it did.

@@ -10,8 +10,8 @@
 mod common;
 
 use common::{
-    Tui, acme, drain, project, scratch_dir, sh, slow_git, spawn_in_pty_writing, stub_file, stubbed,
-    taskman, wait_until,
+    Tui, acme, answer_queries, project, read_pty, scratch_dir, sh, slow_git, spawn_in_pty_writing,
+    stub_file, stubbed, taskman, wait_until,
 };
 use std::path::Path;
 use std::process::Stdio;
@@ -337,15 +337,20 @@ fn a_failed_start_keeps_the_notice_of_a_kill() {
     drop(reader);
     let (mut child, mut master) = spawn_in_pty_writing(stubbed(&dir), Some(Stdio::from(writer)));
     let (mut said, mut status) = (Vec::new(), None);
-    wait_until("the start that couldn't take the terminal didn't end", || {
-        // Read as it goes too, so a full pty can't hold it up.
-        drain(&mut master, &mut said);
+    let ended = wait_until(|| {
+        // Read as it goes too, so a full pty can't hold it up, and answer what it asks there: its
+        // queries go to its output, which fails, but a terminal it asks through the pty would
+        // otherwise be waited for.
+        let before = said.len();
+        read_pty(&mut master, &mut said);
+        answer_queries(&mut master, &said[before..]);
         status = child.try_wait().unwrap();
         status.is_some()
     });
     // What it wrote last, the error, may still be waiting on the pty once it has ended.
-    drain(&mut master, &mut said);
+    read_pty(&mut master, &mut said);
     let said = String::from_utf8_lossy(&said);
+    assert!(ended, "the start that couldn't take the terminal didn't end; it said:\n{said}");
     assert_eq!(status.and_then(|s| s.code()), Some(1), "{said}");
     assert!(said.contains("Broken pipe"), "{said}");
     assert!(!dir.join("state/taskman/panics.log").exists(), "{said}");
