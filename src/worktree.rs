@@ -188,7 +188,8 @@ pub fn create(
     let out = if local {
         add(repo, &[&f, branch])
     } else if remote {
-        add(repo, &["--track", "-b", branch, &f, &format!("origin/{branch}")])
+        // The full ref: a local branch named `origin/<branch>` makes `origin/<branch>` ambiguous.
+        add(repo, &["--track", "-b", branch, &f, &format!("refs/remotes/origin/{branch}")])
     } else {
         let start = base.and_then(|b| {
             let start = start_point(repo, b, has_origin);
@@ -1049,7 +1050,7 @@ mod tests {
     /// A local branch named `origin/main` makes `symbolic-ref --short` say `remotes/origin/main`,
     /// and `origin/main` ambiguous: the default branch, a new worktree's start (also when
     /// `origin/HEAD` was never set and the remote is asked) and the removal check still go by
-    /// origin's.
+    /// origin's, and a branch only origin has is still checked out from origin's.
     #[test]
     fn a_local_branch_named_like_origins_changes_nothing() {
         let (root, repo) = scratch_repo("shadowed");
@@ -1065,7 +1066,7 @@ mod tests {
         sh(
             &repo,
             &format!(
-                "git {id} commit -q --allow-empty -m ahead && git branch origin/main && git reset -q --hard HEAD~1"
+                "git {id} commit -q --allow-empty -m ahead && git branch origin/main && git branch origin/eng-8-remote && git reset -q --hard HEAD~1"
             ),
         );
         let main = DefaultBranch { name: "main".into(), start: "origin/main".into() };
@@ -1080,10 +1081,28 @@ mod tests {
         let check = removal_check(&repo, &wt, None).unwrap().unwrap();
         assert_eq!((check.safe(), check.branch.as_deref()), (true, Some("ENG-1")));
         assert!(remove(&repo, &check, None, &lock).unwrap().starts_with("Removed"));
-        sh(&repo, "git remote set-head origin -d");
+        // From git 2.48 a fetch sets `origin/HEAD` again unless told not to; older git ignores
+        // the setting.
+        sh(
+            &repo,
+            "git config remote.origin.followRemoteHEAD never && git remote set-head origin -d",
+        );
         let asked =
             create(&repo, &folder_path(BESIDE, &repo, "ENG-2"), "ENG-2", None, false).unwrap().path;
         assert_eq!(head(&asked, "HEAD"), head(&repo, "refs/remotes/origin/main"));
+        assert!(local_default_branch(&repo).is_none(), "the remote was asked");
+        let tracking =
+            create(&repo, &folder_path(BESIDE, &repo, "eng-8"), "eng-8-remote", None, false)
+                .unwrap()
+                .path;
+        assert_eq!(head(&tracking, "HEAD"), head(&repo, "refs/remotes/origin/eng-8-remote"));
+        let config = |key: &str| {
+            String::from_utf8_lossy(&git(&repo, &["config", key]).unwrap().stdout)
+                .trim()
+                .to_string()
+        };
+        assert_eq!(config("branch.eng-8-remote.remote"), "origin");
+        assert_eq!(config("branch.eng-8-remote.merge"), "refs/heads/eng-8-remote");
         let _ = std::fs::remove_dir_all(root);
     }
 

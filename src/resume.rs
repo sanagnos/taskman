@@ -230,8 +230,8 @@ thread_local! {
 
 /// Removes the owner file at `path` unless someone holds it, under its lock, as only a holder may
 /// (see `take`). Returns who holds it: `Free` once it's removed or when there's none. When it can't
-/// be taken for another reason (`take` fails: the folder or the file can't be opened for writing),
-/// the file stays, and what `peek` says is returned.
+/// be taken for another reason (`take` fails: the folder or the file can't be opened for writing,
+/// or it "keeps being replaced"), the file stays, and what `peek` says is returned.
 pub fn remove(path: &Path) -> Owner {
     // Peeked at first, as a close holds it already and removes it itself: `take` would wait.
     match peek(path) {
