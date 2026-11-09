@@ -620,55 +620,57 @@ fn fit_reason(clause: &str, fix_at: Option<usize>, width: usize) -> String {
 
 /// `text` as a ticket's own title (`Ticket::label`): on one line, without what hides text from a
 /// reader, and cut to `LABEL_WIDTH` and `LABEL_BYTES`. None when what's left has nothing to see:
-/// all of it, or all the cut leaves, is blank (`util::blank`). A session can write it, so it
+/// all of it, or all the cut keeps, is blank (`util::blank`). A session can write it, so it
 /// counts as untrusted however it came.
 pub(super) fn clean_label(text: &str) -> Option<String> {
     let label = untrusted::line(text);
-    let label = if label_fits(&label) { label } else { cut_label(&label) };
-    Some(label).filter(|l| label_fits(l) && !util::blank(l))
+    let label = if label_fits(&label) { Some(label) } else { cut_label(&label) };
+    label.filter(|l| label_fits(l) && !util::blank(l))
 }
 
-/// Whether `label`, cleaned, is within both limits.
+/// Whether `label` is within both limits.
 fn label_fits(label: &str) -> bool {
     util::width(label) <= LABEL_WIDTH && label.len() <= LABEL_BYTES
 }
 
 /// `label`, a clean line too wide or too long, cut to fit and cleaned again (a cut can leave a
-/// joiner or a space at its end), ended with `…` where the columns ran out. In whole graphemes
-/// where it can be: a cut between an emoji and its U+FE0E would leave it a column wider (⌚︎ is
-/// one column, ⌚ two), so a title saved again would change. A first grapheme that doesn't fit
-/// on its own is cut inside instead, rather than lose the title: a run of Hangul jamo or of
-/// prepended marks, a long chain of joined emoji, a letter with hundreds of combining marks.
-fn cut_label(label: &str) -> String {
+/// joiner or a space at its end), ended with `…` where the columns ran out. None when what it
+/// keeps is blank. In whole graphemes where it can be: a cut between an emoji and its U+FE0E
+/// would leave it a column wider (⌚︎ is one column, ⌚ two), so a title saved again would change.
+/// The grapheme at the edge is cut inside instead when it's wider than two columns (a run of
+/// Hangul jamo or of prepended marks, characters drawn side by side), or when it's the first,
+/// rather than lose the title (a long chain of joined emoji, a letter with hundreds of combining
+/// marks). An ordinary one, such as a flag or 👩‍💻, is left out whole.
+fn cut_label(label: &str) -> Option<String> {
     use unicode_segmentation::UnicodeSegmentation;
     let more = if util::width(label) > LABEL_WIDTH { "…" } else { "" };
     let (cols, bytes) = (LABEL_WIDTH - util::width(more), LABEL_BYTES - more.len());
-    let cut = |end: usize| untrusted::line(&format!("{}{more}", &label[..end]));
-    let (mut used, mut end) = (0, 0);
+    let cut = |end: usize| {
+        let kept = &label[..end];
+        (!util::blank(kept)).then(|| untrusted::line(&format!("{kept}{more}")))
+    };
+    let (mut used, mut end, mut edge) = (0, 0, "");
     for (at, g) in label.grapheme_indices(true) {
         used += util::width(g);
         if used > cols || at + g.len() > bytes {
+            edge = g;
             break;
         }
         end = at + g.len();
     }
-    if end > 0 {
+    if end > 0 && util::width(edge) <= 2 {
         return cut(end);
     }
-    // Inside the first grapheme, where columns don't add up character by character: the last
-    // character's edge where what's saved fits, never before a selector. A few hundred tries at
-    // most, as the bytes allowed bound them.
+    // Inside it, where columns don't add up character by character: the last character's edge
+    // where what's saved fits, never before a selector.
     let selector = ['\u{fe0e}', '\u{fe0f}'];
-    label
-        .char_indices()
-        .map(|(at, _)| at)
-        .skip(1)
-        .take_while(|&at| at <= bytes)
-        .filter(|&at| !label[at..].starts_with(selector))
-        .map(cut)
-        .filter(|l| label_fits(l))
-        .last()
-        .unwrap_or_default()
+    edge.char_indices()
+        .rev()
+        .map(|(i, _)| end + i)
+        .filter(|&at| at > end && at <= bytes && !label[at..].starts_with(selector))
+        .filter_map(cut)
+        .find(|l| label_fits(l))
+        .or_else(|| cut(end))
 }
 
 /// Whether `id` arrived after `seen` was first filled; nothing is new before the first fetch.
@@ -1022,21 +1024,30 @@ mod tests {
         assert_eq!(label, format!("{before}…"));
         assert_eq!((util::width(&label), label.len()), (LABEL_WIDTH, LABEL_BYTES));
         assert_eq!(clean_label(&label), Some(label));
-        // A first grapheme too wide or too long on its own is cut inside, not lost: Hangul jamo
-        // join into one (two columns each), prepended marks join what follows, and so do emoji
-        // joined by U+200D, whose selectors stay with them.
+        // A grapheme at the edge is cut inside, not lost, when it's the first or wider than two
+        // columns: Hangul jamo join into one (two columns each), prepended marks join what
+        // follows, and so do emoji joined by U+200D, whose selectors stay with them (in the
+        // last, the byte limit falls between ⌚ and its U+FE0E).
         for text in [
             "\u{1100}".repeat(150),
+            format!("Fix {}", "\u{1100}".repeat(150)),
             format!("{}x", "\u{600}".repeat(250)),
             "⌚\u{fe0e}\u{200d}".repeat(100),
+            format!("\u{600}\u{600}{}", "⌚\u{fe0e}\u{200d}".repeat(100)),
         ] {
             let label = clean_label(&text).unwrap_or_else(|| panic!("{text:?}"));
             assert!(label_fits(&label) && text.starts_with(label.trim_end_matches('…')));
             assert!(!label.ends_with('⌚'), "{label:?}");
             assert_eq!(clean_label(&label), Some(label));
         }
-        let jamo = clean_label(&"\u{1100}".repeat(150)).unwrap();
-        assert_eq!(jamo, format!("{}…", "\u{1100}".repeat(99)));
+        let jamo = |n| "\u{1100}".repeat(n);
+        assert_eq!(clean_label(&jamo(150)), Some(format!("{}…", jamo(99))));
+        assert_eq!(clean_label(&format!("Fix {}", jamo(150))), Some(format!("Fix {}…", jamo(97))));
+        // An ordinary one is left out whole, as the column cut always did.
+        let flags = format!("{}🇬🇷", "x".repeat(199));
+        assert_eq!(clean_label(&flags), Some(format!("{}…", "x".repeat(199))));
+        // A cut that keeps nothing to see loses the title, whatever comes after.
+        assert_eq!(clean_label(&format!("{}{}", "\u{301}".repeat(1000), "x".repeat(300))), None);
     }
 
     mod labels {
