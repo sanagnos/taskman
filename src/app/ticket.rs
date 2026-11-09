@@ -1042,6 +1042,8 @@ mod tests {
             assert!(!label.ends_with('⌚'), "{label:?}");
             assert_eq!(clean_label(&label), Some(label));
         }
+        // As today's width tables have it: the expected cuts below count on it.
+        assert_eq!(util::width("\u{1100}"), 2);
         let jamo = |n| "\u{1100}".repeat(n);
         assert_eq!(clean_label(&jamo(150)), Some(format!("{}…", jamo(99))));
         assert_eq!(clean_label(&format!("Fix {}", jamo(150))), Some(format!("Fix {}…", jamo(97))));
@@ -1076,6 +1078,8 @@ mod tests {
         );
         // A cut that keeps nothing to see loses the title, whatever comes after.
         assert_eq!(clean_label(&format!("{}{}", "\u{301}".repeat(1000), "x".repeat(300))), None);
+        // Cut for columns, the `…` leaves 797 bytes, which these 798 of marks don't fit in.
+        assert_eq!(clean_label(&format!("{}{}", marks(399), x(300))), None);
     }
 
     mod labels {
@@ -1140,10 +1144,13 @@ mod tests {
                 "(\\PC|[\\x00-\\x1f\\u{200b}\\u{202e}\\u{e0001}]){0,300}".boxed(),
                 long_label().boxed(),
             ]) {
-                // Lost only when there's nothing to see in what the bytes allowed can keep.
+                // Lost only when there's nothing to see in what the bytes allowed can keep: fewer
+                // when it's cut for columns too, as the `…` takes three.
                 let label = clean_label(&text);
                 let line = untrusted::line(&text);
-                let mut end = line.len().min(LABEL_BYTES);
+                let wide = util::width(&line) > LABEL_WIDTH;
+                let bytes = if wide { LABEL_BYTES - '…'.len_utf8() } else { LABEL_BYTES };
+                let mut end = line.len().min(bytes);
                 while !line.is_char_boundary(end) {
                     end -= 1;
                 }

@@ -500,11 +500,15 @@ fn refuses_a_title_it_cant_give() {
     let i = index(&app, "ENG-52");
     app.tickets[i].t.label = Some("Login".into());
     let text = refused(titled(&mut app, "0003", "/src/acme", "ENG-52", "\x1b\u{200b}"));
-    assert_eq!(text, "ENG-52's title would be empty once cleaned");
+    assert_eq!(
+        text,
+        "ENG-52's title would be empty once cleaned: give it words to show, or leave it empty to \
+         clear it"
+    );
     assert_eq!(app.tickets[i].t.label.as_deref(), Some("Login"));
     let marks = format!("{}Fix", "\u{301}".repeat(1000));
     let text = refused(titled(&mut app, "0007", "/src/acme", "ENG-52", &marks));
-    assert_eq!(text, "ENG-52's title would show nothing once cut to fit");
+    assert_eq!(text, "ENG-52's title would show nothing once cut to fit: put the words first");
     assert_eq!(app.tickets[i].t.label.as_deref(), Some("Login"));
     // A key is only unique within its project.
     let text = refused(titled(&mut app, "0004", "/src/notes", "ENG-52", "Fix"));

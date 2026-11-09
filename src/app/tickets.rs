@@ -515,7 +515,7 @@ impl App {
     /// Sets the title of ticket `key` in the project in `repo`, or clears it with `text` empty, as
     /// `prefix e` and `taskman title` do. The session isn't touched: unlike an agent's name, this
     /// is only what the card shows. Returns the title as saved; Err, with nothing changed, for what
-    /// isn't an open ticket, or text with nothing left to show once cleaned.
+    /// isn't an open ticket, or text with nothing left to show once cleaned or cut.
     pub(super) fn set_label(
         &mut self,
         repo: &Path,
@@ -533,9 +533,14 @@ impl App {
         if label.is_none() && !text.is_empty() {
             // Visible, but not in what fits: hundreds of combining marks ahead of the text.
             if !util::blank(&untrusted::line(text)) {
-                return Err(format!("{shown}'s title would show nothing once cut to fit"));
+                return Err(format!(
+                    "{shown}'s title would show nothing once cut to fit: put the words first"
+                ));
             }
-            return Err(format!("{shown}'s title would be empty once cleaned"));
+            return Err(format!(
+                "{shown}'s title would be empty once cleaned: give it words to show, or leave it \
+                 empty to clear it"
+            ));
         }
         tv.t.label.clone_from(&label);
         self.save();
