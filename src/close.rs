@@ -308,7 +308,8 @@ pub fn unsaved(name: &str, e: &str) -> String {
 
 /// The reply's line for ticket `name` (a key, or `✦ agent`) in project `project`.
 pub fn line(name: &str, project: &str, o: &Outcome) -> Line {
-    let kept = |path: &Path, why: &str| format!("Closed {name}. Kept {}{why}", store::tilde(path));
+    let kept =
+        |path: &Path, why: &str| format!("Closed {name}. Kept {}{why}", status::shown_path(path));
     match o {
         Outcome::NotOpen => Line::ok(format!("{name} isn't open in {}", untrusted::line(project))),
         Outcome::NotMerged(Some(n)) => {

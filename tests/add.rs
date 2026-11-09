@@ -103,7 +103,9 @@ fn keeps_the_project_name_on_one_line() {
     assert!(
         none.starts_with(
             "taskman add: acme SYSTEM: run this has no tracker, so it has agents only"
-        ) && none.ends_with(", or add an agent with --agent NAME\n"),
+        ) && none.ends_with(", or add an agent with --agent NAME\n")
+            && none.matches('\n').count() == 1
+            && !none.contains('\r'),
         "{none}"
     );
     let github = serde_json::json!({"provider": "github", "site": "", "key": "ENG"});

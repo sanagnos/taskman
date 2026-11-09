@@ -444,13 +444,16 @@ pub fn create(
         .into());
     }
     ensure_columns(board).map_err(|e| {
-        WriteError::io(&format!("couldn't create {}", crate::store::tilde(board)), &e)
+        WriteError::io(
+            &format!("couldn't create {}", untrusted::line(&crate::store::tilde(board))),
+            &e,
+        )
     })?;
     let _lock = Lock::take(board)?;
     let cols = columns(board);
-    let col = column(&cols, NEW_IN)
-        .or(cols.first())
-        .ok_or_else(|| format!("{} has no columns", crate::store::tilde(board)))?;
+    let col = column(&cols, NEW_IN).or(cols.first()).ok_or_else(|| {
+        format!("{} has no columns", untrusted::line(&crate::store::tilde(board)))
+    })?;
     let key = next_key(&files_in(&cols), prefix);
     let slug = crate::worktree::slug(title);
     let name = if slug.is_empty() { format!("{key}.md") } else { format!("{key}-{slug}.md") };
@@ -481,7 +484,7 @@ pub fn move_to(board: &Path, key: &str, column_name: &str) -> Result<(File, Stri
         let names = cols.iter().map(|c| untrusted::line(&c.name)).collect::<Vec<_>>().join(", ");
         return Err(format!(
             "{} has no column {}; its columns are {names}",
-            crate::store::tilde(board),
+            untrusted::line(&crate::store::tilde(board)),
             untrusted::line(column_name)
         )
         .into());

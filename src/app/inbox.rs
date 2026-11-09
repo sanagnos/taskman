@@ -11,7 +11,7 @@ use crate::session::Reaper;
 use crate::store::{self, Base, Ticket};
 use crate::ticket_key;
 use crate::tracker::{Access, Created};
-use crate::{add, close, github, resume, untrusted, util, worktree};
+use crate::{add, close, github, resume, status, untrusted, util, worktree};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -176,7 +176,8 @@ impl App {
     fn close_now(&mut self, id: &str, req: add::Request) {
         let close = req.close.unwrap_or_default();
         let Some(p) = self.projects.iter().position(|p| p.repo == req.repo) else {
-            let e = format!("the project in {} is no longer in taskman", store::tilde(&req.repo));
+            let e =
+                format!("the project in {} is no longer in taskman", status::shown_path(&req.repo));
             add::reply(id, &req, &[add::Line::err(e)]);
             return;
         };
@@ -358,7 +359,7 @@ impl App {
         let Some(p) = self.projects.iter().position(|p| p.repo == req.repo) else {
             return Err(format!(
                 "the project in {} is no longer in taskman",
-                store::tilde(&req.repo)
+                status::shown_path(&req.repo)
             ));
         };
         match self.projects[p].tracker {
@@ -453,7 +454,11 @@ impl App {
         for ((title, _), res) in req.new_tickets().into_iter().zip(made) {
             match res {
                 Ok(c) => {
-                    lines.push(add::Line::ok(format!("Created {}: {}", c.key, c.at)));
+                    lines.push(add::Line::ok(format!(
+                        "Created {}: {}",
+                        c.key,
+                        untrusted::line(&c.at)
+                    )));
                     items.push(add::Item::Ticket { key: c.key, title: title.trim().to_string() });
                 }
                 Err(e) => {
@@ -529,7 +534,8 @@ impl App {
         closed: bool,
     ) -> (Vec<add::Line>, Option<String>) {
         let Some(p) = self.projects.iter().position(|p| p.repo == req.repo) else {
-            let e = format!("the project in {} is no longer in taskman", store::tilde(&req.repo));
+            let e =
+                format!("the project in {} is no longer in taskman", status::shown_path(&req.repo));
             return (
                 req.items.iter().map(|_| add::Line::err(e.clone())).collect(),
                 Some(format!("{}: {e}", req.command())),
@@ -633,19 +639,19 @@ impl App {
         let title = if title.is_empty() {
             String::new()
         } else {
-            format!(" \"{}\"", util::truncate(title, 60))
+            format!(" \"{}\"", util::truncate(&untrusted::line(title), 60))
         };
         let place = if tv.creating {
             format!(
                 "creating worktree {}",
-                store::tilde(&worktree::folder_path(
+                status::shown_path(&worktree::folder_path(
                     proj.worktrees.folder_format(),
                     &proj.repo,
                     &tv.t.key
                 ))
             )
         } else if tv.t.cwd != tv.t.repo {
-            format!("in its worktree {}", store::tilde(&tv.t.cwd))
+            format!("in its worktree {}", status::shown_path(&tv.t.cwd))
         } else {
             "in the main checkout".into()
         };

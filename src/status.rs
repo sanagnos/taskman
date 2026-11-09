@@ -739,7 +739,9 @@ fn worktree_of(
 }
 
 /// A folder as the text shows it, on one line: its name is whatever the folder is called.
-fn shown_path(p: &Path) -> String {
+/// Folder `p` for a line of output: `~` for the home folder, and on one line, as a folder's
+/// name can hold anything.
+pub(crate) fn shown_path(p: &Path) -> String {
     untrusted::line(&store::tilde(p))
 }
 

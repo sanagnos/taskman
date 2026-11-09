@@ -2,8 +2,8 @@
 //! git commands that make it.
 
 use crate::resume::Hold;
-use crate::store::{self, Provider};
-use crate::{git, github, proc, untrusted};
+use crate::store::Provider;
+use crate::{git, github, proc, status, untrusted};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
@@ -143,12 +143,13 @@ pub fn create(
         // There's nothing in it to lose.
         let f = folder.to_string_lossy();
         let out = changing(git::command(repo).args(["worktree", "remove", &f]));
+        let shown = untrusted::line(&f);
         if !ok(&out) {
             return Err(match (&w.locked, out) {
                 (Some(_), _) => format!(
-                    "git keeps {} as a locked worktree; unlock it with git -C {} worktree unlock {f}",
-                    store::tilde(folder),
-                    store::tilde(repo)
+                    "git keeps {} as a locked worktree; unlock it with git -C {} worktree unlock {shown}",
+                    status::shown_path(folder),
+                    status::shown_path(repo)
                 ),
                 (None, Ok(o)) => git_error(&o),
                 (None, Err(e)) => format!("could not run git: {e}"),
@@ -162,7 +163,7 @@ pub fn create(
             _ => {
                 return Err(format!(
                     "{} already exists; move it, or change Folder in Project settings",
-                    store::tilde(folder)
+                    status::shown_path(folder)
                 ));
             }
         }
@@ -243,8 +244,9 @@ fn remove_unfinished(repo: &Path, folder: &Path) -> Result<(), String> {
     }
     Err(format!(
         "{} is a worktree git never finished making; remove it with \
-         git worktree remove --force --force {f}",
-        store::tilde(folder)
+         git worktree remove --force --force {}",
+        status::shown_path(folder),
+        untrusted::line(&f)
     ))
 }
 
@@ -578,7 +580,7 @@ pub fn remove(
     merged: Option<&str>,
     hold: &Hold,
 ) -> Result<String, String> {
-    let place = store::tilde(&check.path);
+    let place = status::shown_path(&check.path);
     let now = removal_check(repo, &check.path, merged)?
         .ok_or_else(|| format!("{place} isn't a worktree any more"))?;
     if !now.problems.is_empty() {

@@ -654,7 +654,7 @@ fn add(args: &[String]) -> Result<bool, String> {
                 match c.create(&prefix, title, description) {
                     // The key was checked as one; the link is the tracker's.
                     Ok(made) => {
-                        cli::out!("Created {}: {}", made.key, untrusted::clean(&made.at));
+                        cli::out!("Created {}: {}", made.key, untrusted::line(&made.at));
                         created.push(made.key.clone());
                         items.push(Item::Ticket { key: made.key, title: title.trim().into() });
                     }

@@ -1,0 +1,1 @@
+- `taskman add`, `close`, `title` and `move`, and the replies taskman gives them, keep a project's name, a folder and a ticket's title on one line, even if it holds a line break, and so do a project agent's and a ticket's startup instructions.
