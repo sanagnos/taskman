@@ -9,7 +9,11 @@
 
 mod common;
 
-use common::{Tui, acme, project, scratch_dir, sh, slow_git, stub_file, stubbed, taskman};
+use common::{
+    Tui, acme, project, scratch_dir, sh, slow_git, spawn_in_pty_writing, stub_file, stubbed,
+    taskman,
+};
+use std::io::Read;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -280,8 +284,9 @@ fn a_taskman_started_straight_after_a_kill_starts() {
 }
 
 /// A start that fails after a kill -9, before it has the terminal (no terminal, as `ssh host
-/// taskman` without -t; a tickets.json it can't read), doesn't use up the notice: the next start
-/// that gets as far as the terminal says the last one didn't quit cleanly.
+/// taskman` without -t; a tickets.json it can't read; a terminal it can't switch to its own
+/// screen), doesn't use up the notice: the next start that gets as far as the terminal says the
+/// last one didn't quit cleanly.
 #[test]
 fn a_failed_start_keeps_the_notice_of_a_kill() {
     use std::os::unix::process::CommandExt;
@@ -326,6 +331,32 @@ fn a_failed_start_keeps_the_notice_of_a_kill() {
     assert!(err.contains("tickets.json") && !err.contains("already running"), "{err}");
     assert!(alive.exists(), "the notice was used up by an unreadable tickets.json");
     std::fs::write(&tickets, saved).unwrap();
+
+    // A terminal it opens, but can't take: its output goes to a pipe no one reads, so switching to
+    // the alternate screen fails. It ends as on a quit, which removes `alive` otherwise.
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let (mut child, mut master) = spawn_in_pty_writing(stubbed(&dir), Some(Stdio::from(writer)));
+    let mut said = Vec::new();
+    let until = Instant::now() + LIMIT;
+    let status = loop {
+        let mut buf = [0u8; 4096];
+        while let Ok(n @ 1..) = master.read(&mut buf) {
+            said.extend_from_slice(&buf[..n]);
+        }
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < until, "still running: {}", String::from_utf8_lossy(&said));
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let said = String::from_utf8_lossy(&said);
+    assert_eq!(status.code(), Some(1), "{said}");
+    assert!(said.contains("Broken pipe"), "{said}");
+    assert!(!dir.join("state/taskman/panics.log").exists(), "{said}");
+    assert!(alive.exists(), "the notice was used up by a terminal it couldn't take");
+    let age = std::fs::metadata(&alive).unwrap().modified().unwrap().elapsed().unwrap();
+    assert!(age > Duration::from_secs(3600), "the heartbeat is only {age:?} old");
 
     let mut tui = Tui::start("killed-failed-again", &dir, stubbed(&dir), LIMIT);
     tui.wait_text("taskman didn't quit cleanly last time");

@@ -118,7 +118,15 @@ pub fn notified(dir: &Path) -> String {
 
 /// Starts `cmd` in a new pty, as its controlling terminal. Returns it and the pty's master side,
 /// which doesn't block.
-pub fn spawn_in_pty(mut cmd: Command) -> (std::process::Child, std::fs::File) {
+pub fn spawn_in_pty(cmd: Command) -> (std::process::Child, std::fs::File) {
+    spawn_in_pty_writing(cmd, None)
+}
+
+/// `spawn_in_pty`, with stdout going to `stdout` rather than the pty when given.
+pub fn spawn_in_pty_writing(
+    mut cmd: Command,
+    stdout: Option<Stdio>,
+) -> (std::process::Child, std::fs::File) {
     let _guard = SPAWN.lock().unwrap_or_else(|e| e.into_inner());
     let (mut m, mut s) = (-1, -1);
     // SAFETY: openpty writes two descriptors into `m` and `s`; the null name, termios and window
@@ -146,7 +154,7 @@ pub fn spawn_in_pty(mut cmd: Command) -> (std::process::Child, std::fs::File) {
     unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
     cmd.env("TERM", "xterm-256color")
         .stdin(Stdio::from(slave.try_clone().unwrap()))
-        .stdout(Stdio::from(slave.try_clone().unwrap()))
+        .stdout(stdout.unwrap_or_else(|| Stdio::from(slave.try_clone().unwrap())))
         .stderr(Stdio::from(slave));
     // Its own session with the pty as the controlling terminal, as in a terminal window.
     // SAFETY: the closure runs in the child between fork and exec; it allocates nothing and calls

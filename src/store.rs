@@ -958,9 +958,10 @@ const SEE_GUIDE: &str = "see Storing a token in taskman's guide";
 pub(crate) const NOT_IN_THE_SHELL: &str = " in the shell taskman started from";
 
 /// The startup file bash reads in a new terminal. On macOS (`mac`), Terminal starts it as a login
-/// shell, which reads the first of ~/.bash_profile, ~/.bash_login and ~/.profile in `home` that
-/// exists and is readable, and not ~/.bashrc: adding to a ~/.bash_profile that isn't there would
-/// make it, and bash would stop reading an existing ~/.profile.
+/// shell, which reads, as bash's manual puts it, the first of ~/.bash_profile, ~/.bash_login and
+/// ~/.profile in `home` that exists and is readable, and not ~/.bashrc: adding to a
+/// ~/.bash_profile that isn't there would make it, and bash would stop reading an existing
+/// ~/.profile.
 fn bash_file(mac: bool, home: &Path) -> &'static str {
     if !mac {
         return "~/.bashrc";
@@ -1787,7 +1788,8 @@ mod tests {
         assert_eq!(bash_file(false, &home), "~/.bashrc");
         std::fs::write(home.join(".bash_login"), "").unwrap();
         assert_eq!(bash_file(true, &home), "~/.bash_login");
-        // One bash can't read, it skips, as root can read anything.
+        // One that can't be read is passed over, as the manual says (unless run as root, which
+        // can read anything).
         use std::os::unix::fs::PermissionsExt;
         let profile = home.join(".bash_profile");
         std::fs::write(&profile, "").unwrap();

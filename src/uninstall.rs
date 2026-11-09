@@ -412,7 +412,8 @@ fn print(plan: &Plan, keychain: &Keychain, purge: bool) {
 /// What the user may have added to their shell for taskman: tokens, and the program's folder
 /// (`dir`, as shown and as typed) on PATH. fish keeps both in universal variables rather than a
 /// startup file: `fish_add_path`, which the install script suggests, adds the folder to
-/// `$fish_user_paths`. The line that takes it out leaves the list as it is when it isn't there.
+/// `$fish_user_paths`. The line that takes it out compares the folder as text, not as a pattern,
+/// and changes nothing when it isn't there.
 fn shell_lines(dir: Option<(String, String)>, fish: bool) -> Vec<String> {
     if !fish {
         let path = dir.map(|(shown, _)| format!(", and the PATH line for {shown}"));
@@ -425,12 +426,20 @@ fn shell_lines(dir: Option<(String, String)>, fish: bool) -> Vec<String> {
         "fish variables you set: a `set -Ux …_TOKEN` or `…_API_KEY` (or a `set -x` line in ~/.config/fish/config.fish)".to_string(),
     ];
     if let Some((shown, dir)) = dir {
-        let dir = resume::quote(&dir);
+        let dir = fish_quote(&dir);
         lines.push(format!(
-            "{shown} in $fish_user_paths, if fish_add_path put it there: set -U fish_user_paths (string match -v -- {dir} $fish_user_paths)"
+            "{shown} in $fish_user_paths, if fish_add_path put it there: set -l i (contains -i -- {dir} $fish_user_paths); and set -Ue fish_user_paths[$i]"
         ));
     }
     lines
+}
+
+/// `s` as one word for fish: inside its single quotes, `\\` and `\'` are escapes, unlike sh's.
+fn fish_quote(s: &str) -> String {
+    if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_./:@%+=,".contains(c)) {
+        return s.to_string();
+    }
+    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
 }
 
 /// Asks `question` on the terminal; anything but yes is no.
@@ -528,6 +537,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// fish's single quotes take `\\` and `\'` as escapes, so both are escaped; a glob character
+    /// needs nothing, as `contains` compares text.
+    #[test]
+    fn quotes_a_folder_for_fish() {
+        assert_eq!(fish_quote("/home/tester/.local/bin"), "/home/tester/.local/bin");
+        assert_eq!(fish_quote("/home/tester/my bin"), "'/home/tester/my bin'");
+        assert_eq!(fish_quote(r"/home/tester/a\b"), r"'/home/tester/a\\b'");
+        assert_eq!(fish_quote("/home/tester/it's"), r"'/home/tester/it\'s'");
+        assert_eq!(fish_quote(r"/x/\'"), r"'/x/\\\''");
+        assert_eq!(fish_quote("/home/tester/b*n?"), "'/home/tester/b*n?'");
+        assert_eq!(fish_quote(""), "''");
+    }
+
     /// fish keeps the PATH and the tokens in universal variables, not a startup file.
     #[test]
     fn says_where_each_shell_keeps_what_you_added() {
@@ -543,13 +565,12 @@ mod tests {
         assert!(fish[0].starts_with("fish variables you set: a `set -Ux …_TOKEN`"), "{fish:?}");
         assert_eq!(
             fish[1],
-            "~/.local/bin in $fish_user_paths, if fish_add_path put it there: set -U fish_user_paths (string match -v -- /home/tester/.local/bin $fish_user_paths)"
+            "~/.local/bin in $fish_user_paths, if fish_add_path put it there: set -l i (contains -i -- /home/tester/.local/bin $fish_user_paths); and set -Ue fish_user_paths[$i]"
         );
         let odd = Some(("~/my bin".to_string(), "/home/tester/my bin".to_string()));
-        assert!(
-            shell_lines(odd, true)[1]
-                .ends_with("(string match -v -- '/home/tester/my bin' $fish_user_paths)")
-        );
+        let odd = &shell_lines(odd, true)[1];
+        let removes = ": set -l i (contains -i -- '/home/tester/my bin' $fish_user_paths); and set -Ue fish_user_paths[$i]";
+        assert!(odd.ends_with(removes), "{odd}");
         assert!(fish.iter().all(|l| !l.contains("startup file")), "{fish:?}");
         assert_eq!(shell_lines(None, true).len(), 1);
     }
