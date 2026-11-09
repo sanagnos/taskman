@@ -1,1 +1,0 @@
-- A local branch named like one of origin's (`origin/main`, `origin/<branch>`) no longer makes the Add form, the stack hints and the sidebar show `remotes/origin/main`, nor makes creating a ticket's worktree fail with "ambiguous object name".

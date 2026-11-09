@@ -1,1 +1,0 @@
-- Without a remote, closing a ticket while the main checkout's HEAD is detached no longer keeps its worktree for commits that are on another branch, and a tag named like the main checkout's branch no longer makes that check fail or the Add form call the branch `heads/main`.

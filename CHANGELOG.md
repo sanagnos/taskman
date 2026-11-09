@@ -2,6 +2,18 @@
 
 What changed in each release; a release's notes on GitHub are its section here. What's merged but not released yet is in [changelog.d/](changelog.d/), a file for each change, which the release moves in here. Versions follow Cargo's rule for 0.x: the patch number (0.1.1) for anything compatible, fixes and new features alike, and the minor (0.2.0) for breaking changes, such as changed keys, config or saved-state format, or a removed command.
 
+## 0.1.41 - 2026-11-09
+
+- A folded project's header shows the working spinner while one of its sessions is working, so it no longer looks the same as a project whose sessions are all idle. The `●` for a session that needs you, or finished a turn or ended since you looked, still wins over it, and the `↑ N more` and `↓ N more` rows of the sidebar and the find picker follow the same rule.
+- The title form keeps a fix command whole, such as `gh auth refresh -h github.com` after a long repository name, and shortens the text before it instead. A ticket's own title cut at its length limit no longer gains a column when an emoji loses its text-style selector in the cut, so saving it unchanged doesn't shorten it again.
+- Without a remote, closing a ticket while the main checkout's HEAD is detached no longer keeps its worktree for commits that are on another branch, and a tag named like the main checkout's branch no longer makes that check fail or the Add form call the branch `heads/main`.
+- A local branch named like one of origin's (`origin/main`, `origin/<branch>`) no longer makes the Add form, the stack hints and the sidebar show `remotes/origin/main`, nor makes creating a ticket's worktree fail with "ambiguous object name".
+- When Jira or Linear fails on its side (HTTP 500 or more), the tracker panel says taskman tries again on the next refresh, as it does when the tracker can't be reached, rather than to try again later.
+- After taskman was killed or crashed, a start that fails before it opens (no terminal, as with `ssh host taskman` without `-t`, or a tickets.json it can't read) no longer uses up the "didn't quit cleanly" notice: the next start that opens still shows it.
+- For bash on macOS, the install script and the "isn't set" token error name the startup file bash actually reads (`~/.bash_profile`, `~/.bash_login` or `~/.profile`, whichever comes first), so adding the line no longer creates a `~/.bash_profile` that stops bash reading your `~/.profile`. `taskman uninstall` tells fish users where fish keeps what they added: universal variables and `$fish_user_paths`, with the command that takes the folder out.
+- A project's name, a folder, and a ticket's title and link stay on one line, even if they hold a line break, in what `taskman add`, `close`, `title` and `move` print, in the replies taskman gives them, and in a project agent's and a ticket's startup instructions. A folder is named exactly as it is, spaces included: only a line break, a backslash or a character that can't be seen shows as an escape, such as `\n`.
+- The command taskman gives for removing a worktree that git never finished making now names the repository (`git -C <repo>`), as the one for unlocking a locked worktree already did. Both name the folder only when it can be copied as it is; otherwise they say to take it from `git worktree list`.
+
 ## 0.1.40 - 2026-11-08
 
 - A git fetch or other git command that taskman stops at its time limit is asked to stop first, so it no longer leaves a ref or index lock that fails your next git command there. A command still running when you quit no longer leaves what it started running in the background.
