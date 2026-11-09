@@ -1219,24 +1219,113 @@ mod tests {
         ));
     }
 
+    /// A workflow's lines as (indent, text), with comments, quotes and trailing space taken off
+    /// and runs of spaces made one: enough to read its keys and conditions, so a reformat that
+    /// means the same reads the same. Not a YAML parser, and it doesn't read `run:` scripts.
+    fn workflow_lines(yaml: &str) -> Vec<(usize, String)> {
+        yaml.lines()
+            .map(|line| {
+                // A comment starts at a # that begins the line or follows a space.
+                let code = line
+                    .match_indices('#')
+                    .find(|&(i, _)| i == 0 || line[..i].ends_with([' ', '\t']))
+                    .map_or(line, |(i, _)| &line[..i]);
+                let indent = code.len() - code.trim_start().len();
+                let text = code.replace(['\'', '"'], "");
+                (indent, text.split_whitespace().collect::<Vec<_>>().join(" "))
+            })
+            .filter(|(_, text)| !text.is_empty())
+            .collect()
+    }
+
+    /// The lines under `lines[at]`: those after it indented further, up to the next that isn't.
+    fn block(lines: &[(usize, String)], at: usize) -> &[(usize, String)] {
+        let rest = &lines[at + 1..];
+        &rest[..rest.iter().position(|(i, _)| *i <= lines[at].0).unwrap_or(rest.len())]
+    }
+
+    /// Where `key:` is among `lines` at `indent`.
+    fn key_at(lines: &[(usize, String)], indent: usize, key: &str) -> Option<usize> {
+        let key = format!("{key}:");
+        lines.iter().position(|(i, t)| *i == indent && t.split(' ').next() == Some(key.as_str()))
+    }
+
     /// Only a run on a version tag may publish. A pull request's dry run runs release.yml as the
     /// pull request has it, and Dependabot's get the write permissions the jobs ask for, so the
     /// release job's condition must name what may publish, and no other job may write.
     #[test]
     fn only_a_version_tag_publishes() {
-        let released = include_str!("../.github/workflows/release.yml");
-        let start = released.find("\n  release:\n").unwrap();
-        let (before, job) = released.split_at(start);
-        assert!(job.contains(
-            "\n    if: >-\n      ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch')\n      && startsWith(github.ref, 'refs/tags/v') && needs.version.outputs.dry_run == 'false' }}\n"
-        ));
-        assert!(job.contains("\n    environment: release\n"));
-        assert!(!before.contains(": write") && !before.contains("environment:"));
-        // The last job, so its permissions are the only writes after `before`.
-        let job_header = |l: &str| l.starts_with("  ") && !l.starts_with("   ") && l.ends_with(':');
-        assert_eq!(job.lines().filter(|l| job_header(l)).count(), 1);
-        // It runs the base branch's file with a write token: never for a pull request's code.
-        assert!(!released.contains("pull_request_target"));
+        let lines = workflow_lines(include_str!("../.github/workflows/release.yml"));
+        let top = |key| key_at(&lines, 0, key).unwrap_or_else(|| panic!("no {key}:"));
+        // Nothing can write but what a job asks for.
+        assert_eq!(lines[top("permissions")].1, "permissions: {}");
+        // pull_request_target, workflow_run or issue_comment would run with a write token on what
+        // others wrote.
+        let on = block(&lines, top("on"));
+        let events: Vec<_> = on.iter().filter(|(i, _)| *i == on[0].0).map(|(_, t)| t).collect();
+        assert_eq!(events, ["push:", "pull_request:", "workflow_dispatch:"]);
+
+        let jobs = block(&lines, top("jobs"));
+        let indent = jobs[0].0;
+        let mut releases = 0;
+        for at in (0..jobs.len()).filter(|&n| jobs[n].0 == indent) {
+            let name = jobs[at].1.trim_end_matches(':');
+            let job = block(jobs, at);
+            // A key of the job and what's under it, without spaces.
+            let squashed = |key| {
+                let at = key_at(job, indent + 2, key)?;
+                let under = block(job, at).iter().map(|(_, t)| t.as_str());
+                Some(
+                    std::iter::once(job[at].1.as_str())
+                        .chain(under)
+                        .collect::<String>()
+                        .replace(' ', ""),
+                )
+            };
+            if name != "release" {
+                let writes = |t: &str| {
+                    t.ends_with(": write")
+                        || t.contains("write-all")
+                        || (t.starts_with("permissions:") && t.contains("write"))
+                };
+                assert!(!job.iter().any(|(_, t)| writes(t)), "{name} can write");
+                assert_eq!(squashed("environment"), None, "{name} has an environment");
+                continue;
+            }
+            releases += 1;
+            let condition = squashed("if").expect("the release job has a condition");
+            let condition = condition.strip_prefix("if:").unwrap();
+            assert_eq!(
+                condition.strip_prefix(">-").unwrap_or(condition),
+                "${{(github.event_name==push||github.event_name==workflow_dispatch)\
+                 &&startsWith(github.ref,refs/tags/v)&&needs.version.outputs.dry_run==false}}"
+            );
+            let environment = squashed("environment").expect("the release job has an environment");
+            assert!(
+                ["environment:release", "environment:{name:release}", "environment:name:release"]
+                    .contains(&environment.as_str()),
+                "{environment}"
+            );
+        }
+        assert_eq!(releases, 1);
+    }
+
+    #[test]
+    fn reads_a_workflow_however_it_is_written() {
+        let lines = workflow_lines(
+            "on:  # events\n  push:\njobs:\n  release:   # the one\n    permissions:\n      \
+             contents: 'write'\n    environment: {name: \"release\"}\n    steps:\n      - run: |\n          \
+             echo '#1'\n",
+        );
+        assert_eq!(lines[0], (0, "on:".into()));
+        assert_eq!(lines[3], (2, "release:".into()));
+        assert_eq!(lines[5], (6, "contents: write".into()));
+        assert_eq!(lines[6], (4, "environment: {name: release}".into()));
+        // A # in a word isn't a comment.
+        assert_eq!(lines[9], (10, "echo #1".into()));
+        let jobs = key_at(&lines, 0, "jobs").unwrap();
+        assert_eq!(block(&lines, jobs).len(), 7);
+        assert_eq!(key_at(block(&lines, jobs), 4, "environment"), Some(3));
     }
 
     #[test]

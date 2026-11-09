@@ -9,10 +9,12 @@
 # release, to build one again after deleting it or after CI on its commit was re-run (or started
 # by hand) and passed:
 #   gh workflow run release.yml --ref v1.2.3
-# A release runs on its tag, started either way, as only version tags may deploy to the release
-# job's environment. A run for a tag that already has a published release builds nothing and ends
-# green: that's the tag push GitHub delivered late, after the release script had started a run by
-# hand.
+# A release runs on its tag, started either way: the release job's condition lets nothing else
+# through, and only version tags may deploy to its environment. Started by hand on a tag, it runs
+# the workflow as it is at the tag, as the tag push does (GitHub runs the copy at the ref it's
+# given; the first hand start after this changed is the first to show it). A run for a tag that
+# already has a published release builds nothing and ends green: that's the tag push GitHub
+# delivered late, after the release script had started a run by hand.
 #
 # A dry run builds, runs and checks every binary and archive as a release would, for Cargo.toml's
 # version, and keeps the archives and SHA256SUMS as the run's artifacts; it needs no tag, doesn't
@@ -57,13 +59,15 @@ on:
 permissions: {}
 
 concurrency:
-  # Dry runs are by commit, so one never waits on, or holds up, a release; a pull request's are by
-  # pull request, a newer push replacing its run.
+  # Dry runs are by commit, a pull request's too, so one never waits on, or holds up, a release.
+  # A newer push to a pull request doesn't cancel the older run, which finishes: GitHub refuses
+  # cancel-in-progress with queue: max, and doesn't say whether it checks that before working out
+  # an expression, so an expression here could make the file invalid for a tag push too.
   group: >-
     release-${{ github.event_name == 'pull_request'
-    && format('pr-{0}', github.event.pull_request.number)
+    && format('pr-{0}-{1}', github.event.pull_request.number, github.sha)
     || inputs.dry_run && format('dry-run-{0}', github.sha) || github.ref_name }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
   # Runs for one tag wait their turn, all of them: with the default queue of one, a third run
   # would cancel the one waiting, leaving a red run on the release commit.
   queue: max
