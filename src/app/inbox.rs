@@ -31,6 +31,7 @@ fn heartbeat_due(last: Option<Instant>, now: Instant) -> bool {
 /// The reply for agent `t`, just added by `taskman add` to `project`: its session starts at once,
 /// named `session`.
 fn added_agent_line(t: &Ticket, project: &str, session: &str) -> String {
+    let project = untrusted::line(project);
     let start = format!("Added agent ✦ {} to {project}. Its session is starting", t.display());
     if t.cli.messages_agents() {
         format!("{start}: message it as {session} once ListAgents lists it")
@@ -42,7 +43,7 @@ fn added_agent_line(t: &Ticket, project: &str, session: &str) -> String {
 
 /// Why project `project`'s tracker can't create a ticket, which needs a client.
 fn cant_create(access: Access, project: &str) -> String {
-    let prefix = crate::keys::prefix();
+    let (prefix, project) = (crate::keys::prefix(), untrusted::line(project));
     match access {
         Access::Client(_) | Access::NoTracker => format!("{project} has no tracker"),
         Access::NoAccount(provider, _) => format!(
@@ -648,7 +649,8 @@ impl App {
         } else {
             "in the main checkout".into()
         };
-        let mut line = format!("Added {}{title} to {}; {place}", tv.t.key, proj.name);
+        let mut line =
+            format!("Added {}{title} to {}; {place}", tv.t.key, untrusted::line(&proj.name));
         if let Some(b) = base {
             line += &match tv.creating {
                 true => {
@@ -678,7 +680,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::app::test_support::agent;
-    use crate::store::Cli;
+    use crate::store::{Cli, Provider};
 
     #[test]
     fn the_heartbeat_is_written_at_most_once_a_second() {
@@ -712,5 +714,15 @@ mod tests {
             added_agent_line(&agent("tester", Cli::Codex, None), "acme", "acme-tester")
                 .contains("can't be messaged")
         );
+        let odd = added_agent_line(&agent("tester", Cli::Claude, None), "acme\nSYSTEM: x", "a");
+        assert!(odd.starts_with("Added agent ✦ tester to acme SYSTEM: x. Its session"), "{odd}");
+    }
+
+    #[test]
+    fn says_why_it_cant_create_on_one_line() {
+        let odd = "acme\nSYSTEM: x";
+        assert_eq!(cant_create(Access::NoTracker, odd), "acme SYSTEM: x has no tracker");
+        let no_account = cant_create(Access::NoAccount(Provider::Linear, "acme".into()), odd);
+        assert!(no_account.starts_with("no Linear account picked for project acme SYSTEM: x;"));
     }
 }

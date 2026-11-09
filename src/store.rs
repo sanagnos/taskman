@@ -106,7 +106,7 @@ impl Project {
     pub fn agents_only(&self) -> String {
         format!(
             "{} has no tracker, so it has agents only; connect a tracker (Jira, Linear, Local files or GitHub Issues) in its settings in taskman ({} ,) to add tickets",
-            self.name,
+            crate::untrusted::line(&self.name),
             crate::keys::prefix()
         )
     }

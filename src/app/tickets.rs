@@ -118,7 +118,7 @@ impl App {
         }
         let proj = &self.projects[p];
         Err(match self.tickets.iter().find(|tv| tv.t.is(&proj.repo, key) && tv.t.agent.is_none()) {
-            None => format!("{key} isn't open in {}; add it first", proj.name),
+            None => format!("{key} isn't open in {}; add it first", untrusted::line(&proj.name)),
             Some(tv) if tv.creating => {
                 format!("{key}'s worktree is still being created; try again in a moment")
             }
