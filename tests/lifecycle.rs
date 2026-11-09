@@ -10,10 +10,9 @@
 mod common;
 
 use common::{
-    Tui, acme, project, scratch_dir, sh, slow_git, spawn_in_pty_writing, stub_file, stubbed,
-    taskman,
+    Tui, acme, drain, project, scratch_dir, sh, slow_git, spawn_in_pty_writing, stub_file, stubbed,
+    taskman, wait_until,
 };
-use std::io::Read;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -337,21 +336,17 @@ fn a_failed_start_keeps_the_notice_of_a_kill() {
     let (reader, writer) = std::io::pipe().unwrap();
     drop(reader);
     let (mut child, mut master) = spawn_in_pty_writing(stubbed(&dir), Some(Stdio::from(writer)));
-    let mut said = Vec::new();
-    let until = Instant::now() + LIMIT;
-    let status = loop {
-        let mut buf = [0u8; 4096];
-        while let Ok(n @ 1..) = master.read(&mut buf) {
-            said.extend_from_slice(&buf[..n]);
-        }
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
-        }
-        assert!(Instant::now() < until, "still running: {}", String::from_utf8_lossy(&said));
-        std::thread::sleep(Duration::from_millis(20));
-    };
+    let (mut said, mut status) = (Vec::new(), None);
+    wait_until("the start that couldn't take the terminal didn't end", || {
+        // Read as it goes too, so a full pty can't hold it up.
+        drain(&mut master, &mut said);
+        status = child.try_wait().unwrap();
+        status.is_some()
+    });
+    // What it wrote last, the error, may still be waiting on the pty once it has ended.
+    drain(&mut master, &mut said);
     let said = String::from_utf8_lossy(&said);
-    assert_eq!(status.code(), Some(1), "{said}");
+    assert_eq!(status.and_then(|s| s.code()), Some(1), "{said}");
     assert!(said.contains("Broken pipe"), "{said}");
     assert!(!dir.join("state/taskman/panics.log").exists(), "{said}");
     assert!(alive.exists(), "the notice was used up by a terminal it couldn't take");

@@ -510,8 +510,9 @@ fn main() -> anyhow::Result<()> {
     let result = take_terminal(enhanced).map_err(anyhow::Error::from).and_then(|()| {
         let mut terminal =
             ratatui::Terminal::new(backend::Backend::new(links::Runs::new(std::io::stdout())))?;
-        // The TUI holds the terminal, and its first frame shows the notice: the heartbeat goes as
-        // usual from here.
+        // The notice counts as given from here, with the terminal taken, though the first frame
+        // draws it: a run that ends before that still spends it, a tiny window. The heartbeat goes
+        // as usual from here.
         CRASH_UNSAID.store(false, Ordering::Relaxed);
         let result = run(&mut terminal, &mut app, enhanced, &signals, &tty);
         if tty.wait(Duration::ZERO) == Input::Gone {

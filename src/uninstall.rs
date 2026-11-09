@@ -412,8 +412,9 @@ fn print(plan: &Plan, keychain: &Keychain, purge: bool) {
 /// What the user may have added to their shell for taskman: tokens, and the program's folder
 /// (`dir`, as shown and as typed) on PATH. fish keeps both in universal variables rather than a
 /// startup file: `fish_add_path`, which the install script suggests, adds the folder to
-/// `$fish_user_paths`. The line that takes it out compares the folder as text, not as a pattern,
-/// and changes nothing when it isn't there.
+/// `$fish_user_paths`, a universal variable by default. The line that takes it out covers that,
+/// not a folder added with `fish_add_path -g` (which lasts only as long as that shell); it
+/// compares the folder as text, not as a pattern, and changes nothing when it isn't there.
 fn shell_lines(dir: Option<(String, String)>, fish: bool) -> Vec<String> {
     if !fish {
         let path = dir.map(|(shown, _)| format!(", and the PATH line for {shown}"));
