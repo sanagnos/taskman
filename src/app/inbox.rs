@@ -11,7 +11,7 @@ use crate::session::Reaper;
 use crate::store::{self, Base, Ticket};
 use crate::ticket_key;
 use crate::tracker::{Access, Created};
-use crate::{add, close, github, resume, status, untrusted, util, worktree};
+use crate::{add, close, github, resume, untrusted, util, worktree};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -177,7 +177,7 @@ impl App {
         let close = req.close.unwrap_or_default();
         let Some(p) = self.projects.iter().position(|p| p.repo == req.repo) else {
             let e =
-                format!("the project in {} is no longer in taskman", status::shown_path(&req.repo));
+                format!("the project in {} is no longer in taskman", untrusted::path(&req.repo));
             add::reply(id, &req, &[add::Line::err(e)]);
             return;
         };
@@ -359,7 +359,7 @@ impl App {
         let Some(p) = self.projects.iter().position(|p| p.repo == req.repo) else {
             return Err(format!(
                 "the project in {} is no longer in taskman",
-                status::shown_path(&req.repo)
+                untrusted::path(&req.repo)
             ));
         };
         match self.projects[p].tracker {
@@ -535,7 +535,7 @@ impl App {
     ) -> (Vec<add::Line>, Option<String>) {
         let Some(p) = self.projects.iter().position(|p| p.repo == req.repo) else {
             let e =
-                format!("the project in {} is no longer in taskman", status::shown_path(&req.repo));
+                format!("the project in {} is no longer in taskman", untrusted::path(&req.repo));
             return (
                 req.items.iter().map(|_| add::Line::err(e.clone())).collect(),
                 Some(format!("{}: {e}", req.command())),
@@ -644,14 +644,14 @@ impl App {
         let place = if tv.creating {
             format!(
                 "creating worktree {}",
-                status::shown_path(&worktree::folder_path(
+                untrusted::path(&worktree::folder_path(
                     proj.worktrees.folder_format(),
                     &proj.repo,
                     &tv.t.key
                 ))
             )
         } else if tv.t.cwd != tv.t.repo {
-            format!("in its worktree {}", status::shown_path(&tv.t.cwd))
+            format!("in its worktree {}", untrusted::path(&tv.t.cwd))
         } else {
             "in the main checkout".into()
         };

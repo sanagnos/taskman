@@ -1,9 +1,9 @@
 //! Creating a ticket's worktree: its branch and folder names from the project's formats, and the
 //! git commands that make it.
 
-use crate::resume::Hold;
+use crate::resume::{self, Hold};
 use crate::store::Provider;
-use crate::{git, github, proc, status, untrusted};
+use crate::{git, github, proc, untrusted};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
@@ -143,13 +143,12 @@ pub fn create(
         // There's nothing in it to lose.
         let f = folder.to_string_lossy();
         let out = changing(git::command(repo).args(["worktree", "remove", &f]));
-        let shown = untrusted::line(&f);
         if !ok(&out) {
             return Err(match (&w.locked, out) {
                 (Some(_), _) => format!(
-                    "git keeps {} as a locked worktree; unlock it with git -C {} worktree unlock {shown}",
-                    status::shown_path(folder),
-                    status::shown_path(repo)
+                    "git keeps {} as a locked worktree; {}",
+                    untrusted::path(folder),
+                    git_to_copy(repo, "worktree unlock", folder, "unlock it")
                 ),
                 (None, Ok(o)) => git_error(&o),
                 (None, Err(e)) => format!("could not run git: {e}"),
@@ -163,7 +162,7 @@ pub fn create(
             _ => {
                 return Err(format!(
                     "{} already exists; move it, or change Folder in Project settings",
-                    status::shown_path(folder)
+                    untrusted::path(folder)
                 ));
             }
         }
@@ -243,11 +242,22 @@ fn remove_unfinished(repo: &Path, folder: &Path) -> Result<(), String> {
         return Ok(());
     }
     Err(format!(
-        "{} is a worktree git never finished making; remove it with \
-         git worktree remove --force --force {}",
-        status::shown_path(folder),
-        untrusted::line(&f)
+        "{} is a worktree git never finished making; {}",
+        untrusted::path(folder),
+        git_to_copy(repo, "worktree remove --force --force", folder, "remove it")
     ))
+}
+
+/// What to run to `act` on worktree `folder` of `repo`, for the user to copy: `act with git -C
+/// <repo> <args> <folder>`. The command names the real folders, quoted for the shell, so it's left
+/// out when either holds a character `untrusted::path` would have to escape, which a copied
+/// command would get wrong.
+fn git_to_copy(repo: &Path, args: &str, folder: &Path, act: &str) -> String {
+    let plain = |p: &Path| p.to_str().filter(|s| !untrusted::hides(s)).map(resume::quote);
+    match (plain(repo), plain(folder)) {
+        (Some(r), Some(f)) => format!("{act} with git -C {r} {args} {f}"),
+        _ => format!("{act} with git {args}, finding its folder with git worktree list"),
+    }
 }
 
 /// Where a branch stacked on `base` starts: the newer of the local branch and origin's copy, as
@@ -580,7 +590,7 @@ pub fn remove(
     merged: Option<&str>,
     hold: &Hold,
 ) -> Result<String, String> {
-    let place = status::shown_path(&check.path);
+    let place = untrusted::path(&check.path);
     let now = removal_check(repo, &check.path, merged)?
         .ok_or_else(|| format!("{place} isn't a worktree any more"))?;
     if !now.problems.is_empty() {
@@ -1118,9 +1128,67 @@ mod tests {
         assert!(ok(&git(&repo, &["worktree", "lock", &folder.to_string_lossy()])));
         std::fs::remove_dir_all(&folder).unwrap();
         let e = create(&repo, &folder, "ENG-52-fix-login", None, false).unwrap_err();
-        assert!(e.contains("locked worktree; unlock it with git -C"), "{e}");
+        let (r, f) = (repo.to_str().unwrap(), folder.to_str().unwrap());
+        assert_eq!(
+            e,
+            format!(
+                "git keeps {} as a locked worktree; unlock it with git -C {} worktree unlock {}",
+                untrusted::path(&folder),
+                resume::quote(r),
+                resume::quote(f)
+            )
+        );
         assert!(!folder.exists());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A folder's name is shown as it is, two spaces and all, with only a hidden character
+    /// escaped; a command to copy is given only when it would name the real folder.
+    #[test]
+    fn names_a_folder_as_it_is_called() {
+        let (root, repo) = scratch_repo("odd-folder");
+        let lock = hold(&root);
+        let spaced = root.join("acme  ENG-1\u{a0}x");
+        // A zero-width space: git lists the folder, which it can't for one with a line break.
+        let odd = root.join("acme ENG-2\u{200b}x");
+        let made = create(&repo, &spaced, "ENG-1", None, false).unwrap().path;
+        let check = removal_check(&repo, &made, None).unwrap().unwrap();
+        let removed = remove(&repo, &check, None, &lock).unwrap();
+        assert!(removed.starts_with(&format!("Removed {}", spaced.display())), "{removed}");
+        let made = create(&repo, &odd, "ENG-2", None, false).unwrap().path;
+        let check = removal_check(&repo, &made, None).unwrap().unwrap();
+        let removed = remove(&repo, &check, None, &lock).unwrap();
+        let escaped = format!("Removed {}/acme ENG-2\\u{{200b}}x", root.display());
+        assert!(removed.starts_with(&escaped), "{removed}");
+
+        // Locked and gone: no command, as one couldn't name the folder.
+        create(&repo, &odd, "ENG-2", None, false).unwrap();
+        assert!(ok(&git(&repo, &["worktree", "lock", &odd.to_string_lossy()])));
+        std::fs::remove_dir_all(&odd).unwrap();
+        let e = create(&repo, &odd, "ENG-2", None, false).unwrap_err();
+        assert!(
+            e.ends_with(
+                "as a locked worktree; unlock it with git worktree unlock, finding its folder with \
+                 git worktree list"
+            ),
+            "{e}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_command_to_copy_names_the_real_folders() {
+        let (repo, folder) = (Path::new("/src/My  Projects/acme"), Path::new("/src/acme-ENG-1"));
+        assert_eq!(
+            git_to_copy(repo, "worktree unlock", folder, "unlock it"),
+            "unlock it with git -C '/src/My  Projects/acme' worktree unlock /src/acme-ENG-1"
+        );
+        let hidden = Path::new("/src/acme\u{202e}1-GNE");
+        assert_eq!(
+            git_to_copy(repo, "worktree remove --force --force", hidden, "remove it"),
+            "remove it with git worktree remove --force --force, finding its folder with git \
+             worktree list"
+        );
     }
 
     #[test]

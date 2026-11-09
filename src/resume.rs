@@ -378,7 +378,7 @@ fn find<'a>(
             .projects
             .iter()
             .find(|p| p.repo == t.repo)
-            .map_or_else(|| untrusted::line(&store::tilde(&t.repo)), |p| untrusted::line(&p.name))
+            .map_or_else(|| untrusted::path(&t.repo), |p| untrusted::line(&p.name))
     };
     match (ticket, agent) {
         (Some(Ok(t)), Ok(Some(a))) => Err(format!(

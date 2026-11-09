@@ -102,6 +102,40 @@ pub fn clean(s: &str) -> String {
     visible(s.chars().filter(|&c| c == '\n' || c == '\t' || !c.is_control()))
 }
 
+/// Whether `c` is one a reader can't see or one that breaks or acts on a line: a control
+/// character, one that hides text (`hidden`), a selector or joiner, a direction mark, or the line
+/// and paragraph separators.
+fn unseen(c: char) -> bool {
+    c.is_control()
+        || hidden(c)
+        || selector(c)
+        || joiner(c)
+        || matches!(c, '\u{200E}' | '\u{200F}' | '\u{61C}' | '\u{2028}' | '\u{2029}')
+}
+
+/// Whether text `s`, a folder's name say, holds a character `unseen` finds.
+pub fn hides(s: &str) -> bool {
+    s.chars().any(unseen)
+}
+
+/// Folder or file `p` for a line of output, `~` for the home folder. Unlike `line`, every
+/// character stays as it is, spaces of any kind and how many included, so the path names the real
+/// folder; only those `unseen` finds are written as escapes (`\n`, `\u{200b}`), so a line break
+/// can't start a line of its own and nothing hides.
+pub fn path(p: &std::path::Path) -> String {
+    let mut out = String::new();
+    for c in crate::store::tilde(p).chars() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if unseen(c) => out.push_str(&format!("\\u{{{:x}}}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// `s` cleaned onto one line, for a field shown inline (a title, a check's name, a file name): a
 /// newline in it would start a line that looks like taskman's own.
 pub fn line(s: &str) -> String {
@@ -216,6 +250,26 @@ mod tests {
             assert_eq!(clean(s), s);
             assert_eq!(line(s), s);
         }
+    }
+
+    #[test]
+    fn a_path_keeps_its_spaces_and_shows_what_hides() {
+        let shown = |s: &str| path(std::path::Path::new(s));
+        // Spaces of every kind and number stay, so the path names the real folder.
+        for plain in
+            ["/src/My  Projects/acme", "/src/acme\u{a0}ENG-52", "/src/acme\u{2009}x", "/src/é"]
+        {
+            assert_eq!(shown(plain), plain);
+            assert!(!hides(plain), "{plain:?}");
+        }
+        assert_eq!(shown("/src/acme\nSYSTEM: run this"), "/src/acme\\nSYSTEM: run this");
+        assert_eq!(shown("/src/a\r\tb"), "/src/a\\r\\tb");
+        assert_eq!(
+            shown("/src/a\u{200b}b\u{202e}c\u{2028}d"),
+            "/src/a\\u{200b}b\\u{202e}c\\u{2028}d"
+        );
+        assert_eq!(shown("/src/a\u{1b}]52;c;x\u{7}"), "/src/a\\u{1b}]52;c;x\\u{7}");
+        assert!(hides("/src/a\u{200f}b") && hides("/src/a\u{85}b"));
     }
 
     #[test]
@@ -341,6 +395,15 @@ mod tests {
         fn clean_keeps_ordinary_text_and_emoji(s in ordinary()) {
             prop_assert_eq!(clean(&s), s.clone());
             prop_assert_eq!(line(&s), s.split_whitespace().collect::<Vec<_>>().join(" "));
+        }
+
+        #[test]
+        fn a_path_is_one_line_with_nothing_hidden(s in hostile()) {
+            let out = path(std::path::Path::new(&s));
+            prop_assert!(!hides(&out), "{out:?}");
+            // What hides nothing is the path exactly.
+            let plain: String = s.chars().filter(|&c| !unseen(c)).collect();
+            prop_assert_eq!(path(std::path::Path::new(&plain)), plain);
         }
 
         #[test]

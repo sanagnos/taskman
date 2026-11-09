@@ -8,7 +8,7 @@ use super::ticket::{Added, clean_label, merged_head, own_worktree};
 use super::{AgentState, App, Away, Field, Form, FormKind, Level, Mode, TicketView};
 use crate::session::Reaper;
 use crate::store::{self, Base, Cli, Ticket};
-use crate::{close, events_log, github, keys, resume, stack, status, untrusted, util, worktree};
+use crate::{close, events_log, github, keys, resume, stack, untrusted, util, worktree};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
@@ -38,10 +38,10 @@ fn closed_while_created(key: &str, w: &close::Worktree) -> String {
     match w {
         close::Worktree::Removed(done) => format!("{what}. {done}"),
         close::Worktree::Kept(path, why) => {
-            format!("{what}. Kept {}: {why}", status::shown_path(path))
+            format!("{what}. Kept {}: {why}", untrusted::path(path))
         }
         close::Worktree::Asked(path) | close::Worktree::NotOurs(path) => {
-            format!("{what}. Kept {}", status::shown_path(path))
+            format!("{what}. Kept {}", untrusted::path(path))
         }
         close::Worktree::None => what,
     }
