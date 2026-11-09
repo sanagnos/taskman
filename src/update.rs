@@ -1219,35 +1219,72 @@ mod tests {
         ));
     }
 
-    /// A workflow's lines as (indent, text), with comments, quotes and trailing space taken off
-    /// and runs of spaces made one: enough to read its keys and conditions, so a reformat that
-    /// means the same reads the same. Not a YAML parser, and it doesn't read `run:` scripts.
-    fn workflow_lines(yaml: &str) -> Vec<(usize, String)> {
-        yaml.lines()
-            .map(|line| {
-                // A comment starts at a # that begins the line or follows a space.
-                let code = line
-                    .match_indices('#')
-                    .find(|&(i, _)| i == 0 || line[..i].ends_with([' ', '\t']))
-                    .map_or(line, |(i, _)| &line[..i]);
-                let indent = code.len() - code.trim_start().len();
-                let text = code.replace(['\'', '"'], "");
-                (indent, text.split_whitespace().collect::<Vec<_>>().join(" "))
-            })
-            .filter(|(_, text)| !text.is_empty())
-            .collect()
+    /// A line of a workflow: its indent, and its text without a comment, a value's outer quotes or
+    /// runs of spaces, so a reformat that means the same reads the same. A `scalar` line is part of
+    /// a block scalar (`run: |`), a string: its text is the line as it is, and the checks skip it.
+    /// Enough to read keys and conditions; not a YAML parser.
+    struct Line<'a> {
+        indent: usize,
+        text: String,
+        raw: &'a str,
+        scalar: bool,
+    }
+
+    fn workflow_lines(yaml: &str) -> Vec<Line<'_>> {
+        let mut lines = vec![];
+        // The indent of the key whose block scalar the lines after it are part of.
+        let mut scalar_of: Option<usize> = None;
+        for raw in yaml.lines().filter(|l| !l.trim().is_empty()) {
+            let indent = raw.len() - raw.trim_start().len();
+            if scalar_of.is_some_and(|at| indent > at) {
+                let text = raw.trim().to_string();
+                lines.push(Line { indent, text, raw, scalar: true });
+                continue;
+            }
+            scalar_of = None;
+            // A comment starts at a # that begins the line or follows a space.
+            let code = raw
+                .match_indices('#')
+                .find(|&(i, _)| i == 0 || raw[..i].ends_with([' ', '\t']))
+                .map_or(raw, |(i, _)| &raw[..i]);
+            let text = unquote(&code.split_whitespace().collect::<Vec<_>>().join(" "));
+            if text.is_empty() {
+                continue;
+            }
+            let words: Vec<_> = text.split(' ').collect();
+            if let [.., key, value] = words[..]
+                && key.ends_with(':')
+                && value.starts_with(['|', '>'])
+                && value[1..].chars().all(|c| matches!(c, '-' | '+' | '1'..='9'))
+            {
+                scalar_of = Some(indent);
+            }
+            lines.push(Line { indent, text, raw, scalar: false });
+        }
+        lines
+    }
+
+    /// `key: value` or `- value` with a value in quotes, without them.
+    fn unquote(text: &str) -> String {
+        let at = text.find(": ").map(|i| i + 2).or(text.starts_with("- ").then_some(2));
+        let Some(at) = at else { return text.into() };
+        let (head, value) = text.split_at(at);
+        let inner = ['\'', '"'].iter().find_map(|&q| value.strip_prefix(q)?.strip_suffix(q));
+        format!("{head}{}", inner.unwrap_or(value))
     }
 
     /// The lines under `lines[at]`: those after it indented further, up to the next that isn't.
-    fn block(lines: &[(usize, String)], at: usize) -> &[(usize, String)] {
+    fn block<'l, 'a>(lines: &'l [Line<'a>], at: usize) -> &'l [Line<'a>] {
         let rest = &lines[at + 1..];
-        &rest[..rest.iter().position(|(i, _)| *i <= lines[at].0).unwrap_or(rest.len())]
+        &rest[..rest.iter().position(|l| l.indent <= lines[at].indent).unwrap_or(rest.len())]
     }
 
     /// Where `key:` is among `lines` at `indent`.
-    fn key_at(lines: &[(usize, String)], indent: usize, key: &str) -> Option<usize> {
+    fn key_at(lines: &[Line], indent: usize, key: &str) -> Option<usize> {
         let key = format!("{key}:");
-        lines.iter().position(|(i, t)| *i == indent && t.split(' ').next() == Some(key.as_str()))
+        lines.iter().position(|l| {
+            !l.scalar && l.indent == indent && l.text.split(' ').next() == Some(key.as_str())
+        })
     }
 
     /// Only a run on a version tag may publish. A pull request's dry run runs release.yml as the
@@ -1258,49 +1295,65 @@ mod tests {
         let lines = workflow_lines(include_str!("../.github/workflows/release.yml"));
         let top = |key| key_at(&lines, 0, key).unwrap_or_else(|| panic!("no {key}:"));
         // Nothing can write but what a job asks for.
-        assert_eq!(lines[top("permissions")].1, "permissions: {}");
+        assert_eq!(lines[top("permissions")].text, "permissions: {}");
         // pull_request_target, workflow_run or issue_comment would run with a write token on what
         // others wrote.
         let on = block(&lines, top("on"));
-        let events: Vec<_> = on.iter().filter(|(i, _)| *i == on[0].0).map(|(_, t)| t).collect();
+        let events: Vec<_> =
+            on.iter().filter(|l| l.indent == on[0].indent).map(|l| l.text.as_str()).collect();
         assert_eq!(events, ["push:", "pull_request:", "workflow_dispatch:"]);
+        for line in lines.iter().filter(|l| !l.scalar) {
+            // A map or list on a line of its own, as `permissions:` then `{ contents: write }`.
+            assert!(!line.text.starts_with(['{', '[']), "{}", line.raw);
+            // An anchor or an alias would bring a job keys that aren't where they're read.
+            let mut outside = line.text.clone();
+            while let Some(start) = outside.find("${{") {
+                let end = outside[start..].find("}}").map_or(outside.len(), |e| start + e + 2);
+                outside.replace_range(start..end, "");
+            }
+            // They start a value: the word after a key or a list's dash.
+            let words: Vec<_> = outside.split(' ').collect();
+            let anchored = words
+                .windows(2)
+                .any(|w| (w[0].ends_with(':') || w[0] == "-") && w[1].starts_with(['&', '*']));
+            assert!(!anchored, "{}", line.raw);
+        }
 
         let jobs = block(&lines, top("jobs"));
-        let indent = jobs[0].0;
+        let indent = jobs[0].indent;
         let mut releases = 0;
-        for at in (0..jobs.len()).filter(|&n| jobs[n].0 == indent) {
-            let name = jobs[at].1.trim_end_matches(':');
+        for at in (0..jobs.len()).filter(|&n| jobs[n].indent == indent) {
+            let name = jobs[at].text.trim_end_matches(':');
             let job = block(jobs, at);
-            // A key of the job and what's under it, without spaces.
-            let squashed = |key| {
-                let at = key_at(job, indent + 2, key)?;
-                let under = block(job, at).iter().map(|(_, t)| t.as_str());
-                Some(
-                    std::iter::once(job[at].1.as_str())
-                        .chain(under)
-                        .collect::<String>()
-                        .replace(' ', ""),
-                )
-            };
+            // The job's own keys are as indented as its first.
+            let key = |key| key_at(job, job[0].indent, key);
             if name != "release" {
                 let writes = |t: &str| {
-                    t.ends_with(": write")
-                        || t.contains("write-all")
-                        || (t.starts_with("permissions:") && t.contains("write"))
+                    t.contains(": write") || t.contains(":write") || t.contains("write-all")
                 };
-                assert!(!job.iter().any(|(_, t)| writes(t)), "{name} can write");
-                assert_eq!(squashed("environment"), None, "{name} has an environment");
+                for line in job.iter().filter(|l| !l.scalar) {
+                    assert!(!writes(&line.text), "{name} can write: {}", line.raw);
+                    assert!(!line.text.contains("secrets"), "{name} has secrets: {}", line.raw);
+                }
+                assert_eq!(key("environment"), None, "{name} has an environment");
                 continue;
             }
             releases += 1;
-            let condition = squashed("if").expect("the release job has a condition");
-            let condition = condition.strip_prefix("if:").unwrap();
+            // The condition on one line, as it is, with nothing after it: a block scalar's lines
+            // are all the string's, a # line included, and a condition that isn't an expression
+            // is a string, which is always true.
+            let condition = key("if").expect("the release job has a condition");
             assert_eq!(
-                condition.strip_prefix(">-").unwrap_or(condition),
-                "${{(github.event_name==push||github.event_name==workflow_dispatch)\
-                 &&startsWith(github.ref,refs/tags/v)&&needs.version.outputs.dry_run==false}}"
+                job[condition].raw.trim_start(),
+                "if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') \
+                 && startsWith(github.ref, 'refs/tags/v') && needs.version.outputs.dry_run == 'false' }}"
             );
-            let environment = squashed("environment").expect("the release job has an environment");
+            assert!(block(job, condition).is_empty());
+            let environment = key("environment").expect("the release job has an environment");
+            let environment: String = std::iter::once(&job[environment])
+                .chain(block(job, environment))
+                .map(|l| l.text.replace(' ', ""))
+                .collect();
             assert!(
                 ["environment:release", "environment:{name:release}", "environment:name:release"]
                     .contains(&environment.as_str()),
@@ -1314,17 +1367,26 @@ mod tests {
     fn reads_a_workflow_however_it_is_written() {
         let lines = workflow_lines(
             "on:  # events\n  push:\njobs:\n  release:   # the one\n    permissions:\n      \
-             contents: 'write'\n    environment: {name: \"release\"}\n    steps:\n      - run: |\n          \
-             echo '#1'\n",
+             contents: 'write'\n    environment: {name: \"release\"}\n    if: >-\n      \
+             # part of it\n      ${{ \"a\" }}\n    steps:\n      - run: |\n          \
+             echo '#1'\n\n          # a script's\n      - name:  \"x # y\"\n",
         );
-        assert_eq!(lines[0], (0, "on:".into()));
-        assert_eq!(lines[3], (2, "release:".into()));
-        assert_eq!(lines[5], (6, "contents: write".into()));
-        assert_eq!(lines[6], (4, "environment: {name: release}".into()));
-        // A # in a word isn't a comment.
-        assert_eq!(lines[9], (10, "echo #1".into()));
+        let at = |n: usize| (lines[n].indent, lines[n].text.as_str(), lines[n].scalar);
+        assert_eq!(at(0), (0, "on:", false));
+        assert_eq!(at(3), (2, "release:", false));
+        assert_eq!(at(5), (6, "contents: write", false));
+        // Only a value's outer quotes go.
+        assert_eq!(at(6), (4, "environment: {name: \"release\"}", false));
+        // A block scalar's lines are the string's, as they are, a # line included.
+        assert_eq!(at(7), (4, "if: >-", false));
+        assert_eq!(at(8), (6, "# part of it", true));
+        assert_eq!(at(9), (6, "${{ \"a\" }}", true));
+        assert_eq!(at(12), (10, "echo '#1'", true));
+        assert_eq!(at(13), (10, "# a script's", true));
+        // A # after a space is a comment, even in quotes: close enough for keys.
+        assert_eq!(at(14), (6, "- name: \"x", false));
         let jobs = key_at(&lines, 0, "jobs").unwrap();
-        assert_eq!(block(&lines, jobs).len(), 7);
+        assert_eq!(block(&lines, jobs).len(), 12);
         assert_eq!(key_at(block(&lines, jobs), 4, "environment"), Some(3));
     }
 

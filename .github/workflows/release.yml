@@ -479,9 +479,8 @@ jobs:
   # test in update.rs keeps the condition and the environment.
   release:
     needs: [version, ci, check]
-    if: >-
-      ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-      && startsWith(github.ref, 'refs/tags/v') && needs.version.outputs.dry_run == 'false' }}
+    # On one line, which the unit test reads as it is: a folded block's lines are all the string's.
+    if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/tags/v') && needs.version.outputs.dry_run == 'false' }}
     # Only version tags may deploy to it (the repository's settings), a guard that doesn't depend on
     # the condition above being right.
     environment: release
