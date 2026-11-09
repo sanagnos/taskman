@@ -1245,6 +1245,18 @@ mod tests {
         })
     }
 
+    /// Whether a YAML node has a merge key (`<<`) anywhere. The parser reads one as a plain key, so
+    /// what it merges in would go unchecked.
+    fn has_merge_key(node: &Yaml) -> bool {
+        match node {
+            Yaml::Array(items) => items.iter().any(has_merge_key),
+            Yaml::Hash(map) => map.iter().any(|(key, value)| {
+                key.as_str() == Some("<<") || has_merge_key(key) || has_merge_key(value)
+            }),
+            _ => false,
+        }
+    }
+
     /// The keys of a YAML map, as strings; anything else in a key's place is an error.
     fn yaml_keys(map: &Yaml) -> Vec<&str> {
         let map = map.as_hash().unwrap_or_else(|| panic!("not a map: {map:?}"));
@@ -1266,6 +1278,7 @@ mod tests {
             let known = ["name", "run-name", "on", "permissions", "concurrency", "jobs"];
             assert!(known.contains(&key), "release.yml's {key}");
         }
+        assert!(!has_merge_key(workflow), "release.yml has a merge key (<<)");
         // Nothing can write but what a job asks for.
         assert_eq!(workflow["permissions"], Yaml::Hash(Default::default()));
         // pull_request_target, workflow_run or issue_comment would run with a write token on what
@@ -1334,6 +1347,11 @@ mod tests {
         assert_eq!(docs[0]["permissions"].as_str(), Some("write-all"));
         assert_eq!(docs[0]["x"], Yaml::Integer(1));
         assert!(YamlLoader::load_from_str("a: 1\na: 2\n").is_err());
+        // A merge key stays a key, merging nothing, so the test refuses one.
+        let docs = YamlLoader::load_from_str("a: &w {contents: write}\nb:\n  - <<: *w\n").unwrap();
+        assert!(docs[0]["b"][0]["contents"].is_badvalue());
+        assert!(has_merge_key(&docs[0]));
+        assert!(!has_merge_key(&YamlLoader::load_from_str("a: {b: [c]}\n").unwrap()[0]));
         // An escape or a tag makes the same string.
         let docs = YamlLoader::load_from_str("a: \"\\x77rite\"\nb: !!str write\n").unwrap();
         assert_eq!((docs[0]["a"].as_str(), docs[0]["b"].as_str()), (Some("write"), Some("write")));
