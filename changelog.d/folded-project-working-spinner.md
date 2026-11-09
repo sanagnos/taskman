@@ -1,0 +1,1 @@
+- A folded project's header shows the working spinner while one of its sessions is working, so it no longer looks the same as a project whose sessions are all idle. The `●` for a session that needs you, or finished a turn or ended since you looked, still wins over it, and the `↑ N more` and `↓ N more` rows of the sidebar and the find picker follow the same rule.
