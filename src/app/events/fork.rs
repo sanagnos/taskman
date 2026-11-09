@@ -161,8 +161,20 @@ fn a_probe_that_panics_adds_nothing() {
     panicking(&mut app);
     let before = app.tickets.len();
     fork_with_key(&mut app, "ENG-52", "deep-dive");
+    // The thread sends the bug's toast first and the fork's failure after it, and the one settle
+    // in `fork_with_key` can take the toast alone: wait for the failure.
+    let failed = format!("Couldn't fork ✦ deep-dive: {BUG}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !logged_error(&app, &failed) {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let Ok(msg) = app.rx.recv_timeout(left) else {
+            let logged: Vec<&str> = app.toast_log.iter().map(|l| l.msg.as_str()).collect();
+            panic!("no fork failure within 10 s; logged: {logged:?}");
+        };
+        app.tx.send(msg).unwrap();
+        app.drain_messages();
+    }
     assert_eq!(app.tickets.len(), before);
-    assert!(logged_error(&app, &format!("Couldn't fork ✦ deep-dive: {BUG}")));
 }
 
 /// Codex makes the fork's id itself: the hooks report it, and the fork takes it then. The source's
