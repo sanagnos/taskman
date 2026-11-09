@@ -1066,7 +1066,8 @@ mod tests {
         sh(
             &repo,
             &format!(
-                "git {id} commit -q --allow-empty -m ahead && git branch origin/main && git branch origin/eng-8-remote && git reset -q --hard HEAD~1"
+                "git {id} commit -q --allow-empty -m ahead && git branch origin/main && \
+                 git branch origin/eng-8-remote && git reset -q --hard HEAD~1"
             ),
         );
         let main = DefaultBranch { name: "main".into(), start: "origin/main".into() };
