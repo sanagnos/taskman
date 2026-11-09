@@ -1340,7 +1340,10 @@ mod tests {
             assert!(!job.is_empty(), "{name} has no keys");
             // The job's own keys are as indented as its first.
             let keys: Vec<_> = job.iter().filter(|l| l.indent == job[0].indent).collect();
-            assert!(keys.iter().all(|k| !k.scalar && !k.code.starts_with(['"', '\''])), "{name}");
+            for key in &keys {
+                let plain = !key.scalar && !key.code.starts_with(['"', '\'']);
+                assert!(plain, "{name} has a key in quotes: {}", key.raw);
+            }
             let key = |key| key_at(job, job[0].indent, key);
             if name == "release" {
                 releases += 1;
