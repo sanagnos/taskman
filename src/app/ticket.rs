@@ -1057,6 +1057,9 @@ mod tests {
         // would draw as something else.
         let x = |n| "x".repeat(n);
         for edge in ["🇬🇷", "🏃\u{200d}♂", "प्रो", "स्त्री"] {
+            use unicode_segmentation::UnicodeSegmentation;
+            assert_eq!(edge.graphemes(true).count(), 1, "{edge}");
+            assert!(util::width(edge) >= 2, "{edge}: {}", util::width(edge));
             assert_eq!(clean_label(&format!("{}{edge}", x(199))), Some(format!("{}…", x(199))));
             let kept = format!("{}{edge}{}", x(190), x(20));
             let label = clean_label(&kept).unwrap();
@@ -1065,7 +1068,8 @@ mod tests {
         // And so is one that runs past the bytes but would fit them on its own: only one that
         // couldn't is cut inside.
         let marks = |n| "\u{301}".repeat(n);
-        assert_eq!(clean_label(&format!("{}e{}", x(700), marks(100))), Some(x(700)));
+        let euros = "€".repeat(199);
+        assert_eq!(clean_label(&format!("{euros}e{}", marks(102))), Some(euros));
         assert_eq!(
             clean_label(&format!("Fix e{}", marks(1000))),
             Some(format!("Fix e{}", marks(397)))
