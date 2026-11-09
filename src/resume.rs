@@ -186,7 +186,8 @@ pub fn take(path: &Path) -> std::io::Result<Result<Hold, Owner>> {
     // A holder removes the file as it lets go of a ticket that's gone (`Hold::closing`, `remove`),
     // so the file locked here may no longer be the one at `path`, opened just before it went: then
     // it's taken again, or two could hold the same session, one on the old file and one on a new
-    // one. Nothing else removes it.
+    // one. Nothing else removes it, apart from `taskman uninstall`, which deletes the whole state
+    // folder once the TUI has quit.
     for _ in 0..5 {
         let mut file = std::fs::OpenOptions::new()
             .read(true)
@@ -228,7 +229,9 @@ thread_local! {
 }
 
 /// Removes the owner file at `path` unless someone holds it, under its lock, as only a holder may
-/// (see `take`). Returns who holds it: `Free` once it's removed, or when it can't be opened.
+/// (see `take`). Returns who holds it: `Free` once it's removed or when there's none. When it can't
+/// be taken for another reason (`take` fails: the folder or the file can't be opened for writing),
+/// the file stays, and what `peek` says is returned.
 pub fn remove(path: &Path) -> Owner {
     // Peeked at first, as a close holds it already and removes it itself: `take` would wait.
     match peek(path) {
@@ -698,6 +701,31 @@ mod tests {
         assert!(BETWEEN_OPEN_AND_LOCK.with(|b| b.take()).is_none(), "the hook ran");
         assert!(same_file(&hold.file, &path));
         assert!(take(&path).unwrap().is_err());
+    }
+
+    /// Someone takes the file between `remove`'s peek and its lock, as `taskman resume` can: the
+    /// file stays theirs, and `remove` says who runs it.
+    #[test]
+    fn remove_leaves_a_file_taken_just_before_it_locks() {
+        let path = scratch("remove-race").join("ENG-52.owner");
+        let mut last = take(&path).unwrap().ok().unwrap();
+        last.write("outside 1");
+        drop(last);
+        assert_eq!(peek(&path), Owner::Back);
+        let taken = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let (keep, at) = (taken.clone(), path.clone());
+        BETWEEN_OPEN_AND_LOCK.with(|b| {
+            b.set(Some(Box::new(move || {
+                let mut hold = take(&at).unwrap().ok().unwrap();
+                hold.write("outside 4242");
+                *keep.borrow_mut() = Some(hold);
+            })));
+        });
+        let who = remove(&path);
+        assert!(taken.borrow().is_some(), "the hook ran");
+        assert_eq!(who, Owner::Outside(4242));
+        assert!(who.elsewhere());
+        assert!(path.exists());
     }
 
     /// Only a holder removes the file: one someone holds stays, and a hold whose file was replaced

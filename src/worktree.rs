@@ -664,8 +664,9 @@ pub struct DefaultBranch {
 /// As `DefaultBranch` says. Quick: no network.
 pub fn default_branch_of(repo: &Path) -> DefaultBranch {
     if let Some(b) = local_default_branch(repo) {
-        let name = b.strip_prefix("origin/").unwrap_or(&b).to_string();
-        return DefaultBranch { name, start: b };
+        let name = b.strip_prefix("refs/remotes/origin/").unwrap_or(&b).to_string();
+        let start = b.strip_prefix("refs/remotes/").unwrap_or(&b).to_string();
+        return DefaultBranch { name, start };
     }
     let unknown = || DefaultBranch { name: "main".into(), start: "origin/main".into() };
     if !ok(&git(repo, &["rev-parse", "--git-dir"])) {
@@ -681,12 +682,15 @@ pub fn default_branch_of(repo: &Path) -> DefaultBranch {
     }
 }
 
-/// `origin/HEAD` as git last saw it, like `origin/main`, without asking the remote.
+/// `origin/HEAD` as git last saw it, as its ref, like `refs/remotes/origin/main`, without asking
+/// the remote. Not `--short`, which says `remotes/origin/main` when a local branch is named
+/// `origin/main` too, and as `origin/main` git would take that branch instead.
 fn local_default_branch(repo: &Path) -> Option<String> {
-    let o = git(repo, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])
+    let o = git(repo, &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])
         .ok()
         .filter(|o| o.status.success())?;
-    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+    let b = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    b.starts_with("refs/remotes/origin/").then_some(b)
 }
 
 /// The branch the main checkout at `repo` is on, as its ref, like `refs/heads/main`. None when its
@@ -704,8 +708,8 @@ fn short_branch(r: &str) -> &str {
     r.strip_prefix("refs/heads/").unwrap_or(r)
 }
 
-/// Origin's default branch, like `origin/main`: from `origin/HEAD`, or by asking the remote when a
-/// remote added by hand never set it.
+/// Origin's default branch, as its ref, like `refs/remotes/origin/main`: from `origin/HEAD`, or by
+/// asking the remote when a remote added by hand never set it.
 fn default_branch(repo: &Path) -> Option<String> {
     if let Some(b) = local_default_branch(repo) {
         return Some(b);
@@ -716,7 +720,7 @@ fn default_branch(repo: &Path) -> Option<String> {
     let text = String::from_utf8_lossy(&o.stdout);
     let head =
         text.lines().find_map(|l| l.strip_prefix("ref: refs/heads/")?.split_whitespace().next())?;
-    let b = format!("origin/{head}");
+    let b = format!("refs/remotes/origin/{head}");
     ok(&git(repo, &["rev-parse", "--verify", "--quiet", &b])).then_some(b)
 }
 
@@ -1040,6 +1044,47 @@ mod tests {
             DefaultBranch { name: "master".into(), start: "HEAD (master): no remote".into() };
         assert_eq!(default_branch_of(&root.join("local")), local);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A local branch named `origin/main` makes `symbolic-ref --short` say `remotes/origin/main`,
+    /// and `origin/main` ambiguous: the default branch, a new worktree's start (also when
+    /// `origin/HEAD` was never set and the remote is asked) and the removal check still go by
+    /// origin's.
+    #[test]
+    fn a_local_branch_named_like_origins_changes_nothing() {
+        let (root, repo) = scratch_repo("shadowed");
+        let lock = hold(&root);
+        let sh = |dir: &Path, cmd: &str| {
+            assert!(
+                Command::new("sh").arg("-c").arg(cmd).current_dir(dir).status().unwrap().success(),
+                "{cmd}"
+            );
+        };
+        let id = "-c user.name=t -c user.email=t@example.com";
+        // The local branch is a commit ahead of origin's, which nobody pushed.
+        sh(
+            &repo,
+            &format!(
+                "git {id} commit -q --allow-empty -m ahead && git branch origin/main && git reset -q --hard HEAD~1"
+            ),
+        );
+        let main = DefaultBranch { name: "main".into(), start: "origin/main".into() };
+        assert_eq!(default_branch_of(&repo), main);
+        assert_eq!(local_default_branch(&repo).as_deref(), Some("refs/remotes/origin/main"));
+        let wt =
+            create(&repo, &folder_path(BESIDE, &repo, "ENG-1"), "ENG-1", None, false).unwrap().path;
+        let head = |dir: &Path, r: &str| {
+            String::from_utf8_lossy(&git(dir, &["rev-parse", r]).unwrap().stdout).to_string()
+        };
+        assert_eq!(head(&wt, "HEAD"), head(&repo, "refs/remotes/origin/main"));
+        let check = removal_check(&repo, &wt, None).unwrap().unwrap();
+        assert_eq!((check.safe(), check.branch.as_deref()), (true, Some("ENG-1")));
+        assert!(remove(&repo, &check, None, &lock).unwrap().starts_with("Removed"));
+        sh(&repo, "git remote set-head origin -d");
+        let asked =
+            create(&repo, &folder_path(BESIDE, &repo, "ENG-2"), "ENG-2", None, false).unwrap().path;
+        assert_eq!(head(&asked, "HEAD"), head(&repo, "refs/remotes/origin/main"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
