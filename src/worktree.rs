@@ -249,13 +249,19 @@ fn remove_unfinished(repo: &Path, folder: &Path) -> Result<(), String> {
 }
 
 /// What to run to `act` on worktree `folder` of `repo`, for the user to copy: `act with git -C
-/// <repo> <args> <folder>`. The command names the real folders, quoted for the shell, so it's left
-/// out when either holds a character `untrusted::path` would have to escape, which a copied
-/// command would get wrong.
+/// <repo> <args> <folder>`. The command names the real folders, quoted for the shell, so a folder
+/// is left out of it when it holds a character `untrusted::path` would have to escape, which a
+/// copied command would get wrong; that includes a backslash, which fish reads as an escape even
+/// in single quotes. Then it says how to find the folder.
 fn git_to_copy(repo: &Path, args: &str, folder: &Path, act: &str) -> String {
     let plain = |p: &Path| p.to_str().filter(|s| !untrusted::hides(s)).map(resume::quote);
     match (plain(repo), plain(folder)) {
         (Some(r), Some(f)) => format!("{act} with git -C {r} {args} {f}"),
+        (Some(r), None) => {
+            format!(
+                "{act} with git -C {r} {args} and its folder, which git -C {r} worktree list shows"
+            )
+        }
         _ => format!("{act} with git {args}, finding its folder with git worktree list"),
     }
 }
@@ -1161,16 +1167,18 @@ mod tests {
         let escaped = format!("Removed {}/acme ENG-2\\u{{200b}}x", root.display());
         assert!(removed.starts_with(&escaped), "{removed}");
 
-        // Locked and gone: no command, as one couldn't name the folder.
+        // Locked and gone: the command can't name the folder, so it names the repository and how
+        // to find the folder there.
         create(&repo, &odd, "ENG-2", None, false).unwrap();
         assert!(ok(&git(&repo, &["worktree", "lock", &odd.to_string_lossy()])));
         std::fs::remove_dir_all(&odd).unwrap();
         let e = create(&repo, &odd, "ENG-2", None, false).unwrap_err();
+        let r = resume::quote(repo.to_str().unwrap());
         assert!(
-            e.ends_with(
-                "as a locked worktree; unlock it with git worktree unlock, finding its folder with \
-                 git worktree list"
-            ),
+            e.ends_with(&format!(
+                "as a locked worktree; unlock it with git -C {r} worktree unlock and its folder, \
+                 which git -C {r} worktree list shows"
+            )),
             "{e}"
         );
         let _ = std::fs::remove_dir_all(root);
@@ -1186,9 +1194,20 @@ mod tests {
         let hidden = Path::new("/src/acme\u{202e}1-GNE");
         assert_eq!(
             git_to_copy(repo, "worktree remove --force --force", hidden, "remove it"),
-            "remove it with git worktree remove --force --force, finding its folder with git \
-             worktree list"
+            "remove it with git -C '/src/My  Projects/acme' worktree remove --force --force and its \
+             folder, which git -C '/src/My  Projects/acme' worktree list shows"
         );
+        // A backslash: fish reads it as an escape even in single quotes.
+        for (repo, folder) in [(Path::new("/src/a\\b"), folder), (hidden, folder)] {
+            assert_eq!(
+                git_to_copy(repo, "worktree unlock", folder, "unlock it"),
+                "unlock it with git worktree unlock, finding its folder with git worktree list"
+            );
+        }
+        let slashed = git_to_copy(repo, "worktree unlock", Path::new("/src/acme\\"), "unlock it");
+        assert!(slashed.ends_with(
+            "and its folder, which git -C '/src/My  Projects/acme' worktree list shows"
+        ));
     }
 
     #[test]

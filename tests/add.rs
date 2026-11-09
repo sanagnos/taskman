@@ -191,7 +191,9 @@ fn a_sessions_new_ticket_waits_for_the_user() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{}", said(&out));
     assert_eq!(board(&repo), ["ENG-1-export-to-csv.md"], "{}", said(&out));
-    assert!(stdout.starts_with("Created ENG-1: "), "{stdout}");
+    // The file's path as it is, not a link kept to one line.
+    let file = repo.join("workplan/todo/ENG-1-export-to-csv.md");
+    assert!(stdout.starts_with(&format!("Created ENG-1: {}\n", file.display())), "{stdout}");
     assert!(stdout.contains("\nAdded ENG-1 \"Export to CSV\" to acme"), "{stdout}");
     let file = std::fs::read_to_string(repo.join("workplan/todo/ENG-1-export-to-csv.md")).unwrap();
     assert!(file.contains("API_KEY=sk-mock-123"), "{file}");

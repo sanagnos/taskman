@@ -443,8 +443,11 @@ impl Client {
             Client::Linear(c) => c.create(prefix, title, description),
             Client::Github(c) => c.create(prefix, title, description),
             Client::Local(board) => {
-                return local::create(board, prefix, title, description)
-                    .map(|f| Created { key: f.key, at: store::tilde(&f.path) });
+                return local::create(board, prefix, title, description).map(|f| Created {
+                    key: f.key,
+                    at: f.path.display().to_string(),
+                    file: true,
+                });
             }
         };
         created.map_err(local::WriteError::from)
@@ -456,15 +459,26 @@ impl Client {
 pub struct Created {
     pub key: String,
     pub at: String,
+    /// `at` is the path of a file on a Local files board, not a link.
+    pub file: bool,
 }
 
 impl Created {
+    /// Where the ticket is, for a line of output: a file's path as it's named
+    /// (`untrusted::path`), or the tracker's link kept to one line.
+    pub fn shown(&self) -> String {
+        match self.file {
+            true => crate::untrusted::path(Path::new(&self.at)),
+            false => crate::untrusted::line(&self.at),
+        }
+    }
+
     /// From the key and link a tracker answered with, which must read as a key. `place` names
     /// where the ticket was made, for when they don't.
     pub(crate) fn read(key: Option<&str>, at: &str, place: &str) -> Result<Created, String> {
         match key {
             Some(key) if ticket_key::well_formed(key) => {
-                Ok(Created { key: key.into(), at: at.into() })
+                Ok(Created { key: key.into(), at: at.into(), file: false })
             }
             _ => Err(maybe_created(
                 &format!("the answer gave no ticket key taskman can read ({key:?})"),

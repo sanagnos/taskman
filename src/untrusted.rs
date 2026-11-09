@@ -113,19 +113,22 @@ fn unseen(c: char) -> bool {
         || matches!(c, '\u{200E}' | '\u{200F}' | '\u{61C}' | '\u{2028}' | '\u{2029}')
 }
 
-/// Whether text `s`, a folder's name say, holds a character `unseen` finds.
+/// Whether `path` would write any of text `s`, a folder's name say, as an escape: a character
+/// `unseen` finds, or a backslash.
 pub fn hides(s: &str) -> bool {
-    s.chars().any(unseen)
+    s.chars().any(|c| c == '\\' || unseen(c))
 }
 
 /// Folder or file `p` for a line of output, `~` for the home folder. Unlike `line`, every
 /// character stays as it is, spaces of any kind and how many included, so the path names the real
 /// folder; only those `unseen` finds are written as escapes (`\n`, `\u{200b}`), so a line break
-/// can't start a line of its own and nothing hides.
+/// can't start a line of its own and nothing hides. A backslash is written `\\`, so a folder named
+/// `a\nb` isn't taken for one with a line break.
 pub fn path(p: &std::path::Path) -> String {
     let mut out = String::new();
     for c in crate::store::tilde(p).chars() {
         match c {
+            '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
@@ -270,6 +273,10 @@ mod tests {
         );
         assert_eq!(shown("/src/a\u{1b}]52;c;x\u{7}"), "/src/a\\u{1b}]52;c;x\\u{7}");
         assert!(hides("/src/a\u{200f}b") && hides("/src/a\u{85}b"));
+        // A backslash is escaped too, so a name that spells an escape reads differently from one.
+        assert_eq!(shown("/src/acme\\nSYSTEM"), "/src/acme\\\\nSYSTEM");
+        assert_ne!(shown("/src/acme\\nSYSTEM"), shown("/src/acme\nSYSTEM"));
+        assert!(hides("/src/a\\b"));
     }
 
     #[test]
@@ -400,9 +407,9 @@ mod tests {
         #[test]
         fn a_path_is_one_line_with_nothing_hidden(s in hostile()) {
             let out = path(std::path::Path::new(&s));
-            prop_assert!(!hides(&out), "{out:?}");
+            prop_assert!(!out.chars().any(unseen), "{out:?}");
             // What hides nothing is the path exactly.
-            let plain: String = s.chars().filter(|&c| !unseen(c)).collect();
+            let plain: String = s.chars().filter(|&c| c != '\\' && !unseen(c)).collect();
             prop_assert_eq!(path(std::path::Path::new(&plain)), plain);
         }
 

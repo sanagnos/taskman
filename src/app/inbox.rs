@@ -454,11 +454,7 @@ impl App {
         for ((title, _), res) in req.new_tickets().into_iter().zip(made) {
             match res {
                 Ok(c) => {
-                    lines.push(add::Line::ok(format!(
-                        "Created {}: {}",
-                        c.key,
-                        untrusted::line(&c.at)
-                    )));
+                    lines.push(add::Line::ok(format!("Created {}: {}", c.key, c.shown())));
                     items.push(add::Item::Ticket { key: c.key, title: title.trim().to_string() });
                 }
                 Err(e) => {
