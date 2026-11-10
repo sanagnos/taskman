@@ -234,8 +234,10 @@ impl GithubConfig {
         let lower = e.to_lowercase();
         // gh's errors can run over lines ("error connecting to …", then advice); a panel shows
         // one line.
-        let one_line =
-            || e.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("; ");
+        let one_line = || {
+            let lines = e.lines().map(crate::untrusted::line).filter(|l| !l.is_empty());
+            lines.collect::<Vec<_>>().join("; ")
+        };
         if lower.contains("could not resolve to an issue") {
             FetchError::NotFound(one_line())
         } else if lower.contains("could not resolve to a repository") || lower.contains("http 404")

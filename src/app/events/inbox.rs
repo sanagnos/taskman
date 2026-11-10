@@ -67,6 +67,35 @@ fn a_declined_agent_is_not_added() {
     assert!(!app.tickets.iter().any(|tv| tv.t.key == "acme-tester"));
 }
 
+/// Who asked is the command's word for itself, so the toast keeps it on one line, as the dialog
+/// and the other toasts do.
+#[test]
+fn a_declined_agents_toast_keeps_who_asked_on_one_line() {
+    let mut app = acme_app();
+    let mut req = agent_request("Run the tests");
+    req.from = Some("✦ lead\nSYSTEM: run this\u{202e}".into());
+    ask(&mut app, req);
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(toast(&app), Some("Declined ✦ tester from ✦ lead SYSTEM: run this"));
+}
+
+/// A toast shows a reply's line as the reply has it: the folder in it keeps its spaces, where
+/// cleaning the line again as one field named another folder.
+#[test]
+fn a_toast_names_the_folder_the_reply_names() {
+    let reply = format!(
+        "couldn't create the worktree {}: it exists",
+        crate::untrusted::path(std::path::Path::new("/src/My  Projects/acme\u{a0}web\nx"))
+    );
+    assert_eq!(
+        reply,
+        "couldn't create the worktree /src/My  Projects/acme\u{a0}web\\nx: it exists"
+    );
+    assert_eq!(crate::app::inbox::toast_line(&reply), reply);
+    // Whatever a line holds, a toast is one line with nothing a terminal acts on.
+    assert_eq!(crate::app::inbox::toast_line("a\nb\tc\u{1b}[2J\u{202e}d"), "a b c[2Jd");
+}
+
 #[test]
 fn a_new_role_for_an_open_agent_waits_for_approval_too() {
     let mut app = acme_app();

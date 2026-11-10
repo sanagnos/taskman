@@ -28,6 +28,14 @@ fn heartbeat_due(last: Option<Instant>, now: Instant) -> bool {
     last.is_none_or(|t| now.saturating_duration_since(t) >= HEARTBEAT_EVERY)
 }
 
+/// A reply's line for a toast: as it was built, from parts each cleaned for where it stands (a
+/// title on one line, a folder as it's named). Cleaning the whole line again as one field
+/// (`untrusted::line`) joined the spaces in a folder's name, so the toast named another folder
+/// than the reply did. Only a line break, which no reply line has, is taken out.
+pub(super) fn toast_line(text: &str) -> String {
+    untrusted::clean(text).replace(['\n', '\t'], " ")
+}
+
 /// The reply for agent `t`, just added by `taskman add` to `project`: its session starts at once,
 /// named `session`.
 fn added_agent_line(t: &Ticket, project: &str, session: &str) -> String {
@@ -475,7 +483,7 @@ impl App {
             // Its toast isn't used, so whether the request waited for taskman doesn't matter.
             let (added, _) = self.add_requested(&add::Request { items, ..req.clone() }, false);
             if let Some(e) = added.iter().find(|l| !l.ok) {
-                let e = untrusted::line(&e.text);
+                let e = toast_line(&e.text);
                 failed.get_or_insert_with(|| format!("Created {}, but {e}", keys.join(", ")));
             }
             lines.extend(added);
@@ -500,7 +508,10 @@ impl App {
         let req = &ask.req;
         let name = req.agent().map(|(n, _)| store::slug(n)).unwrap_or_default();
         if !yes {
-            let from = req.from.as_ref().map_or(String::new(), |f| format!(" from {f}"));
+            let from = req
+                .from
+                .as_deref()
+                .map_or(String::new(), |f| format!(" from {}", untrusted::line(f)));
             self.toast(format!("Declined ✦ {name}{from}"));
             return;
         }
@@ -513,7 +524,7 @@ impl App {
         }
         let (lines, toast) = self.add_requested(req, ask.closed);
         match lines.iter().find(|l| !l.ok) {
-            Some(err) => self.error(format!("✦ {name}: {}", untrusted::line(&err.text))),
+            Some(err) => self.error(format!("✦ {name}: {}", toast_line(&err.text))),
             None => {
                 self.toast(toast.unwrap_or_else(|| {
                     format!("✦ {name}'s new role applies when its session next starts")

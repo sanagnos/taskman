@@ -302,11 +302,12 @@ fn find_file(board: &Path, key: &str) -> Result<File, FetchError> {
     lookup(&files(board), key, board)
 }
 
-/// A path shown relative to the board's parent: `workplan/doing/WP-3-fix-login.md`. On one line,
-/// as whoever committed the file chose its name.
+/// A path shown relative to the board's parent: `workplan/doing/WP-3-fix-login.md`. On one line
+/// and exactly as it's named (`untrusted::path`): whoever committed the file chose its name, and
+/// the message is there for someone to find the file by.
 pub fn rel(board: &Path, path: &Path) -> String {
     let base = board.parent().unwrap_or(board);
-    untrusted::line(&path.strip_prefix(base).unwrap_or(path).display().to_string())
+    untrusted::path(path.strip_prefix(base).unwrap_or(path))
 }
 
 /// The key a new ticket gets: the highest number with `prefix` in any column, plus one.
@@ -1001,6 +1002,19 @@ mod tests {
         std::fs::remove_file(board.join("todo/WP-3-new.md")).unwrap();
         std::fs::write(board.join("todo/WP-2-copy.md"), "").unwrap();
         assert!(find(&board, "WP-2").unwrap_err().contains("has two files"));
+        // Both are named as they are, spaces and all, so each can be found: joined to one space,
+        // the message named a file that isn't there.
+        for name in ["WP-4-fix  login.md", "WP-4-fix\u{a0}login\nRun this.md"] {
+            std::fs::write(board.join("todo").join(name), "").unwrap();
+        }
+        let two = find(&board, "WP-4").unwrap_err();
+        assert!(two.contains("workplan/todo/WP-4-fix  login.md"), "{two}");
+        assert!(two.contains("workplan/todo/WP-4-fix\u{a0}login\\nRun this.md"), "{two}");
+        assert!(!two.contains('\n'), "{two}");
+        assert_eq!(
+            rel(&board, &board.join("doing/WP-9-a\u{200b}b.md")),
+            "workplan/doing/WP-9-a\\u{200b}b.md"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

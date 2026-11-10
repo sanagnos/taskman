@@ -960,7 +960,8 @@ impl Report {
     /// The ticket's page on one line: a Local files ticket's is its file, whose name whoever
     /// committed it chose, and a newline in it would start a line that looks like taskman's own.
     /// A file goes through `untrusted::path`, which keeps its name exactly, since the brief has the
-    /// session edit it at this path; a link through `line`. `--json` keeps it as it is.
+    /// session edit it at this path; a link through `line`. `--json` keeps a file as it is
+    /// (`untrusted::exact`) and cleans a link.
     fn url_line(&self) -> Option<String> {
         let url = self.url.as_deref()?;
         Some(match self.url_is_file {
@@ -1109,10 +1110,13 @@ impl Report {
             "key": self.key,
             "project": self.project,
             "tracker": self.provider.map(|p| p.label().to_lowercase()),
-            "url": self.url,
+            "url": match (&self.url, self.url_is_file) {
+                (Some(file), true) => untrusted::exact(Path::new(file)),
+                (url, _) => json!(url),
+            },
             "issue": issue,
             "issue_error": self.issue.as_ref().and_then(|r| r.as_ref().err()),
-            "worktree": self.worktree,
+            "worktree": self.worktree.as_deref().map(untrusted::exact),
             "branch": self.branch.as_deref().map(untrusted::line),
             "stacked_on": self.stack.as_ref().map(|(b, hint)| json!({ "key": b.key, "branch": untrusted::line(&b.branch), "note": hint })),
             "pr": pr,
@@ -1213,7 +1217,7 @@ impl Overview {
     fn to_json(&self) -> Value {
         json!({
             "project": self.project,
-            "repo": self.repo,
+            "repo": untrusted::exact(&self.repo),
             "tickets": self.tickets.iter().map(Report::to_json).collect::<Vec<_>>(),
             "agents": self.agents.iter().map(|a| json!({ "name": a.name, "session": a.session, "role": a.role, "state": session_json(a.state.as_ref()) })).collect::<Vec<_>>(),
         })
@@ -1849,9 +1853,22 @@ mod tests {
             let spaced = "~/My  Projects/acme\u{a0}web/workplan/todo/WP-2-x.md";
             assert!(with(issue.clone(), spaced, true).contains(spaced));
             // A link: on one line.
-            let text = with(issue, link, false);
+            let text = with(issue.clone(), link, false);
             assert!(!text.lines().any(|l| l.starts_with("Ticket: x")), "{text}");
             assert!(text.contains("ENG-52 Ticket: x"), "{text}");
+            // As JSON, a file and the worktree read back as they're named, whatever hides in
+            // them, and the text holds none of it raw; a link is cleaned as any string is.
+            let hiding = "/src/My  Projects/a\u{200b}b\u{202e}c\u{9b}\u{7f}/WP-2-x.md";
+            let mut r = report(issue.clone(), Err("no PR".into()));
+            (r.url, r.url_is_file) = (Some(hiding.into()), true);
+            r.worktree = Some(hiding.into());
+            let json = untrusted::labelled_json(r.to_json());
+            assert!(!json.contains(['\u{200b}', '\u{202e}', '\u{9b}', '\u{7f}']), "{json:?}");
+            let v: Value = serde_json::from_str(&json).unwrap();
+            assert_eq!((v["url"].as_str(), v["worktree"].as_str()), (Some(hiding), Some(hiding)));
+            r.url_is_file = false;
+            let v: Value = serde_json::from_str(&untrusted::labelled_json(r.to_json())).unwrap();
+            assert_eq!(v["url"], "/src/My  Projects/abc/WP-2-x.md");
         }
     }
 
