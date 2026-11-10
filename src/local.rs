@@ -105,13 +105,16 @@ pub fn columns(board: &Path) -> Vec<Column> {
         .collect()
 }
 
-/// The column `name` names, by its shown name or its folder's, ignoring case.
+/// The column `name` names, by its shown name or its folder's, ignoring case, as typed or as
+/// taskman prints it (`column_shown`), so a column whose name `untrusted::path` escapes (`~done`,
+/// `a\b`, one with a hidden character) can be typed back as it's shown.
 fn column<'a>(columns: &'a [Column], name: &str) -> Option<&'a Column> {
     let name = name.trim().trim_matches('/');
-    columns.iter().find(|c| {
-        c.name.eq_ignore_ascii_case(name)
-            || c.dir.file_name().is_some_and(|d| d.to_string_lossy().eq_ignore_ascii_case(name))
-    })
+    let named =
+        |n: &str| n.eq_ignore_ascii_case(name) || column_shown(n).eq_ignore_ascii_case(name);
+    columns
+        .iter()
+        .find(|c| named(&c.name) || c.dir.file_name().is_some_and(|d| named(&d.to_string_lossy())))
 }
 
 /// The status category the panel colours by, from the column's name.
@@ -1004,6 +1007,22 @@ mod tests {
         std::fs::remove_file(board.join("todo/WP-3-new.md")).unwrap();
         std::fs::write(board.join("todo/WP-2-copy.md"), "").unwrap();
         assert!(find(&board, "WP-2").unwrap_err().contains("has two files"));
+        // A column is taken by the name taskman shows for it too, whatever `path` escapes there.
+        for name in ["~done", "a\\b", "x\u{200b}y", "In  Progress"] {
+            std::fs::create_dir_all(board.join(name)).unwrap();
+        }
+        let cols = columns(&board);
+        for name in ["~done", "a\\b", "x\u{200b}y", "In  Progress"] {
+            let shown = column_shown(name);
+            let found = column(&cols, &shown).map(|c| c.name.as_str());
+            assert_eq!(found, Some(name), "{shown:?}");
+            assert_eq!(column(&cols, name).map(|c| c.name.as_str()), Some(name));
+            assert_eq!(column(&cols, &shown.to_uppercase()).map(|c| c.name.as_str()), Some(name));
+        }
+        assert_eq!(column_shown("~done"), "\\x7edone");
+        for name in ["~done", "a\\b", "x\u{200b}y", "In  Progress"] {
+            std::fs::remove_dir_all(board.join(name)).unwrap();
+        }
         // Both are named as they are, spaces and all, so each can be found: joined to one space,
         // the message named a file that isn't there.
         for name in ["WP-4-fix  login.md", "WP-4-fix\u{a0}login\nRun this.md"] {
