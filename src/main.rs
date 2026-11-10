@@ -365,6 +365,10 @@ fn main() -> anyhow::Result<()> {
     }
     match args.get(1).map(String::as_str) {
         Some("hook") => {
+            // A CLI that ends a hook with a signal it can catch (Claude Code sends SIGTERM, then
+            // SIGKILL; Codex only SIGKILL) has it stop its git first, which is in a session of its
+            // own and would otherwise run on.
+            proc::stop_on_signals();
             hook::run(args.get(2).map(String::as_str).unwrap_or("idle"));
             return Ok(());
         }

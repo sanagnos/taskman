@@ -148,9 +148,10 @@ static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 /// have, so the shell sees the signal (status 130 for ctrl+c) and a script looping over commands
 /// stops. Left to the signal, the command would end alone: its helpers run in sessions of their own
 /// ([`own_session`]), which the terminal's ctrl+c and hangup don't reach, and would run on to
-/// their time limit. Not for the TUI, whose quit stops them. A signal the command was started
-/// ignoring stays ignored: `nohup taskman update`, or `taskman status &` from a script, whose shell
-/// ignores ctrl+c for it, carries on as before.
+/// their time limit. For a hook too, which a CLI may end with SIGTERM while it waits for git. Not
+/// for the TUI, whose quit stops them. A signal the command was started ignoring stays ignored:
+/// `nohup taskman update`, or `taskman status &` from a script, whose shell ignores ctrl+c for it,
+/// carries on as before.
 pub fn stop_on_signals() {
     let caught: Vec<i32> =
         [libc::SIGINT, libc::SIGTERM, libc::SIGHUP].into_iter().filter(|&s| !ignored(s)).collect();

@@ -1,1 +1,2 @@
 - A session's hooks keep to their time when git hangs: a turn's end is over within 2.5 s and a prompt's start within 0.8 s, where stopping a hung git added a quarter of a second per call (2.75 s at a turn's end, close to the 3 s at which Codex ends a hook). A git or gh that ends when asked at its time limit no longer costs that quarter second either.
+- A hook that Claude Code ends at its time limit stops the git it was waiting for, rather than leaving it running.

@@ -247,9 +247,9 @@ fn a_codex_session_logs_no_message() {
     assert!(logged("Claude"));
 }
 
-/// The real command with its real limits, given a Stop in the session at `repo`, whose turn began
-/// at `head`, with `git` first on PATH. Returns the log's text and how long the hook took.
-fn stop_with_git(dir: &Path, repo: &Path, head: &str, git: &str) -> (String, Duration) {
+/// The real command with its real limits, started and given a Stop in the session at `repo`, whose
+/// turn began at `head`, with `git` first on PATH. Returns it and its status file.
+fn start_stop(dir: &Path, repo: &Path, head: &str, git: &str) -> (std::process::Child, PathBuf) {
     use std::io::Write as _;
     use std::process::Stdio;
     let bin = dir.join("git-stub");
@@ -260,7 +260,6 @@ fn stop_with_git(dir: &Path, repo: &Path, head: &str, git: &str) -> (String, Dur
     let begun = format!("{{\"head\":\"{head}\",\"ts\":1}}\n");
     std::fs::write(status.with_extension("turn.jsonl"), begun).unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
-    let started = std::time::Instant::now();
     let mut child = taskman(dir)
         .args(["hook", "done"])
         .env("TASKMAN_STATUS_FILE", &status)
@@ -272,9 +271,39 @@ fn stop_with_git(dir: &Path, repo: &Path, head: &str, git: &str) -> (String, Dur
         .unwrap();
     let stop = r#"{"hook_event_name":"Stop","last_assistant_message":"Done."}"#;
     child.stdin.take().unwrap().write_all(stop.as_bytes()).unwrap();
+    (child, status)
+}
+
+/// [`start_stop`], run to its end. Returns the log's text and how long the hook took.
+fn stop_with_git(dir: &Path, repo: &Path, head: &str, git: &str) -> (String, Duration) {
+    let started = std::time::Instant::now();
+    let (mut child, status) = start_stop(dir, repo, head, git);
     assert!(child.wait().unwrap().success());
     let took = started.elapsed();
     (std::fs::read_to_string(status.with_extension("events.jsonl")).unwrap(), took)
+}
+
+/// A hook the CLI ends with SIGTERM, as Claude Code does one past its limit, stops the git it was
+/// waiting for: git runs in a session of its own, which a signal to the hook's group doesn't
+/// reach, so it would run on. (Codex kills the hook outright, which nothing can catch.)
+#[test]
+fn a_hook_ended_by_sigterm_stops_its_git() {
+    let dir = scratch_dir("hook-sigterm");
+    let pids = dir.join("git.pids");
+    let git = format!("#!/bin/sh\necho $$ >> '{}'\nexec sleep 60\n", pids.display());
+    let (mut child, _) = start_stop(&dir, &dir, "abc", &git);
+    assert!(common::wait_until(|| pids.exists()), "git never started");
+    // SAFETY: kill only sends the signal, to the hook this test started and hasn't reaped.
+    unsafe { libc::kill(i32::try_from(child.id()).unwrap(), libc::SIGTERM) };
+    child.wait().unwrap();
+    // Each git the hook started, the one it was waiting for when the signal came included.
+    let started: Vec<i32> = std::fs::read_to_string(&pids)
+        .unwrap()
+        .split_whitespace()
+        .map(|p| p.parse().unwrap())
+        .collect();
+    assert!(!started.is_empty());
+    assert!(common::wait_until(|| !started.iter().any(|&p| alive(p))), "git runs on: {started:?}");
 }
 
 /// What Codex gives a hook before it ends it (`CODEX_HOOK_TIMEOUT`); Claude gives 5 s.
