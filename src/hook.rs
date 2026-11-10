@@ -174,10 +174,13 @@ const RELEASE_GIT_WAIT: Duration = Duration::from_millis(800);
 /// the turn's line, which matters more than what git says.
 const RELEASE_STOP_WAIT: Duration = Duration::from_millis(2500);
 
-/// The limits a hook keeps to ([`RELEASE_GIT_WAIT`], [`RELEASE_STOP_WAIT`]), but for the unit
-/// tests: they run real git on machines that may be busy, and a hook's limit isn't what they're
-/// about. A unit test checks the release values against the CLIs' limits.
+// The unit tests run real git on machines that may be busy, and a hook's limit isn't what they're
+// about, so they get longer limits; a unit test checks the release values against the CLIs'.
+
+/// [`RELEASE_GIT_WAIT`], but for the unit tests.
 const GIT_WAIT: Duration = if cfg!(test) { Duration::from_secs(60) } else { RELEASE_GIT_WAIT };
+
+/// [`RELEASE_STOP_WAIT`], but for the unit tests.
 const STOP_WAIT: Duration = if cfg!(test) { Duration::from_secs(300) } else { RELEASE_STOP_WAIT };
 
 /// The least time a git call is started with: less starts git only to stop it.
@@ -1416,7 +1419,7 @@ mod tests {
                 break;
             }
             assert!(limit + grace <= left, "call {call}: {limit:?} with {left:?} left");
-            left -= limit + grace;
+            left = left.saturating_sub(limit + grace);
         }
         // The first call gets all of the wait, as a slow git should.
         assert_eq!(git_limit(total, wait), wait);
