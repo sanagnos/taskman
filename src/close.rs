@@ -50,8 +50,8 @@ fn close(args: &[String]) -> Result<bool, String> {
     let me = session
         .as_deref()
         .and_then(|s| store::session_ticket(&saved.tickets, s, session_repo.as_deref()));
-    let own = cli::session_project(&saved, session_repo.as_deref())
-        .map_err(|_| "this session's project is no longer in taskman".to_string())?;
+    // Its refusal says the way round it, as status's and resume's do.
+    let own = cli::session_project(&saved, session_repo.as_deref())?;
     let plan = plan(&a, &saved, me, Here::current().as_ref(), own)?;
     let codex = std::env::var(status::CODEX_NO_NETWORK).is_ok_and(|v| v == "1");
     let mut all_ok = true;

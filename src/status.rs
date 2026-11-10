@@ -428,16 +428,18 @@ pub(crate) fn locate<'a>(
 }
 
 /// Whether `key` can be a ticket of project `p`, a session's: refused when `p`'s tracker has a
-/// prefix and the key another, as `cli::resolve_key` refuses it in a session. Never fetched: a
+/// prefix and the key another, as `cli::resolve_key` refuses it in a session, with the way round
+/// it (`cli::WIDER`), as a plain shell would have looked further. Never fetched: a
 /// GitHub tracker reads only the number, so `SEC-7` would show issue #7 labelled SEC-7. The words
 /// are the same whether another project has the prefix or none has.
 fn session_key(key: &str, p: &Project) -> Result<(), String> {
     let pre = p.tracker.as_ref().map(|t| t.key.to_uppercase()).filter(|k| !k.is_empty());
     match pre {
         Some(pre) if !ticket_key::prefix_of(key).eq_ignore_ascii_case(&pre) => Err(format!(
-            "{} doesn't belong to {}'s tracker ({pre})",
+            "{} doesn't belong to {}'s tracker ({pre}). {}.",
             key.to_uppercase(),
-            untrusted::line(&p.name)
+            untrusted::line(&p.name),
+            cli::WIDER
         )),
         _ => Ok(()),
     }
@@ -1702,7 +1704,7 @@ mod tests {
         // A key no project has the prefix of is refused as one another project has would be.
         assert_eq!(
             in_session(&s, "OPS-1", 0),
-            Err("OPS-1 doesn't belong to acme's tracker (ENG)".into())
+            Err(format!("OPS-1 doesn't belong to acme's tracker (ENG). {}.", cli::WIDER))
         );
 
         let s = boards();
@@ -1714,7 +1716,8 @@ mod tests {
         assert_eq!(in_session(&s, "WP-2", 0), Ok((None, "alpha".into())));
         // A key with another prefix is refused, nothing fetched, in the same words whether another
         // project has the prefix or none has.
-        let foreign = |k: &str| Err(format!("{k} doesn't belong to alpha's tracker (WP)"));
+        let foreign =
+            |k: &str| Err(format!("{k} doesn't belong to alpha's tracker (WP). {}.", cli::WIDER));
         assert_eq!(in_session(&s, "OPS-3", 0), foreign("OPS-3"));
         assert_eq!(in_session(&s, "zzz-3", 0), foreign("ZZZ-3"));
         // So is one only another project has open, from a project with another prefix.
@@ -1722,7 +1725,7 @@ mod tests {
         ops_session.tickets.push(Ticket { key: "WP-9".into(), ..s.tickets[0].clone() });
         assert_eq!(
             in_session(&ops_session, "WP-9", 2),
-            Err("WP-9 doesn't belong to ops's tracker (OPS)".into())
+            Err(format!("WP-9 doesn't belong to ops's tracker (OPS). {}.", cli::WIDER))
         );
         // A project with no prefix takes any key as its own.
         let mut bare = boards();

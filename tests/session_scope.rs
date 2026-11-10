@@ -147,7 +147,11 @@ fn a_session_reaches_only_its_own_project() {
         // A key with another prefix than the session's tracker's is refused, nothing read.
         let (ok, out, err) = run(&dir, &acme, Some(session), &["status", "SEC-7"]);
         assert!(!ok && out.is_empty(), "{session}: {out}\n{err}");
-        assert_eq!(err, "taskman status: SEC-7 doesn't belong to acme's tracker (ENG)\n");
+        assert!(
+            err.starts_with("taskman status: SEC-7 doesn't belong to acme's tracker (ENG). ")
+                && err.contains("`env -u TASKMAN_REPO`"),
+            "{err}"
+        );
         // By name, it's refused.
         refused(
             run(&dir, &acme, Some(session), &["status", "--project=private"]),
@@ -266,11 +270,16 @@ fn a_sessions_answers_dont_depend_on_the_other_projects() {
                 assert_eq!(answers[0], answers[1], "{what}");
                 assert_eq!(answers[0], answers[2], "{what}");
                 silent(&what, &answers[0]);
-                // `title` has a refusal of its own, which offers no way round.
+                // `title` has a refusal of its own, which offers no way round; every other says
+                // how to go wider, as a plain shell would have answered otherwise.
                 if hole == "NAME" && template[0] != "title" {
                     let refusal = "this session works in acme: a session keeps to its own project";
                     assert!(answers[0].1.is_empty() && answers[0].2.contains(refusal), "{what}");
                 }
+                // `--fork` names a session in the folder's project from a plain shell too.
+                let wider = answers[0].2.contains("`env -u TASKMAN_REPO`");
+                let differs = template[0] != "title" && !template.contains(&"--fork");
+                assert_eq!(wider, differs, "{what}: {answers:#?}");
             }
         }
         // What it's shown of its own project names no other either, as text or JSON.
@@ -298,47 +307,61 @@ fn a_sessions_answers_dont_depend_on_the_other_projects() {
     assert!(out.contains("private plans"), "{out}\n{err}");
 }
 
-/// A session's own project answers to its name in any case or by its slug, and the answer is the
-/// same whether another project's name looks like it: only the session's own is compared.
+/// In a session `--project` takes the session's own project by its exact name only: another
+/// spelling may be another project's (`ACME` beside `acme`), so every command refuses it, in the
+/// same words with or without such a project, and acts on nothing.
 #[test]
-fn a_session_names_its_own_project_whatever_else_there_is() {
+fn a_session_takes_its_own_project_by_its_exact_name_only() {
     let dir = common::scratch_dir("session-own-name");
     let (acme, _) = two_projects(&dir);
     type Answer = (Option<i32>, String, String);
-    let answer = |args: &[&str]| -> Answer {
+    let answer = |args: &[String]| -> Answer {
         let mut cmd = common::taskman(&dir);
         cmd.env("TASKMAN_TICKET", "ENG-1").env("TASKMAN_REPO", &acme);
         let out = cmd.args(args).current_dir(&acme).stdin(Stdio::null()).output().unwrap();
         let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
         (out.status.code(), text(&out.stdout), text(&out.stderr))
     };
-    let spellings = ["acme", "ACME", "Acme", "acme!", " acme "];
-    let asks = |name: &str| -> Vec<Vec<String>> {
-        [
-            vec!["status", "--project", name],
-            vec!["status", "ENG-1", "--json", "--project", name],
-            vec!["status", "SEC-7", "--project", name],
-            vec!["add", "ENG-1", "--project", name],
-        ]
-        .into_iter()
-        .map(|a| a.into_iter().map(String::from).collect())
-        .collect()
+    let with = |template: &[&str], name: &str| -> Vec<String> {
+        template.iter().map(|a| a.replace("NAME", name)).collect()
     };
-    let all = |answer: &dyn Fn(&[&str]) -> Answer| {
-        spellings
+    // Read-only, or with nothing to do: safe to run with the exact name too.
+    let reads: [&[&str]; 4] = [
+        &["status", "--project", "NAME"],
+        &["status", "ENG-1", "--json", "--project", "NAME"],
+        &["status", "SEC-7", "--project", "NAME"],
+        &["add", "ENG-1", "--project", "NAME"],
+    ];
+    // Ones that would act on acme's ENG-1 if taken: run only with spellings that must be refused.
+    let acts: [&[&str]; 4] = [
+        &["move", "ENG-1", "doing", "--project", "NAME"],
+        &["title", "ENG-1", "Fix login", "--project", "NAME"],
+        &["close", "ENG-1", "--project", "NAME"],
+        &["resume", "ENG-1", "--project", "NAME"],
+    ];
+    let variants = ["ACME", "Acme", "acme!", " acme ", "acme "];
+    let run_all = || {
+        let exact: Vec<Answer> = reads.iter().map(|t| answer(&with(t, "acme"))).collect();
+        let refused: Vec<Vec<Answer>> = reads
             .iter()
-            .flat_map(|name| asks(name))
-            .map(|args| answer(&args.iter().map(String::as_str).collect::<Vec<_>>()))
-            .collect::<Vec<_>>()
+            .chain(&acts)
+            .map(|t| variants.iter().map(|v| answer(&with(t, v))).collect())
+            .collect();
+        (exact, refused)
     };
-    let alone = all(&answer);
-    // Its own overview and ticket, whichever way it's spelt.
-    assert_eq!(alone[0].0, Some(0), "{alone:#?}");
-    assert!(alone[0].1.contains("ENG-1"), "{alone:#?}");
-    for (i, a) in alone.iter().enumerate() {
-        assert_eq!(a, &alone[i % 4], "spelling {}: {a:#?}", i / 4);
+    let (exact, refused) = run_all();
+    // The exact name is its own project: its overview, its ticket.
+    assert_eq!(exact[0].0, Some(0), "{exact:#?}");
+    assert!(exact[0].1.contains("ENG-1") && exact[1].1.contains("\"key\": \"ENG-1\""));
+    // Every other spelling is refused, the same for each, nothing printed but the refusal.
+    for (template, answers) in reads.iter().chain(&acts).zip(&refused) {
+        let what = template.join(" ");
+        assert_eq!(answers[0].0, Some(1), "{what}: {answers:#?}");
+        assert!(answers[0].1.is_empty(), "{what}: {answers:#?}");
+        assert!(answers.iter().all(|a| a == &answers[0]), "{what}: {answers:#?}");
     }
-    // Projects whose names match some of those spellings exactly change nothing in its session.
+    assert!(acme.join("workplan/todo/ENG-1-test.md").exists(), "a refused move moved it");
+    // Projects named like some of those spellings change nothing in its session.
     let state = dir.join("state/taskman/tickets.json");
     let mut saved: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
@@ -351,7 +374,8 @@ fn a_session_names_its_own_project_whatever_else_there_is() {
         }));
     }
     std::fs::write(&state, saved.to_string()).unwrap();
-    assert_eq!(all(&answer), alone);
+    assert_eq!(run_all(), (exact, refused));
+    assert!(acme.join("workplan/todo/ENG-1-test.md").exists(), "a refused move moved it");
     // From the user's own shell they're told apart, as before.
     let mut cmd = common::taskman(&dir);
     let out = cmd.args(["status", "--project", "Acme"]).current_dir(&acme).output().unwrap();

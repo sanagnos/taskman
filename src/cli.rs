@@ -205,21 +205,34 @@ fn find_named(projects: &[Project], name: &str) -> Result<usize, Vec<usize>> {
 }
 
 /// `--project NAME` in a session taskman started, whose project is `own` (None outside one, where
-/// it's `project_named`): the session's own project, by its name in any case or by its slug, or
-/// `elsewhere`'s refusal. Only the session's project is compared, so the answer is the same
-/// whether the name is another project's, several projects' or nobody's, and whether another
-/// project's name looks like the session's own: a session isn't told which projects taskman has.
+/// it's `project_named`): the session's own project by its exact name, or `elsewhere`'s refusal.
+/// Not by case or slug, as outside a session: names need only differ exactly, so `ACME` can be
+/// another project beside `acme` (and `c++` and `c#` slug alike), and a looser match would act on
+/// the session's project when another was meant. Any other spelling gets the refusal, which is the
+/// same whether a project has that name or none has, so the session isn't told which exist.
 pub(crate) fn own_named(saved: &Saved, name: &str, own: Option<usize>) -> Result<usize, String> {
-    let Some(own) = own else { return project_named(&saved.projects, name) };
-    let mine = &saved.projects[own].name;
-    let slug = store::slug(name);
-    if *mine == name
-        || mine.eq_ignore_ascii_case(name)
-        || (!slug.is_empty() && store::slug(mine) == slug)
-    {
-        Ok(own)
-    } else {
-        Err(elsewhere(own, saved))
+    match own {
+        None => project_named(&saved.projects, name),
+        Some(own) if saved.projects[own].name == name => Ok(own),
+        Some(own) => Err(elsewhere(own, saved)),
+    }
+}
+
+/// `e`, an answer in a session that a plain shell, looking in every project, could have answered
+/// otherwise, with the way round it (`WIDER`) once.
+pub(crate) fn with_way_round(e: String) -> String {
+    if e.ends_with(&format!(" {WIDER}.")) {
+        return e;
+    }
+    format!("{}. {WIDER}.", e.trim_end_matches('.'))
+}
+
+/// `e`, a refusal in a session, without the way round it (`WIDER`), for a command that offers
+/// none (`taskman title`).
+pub(crate) fn no_way_round(e: String) -> String {
+    match e.strip_suffix(&format!(" {WIDER}.")) {
+        Some(bare) => bare.to_string(),
+        None => e,
     }
 }
 
@@ -234,12 +247,13 @@ pub(crate) fn context(me: Option<&Ticket>, saved: &Saved, here: Option<&Here>) -
     status::project_here(&saved.projects, here?)
 }
 
-/// What lifts `confine` and `confine_all`. A command written this way matches no rule of the
+/// What lifts `confine`, `confine_all` and every other refusal a session gets that a plain shell
+/// would have answered otherwise (`status::locate`'s of another prefix, `resolve_key`'s). A command written this way matches no rule of the
 /// allow-list, so the CLI's own permission settings decide: Claude Code asks the user, runs it
 /// (auto mode's classifier, a mode that skips prompts, a rule of the user's) or refuses it
 /// (`dontAsk`); Codex runs it, asks or refuses as its sandbox, approval policy and rules say. The
 /// refusal says only that much, as taskman can't tell which applies; the guide says more.
-const WIDER: &str = "If the user asked for it, run the same command with `env -u TASKMAN_REPO` in front; the session's permission settings decide whether it runs, asks the user or is refused";
+pub(crate) const WIDER: &str = "If the user asked for it, run the same command with `env -u TASKMAN_REPO` in front; the session's permission settings decide whether it runs, asks the user or is refused";
 
 /// The project of the session taskman started that the command runs in, by `TASKMAN_REPO`; None
 /// outside one.
@@ -440,8 +454,10 @@ pub(crate) fn resolve_key(
         .find(|q| !quiet && has_prefix(q, ticket_key::prefix_of(&key)))
         .map(|q| format!("; for project {0}, pass --project {0}", untrusted::line(&q.name)))
         .unwrap_or_default();
+    // In a session, the way round it, as outside one this names the project to pass.
+    let wider = if quiet { format!(". {WIDER}.") } else { String::new() };
     Err(format!(
-        "{key} doesn't belong to {}'s tracker ({pre}){theirs}",
+        "{key} doesn't belong to {}'s tracker ({pre}){theirs}{wider}",
         untrusted::line(&project.name)
     ))
 }
@@ -961,9 +977,10 @@ pub(crate) mod tests {
         for name in ["acme-api", "notes", "Notes", "NOTES", "nobody", "acme web legacy"] {
             assert_eq!(own_named(&s, name, own).unwrap_err(), refusal, "{name}");
         }
-        // Its own, by name, case or slug, as outside a session.
-        for name in ["acme-web", "Acme-Web", "acme web"] {
-            assert_eq!(own_named(&s, name, own), Ok(0), "{name}");
+        // Its own by its exact name only.
+        assert_eq!(own_named(&s, "acme-web", own), Ok(0));
+        for name in ["Acme-Web", "acme web"] {
+            assert_eq!(own_named(&s, name, own).unwrap_err(), refusal, "{name}");
         }
         // Outside a session, the lists as they were.
         assert!(own_named(&s, "nobody", None).unwrap_err().contains("taskman has acme-web, "));
@@ -975,32 +992,53 @@ pub(crate) mod tests {
             .map(|s| resolve_key("API-7", 0, &s.projects, true).unwrap_err())
             .into_iter()
             .collect();
-        assert_eq!(foreign[0], "API-7 doesn't belong to acme-web's tracker (ENG)");
+        assert_eq!(
+            foreign[0],
+            format!("API-7 doesn't belong to acme-web's tracker (ENG). {WIDER}.")
+        );
         assert!(foreign.iter().all(|e| *e == foreign[0]), "{foreign:?}");
     }
 
-    /// The session's own project answers to its name in any case and to its slug, and nothing
-    /// else does, whether or not another project's name looks like it: only its own name is
-    /// compared, so the answer doesn't say there's a look-alike.
+    /// In a session `--project` takes the session's project by its exact name only: another
+    /// spelling may be another project's (`ACME` beside `acme`), so it gets the refusal, the same
+    /// with or without such a project.
     #[test]
-    fn a_session_knows_its_own_project_by_any_spelling() {
+    fn a_session_takes_only_its_own_projects_exact_name() {
         let alone = saved();
         let mut twins = saved();
         for name in ["Acme-Web", "ACME WEB", "acme_web"] {
             twins.projects.push(project(name, &format!("/src/{name}"), "ENG"));
         }
         for s in [&alone, &twins] {
-            for name in ["acme-web", "ACME-WEB", "Acme-Web", "acme web", "Acme_Web", "acme  web!"] {
-                assert_eq!(own_named(s, name, Some(0)), Ok(0), "{name}");
-            }
+            assert_eq!(own_named(s, "acme-web", Some(0)), Ok(0));
             let refusal = confine(1, Some(0), s).unwrap_err();
-            for name in ["acme", "web", "acme-web-2", "", "-"] {
+            for name in [
+                "ACME-WEB",
+                "Acme-Web",
+                "acme web",
+                "Acme_Web",
+                "acme  web!",
+                "acme",
+                " acme-web",
+                "",
+            ] {
                 assert_eq!(own_named(s, name, Some(0)).unwrap_err(), refusal, "{name:?}");
             }
         }
-        // The look-alikes' own sessions know theirs the same way, and not acme-web's.
+        // A look-alike's own session takes its exact name, and not acme-web's.
         assert_eq!(own_named(&twins, "ACME WEB", Some(4)), Ok(4));
-        assert!(own_named(&twins, "acme-web", Some(4)).is_ok(), "same slug, same answer");
+        assert!(own_named(&twins, "acme-web", Some(4)).is_err());
+        // In a session the way round is offered; `no_way_round` takes it off for `title`.
+        let refusal = confine(1, Some(0), &alone).unwrap_err();
+        assert!(refusal.ends_with(&format!(" {WIDER}.")), "{refusal}");
+        assert_eq!(
+            no_way_round(refusal),
+            "this session works in acme-web: a session keeps to its own project."
+        );
+        assert_eq!(no_way_round("other".into()), "other");
+        let found = with_way_round("no agent named lead is open in taskman".into());
+        assert_eq!(found, format!("no agent named lead is open in taskman. {WIDER}."));
+        assert_eq!(with_way_round(found.clone()), found);
         // Outside a session, the look-alikes are told apart as before.
         assert_eq!(own_named(&twins, "acme-web", None), Ok(0));
         assert!(own_named(&twins, "ACME-WEB", None).unwrap_err().contains("could mean projects"));

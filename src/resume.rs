@@ -517,7 +517,10 @@ fn resume(args: &[String]) -> Result<i32, String> {
     let here = Here::current();
     let session_repo = store::session_env().1;
     let scope = scope_of(&a, &saved, session_repo.as_deref(), here.as_ref())?;
-    let t = find(&a.key, a.kind, scope, &saved)?.clone();
+    // In a session, an answer a plain shell could have given otherwise by looking in every
+    // project says how to go wider, as the other commands' refusals there do.
+    let in_session = |e: String| if session_repo.is_some() { cli::with_way_round(e) } else { e };
+    let t = find(&a.key, a.kind, scope, &saved).map_err(in_session)?.clone();
     let name = untrusted::line(t.display());
     if t.pending_worktree.is_some() {
         return Err(format!(
@@ -550,7 +553,7 @@ fn resume(args: &[String]) -> Result<i32, String> {
     let t = match find(&a.key, a.kind, scope, &saved) {
         Ok(now) if now.is(&t.repo, &t.key) => now.clone(),
         Ok(_) => return Err(format!("{name} changed in taskman just now; try again")),
-        Err(e) => return Err(e),
+        Err(e) => return Err(in_session(e)),
     };
     let exe =
         std::env::current_exe().map_err(|e| format!("couldn't find taskman's own binary: {e}"))?;

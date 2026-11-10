@@ -179,7 +179,10 @@ fn target(
     };
     let t = match &a.input {
         Some(input) => {
-            let (key, (t, project)) = cli::locate_ticket(input, named, me, saved, here, own)?;
+            // A key of another prefix is refused as status refuses it, but without the way
+            // round, which this command doesn't offer (below).
+            let (key, (t, project)) = cli::locate_ticket(input, named, me, saved, here, own)
+                .map_err(|e| if own.is_some() { cli::no_way_round(e) } else { e })?;
             t.ok_or_else(|| format!("{key} isn't open in {}", untrusted::line(&project.name)))?
         }
         None => {
@@ -339,7 +342,7 @@ mod tests {
         assert_eq!(of(&["ENG-53", "Fix"]), Err(format!("that's ENG-53, {refused}")));
         assert_eq!(of(&["53", "Fix"]), Err(format!("that's ENG-53, {refused}")));
         assert_eq!(of(&["--clear", "53"]), Err(format!("that's ENG-53, {refused}")));
-        let foreign = |k: &str| Err(format!("{k} doesn't belong to acme-web's tracker (ENG)"));
+        let foreign = |k: &str| Err(format!("{k} doesn't belong to acme-web's tracker (ENG)."));
         assert_eq!(of(&["API-7", "Fix"]), foreign("API-7"));
         assert_eq!(of(&["OPS-7", "Fix"]), foreign("OPS-7"));
         for name in ["acme-api", "nobody"] {
