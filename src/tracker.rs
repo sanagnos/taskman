@@ -1287,7 +1287,10 @@ mod tests {
         assert_eq!(made.shown(), crate::untrusted::path(&file));
         assert!(made.shown().contains("My  Projects/acme\u{a0}web/workplan/todo/"));
         let link = Created::read(Some("ENG-2"), "https://example.com/ENG-2\nx", "Linear").unwrap();
-        assert_eq!((link.file, link.shown().as_str()), (None, "https://example.com/ENG-2 x"));
+        assert_eq!(
+            (link.file.is_none(), link.shown().as_str()),
+            (true, "https://example.com/ENG-2 x")
+        );
     }
 
     /// A refused certificate won't change by asking again, so it isn't worded as a network problem

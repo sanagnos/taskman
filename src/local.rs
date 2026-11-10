@@ -107,14 +107,25 @@ pub fn columns(board: &Path) -> Vec<Column> {
 
 /// The column `name` names, by its shown name or its folder's, ignoring case, as typed or as
 /// taskman prints it (`column_shown`), so a column whose name `untrusted::path` escapes (`~done`,
-/// `a\b`, one with a hidden character) can be typed back as it's shown.
-fn column<'a>(columns: &'a [Column], name: &str) -> Option<&'a Column> {
+/// `a\b`, one with a hidden character) can be typed back as it's shown. Ok(None) when none does;
+/// Err with every one it could mean when several do: folder names come from the repository, so
+/// one can be made to read as another's shown name (`\x7edone` beside `~done`), and picking
+/// either would be a guess.
+fn column<'a>(columns: &'a [Column], name: &str) -> Result<Option<&'a Column>, Vec<&'a Column>> {
     let name = name.trim().trim_matches('/');
     let named =
         |n: &str| n.eq_ignore_ascii_case(name) || column_shown(n).eq_ignore_ascii_case(name);
-    columns
+    let found: Vec<&Column> = columns
         .iter()
-        .find(|c| named(&c.name) || c.dir.file_name().is_some_and(|d| named(&d.to_string_lossy())))
+        .filter(|c| {
+            named(&c.name) || c.dir.file_name().is_some_and(|d| named(&d.to_string_lossy()))
+        })
+        .collect();
+    match found[..] {
+        [] => Ok(None),
+        [c] => Ok(Some(c)),
+        _ => Err(found),
+    }
 }
 
 /// The status category the panel colours by, from the column's name.
@@ -458,7 +469,9 @@ pub fn create(
         .map_err(|e| WriteError::io(&format!("couldn't create {}", untrusted::path(board)), &e))?;
     let _lock = Lock::take(board)?;
     let cols = columns(board);
+    // Several columns named alike (`todo` and `Todo`): the first, as the board sorts them.
     let col = column(&cols, NEW_IN)
+        .unwrap_or_else(|several| several.first().copied())
         .or(cols.first())
         .ok_or_else(|| format!("{} has no columns", untrusted::path(board)))?;
     let key = next_key(&files_in(&cols), prefix);
@@ -487,7 +500,15 @@ fn ticket_text(title: &str, description: &str) -> String {
 pub fn move_to(board: &Path, key: &str, column_name: &str) -> Result<(File, String), WriteError> {
     let file = find(board, key)?;
     let cols = columns(board);
-    let Some(to) = column(&cols, column_name) else {
+    let to = column(&cols, column_name).map_err(|several| {
+        let names = several.iter().map(|c| column_shown(&c.name)).collect::<Vec<_>>().join(" or ");
+        format!(
+            "{} could mean the columns {names} on {}; name the folder exactly as it is",
+            untrusted::line(column_name),
+            untrusted::path(board)
+        )
+    })?;
+    let Some(to) = to else {
         let names = cols.iter().map(|c| column_shown(&c.name)).collect::<Vec<_>>().join(", ");
         return Err(format!(
             "{} has no column {}; its columns are {names}",
@@ -1014,12 +1035,29 @@ mod tests {
         let cols = columns(&board);
         for name in ["~done", "a\\b", "x\u{200b}y", "In  Progress"] {
             let shown = column_shown(name);
-            let found = column(&cols, &shown).map(|c| c.name.as_str());
-            assert_eq!(found, Some(name), "{shown:?}");
-            assert_eq!(column(&cols, name).map(|c| c.name.as_str()), Some(name));
-            assert_eq!(column(&cols, &shown.to_uppercase()).map(|c| c.name.as_str()), Some(name));
+            let found = |typed: &str| column(&cols, typed).unwrap().map(|c| c.name.as_str());
+            assert_eq!(found(&shown), Some(name), "{shown:?}");
+            assert_eq!(found(name), Some(name));
+            assert_eq!(found(&shown.to_uppercase()), Some(name));
         }
         assert_eq!(column_shown("~done"), "\\x7edone");
+        // A folder named as another's shown name is a decoy: what's typed could mean either, so
+        // the move is refused, naming both as shown, and nothing moves.
+        std::fs::create_dir_all(board.join("\\x7edone")).unwrap();
+        let cols = columns(&board);
+        let mut both: Vec<&str> =
+            column(&cols, "\\x7edone").unwrap_err().iter().map(|c| c.name.as_str()).collect();
+        both.sort_unstable();
+        assert_eq!(both, ["\\x7edone", "~done"]);
+        let before = find(&board, "WP-1").unwrap().path;
+        let e = move_to(&board, "WP-1", "\\x7edone").unwrap_err().message;
+        assert!(e.contains("\\x7edone could mean the columns "), "{e}");
+        assert!(
+            e.contains(&column_shown("~done")) && e.contains(&column_shown("\\x7edone")),
+            "{e}"
+        );
+        assert_eq!(find(&board, "WP-1").unwrap().path, before, "it moved");
+        std::fs::remove_dir_all(board.join("\\x7edone")).unwrap();
         for name in ["~done", "a\\b", "x\u{200b}y", "In  Progress"] {
             std::fs::remove_dir_all(board.join(name)).unwrap();
         }

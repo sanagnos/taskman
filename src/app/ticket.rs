@@ -1060,16 +1060,13 @@ mod tests {
         let jamo = |n| "\u{1100}".repeat(n);
         assert_eq!(clean_label(&jamo(150)), Some(format!("{}…", jamo(99))));
         assert_eq!(clean_label(&format!("Fix {}", jamo(150))), Some(format!("Fix {}…", jamo(97))));
-        // A prepended mark before it is nothing visible, so it's cut inside as if it came first:
+        // A direction mark before it is nothing visible, so it's cut inside as if it came first:
         // this chain fits the bytes on its own (798), but not after the mark.
         let chain = format!("{}⌚\u{fe0e}", "⌚\u{fe0e}\u{200d}".repeat(88));
         assert_eq!(chain.len(), LABEL_BYTES - 2);
-        let label = clean_label(&format!("\u{600}\u{600}{chain}")).unwrap();
-        assert!(label.starts_with("\u{600}\u{600}⌚\u{fe0e}") && label_fits(&label), "{label:?}");
+        let label = clean_label(&format!("\u{200e}{chain}")).unwrap();
+        assert!(label.starts_with("\u{200e}⌚\u{fe0e}") && label_fits(&label), "{label:?}");
         assert_eq!(clean_label(&label), Some(label));
-        // A direction mark before it has no right-to-left letter to stand beside, so it goes
-        // (`untrusted::line`) and the chain fits whole.
-        assert_eq!(clean_label(&format!("\u{200e}{chain}")), Some(chain));
         // One that could be shown whole is left out whole, as the column cut always did, however
         // wide: cut, a flag, an emoji sequence without its U+FE0F (three columns) or a conjunct
         // would draw as something else.

@@ -72,9 +72,11 @@ fn cleaned(v: serde_json::Value) -> serde_json::Value {
 /// one it's read in; and the Hangul fillers no running text needs (U+3164, U+FFA0), which are
 /// letters to Unicode and draw as blanks; and the other characters Unicode marks as drawing
 /// nothing that no text needs (Khmer's U+17B4 and U+17B5, U+2065, the shorthand format controls).
-/// All are known ways to put instructions in text where a
-/// person looking at it won't see them. Direction marks and the conjoining jamo fillers have a
-/// job in some text, so they stay where they have it (`mark`, `kept`).
+/// All are known ways to put instructions in text where a person looking at it won't see them.
+/// Direction marks (U+200E, U+200F, U+061C) stay wherever they are: they only nudge the
+/// characters beside them, can't reverse text as the embeddings, overrides and isolates can, and
+/// right-to-left text uses them. The conjoining jamo fillers have a job in some text, so they stay
+/// where they have it (`kept`).
 fn hidden(c: char) -> bool {
     matches!(c,
         '\u{AD}' | '\u{34F}' | '\u{180E}' | '\u{200B}' | '\u{2060}'..='\u{2064}'
@@ -131,53 +133,8 @@ fn mark(c: char) -> bool {
     matches!(c, '\u{200E}' | '\u{200F}' | '\u{61C}')
 }
 
-/// A letter of a script written right to left (Hebrew, Arabic, Syriac, Thaana, N'Ko and the
-/// rest of the right-to-left blocks, with their presentation forms), Unicode's strong
-/// right-to-left classes (R and AL), beside which a direction mark has a job. Not the combining
-/// marks in those blocks (Hebrew's points, Arabic's vowel signs), which are alphabetic to Unicode
-/// but take no column and carry no direction of their own: one on a Latin letter would otherwise
-/// count. Without a crate that knows each character's bidirectional class, a letter that takes a
-/// column is the test (`strong`).
-fn right_to_left(c: char) -> bool {
-    strong(c)
-        && matches!(c,
-            '\u{590}'..='\u{8FF}' | '\u{FB1D}'..='\u{FDFF}' | '\u{FE70}'..='\u{FEFF}'
-            | '\u{10800}'..='\u{10FFF}' | '\u{1E800}'..='\u{1EFFF}')
-}
-
-/// A letter that takes a column, of either direction: what Unicode's bidirectional algorithm
-/// calls strong, which neutrals, digits and combining marks aren't. Never one `hidden` drops.
-fn strong(c: char) -> bool {
-    c.is_alphabetic()
-        && !hidden(c)
-        && unicode_width::UnicodeWidthChar::width(c).is_some_and(|w| w > 0)
-}
-
-/// For each of `chars`, whether the nearest strong character before it or after it, skipping
-/// everything that isn't strong (neutrals, digits, marks, what `clean` drops), is right-to-left:
-/// where a direction mark has a job.
-fn beside_rtl(chars: &[char]) -> Vec<bool> {
-    let mut after = vec![false; chars.len()];
-    let mut next = None;
-    for i in (0..chars.len()).rev() {
-        after[i] = next.is_some_and(right_to_left);
-        if strong(chars[i]) {
-            next = Some(chars[i]);
-        }
-    }
-    let mut prev = None;
-    let mut beside = Vec::with_capacity(chars.len());
-    for (i, &c) in chars.iter().enumerate() {
-        beside.push(prev.is_some_and(right_to_left) || after[i]);
-        if strong(c) {
-            prev = Some(c);
-        }
-    }
-    beside
-}
-
-/// A character that stays only where it has a job: a selector, joiner, direction mark or jamo
-/// filler.
+/// A character that draws as nothing beside another and stays only where it has a job there (a
+/// selector, joiner or jamo filler; `kept`), or one `sift` always escapes (a direction mark).
 fn job_only(c: char) -> bool {
     selector(c) || joiner(c) || mark(c) || matches!(c, NO_CONSONANT | NO_VOWEL)
 }
@@ -197,25 +154,18 @@ fn jamo_vowel(c: char) -> bool {
     matches!(c, '\u{1161}'..='\u{11A7}' | '\u{D7B0}'..='\u{D7C6}')
 }
 
-/// Whether `c`, after the kept character `prev` and before `next`, stays; `rtl` says whether the
-/// nearest strong character on either side is right-to-left (`beside_rtl`). A selector, joiner,
-/// direction mark or jamo filler draws as nothing, so one that has no job where it is could carry
-/// hidden text, a run of them a whole message. So a selector stays only straight after an emoji,
-/// one at a time; a joiner only between two characters it can join; a direction mark only next to
-/// a right-to-left run, one at a time; and a jamo filler only in the syllable it completes, before
-/// a vowel or after a first consonant. A mark's job isn't only right beside a letter: Unicode's
-/// bidirectional algorithm (UAX #9) and W3C's advice put one after the neutrals that end a run
-/// (`C++\u{200F}`, `!\u{200F}`) and beside digits, which carry no direction of their own, so
-/// neutrals and digits are skipped to find the run. Between two left-to-right letters a mark has
-/// no run to bound and only hides, or moves digits and punctuation about (`a\u{200F}1 2\u{200F}b`).
-fn kept(prev: Option<char>, c: char, next: Option<char>, rtl: bool) -> bool {
+/// Whether `c`, after the kept character `prev` and before `next`, stays. A selector, joiner or
+/// jamo filler draws as nothing, so one that has no job where it is could carry hidden text, a
+/// run of them a whole message. So a selector stays only straight after an emoji, one at a time;
+/// a joiner only between two characters it can join; and a jamo filler only in the syllable it
+/// completes, before a vowel or after a first consonant. A direction mark stays wherever it is
+/// (`hidden`).
+fn kept(prev: Option<char>, c: char, next: Option<char>) -> bool {
     if selector(c) {
         prev.is_some_and(emoji_base)
     } else if joiner(c) {
         prev.is_some_and(|p| joinable(p) || selector(p))
             && next.is_some_and(|n| joinable(n) && !selector(n))
-    } else if mark(c) {
-        rtl && !prev.is_some_and(mark)
     } else if c == NO_CONSONANT {
         next.is_some_and(jamo_vowel)
     } else if c == NO_VOWEL {
@@ -239,9 +189,8 @@ enum Sifted {
 /// `labelled_json`'s output, where a marked path must read back as it was. After an escape a
 /// character that has a job only beside another (`job_only`) is escaped too, not judged as one
 /// after the escape's last digit (`1️⃣` takes a selector) or by what follows alone (a jamo filler
-/// before a vowel), and a direction mark is always escaped: whether the JSON as a whole has a
-/// right-to-left letter says nothing of the string the mark is in, and an escaped one still reads
-/// back as itself.
+/// before a vowel), and a direction mark is always escaped, as it draws as nothing and an escaped
+/// one still reads back as itself.
 fn sift(s: impl Iterator<Item = Sifted>) -> String {
     let mut chars = s.peekable();
     let mut out = String::new();
@@ -256,7 +205,9 @@ fn sift(s: impl Iterator<Item = Sifted>) -> String {
                 out.push(c);
                 prev = Some(c);
             }
-            Sifted::Asked(c) if (prev.is_some() || !job_only(c)) && kept(prev, c, next, false) => {
+            Sifted::Asked(c)
+                if !mark(c) && (prev.is_some() || !job_only(c)) && kept(prev, c, next) =>
+            {
                 out.push(c);
                 prev = Some(c);
             }
@@ -273,11 +224,10 @@ fn sift(s: impl Iterator<Item = Sifted>) -> String {
 
 /// `s` without what `kept` drops.
 fn visible(s: impl Iterator<Item = char>) -> String {
-    let chars: Vec<char> = s.collect();
-    let rtl = beside_rtl(&chars);
+    let mut chars = s.peekable();
     let mut out = String::new();
-    for (i, &c) in chars.iter().enumerate() {
-        if kept(out.chars().next_back(), c, chars.get(i + 1).copied(), rtl[i]) {
+    while let Some(c) = chars.next() {
+        if kept(out.chars().next_back(), c, chars.peek().copied()) {
             out.push(c);
         }
     }
@@ -423,56 +373,29 @@ mod tests {
         assert_eq!(clean("\u{200F}عربي\u{200E}"), "\u{200F}عربي\u{200E}");
     }
 
-    /// Direction marks stay in right-to-left text, one at a time; in a run, or in text with no
-    /// right-to-left letter, they could spell out a message nobody sees, and go.
+    /// Direction marks stay as the text has them: they only nudge the characters beside them,
+    /// and right-to-left text uses them, after the neutrals ending a run and beside digits too.
     #[test]
-    fn keeps_direction_marks_only_in_right_to_left_text() {
+    fn keeps_direction_marks_as_text_has_them() {
         for s in [
+            "\u{200F}عربي\u{200E}",
             "שלום\u{200F}!",
             "\u{200E}עברית (Hebrew)",
-            "C++ \u{200F}עברית",
-            "مرحبا\u{61C} 123",
-            "السعر\u{200E}: 5",
-        ] {
-            assert_eq!(clean(s), s);
-            assert_eq!(line(s), s);
-        }
-        // Where Unicode's algorithm and W3C put them: after the neutrals ending a run, beside
-        // digits (Arabic-Indic ones too), between Latin and right-to-left words.
-        for s in [
             "אני אוהב C++\u{200F} מאוד",
             "مرحبا بالويب!\u{200F}",
             "السعر \u{61C}١٢٣\u{61C}+",
             "Windows\u{200E} בגרסה 11",
+            "Fix\u{200E} login",
         ] {
             assert_eq!(clean(s), s);
             assert_eq!(line(s), s);
         }
-        // In text with no right-to-left letter, every one goes.
-        assert_eq!(clean("Fix\u{200E} log\u{200F}in\u{61C}"), "Fix login");
-        assert_eq!(clean("C++\u{200F} 123\u{61C}"), "C++ 123");
-        // A combining mark of a right-to-left script is no letter of one: a sheva or fathatan on
-        // a Latin letter opens nothing.
-        assert_eq!(clean("Fix\u{5B0} lo\u{200F}gin\u{64B}\u{200E}"), "Fix\u{5B0} login\u{64B}");
-        // Nor does a right-to-left word elsewhere in the text: a mark keeps only to its run.
-        assert_eq!(
-            clean("שלום, and a long\u{200F} Latin sentence"),
-            "שלום, and a long Latin sentence"
-        );
-        assert_eq!(clean("שלום a\u{200F}1 2\u{200F}b"), "שלום a1 2b");
-        let bits: String =
-            (0..64).map(|i| if i % 3 == 0 { '\u{200E}' } else { '\u{200F}' }).collect();
-        assert_eq!(clean(&format!("Fix{bits} login")), "Fix login");
-        // In right-to-left text, the first of a run only.
-        assert_eq!(clean(&format!("שלום{bits} login")), "שלום\u{200E} login");
-        assert_eq!(clean(&format!("login{bits} שלום")), "login\u{200E} שלום");
-        assert_eq!(clean("א\u{200F}\u{200E}ב"), "א\u{200F}ב");
-        // A joiner before a mark that goes has nothing to join.
-        assert_eq!(clean("¡\u{200C}\u{200E}a"), "¡a");
+        // In a path each is escaped, as it draws as nothing; in JSON it's an escape too.
+        assert_eq!(path(std::path::Path::new("/src/a\u{200f}b")), "/src/a\\u{200f}b");
+        let json = labelled_json(serde_json::json!({ "title": "עברית\u{200F}!" }));
+        assert!(json.contains("עברית\\u200f!") && !json.contains('\u{200F}'), "{json}");
     }
 
-    /// The Hangul fillers draw as blanks. The two conjoining ones stay in the syllable each
-    /// completes, as old Korean text writes them; the others, and any on their own, go.
     #[test]
     fn keeps_hangul_fillers_only_in_their_syllables() {
         // A vowel with no first consonant, and a consonant with no vowel.
@@ -638,9 +561,10 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["worktree"], odd);
         assert_eq!(v["tickets"][0]["url"], odd);
-        assert_eq!(v["title"], "/src/abcd  e\u{a0}");
-        assert_eq!(v["tickets"][0]["branch"], "/src/abcd  e\u{a0}");
-        assert_eq!(v["/src/abcd  e\u{a0}"], 1);
+        // A direction mark stays in a cleaned string, as text has it (and is escaped in the text).
+        assert_eq!(v["title"], "/src/abcd  e\u{a0}\u{200f}");
+        assert_eq!(v["tickets"][0]["branch"], "/src/abcd  e\u{a0}\u{200f}");
+        assert_eq!(v["/src/abcd  e\u{a0}\u{200f}"], 1);
         assert_eq!(v["note"], NOTE);
         // A selector after an escape is escaped too, not taken for one after the escape's digit.
         for p in [
@@ -762,10 +686,9 @@ mod tests {
     /// in `s`.
     fn out_of_place(s: &str) -> Option<usize> {
         let c: Vec<char> = s.chars().collect();
-        let rtl = beside_rtl(&c);
         (0..c.len()).find(|&i| {
             let (prev, next) = (i.checked_sub(1).map(|p| c[p]), c.get(i + 1).copied());
-            placed(c[i]) && !kept(prev, c[i], next, rtl[i])
+            placed(c[i]) && !kept(prev, c[i], next)
         })
     }
 
@@ -829,55 +752,6 @@ mod tests {
             if s != t {
                 prop_assert_ne!(escaped(&s), escaped(&t));
             }
-        }
-
-        /// Right-to-left text as it's written: Hebrew, Arabic and Syriac words, with a direction
-        /// mark right after one, or after the punctuation and digits (Arabic-Indic too) that
-        /// follow it, before a Latin word: never two in a row, each next to a right-to-left run.
-        #[test]
-        fn right_to_left_text_keeps_its_marks(
-            parts in prop::collection::vec(
-                (
-                    prop::sample::select(vec!["שלום", "עברית", "مرحبا", "السعر", "ܫܠܡܐ", "בְּרֵאשִׁית"]),
-                    prop::sample::select(vec!["\u{200E}", "\u{200F}", "\u{61C}", ""]),
-                    "[ .,!?():+#0-9١٢٣-]{1,4}",
-                    prop::sample::select(vec!["\u{200E}", "\u{200F}", "\u{61C}", ""]),
-                    prop::sample::select(vec!["C++", "Windows", "v2", ""]),
-                ),
-                1..8,
-            ),
-        ) {
-            let s: String = parts
-                .iter()
-                .map(|(word, after, neutral, before, latin)| {
-                    format!("{word}{after}{neutral}{before}{latin} ")
-                })
-                .collect();
-            prop_assert_eq!(clean(&s), s.clone());
-            prop_assert_eq!(line(&s), s.split_whitespace().collect::<Vec<_>>().join(" "));
-            // The same text without its right-to-left letters keeps none of its marks.
-            let ltr: String = s.chars().filter(|&c| !right_to_left(c)).collect();
-            prop_assert!(!clean(&ltr).chars().any(mark), "{:?}", clean(&ltr));
-        }
-
-        /// Text with no right-to-left letter keeps no mark, whatever combining marks of
-        /// right-to-left scripts it has; nor does a mark between two left-to-right letters, though
-        /// a right-to-left word is elsewhere in the text.
-        #[test]
-        fn marks_away_from_right_to_left_runs_go(
-            ascii in concat!(
-                "([ -~]|[\u{591}-\u{5BD}\u{610}-\u{61A}\u{64B}-\u{65F}]",
-                "|[\u{200E}\u{200F}\u{61C}]){0,40}"
-            ),
-            a in "[A-Za-z]{1,6}",
-            gap in "[ .,!0-9]{0,3}",
-            b in "[A-Za-z]{1,6}",
-            m in prop::sample::select(vec!["\u{200E}", "\u{200F}", "\u{61C}"]),
-        ) {
-            prop_assert!(!clean(&ascii).chars().any(mark), "{:?}", clean(&ascii));
-            prop_assert!(!line(&ascii).chars().any(mark), "{:?}", line(&ascii));
-            let far = format!("שלום. {a}{gap}{m}{gap}{b}");
-            prop_assert!(!clean(&far).chars().any(mark), "{:?}", clean(&far));
         }
 
         /// Korean as it's written: whole syllables, conjoining jamo, and old-style syllables with
