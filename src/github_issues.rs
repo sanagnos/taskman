@@ -109,6 +109,27 @@ pub fn key_from_input(input: &str, prefix: &str, repo: &Repo) -> Option<Result<S
     }
 }
 
+/// Whether `input` names an issue of a repository other than `repo` the GitHub way
+/// (`acme/api#3`, or its link): what `key_from_input` refuses as another repository's, where a
+/// pull request's link or reference isn't.
+pub fn names_others_issue(input: &str, repo: &Repo) -> bool {
+    let s = input.trim();
+    let other = |host: &str, owner: &str, name: &str| {
+        let theirs = Repo { host: host.into(), owner: owner.into(), name: name.into() };
+        !repo.same(host, owner, name) && names_issue(s, &theirs)
+    };
+    if !s.contains("://")
+        && let Some((path, _)) = s.split_once('#')
+        && let Some((owner, name)) = path.split_once('/')
+    {
+        return other(&repo.host, owner, name);
+    }
+    let rest = s.split_once("://").map_or(s, |(_, rest)| rest);
+    let rest = rest.split(['?', '#']).next().unwrap_or(rest);
+    let parts: Vec<&str> = rest.trim_end_matches('/').split('/').collect();
+    matches!(parts[..], [host, owner, name, ..] if other(host, owner, name))
+}
+
 /// Whether `input` names an issue of `repo` the GitHub way, whatever the project's prefix.
 pub fn names_issue(input: &str, repo: &Repo) -> bool {
     // Any prefix will do: only a missing one makes `key_from_input` refuse an issue of `repo`.
@@ -757,6 +778,32 @@ pub(crate) mod tests {
             let out = serde_json::json!({ "number": n, "html_url": url }).to_string();
             let made = parse_created(&out, "web", "acme/web").unwrap();
             prop_assert_eq!((made.key, made.at), (format!("WEB-{n}"), url));
+        }
+    }
+
+    /// Another repository's issue, by reference or link, is told from a pull request's and from
+    /// the project's own: only the first is another repository's to answer.
+    #[test]
+    fn tells_another_repositorys_issue_apart() {
+        let web = Repo { host: "github.com".into(), owner: "acme".into(), name: "web".into() };
+        for others in [
+            "acme/api#3",
+            "https://github.com/acme/api/issues/3",
+            "github.com/acme/api/issues/3/",
+            " https://github.com/ACME/api/issues/3?x=1#c ",
+        ] {
+            assert!(names_others_issue(others, &web), "{others:?}");
+        }
+        for not in [
+            "#3",
+            "acme/web#3",
+            "https://github.com/acme/web/issues/3",
+            "https://github.com/acme/api/pull/3",
+            "acme/api",
+            "API-3",
+            "https://example.com/acme/api/issues/x",
+        ] {
+            assert!(!names_others_issue(not, &web), "{not:?}");
         }
     }
 }

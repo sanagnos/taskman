@@ -1064,6 +1064,12 @@ impl Tracker {
         github_issues::key_from_input(input, &self.key, &self.github_repo()?)
     }
 
+    /// Whether `input` is written this tracker's own way but names another repository's issue,
+    /// which `key_from_input` refuses where a plain shell may find the project it belongs to.
+    pub fn names_others_issue(&self, input: &str) -> bool {
+        self.github_repo().is_some_and(|repo| github_issues::names_others_issue(input, &repo))
+    }
+
     /// Whether `input` is written this tracker's own way and names one of its issues, whatever the
     /// project's prefix: `key_from_input` gives its key, or would once a prefix is set.
     pub fn names_issue(&self, input: &str) -> bool {

@@ -394,7 +394,8 @@ mod tests {
             prop_assume!(!before.iter().chain(&after).any(|seg| names_one(seg)));
             // `before` may hold a key of its own: a segment no tracker puts one in, never read
             // either, so the link reads as nobody's.
-            let segments: Vec<&String> = before.iter().chain([&marker, &key]).chain(&after).collect();
+            let segments: Vec<&String> =
+                before.iter().chain([&marker, &key]).chain(&after).collect();
             let path = segments.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("/");
             for link in [
                 format!("{host}/{path}"),

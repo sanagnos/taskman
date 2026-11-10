@@ -376,7 +376,12 @@ fn tracker_key(
     let tracker = |p: usize| saved.projects[p].tracker.as_ref();
     let read = |p: usize| tracker(p)?.key_from_input(input);
     if quiet && let Some(p) = place {
-        return read(p).transpose().map(|key| key.map(|k| (k, p)));
+        // Another repository's issue: a plain shell may find the project whose it is.
+        let wider = |e: String| match tracker(p).is_some_and(|t| t.names_others_issue(input)) {
+            true => with_way_round(e),
+            false => e,
+        };
+        return read(p).transpose().map(|key| key.map(|k| (k, p))).map_err(wider);
     }
     let names = |p: usize| tracker(p).is_some_and(|t| t.names_issue(input));
     let others = (0..saved.projects.len()).filter(|&q| Some(q) != place);
@@ -432,8 +437,15 @@ pub(crate) fn resolve_key(
     quiet: bool,
 ) -> Result<String, String> {
     let project = &projects[p];
-    if let Some(key) = project.tracker.as_ref().and_then(|t| t.key_from_input(input)) {
-        return key;
+    if let Some(t) = &project.tracker
+        && let Some(key) = t.key_from_input(input)
+    {
+        // In a session, another repository's issue has the way round, as a plain shell may find
+        // the project whose it is; a pull request's link is refused alike either way.
+        return match quiet && t.names_others_issue(input) {
+            true => key.map_err(with_way_round),
+            false => key,
+        };
     }
     let prefix = project.tracker.as_ref().map(|t| t.key.to_uppercase()).filter(|k| !k.is_empty());
     if ticket_key::is_number(input) {
@@ -1072,8 +1084,18 @@ pub(crate) mod tests {
         assert!(!answer(&two, Some(0)).contains("api,"), "{}", answer(&two, Some(0)));
         assert_eq!(
             answer(&two, Some(0)),
-            "that's an issue of acme/api; this project's issues are acme/web"
+            format!("that's an issue of acme/api; this project's issues are acme/web. {WIDER}.")
         );
+        // A pull request's link is refused alike from a plain shell: no way round.
+        let pull = "https://github.com/acme/web/pull/4";
+        let e = locate_ticket(pull, None, None, &two, Some(&acme), Some(0)).unwrap_err();
+        assert!(!e.contains(WIDER), "{e}");
+        // Nor through `resolve_key`, as `add` and `move` read it.
+        let projects = &two.projects;
+        let refused = resolve_key("acme/api#3", 0, projects, true).unwrap_err();
+        assert!(refused.ends_with(&format!(" {WIDER}.")), "{refused}");
+        assert!(!resolve_key("acme/api#3", 0, projects, false).unwrap_err().contains(WIDER));
+        assert!(!resolve_key(pull, 0, projects, true).unwrap_err().contains(WIDER));
         // `#88` is its own project's there too.
         let got = locate_ticket("#88", None, None, &two, None, Some(0)).unwrap();
         assert_eq!((got.0.as_str(), got.1.1.name.as_str()), ("ENG-88", "acme"));

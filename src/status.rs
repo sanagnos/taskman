@@ -96,8 +96,7 @@ fn status(args: &[String]) -> Result<bool, String> {
             if let Some(p) = saved.projects.iter().position(|p| p.repo == project.repo) {
                 cli::confine(p, own, &saved)?;
             }
-            // A bug while fetching it says so and exits 1, as `--all-projects` names it.
-            let r = util::caught(|| report(&key, ticket, project, &saved, &config, codex))?;
+            let r = report(&key, ticket, project, &saved, &config, codex);
             let own = me.is_some_and(|m| ticket.is_some_and(|t| t.is(&m.repo, &m.key)));
             cli::out!(
                 "{}",
@@ -555,11 +554,15 @@ struct Report {
     name: String,
     /// A stacked ticket's base and where it stands (`stack::hint`).
     stack: Option<(store::Base, String)>,
+    /// The fetch of the base's PR failed in taskman itself (its thread panicked): the stack line
+    /// says so, the JSON lists it under `failed`, and the report isn't whole.
+    base_failed: bool,
 }
 
 impl Report {
     fn ok(&self) -> bool {
-        self.issue.as_ref().is_none_or(Result::is_ok)
+        !self.base_failed
+            && self.issue.as_ref().is_none_or(Result::is_ok)
             && self.pr.as_ref().err().is_none_or(|e| github::is_note(e))
     }
 }
@@ -604,19 +607,15 @@ fn fetch_report(
         };
         (
             issue.join().unwrap_or_else(|_| Some(Err("the tracker request crashed".into()))),
-            // A panic there is the whole report's: `each_at_once` names the ticket, and a lone
-            // report (`taskman status KEY`) is `util::caught`. Left as None, it read as "unknown".
-            base_pr.join().unwrap_or_else(|p| std::panic::resume_unwind(p)),
+            base_pr.join(),
             (wt, pr),
         )
     });
-    let stack = base.and_then(|b| {
-        let own = pr.as_ref().ok().and_then(|l| l.pr.as_ref());
-        let merged = base_pr.map(|l| l.pr.is_some_and(|p| p.state == PrState::Merged));
-        let state = stack::state(&b, own, merged);
-        let hint = stack::hint(&b, own, state, &worktree::default_branch_name(&project.repo))?;
-        Some((b, hint))
-    });
+    let own = pr.as_ref().ok().and_then(|l| l.pr.as_ref());
+    let (stack, base_failed) = match base {
+        Some(b) => stacked(b, own, base_pr, &worktree::default_branch_name(&project.repo)),
+        None => (None, false),
+    };
     let (worktree, branch) = wt;
     let session = ticket.and_then(|t| session_state(t, saved));
     let name = ticket.map_or_else(|| key.to_string(), |t| session_name(t, session.as_ref(), saved));
@@ -640,6 +639,7 @@ fn fetch_report(
         session,
         name,
         stack,
+        base_failed,
     }
 }
 
@@ -675,6 +675,25 @@ impl Overview {
     fn ok(&self) -> bool {
         self.failed.is_empty() && self.tickets.iter().all(Report::ok)
     }
+}
+
+/// A stacked ticket's line on its base, from the base's PR as its thread `joined` (Err when the
+/// thread panicked), and whether that failed. A panic doesn't take the report with it: the line
+/// says the base's PR couldn't be read, as `--all-projects` says of a project, rather than
+/// guessing where the stack stands.
+fn stacked(
+    base: store::Base,
+    own: Option<&Pr>,
+    joined: std::thread::Result<Option<Lookup>>,
+    default: &str,
+) -> (Option<(store::Base, String)>, bool) {
+    let Ok(base_pr) = joined else {
+        let line = format!("Stacked on {}: its PR {FAILED}", base.key);
+        return (Some((base, line)), true);
+    };
+    let merged = base_pr.map(|l| l.pr.is_some_and(|p| p.state == PrState::Merged));
+    let state = stack::state(&base, own, merged);
+    (stack::hint(&base, own, state, default).map(|hint| (base, hint)), false)
 }
 
 /// What taskman says of a ticket or project whose fetch failed in taskman itself.
@@ -1158,6 +1177,10 @@ impl Report {
             "worktree": self.worktree.as_deref().map(untrusted::exact),
             "branch": self.branch.as_deref().map(untrusted::line),
             "stacked_on": self.stack.as_ref().map(|(b, hint)| json!({ "key": b.key, "branch": untrusted::line(&b.branch), "note": hint })),
+            "failed": match (&self.stack, self.base_failed) {
+                (Some((b, _)), true) => json!([{ "what": "base PR", "key": b.key, "error": FAILED }]),
+                _ => json!([]),
+            },
             "pr": pr,
             "pr_note": pr_note,
             "pr_error": self.pr.as_ref().err().filter(|e| !github::is_note(e)),
@@ -2186,6 +2209,7 @@ mod tests {
             }),
             name: "ENG-52".into(),
             stack: None,
+            base_failed: false,
         }
     }
 
@@ -2371,6 +2395,39 @@ mod tests {
         assert!(text.contains("PR: couldn't fetch: gh isn't logged in"), "{text}");
         assert!(!failed.ok());
         assert!(report(Ok(issue(0)), Err(github::NO_REMOTE.into())).ok());
+
+        // A panic while fetching the base's PR is passed on: the report still prints, its stack
+        // line says the PR couldn't be read, the JSON lists it as failed, and it isn't whole.
+        crate::util::quiet_test_panics();
+        let base = || store::Base {
+            key: "ENG-51".into(),
+            branch: "eng-51".into(),
+            extra: Default::default(),
+        };
+        let panicked = std::thread::spawn(|| -> Option<Lookup> {
+            std::panic::panic_any(crate::util::TestPanic)
+        })
+        .join();
+        let (stack, failed) = stacked(base(), None, panicked, "main");
+        assert!(failed);
+        let r = Report {
+            stack,
+            base_failed: failed,
+            ..report(Ok(issue(0)), Err(github::NO_REMOTE.into()))
+        };
+        assert!(!r.ok());
+        assert!(r.text(true).contains(&format!("Stacked on ENG-51: its PR {FAILED}")));
+        let json = r.to_json();
+        assert_eq!(json["failed"][0]["what"], "base PR");
+        assert_eq!(json["failed"][0]["key"], "ENG-51");
+        assert_eq!(json["stacked_on"]["key"], "ENG-51");
+        // A base PR that was fetched, or found missing, is no failure.
+        let (stack, failed) = stacked(base(), None, Ok(None), "main");
+        assert!(!failed && stack.is_some_and(|(_, hint)| hint.contains("open the PR against")));
+        assert_eq!(
+            report(Ok(issue(0)), Err(github::NO_REMOTE.into())).to_json()["failed"],
+            json!([])
+        );
 
         // A stacked ticket says what it stacks on, under where it works.
         let base = store::Base {

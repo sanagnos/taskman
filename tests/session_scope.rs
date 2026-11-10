@@ -391,8 +391,9 @@ fn a_session_takes_its_own_project_by_its_exact_name_only() {
             );
         } else {
             let refusal = format!(
-                "taskman {command}: this session works in acme: a session keeps to its own project. \
-                 If the user asked for it, run the same command with `env -u TASKMAN_REPO` in front"
+                "taskman {command}: this session works in acme: a session keeps to its own \
+                 project. If the user asked for it, run the same command with `env -u \
+                 TASKMAN_REPO` in front"
             );
             assert!(err.starts_with(&refusal) && err.ends_with(".\n"), "{what}: {err}");
             assert_eq!(err.lines().count(), 1, "{what}: {err}");
@@ -419,4 +420,62 @@ fn a_session_takes_its_own_project_by_its_exact_name_only() {
     let out = cmd.args(["status", "--project", "aCmE"]).current_dir(&acme).output().unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("could mean projects acme or ACME or Acme"), "{err}");
+}
+
+/// In a session of a project on GitHub Issues, another repository's issue (`acme/api#3`, or its
+/// link) is refused by the project's own tracker with the way round, in the same words whether a
+/// project has that repository or none has: a plain shell may have found the project.
+#[test]
+fn another_repositorys_issue_gets_the_way_round_alike() {
+    let dir = common::scratch_dir("session-other-repo");
+    let state = dir.join("state/taskman");
+    std::fs::create_dir_all(&state).unwrap();
+    let (web, api) = (dir.join("web"), dir.join("api"));
+    for repo in [&web, &api] {
+        std::fs::create_dir_all(repo).unwrap();
+    }
+    let github =
+        |site: &str, key: &str| serde_json::json!({"provider": "github", "site": site, "key": key});
+    let write = |with_api: bool| {
+        let mut projects = vec![serde_json::json!(
+            {"name": "web", "repo": web, "tracker": github("acme/web", "WEB")}
+        )];
+        if with_api {
+            projects.push(serde_json::json!(
+                {"name": "api", "repo": api, "tracker": github("acme/api", "API")}
+            ));
+        }
+        let saved = serde_json::json!({
+            "projects": projects,
+            "tickets": [{"key": "WEB-1", "repo": web, "cwd": web}],
+        });
+        std::fs::write(state.join("tickets.json"), saved.to_string()).unwrap();
+    };
+    let answer = |args: &[&str]| {
+        let mut cmd = common::taskman(&dir);
+        cmd.env("TASKMAN_TICKET", "WEB-1").env("TASKMAN_REPO", &web);
+        let out = cmd.args(args).current_dir(&web).stdin(Stdio::null()).output().unwrap();
+        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        (out.status.code(), text(&out.stdout), text(&out.stderr))
+    };
+    let asks: [&[&str]; 4] = [
+        &["close", "acme/api#3"],
+        &["close", "https://github.com/acme/api/issues/3"],
+        &["add", "acme/api#3"],
+        &["add", "https://github.com/acme/api/issues/3"],
+    ];
+    write(false);
+    let alone: Vec<_> = asks.iter().map(|a| answer(a)).collect();
+    write(true);
+    let beside: Vec<_> = asks.iter().map(|a| answer(a)).collect();
+    for ((ask, a), b) in asks.iter().zip(&alone).zip(&beside) {
+        assert_eq!(a, b, "{ask:?}");
+        let said = format!("{}{}", a.1, a.2);
+        assert!(said.contains("that's an issue of acme/api") || said.contains("is an issue of"));
+        assert!(said.contains("`env -u TASKMAN_REPO`"), "{ask:?}: {said}");
+        assert!(!said.contains("api,") && !said.contains("project api"), "{ask:?}: {said}");
+    }
+    // A pull request's link is refused alike from a plain shell, so with no way round.
+    let pull = answer(&["close", "https://github.com/acme/web/pull/4"]);
+    assert!(!format!("{}{}", pull.1, pull.2).contains("env -u"), "{pull:?}");
 }

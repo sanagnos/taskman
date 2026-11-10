@@ -389,9 +389,9 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
 /// The ticket or agent `key` names: a ticket through `taskman status`'s lookup, and an agent by its
 /// name or key. An agent's name can look like a ticket's key (tester-1), so both are looked for
 /// unless `kind` says which; when both are open, it's for the user to pick. In a session
-/// (`session`), an answer that nothing was found, which a plain shell looking in every project could
-/// have answered otherwise, says how to go wider (`cli::with_way_round`); one that asks for a flag
-/// doesn't, as the flag is the way.
+/// (`session`), an answer that nothing was found, which a plain shell looking in every project
+/// could have answered otherwise, says how to go wider (`cli::with_way_round`); one that asks for
+/// a flag doesn't, as the flag is the way.
 fn find<'a>(
     key: &str,
     kind: Option<Kind>,
