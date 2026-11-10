@@ -63,17 +63,18 @@ fn alive(pid: i32) -> bool {
     if unsafe { libc::kill(pid, 0) } != 0 {
         return false;
     }
-    // `ps -o stat=` on Linux and macOS alike: Z for a zombie. Gone by now is gone too. Without a
-    // `ps` to ask, signal 0's answer stands, so a test can't pass for want of one.
+    // `ps -o stat=` on Linux and macOS alike: Z for a zombie. A `ps` that can't run or doesn't
+    // answer (one that takes neither option, or the process gone since) leaves signal 0's answer
+    // standing, so a test can't pass for want of one; a process that did end is seen at the next
+    // look.
     let ps =
         std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output();
     match ps {
-        Ok(o) => {
+        Ok(o) if o.status.success() => {
             let stat = String::from_utf8_lossy(&o.stdout);
-            let stat = stat.trim();
-            !stat.is_empty() && !stat.starts_with('Z')
+            !stat.trim_start().starts_with('Z')
         }
-        Err(_) => true,
+        _ => true,
     }
 }
 

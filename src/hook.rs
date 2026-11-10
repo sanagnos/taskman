@@ -166,16 +166,22 @@ fn session_dir(started: Option<std::ffi::OsString>, v: &Value) -> Option<PathBuf
 
 /// How long a hook gives one git call to answer before asking it to end, and all a prompt's start
 /// waits for its one call, stopping it included: so that call is asked to end at 550 ms
-/// ([`git_limit`]), which is plenty for `rev-parse HEAD`. Tests run real git on machines that may
-/// be busy, and a hook's limit isn't what they're about.
-const GIT_WAIT: Duration =
-    if cfg!(test) { Duration::from_secs(60) } else { Duration::from_millis(800) };
+/// ([`git_limit`]), which is plenty for `rev-parse HEAD`.
+const RELEASE_GIT_WAIT: Duration = Duration::from_millis(800);
 
 /// How long a turn's end waits for all its git calls together, stopping those that hang included:
-/// the CLIs give a hook 3 s (Codex) or 5 s, and a hook they end hasn't written the turn's line,
-/// which matters more than what git says.
-const STOP_WAIT: Duration =
-    if cfg!(test) { Duration::from_secs(300) } else { Duration::from_millis(2500) };
+/// the CLIs give a hook 3 s (Codex, as taskman sets it) or 5 s, and a hook they end hasn't written
+/// the turn's line, which matters more than what git says.
+const RELEASE_STOP_WAIT: Duration = Duration::from_millis(2500);
+
+/// The limits a hook keeps to ([`RELEASE_GIT_WAIT`], [`RELEASE_STOP_WAIT`]), but for the unit
+/// tests: they run real git on machines that may be busy, and a hook's limit isn't what they're
+/// about. A unit test checks the release values against the CLIs' limits.
+const GIT_WAIT: Duration = if cfg!(test) { Duration::from_secs(60) } else { RELEASE_GIT_WAIT };
+const STOP_WAIT: Duration = if cfg!(test) { Duration::from_secs(300) } else { RELEASE_STOP_WAIT };
+
+/// The least time a git call is started with: less starts git only to stop it.
+const GIT_FLOOR: Duration = Duration::from_millis(50);
 
 /// How a git call came out.
 #[derive(Debug, PartialEq)]
@@ -192,9 +198,10 @@ enum Git {
 /// end when asked at its limit takes `proc::STOP_GRACE` more before it's killed, which comes off
 /// what's left, so the call is over in time either way. Off what's left, not off `wait`: a slow
 /// git still answering at a turn's end gets its whole `wait` while there's time for the grace
-/// after it. Zero when there's no time to run it in.
+/// after it. Zero when that leaves too little to run it in ([`GIT_FLOOR`]).
 fn git_limit(left: Duration, wait: Duration) -> Duration {
-    left.saturating_sub(crate::proc::STOP_GRACE).min(wait)
+    let limit = left.saturating_sub(crate::proc::STOP_GRACE).min(wait);
+    if limit < GIT_FLOOR { Duration::ZERO } else { limit }
 }
 
 /// Runs `git args` in `dir`, over by the time `until` at the latest, the stopping of a git that
@@ -1389,34 +1396,40 @@ mod tests {
         assert_eq!(state.matches("trusted_hash").count(), CODEX_HOOKS.len());
     }
 
-    /// A git call is over within the time it has, the grace a hung git gets when it's stopped
-    /// included, and a slow one still answering gets all of `GIT_WAIT` while there's room for the
-    /// grace after it. With the real limits: a turn's end, 2.5 s for three calls, gives the first
-    /// two 800 ms each; a prompt's start, 800 ms for one, gives it 550.
+    /// With the limits a release keeps to: a git call is over within the time it has, the grace a
+    /// hung git gets when it's stopped included; a turn's end with every git hung, even ones that
+    /// ignore the request to end, is over within its time, which is inside Codex's limit for a
+    /// hook; a slow git still answering gets all of the wait while there's room; and a prompt's
+    /// start runs its one call, over within its time.
     #[test]
     fn a_git_calls_limit_leaves_time_to_stop_it() {
-        let ms = Duration::from_millis;
         let grace = crate::proc::STOP_GRACE;
-        assert_eq!(grace, ms(250));
-        let wait = ms(800);
-        // A turn's end with every git hung and ignoring the request to end: each call takes its
-        // limit and the grace, and the three are over by the 2.5 s.
-        let first = git_limit(ms(2500), wait);
-        assert_eq!(first, wait);
-        let second = git_limit(ms(2500) - first - grace, wait);
-        assert_eq!(second, wait);
-        let left = ms(2500) - first - grace - second - grace;
-        assert_eq!(git_limit(left, wait) + grace, left);
-        // A prompt's start.
-        assert_eq!(git_limit(wait, wait), ms(550));
-        // However much is left, the call and its stopping fit in it.
-        for left in (0..3000).step_by(50).map(ms) {
+        let (wait, total) = (RELEASE_GIT_WAIT, RELEASE_STOP_WAIT);
+        // Writing the line and starting taskman need some of what the CLI gives the hook.
+        assert!(total + Duration::from_millis(400) <= Duration::from_secs(CODEX_HOOK_TIMEOUT));
+        // A turn's end makes three calls (`log_turn`), each taking its limit and the grace; one
+        // left no time isn't run.
+        let mut left = total;
+        for call in 0..3 {
+            let limit = git_limit(left, wait);
+            if limit.is_zero() {
+                break;
+            }
+            assert!(limit + grace <= left, "call {call}: {limit:?} with {left:?} left");
+            left -= limit + grace;
+        }
+        // The first call gets all of the wait, as a slow git should.
+        assert_eq!(git_limit(total, wait), wait);
+        // A prompt's start: one call, run and over within `wait` itself.
+        let prompt = git_limit(wait, wait);
+        assert!(!prompt.is_zero() && prompt + grace <= wait, "{prompt:?}");
+        // However much is left, a call and its stopping fit in it, and one that would get less
+        // than the floor isn't started.
+        for left in (0..3000).map(Duration::from_millis) {
             let limit = git_limit(left, wait);
             assert!(limit <= wait);
-            assert!(limit.is_zero() || limit + grace <= left, "{left:?}");
+            assert!(limit.is_zero() || (limit >= GIT_FLOOR && limit + grace <= left), "{left:?}");
         }
-        // No time to run it and stop it in: it isn't run.
-        assert_eq!(git_limit(grace, wait), Duration::ZERO);
-        assert_eq!(git_limit(Duration::ZERO, wait), Duration::ZERO);
+        assert_eq!(git_limit(grace + GIT_FLOOR / 2, wait), Duration::ZERO);
     }
 }

@@ -439,8 +439,7 @@ fn stop(child: &mut Child, timeout: Duration, grace: Duration) -> io::Error {
     // group, which signal 0 asks for each look: a group seen empty is never signalled again, and
     // the last look and the SIGKILL come in the same hold of the lock.
     //
-    // That leaves a window, `stop_all`'s too, which `stop` didn't have before it reaped ahead of
-    // its SIGKILL: what's left can end in any sleep between two looks (up to 10 ms here, 5 in
+    // That leaves a window, as in `stop_all`: what's left can end in any sleep between two looks (up to 10 ms here, 5 in
     // `stop_all`), and if pids wrapped around in that moment and a new process made itself a
     // group leader under the same id, the next look finds that group, and the kill at the end of
     // the grace reaches it. It needs the pid counter to come round to that very id within
