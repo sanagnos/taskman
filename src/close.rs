@@ -147,9 +147,9 @@ impl Plan {
 
 /// Finds each ticket's project as `taskman status` does (`status::locate`), so a key open in two
 /// projects is never closed in the wrong one; keys that aren't open are answered here. A session
-/// taskman started (`own`, its project) may close another project's ticket, as its permission
-/// settings decide (`taskman close` isn't on the allow-list), but an error there doesn't list the
-/// projects taskman has.
+/// taskman started (`own`, its project) closes only its own project's tickets, as every command
+/// there keeps to its project (`cli::confine`): `env -u TASKMAN_REPO` in front goes wider, as its
+/// permission settings decide.
 fn plan(
     a: &Args,
     saved: &Saved,
@@ -157,11 +157,7 @@ fn plan(
     here: Option<&Here>,
     own: Option<usize>,
 ) -> Result<Plan, String> {
-    let named = a
-        .project
-        .as_deref()
-        .map(|n| cli::quietly_named(&saved.projects, n, own.is_some()))
-        .transpose()?;
+    let named = a.project.as_deref().map(|n| cli::own_named(saved, n, own)).transpose()?;
     let mut plan = Plan::default();
     if let Some(name) = &a.agent {
         let p = cli::pick_project(named, &[], me, saved, here, own)?;

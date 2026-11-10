@@ -87,8 +87,9 @@ fn status(args: &[String]) -> Result<bool, String> {
     };
     match wanted {
         Target::Ticket(key, repo) => {
+            // In a session `named` can only be its own project (`cli::own_named`).
             let scope = match own {
-                Some(p) if named.is_none() => Scope::Session(&saved.projects[p].repo),
+                Some(p) => Scope::Session(&saved.projects[p].repo),
                 _ => scope(named, repo.as_deref(), me, &saved, here.as_ref()),
             };
             let (ticket, project) = locate(&key, &saved, scope)?;
@@ -310,10 +311,11 @@ pub(crate) enum Scope<'a> {
     /// The project of the session or folder the command runs in: its ticket, unless the key can't
     /// be one (another prefix), or it's the same tracker issue that another project has open.
     Here(&'a Path),
-    /// The project of the session taskman started the command in: its ticket, whatever the key.
-    /// Never another project's, neither by the key's prefix nor as the same tracker issue another
-    /// project has open, so the answer is the same whether or not another project has the key: a
-    /// session's answers don't say what the other projects are (`cli::confine`).
+    /// The project of the session taskman started the command in: its ticket, or a refusal of a
+    /// key with another prefix than its tracker's (`session_key`). Never another project's,
+    /// neither by the key's prefix nor as the same tracker issue another project has open, so the
+    /// answer is the same whether or not another project has the key: a session's answers don't
+    /// say what the other projects are (`cli::confine`).
     Session(&'a Path),
     Anywhere,
 }
@@ -347,17 +349,6 @@ pub(crate) fn locate<'a>(
     saved: &'a Saved,
     scope: Scope,
 ) -> Result<(Option<&'a Ticket>, &'a Project), String> {
-    locate_for(key, saved, scope, false)
-}
-
-/// `locate`, for a command that may reach another project from a session (`taskman close`,
-/// `resume`): there (`quiet`) a key open in several projects is refused without naming them.
-pub(crate) fn locate_for<'a>(
-    key: &str,
-    saved: &'a Saved,
-    scope: Scope,
-    quiet: bool,
-) -> Result<(Option<&'a Ticket>, &'a Project), String> {
     let open: Vec<&Ticket> = saved
         .tickets
         .iter()
@@ -384,8 +375,8 @@ pub(crate) fn locate_for<'a>(
                 .tracker
                 .as_ref()
                 .is_some_and(|t| t.key.is_empty() || t.key.eq_ignore_ascii_case(prefix));
-            if matches!(scope, Scope::Session(_)) {
-                return Ok((None, p));
+            if let Scope::Session(_) = scope {
+                return session_key(key, p).map(|()| (None, p));
             }
             if has_prefix {
                 // A Jira site or Linear workspace has one ENG-52, whichever project reads it: the
@@ -408,9 +399,6 @@ pub(crate) fn locate_for<'a>(
     let found = match open[..] {
         [] => None,
         [t] => Some(t),
-        _ if quiet => {
-            return Err(format!("{key} is open in more than one project: pass --project NAME"));
-        }
         _ => {
             let names: Vec<String> = open
                 .iter()
@@ -437,6 +425,22 @@ pub(crate) fn locate_for<'a>(
     found.map(|p| (None, p)).ok_or_else(|| {
         format!("{key} isn't in taskman and no project has the ticket prefix {prefix}. Add the ticket in taskman, or run this in the project's repository.")
     })
+}
+
+/// Whether `key` can be a ticket of project `p`, a session's: refused when `p`'s tracker has a
+/// prefix and the key another, as `cli::resolve_key` refuses it in a session. Never fetched: a
+/// GitHub tracker reads only the number, so `SEC-7` would show issue #7 labelled SEC-7. The words
+/// are the same whether another project has the prefix or none has.
+fn session_key(key: &str, p: &Project) -> Result<(), String> {
+    let pre = p.tracker.as_ref().map(|t| t.key.to_uppercase()).filter(|k| !k.is_empty());
+    match pre {
+        Some(pre) if !ticket_key::prefix_of(key).eq_ignore_ascii_case(&pre) => Err(format!(
+            "{} doesn't belong to {}'s tracker ({pre})",
+            key.to_uppercase(),
+            untrusted::line(&p.name)
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// Whether two projects read the same Jira site or Linear workspace, where a key names one issue.
@@ -1649,8 +1653,11 @@ mod tests {
             in_session(&s, "ENG-52", 1),
             Ok((Some("ENG-52 in /src/acme-web".into()), "acme-web".into()))
         );
-        // A key no project has the prefix of is the session's project's to answer.
-        assert_eq!(in_session(&s, "OPS-1", 0), Ok((None, "acme".into())));
+        // A key no project has the prefix of is refused as one another project has would be.
+        assert_eq!(
+            in_session(&s, "OPS-1", 0),
+            Err("OPS-1 doesn't belong to acme's tracker (ENG)".into())
+        );
 
         let s = boards();
         // Each board's own WP-1, and WP-2 from alpha's board though beta has one open.
@@ -1659,14 +1666,29 @@ mod tests {
             Ok((Some("WP-1 in /src/alpha".into()), "alpha".into()))
         );
         assert_eq!(in_session(&s, "WP-2", 0), Ok((None, "alpha".into())));
-        // Another project's prefix is its own board's to answer, as a prefix no project has is:
-        // the answer doesn't say which.
-        assert_eq!(in_session(&s, "OPS-3", 0), Ok((None, "alpha".into())));
-        assert_eq!(in_session(&s, "ZZZ-3", 0), Ok((None, "alpha".into())));
-        // So is a ticket only another project has open, from a project without its prefix.
+        // A key with another prefix is refused, nothing fetched, in the same words whether another
+        // project has the prefix or none has.
+        let foreign = |k: &str| Err(format!("{k} doesn't belong to alpha's tracker (WP)"));
+        assert_eq!(in_session(&s, "OPS-3", 0), foreign("OPS-3"));
+        assert_eq!(in_session(&s, "zzz-3", 0), foreign("ZZZ-3"));
+        // So is one only another project has open, from a project with another prefix.
         let mut ops_session = boards();
         ops_session.tickets.push(Ticket { key: "WP-9".into(), ..s.tickets[0].clone() });
-        assert_eq!(in_session(&ops_session, "WP-9", 2), Ok((None, "ops".into())));
+        assert_eq!(
+            in_session(&ops_session, "WP-9", 2),
+            Err("WP-9 doesn't belong to ops's tracker (OPS)".into())
+        );
+        // A project with no prefix takes any key as its own.
+        let mut bare = boards();
+        bare.projects[2].tracker.as_mut().unwrap().key.clear();
+        assert_eq!(in_session(&bare, "WP-9", 2), Ok((None, "ops".into())));
+        // A GitHub tracker reads only the number, so `SEC-7` would be its issue #7 under another
+        // name: refused too, rather than fetched.
+        let mut github = boards();
+        let t = github.projects[0].tracker.as_mut().unwrap();
+        (t.provider, t.site) = (Provider::Github, "acme/web".into());
+        assert_eq!(in_session(&github, "SEC-7", 0), foreign("SEC-7"));
+        assert_eq!(in_session(&github, "WP-7", 0), Ok((None, "alpha".into())));
         // A session's hint names a ticket of its own project.
         assert_eq!(example(&s, Some(Path::new("/src/beta"))), "taskman status WP-1");
         assert_eq!(example(&s, Some(Path::new("/src/ops"))), "taskman status KEY");

@@ -334,13 +334,14 @@ mod tests {
             assert_eq!(of(a), Ok((0, "ENG-52".into())), "{a:?}");
         }
         // Another ticket of its project, or another project's by name: refused, with no way around
-        // it offered. Another project's by its prefix is looked for in its own, which hasn't it.
+        // it offered. A key with another prefix than its tracker's can't be its project's.
         let refused = "and a session sets only its own ticket's title";
         assert_eq!(of(&["ENG-53", "Fix"]), Err(format!("that's ENG-53, {refused}")));
         assert_eq!(of(&["53", "Fix"]), Err(format!("that's ENG-53, {refused}")));
         assert_eq!(of(&["--clear", "53"]), Err(format!("that's ENG-53, {refused}")));
-        assert_eq!(of(&["API-7", "Fix"]), Err("API-7 isn't open in acme-web".into()));
-        assert_eq!(of(&["OPS-7", "Fix"]), Err("OPS-7 isn't open in acme-web".into()));
+        let foreign = |k: &str| Err(format!("{k} doesn't belong to acme-web's tracker (ENG)"));
+        assert_eq!(of(&["API-7", "Fix"]), foreign("API-7"));
+        assert_eq!(of(&["OPS-7", "Fix"]), foreign("OPS-7"));
         for name in ["acme-api", "nobody"] {
             assert_eq!(
                 of(&["API-7", "Fix", "--project", name]),

@@ -110,7 +110,7 @@ impl<'a> Lexer<'a> {
 }
 
 /// The project a command means: the one named (`named`, from `project_named` or, in a session,
-/// `own_named` or `quietly_named`), else the session's (`own`, then `me`), else the folder's, else
+/// `own_named`), else the session's (`own`, then `me`), else the folder's, else
 /// the one whose ticket prefix the first key has. In a session taskman started it's the session's
 /// own unless one is named: neither the folder nor a key's prefix picks another, so no answer
 /// there says which projects use a prefix.
@@ -205,32 +205,22 @@ fn find_named(projects: &[Project], name: &str) -> Result<usize, Vec<usize>> {
 }
 
 /// `--project NAME` in a session taskman started, whose project is `own` (None outside one, where
-/// it's `project_named`), for the commands a session runs without asking (`confine`): the
-/// session's own project, or `elsewhere`'s refusal. The refusal is the same whether the name is
-/// another project's, several projects' or nobody's, so it doesn't say which projects taskman has.
+/// it's `project_named`): the session's own project, by its name in any case or by its slug, or
+/// `elsewhere`'s refusal. Only the session's project is compared, so the answer is the same
+/// whether the name is another project's, several projects' or nobody's, and whether another
+/// project's name looks like the session's own: a session isn't told which projects taskman has.
 pub(crate) fn own_named(saved: &Saved, name: &str, own: Option<usize>) -> Result<usize, String> {
     let Some(own) = own else { return project_named(&saved.projects, name) };
-    match find_named(&saved.projects, name) {
-        Ok(p) if p == own => Ok(p),
-        _ => Err(elsewhere(own, saved)),
+    let mine = &saved.projects[own].name;
+    let slug = store::slug(name);
+    if *mine == name
+        || mine.eq_ignore_ascii_case(name)
+        || (!slug.is_empty() && store::slug(mine) == slug)
+    {
+        Ok(own)
+    } else {
+        Err(elsewhere(own, saved))
     }
-}
-
-/// `--project NAME` for a command that may reach another project from a session, as the session's
-/// permission settings decide on each run (`taskman close`, `resume`): `project_named`, but in a
-/// session (`quiet`) an error doesn't list the projects taskman has.
-pub(crate) fn quietly_named(
-    projects: &[Project],
-    name: &str,
-    quiet: bool,
-) -> Result<usize, String> {
-    if !quiet {
-        return project_named(projects, name);
-    }
-    find_named(projects, name).map_err(|found| match found.is_empty() {
-        true => format!("no project is named {name}"),
-        false => format!("{name} names more than one project; pass --project with the exact name"),
-    })
 }
 
 /// The project of the session the command runs in, else of the repository the folder is in.
@@ -306,8 +296,8 @@ pub(crate) fn confine_all(own: Option<usize>) -> Result<(), String> {
 /// (GitHub's `#12` and issue links) is read by that tracker, and any other key or link goes by
 /// `status::locate`, so a key open in two projects needs the project. `named` is `--project`'s.
 /// Only the whole input counts (`ticket_key::exact`): a key in a phrase is refused, never closed.
-/// In a session taskman started (`own`, its project) no error names a project the command didn't
-/// reach.
+/// In a session taskman started (`own`, its project) only that project's tickets are found
+/// (`Scope::Session`), and no answer depends on the other projects.
 pub(crate) fn locate_ticket<'a>(
     input: &str,
     named: Option<usize>,
@@ -351,10 +341,10 @@ pub(crate) fn locate_ticket<'a>(
         }
     })?;
     let scope = match own {
-        Some(p) if named.is_none() => status::Scope::Here(&saved.projects[p].repo),
-        _ => status::scope(named, None, me, saved, here),
+        Some(p) => status::Scope::Session(&saved.projects[p].repo),
+        None => status::scope(named, None, me, saved, here),
     };
-    let located = status::locate_for(&key, saved, scope, quiet)?;
+    let located = status::locate(&key, saved, scope)?;
     Ok((key, located))
 }
 
@@ -987,19 +977,33 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(foreign[0], "API-7 doesn't belong to acme-web's tracker (ENG)");
         assert!(foreign.iter().all(|e| *e == foreign[0]), "{foreign:?}");
-        // The commands that may go further when the user allows it list nothing either.
-        for (name, e) in [
-            ("nobody", "no project is named nobody"),
-            ("NOTES", "NOTES names more than one project; pass --project with the exact name"),
-        ] {
-            assert_eq!(quietly_named(&s.projects, name, true).unwrap_err(), e);
-            assert_eq!(
-                quietly_named(&s.projects, name, false),
-                project_named(&s.projects, name),
-                "{name}"
-            );
+    }
+
+    /// The session's own project answers to its name in any case and to its slug, and nothing
+    /// else does, whether or not another project's name looks like it: only its own name is
+    /// compared, so the answer doesn't say there's a look-alike.
+    #[test]
+    fn a_session_knows_its_own_project_by_any_spelling() {
+        let alone = saved();
+        let mut twins = saved();
+        for name in ["Acme-Web", "ACME WEB", "acme_web"] {
+            twins.projects.push(project(name, &format!("/src/{name}"), "ENG"));
         }
-        assert_eq!(quietly_named(&s.projects, "acme-api", true), Ok(1));
+        for s in [&alone, &twins] {
+            for name in ["acme-web", "ACME-WEB", "Acme-Web", "acme web", "Acme_Web", "acme  web!"] {
+                assert_eq!(own_named(s, name, Some(0)), Ok(0), "{name}");
+            }
+            let refusal = confine(1, Some(0), s).unwrap_err();
+            for name in ["acme", "web", "acme-web-2", "", "-"] {
+                assert_eq!(own_named(s, name, Some(0)).unwrap_err(), refusal, "{name:?}");
+            }
+        }
+        // The look-alikes' own sessions know theirs the same way, and not acme-web's.
+        assert_eq!(own_named(&twins, "ACME WEB", Some(4)), Ok(4));
+        assert!(own_named(&twins, "acme-web", Some(4)).is_ok(), "same slug, same answer");
+        // Outside a session, the look-alikes are told apart as before.
+        assert_eq!(own_named(&twins, "acme-web", None), Ok(0));
+        assert!(own_named(&twins, "ACME-WEB", None).unwrap_err().contains("could mean projects"));
     }
 
     /// In a session only the meant project's tracker reads a link or `#12`, so the answer doesn't
