@@ -277,15 +277,29 @@ fn stop_with_git(dir: &Path, repo: &Path, head: &str, git: &str) -> (String, Dur
     (std::fs::read_to_string(status.with_extension("events.jsonl")).unwrap(), took)
 }
 
+/// What Codex gives a hook before it ends it (`CODEX_HOOK_TIMEOUT`); Claude gives 5 s.
+const HOOK_LIMIT: Duration = Duration::from_secs(3);
+
 /// A git that hangs must not cost the turn's line: the CLI ends a hook that takes too long, Codex's
-/// at 3 s. Sleeping, not working, so a busy machine doesn't change how long this takes by much.
+/// at 3 s, so the hook has to be over by then, and it gives its git calls 2.5 s between them.
+/// Sleeping, not working, so a busy machine doesn't change how long this takes by much.
 #[test]
 fn a_hung_git_still_leaves_the_turns_line() {
     let dir = scratch_dir("hook-hung-git");
     let (log, took) = stop_with_git(&dir, &dir, "abc", "#!/bin/sh\nexec sleep 60\n");
     assert!(log.contains(r#""message":"Done.""#), "{log}");
     assert!(!log.contains("commits") && !log.contains("on_origin"), "{log}");
-    assert!(took < Duration::from_secs(10), "{took:?}");
+    assert!(took < HOOK_LIMIT, "{took:?}");
+}
+
+/// Nor one that doesn't end when it's asked to at its limit, which is given a moment more before
+/// it's killed: that moment is within the hook's time too.
+#[test]
+fn a_hung_git_that_ignores_being_stopped_still_leaves_the_turns_line() {
+    let dir = scratch_dir("hook-stubborn-git");
+    let (log, took) = stop_with_git(&dir, &dir, "abc", "#!/bin/sh\ntrap '' TERM\nsleep 60\n");
+    assert!(log.contains(r#""message":"Done.""#), "{log}");
+    assert!(took < HOOK_LIMIT, "{took:?}");
 }
 
 /// A log too slow to answer isn't a default branch that's gone: asking again without leaving it out

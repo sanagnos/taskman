@@ -60,8 +60,9 @@ fn live() -> MutexGuard<'static, Live> {
 }
 
 /// How long [`stop_all`] gives the groups it asked to end before it kills them, and [`stop`] a
-/// helper at its time limit.
-const STOP_GRACE: Duration = Duration::from_millis(250);
+/// helper at its time limit: what a helper that doesn't end when asked takes beyond its limit,
+/// which a caller with a time of its own to keep takes off the limit it gives (`hook::git_limit`).
+pub const STOP_GRACE: Duration = Duration::from_millis(250);
 
 /// [`STOP_GRACE`], or in a test the grace its thread set, so a test on a slow machine can give a
 /// trap time to run.
@@ -409,31 +410,71 @@ fn group_exists(group: libc::pid_t) -> bool {
 }
 
 /// Stops `child`'s whole process group (a hung `git fetch` waits on ssh, say) and says why. The
-/// group is asked to end and given `grace` before it's killed, as at a quit ([`stop_all`]): git
-/// killed part-way leaves its `.lock` files. `grace` is zero when it was asked already.
+/// group is asked to end and given up to `grace` before it's killed, as at a quit ([`stop_all`]):
+/// git killed part-way leaves its `.lock` files. The grace is a wait for the group to end, not a
+/// sleep, so one that ends when asked costs milliseconds; `timeout` and `grace` together bound
+/// what a helper that doesn't can take. `grace` is zero when it was asked already.
 fn stop(child: &mut Child, timeout: Duration, grace: Duration) -> io::Error {
-    // The child isn't reaped until the wait below, so its group's id can't pass to another group
-    // meanwhile, and a zombie still counts as being in it: the grace is waited out in full. The
-    // group stays live meanwhile, for a quit to stop too, and leaves the live ones before the
-    // kill; a quit that asked it meanwhile drops it once it's gone, or kills it again and finds
-    // no one.
-    let group = group_of(child);
-    if let Some(g) = group
-        && !grace.is_zero()
-    {
-        signal_group(g, libc::SIGTERM);
-        std::thread::sleep(grace);
-    }
-    if let Some(g) = group {
-        live().groups.retain(|l| *l != g);
-        signal_group(g, libc::SIGKILL);
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-    io::Error::new(
+    let error = io::Error::new(
         io::ErrorKind::TimedOut,
         format!("it didn't finish within {}s", timeout.as_secs()),
-    )
+    );
+    let Some(group) = group_of(child) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return error;
+    };
+    let asked = Instant::now();
+    if !grace.is_zero() {
+        signal_group(group, libc::SIGTERM);
+    }
+    // The order is `stop_all`'s. The leader is reaped under the list's lock as soon as it has
+    // ended, since only then can the rest of the group be told from its zombie, and the group
+    // leaves the list with it. Until then the id is the group's own, and a kill reaches nothing
+    // else. From then on the id is kept only by what's left in the group, which signal 0 asks
+    // for: once nothing is, the id is free to pass to another group, so a group seen empty is
+    // never signalled again, and the last look and the SIGKILL come one after the other in the
+    // same hold of the lock. That leaves `stop_all`'s window and no other: the kill reaches
+    // another group only if this one emptied after that look, pids wrapped around in that moment
+    // and a new process made itself a group leader under its id.
+    let mut reaped = false;
+    let mut pause = Duration::from_millis(1);
+    loop {
+        let mut live = live();
+        if !reaped && !matches!(child.try_wait(), Ok(None)) {
+            reaped = true;
+            live.groups.retain(|g| *g != group);
+            // What's left is still a quit's to stop, which finds it among the groups asked now
+            // that it's off the list: it waits for it and kills it as this would, should taskman
+            // end before this does.
+            if group_exists(group) {
+                live.asked.push((group, asked));
+            }
+        }
+        let gone = reaped && !group_exists(group);
+        if gone || asked.elapsed() >= grace {
+            // Gone or killed here, so a quit has nothing more to ask of this id, which may be
+            // another group's from now on.
+            live.groups.retain(|g| *g != group);
+            live.asked.retain(|&(g, _)| g != group);
+            if !gone {
+                signal_group(group, libc::SIGKILL);
+            }
+            break;
+        }
+        drop(live);
+        std::thread::sleep(pause);
+        pause = (pause * 2).min(Duration::from_millis(10));
+    }
+    // A killed leader ends at once. Polled, not waited for, as the wait would be under the lock,
+    // which a quit's `stop_all` and the watchdog's need.
+    while !reaped {
+        reaped = !matches!(reap(child), Ok(None));
+        if !reaped {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    error
 }
 
 #[cfg(test)]
@@ -939,6 +980,48 @@ mod tests {
             let term = std::fs::read_to_string(&file).unwrap_or_default();
             assert_eq!(term.trim(), "term", "{} wasn't asked to end", file.display());
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The grace is a wait for the group to end, not a sleep: a helper that ends when asked at
+    /// its limit doesn't cost the grace as well, which a hook's git calls would add up.
+    #[test]
+    fn a_helper_that_ends_when_asked_doesnt_take_the_grace() {
+        GRACE.set(Some(Duration::from_secs(60)));
+        let begun = Instant::now();
+        let err = sh("exec sleep 60", Duration::from_millis(100)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        let took = begun.elapsed();
+        assert!(took < Duration::from_secs(20), "took {took:?}");
+    }
+
+    /// What's left of a group whose leader ended when asked is given the rest of the grace, then
+    /// killed, and the group isn't kept for a quit to signal once that's done.
+    #[test]
+    fn what_a_helper_leaves_at_its_limit_is_killed_after_the_grace() {
+        let dir = std::env::temp_dir().join(format!("taskman-left-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid = dir.join("pid");
+        // The leader ends on SIGTERM; what it started ignores it, with its output elsewhere.
+        let script = format!(
+            "(trap '' TERM; exec sleep 60) >/dev/null 2>&1 & echo $! > '{}'; \
+             while :; do sleep 0.05; done",
+            pid.display()
+        );
+        let helper = std::thread::spawn(move || {
+            GRACE.set(Some(Duration::from_millis(300)));
+            sh(&script, Duration::from_secs(2))
+        });
+        let stray = pids(&pid, 1)[0];
+        // SAFETY: getpgid only reads the group of a process; it touches no memory of ours.
+        let group = unsafe { libc::getpgid(stray) };
+        let err = helper.join().unwrap().unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert!(ends(stray), "{stray} is still running");
+        let live = live();
+        assert!(!live.groups.contains(&group), "{group} is still listed");
+        assert!(!live.asked.iter().any(|&(g, _)| g == group), "{group} is still asked");
+        drop(live);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
