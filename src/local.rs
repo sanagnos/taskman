@@ -648,17 +648,19 @@ fn move_command(args: &[String]) -> Result<String, String> {
         .as_deref()
         .and_then(|s| crate::store::session_ticket(&saved.tickets, s, session_repo.as_deref()));
     let here = crate::status::Here::current();
+    let own = crate::cli::session_project(&saved, session_repo.as_deref())?;
+    let named = project.as_deref().map(|n| crate::cli::own_named(&saved, n, own)).transpose()?;
     let p = crate::cli::pick_project(
-        project.as_deref(),
+        named,
         std::slice::from_ref(input),
         me,
         &saved,
         here.as_ref(),
+        own,
     )?;
-    let own = crate::cli::session_project(&saved, session_repo.as_deref())?;
     crate::cli::confine(p, own, &saved)?;
     let board = board_of(&saved.projects[p])?;
-    let key = crate::cli::resolve_key(input, p, &saved.projects)?;
+    let key = crate::cli::resolve_key(input, p, &saved.projects, own.is_some())?;
     let codex = std::env::var(crate::status::CODEX_NO_NETWORK).is_ok_and(|v| v == "1");
     let (file, from) = move_to(&board, &key, column).map_err(|e| sandbox_hint(e, codex))?;
     Ok(moved(&file, &from))

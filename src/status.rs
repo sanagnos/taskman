@@ -56,27 +56,34 @@ pub fn run(args: &[String]) -> i32 {
 /// Prints the report; returns whether every part of it could be fetched.
 fn status(args: &[String]) -> Result<bool, String> {
     let saved = store::load()?;
-    let a = parse_args(args, &example(&saved))?;
+    let (session, session_repo) = store::session_env();
+    let a = parse_args(args, &example(&saved, session_repo.as_deref()))?;
     let as_json = a.json;
     let config = store::load_config()?;
-    let (session, session_repo) = store::session_env();
     let me = session
         .as_deref()
         .and_then(|s| store::session_ticket(&saved.tickets, s, session_repo.as_deref()));
     let codex = std::env::var(CODEX_NO_NETWORK).is_ok_and(|v| v == "1");
     let here = Here::current();
-    let named = a.project.as_deref().map(|n| cli::project_named(&saved.projects, n)).transpose()?;
     let own = cli::session_project(&saved, session_repo.as_deref())?;
-    if let Some(p) = named {
-        cli::confine(p, own, &saved)?;
-    }
+    // In a session, its own project or a refusal that doesn't say what else there is.
+    let named = a.project.as_deref().map(|n| cli::own_named(&saved, n, own)).transpose()?;
     // Before anything reads a token. It goes past `target`, as neither the folder nor what's left
     // of a session's environment after `env -u TASKMAN_REPO` should narrow it.
     let wanted = if a.all_projects {
         cli::confine_all(own)?;
         Target::All
     } else {
-        within(own, target(a.key, session.as_deref(), me, named, &saved, here.as_ref())?)
+        let asked = target(
+            a.key,
+            session.as_deref(),
+            me,
+            named,
+            &saved,
+            here.as_ref(),
+            session_repo.as_deref(),
+        )?;
+        within(own, asked)
     };
     match wanted {
         Target::Ticket(key, repo) => {
@@ -130,9 +137,12 @@ fn status(args: &[String]) -> Result<bool, String> {
     }
 }
 
-/// How to name a ticket in a hint: one the user has, rather than a made-up key.
-fn example(saved: &Saved) -> String {
-    let key = saved.tickets.iter().find(|t| t.agent.is_none()).map_or("KEY", |t| t.key.as_str());
+/// How to name a ticket in a hint: one the user has, rather than a made-up key. In a session
+/// taskman started (`session_repo`, its project's folder) one of its own project's, as a session
+/// isn't shown another's.
+fn example(saved: &Saved, session_repo: Option<&Path>) -> String {
+    let mine = |t: &&Ticket| t.agent.is_none() && session_repo.is_none_or(|r| t.repo == r);
+    let key = saved.tickets.iter().find(mine).map_or("KEY", |t| t.key.as_str());
     format!("taskman status {key}")
 }
 
@@ -235,6 +245,7 @@ fn target(
     named: Option<usize>,
     saved: &Saved,
     here: Option<&Here>,
+    session_repo: Option<&Path>,
 ) -> Result<Target, String> {
     if let Some(k) = key {
         return Ok(Target::Ticket(k, None));
@@ -258,7 +269,7 @@ fn target(
             .ok_or_else(|| format!("{s}'s project is no longer in taskman")),
         Some(t) => Ok(Target::Ticket(t.key.clone(), Some(t.repo.clone()))),
         None => ticket_key::parse(s).map(|k| Target::Ticket(k, None)).ok_or_else(|| {
-            format!("session {s} has no ticket; pass a key, like {}", example(saved))
+            format!("session {s} has no ticket; pass a key, like {}", example(saved, session_repo))
         }),
     }
 }
@@ -299,9 +310,10 @@ pub(crate) enum Scope<'a> {
     /// The project of the session or folder the command runs in: its ticket, unless the key can't
     /// be one (another prefix), or it's the same tracker issue that another project has open.
     Here(&'a Path),
-    /// The project of the session taskman started the command in: as `Here`, but never another
-    /// project's ticket (`cli::confine` refuses what resolves elsewhere), so not the same tracker
-    /// issue another project has open either.
+    /// The project of the session taskman started the command in: its ticket, whatever the key.
+    /// Never another project's, neither by the key's prefix nor as the same tracker issue another
+    /// project has open, so the answer is the same whether or not another project has the key: a
+    /// session's answers don't say what the other projects are (`cli::confine`).
     Session(&'a Path),
     Anywhere,
 }
@@ -335,6 +347,17 @@ pub(crate) fn locate<'a>(
     saved: &'a Saved,
     scope: Scope,
 ) -> Result<(Option<&'a Ticket>, &'a Project), String> {
+    locate_for(key, saved, scope, false)
+}
+
+/// `locate`, for a command that may reach another project from a session (`taskman close`,
+/// `resume`): there (`quiet`) a key open in several projects is refused without naming them.
+pub(crate) fn locate_for<'a>(
+    key: &str,
+    saved: &'a Saved,
+    scope: Scope,
+    quiet: bool,
+) -> Result<(Option<&'a Ticket>, &'a Project), String> {
     let open: Vec<&Ticket> = saved
         .tickets
         .iter()
@@ -361,7 +384,7 @@ pub(crate) fn locate<'a>(
                 .tracker
                 .as_ref()
                 .is_some_and(|t| t.key.is_empty() || t.key.eq_ignore_ascii_case(prefix));
-            if has_prefix && matches!(scope, Scope::Session(_)) {
+            if matches!(scope, Scope::Session(_)) {
                 return Ok((None, p));
             }
             if has_prefix {
@@ -385,6 +408,9 @@ pub(crate) fn locate<'a>(
     let found = match open[..] {
         [] => None,
         [t] => Some(t),
+        _ if quiet => {
+            return Err(format!("{key} is open in more than one project: pass --project NAME"));
+        }
         _ => {
             let names: Vec<String> = open
                 .iter()
@@ -1372,7 +1398,7 @@ mod tests {
         here: Option<&Here>,
     ) -> Result<Target, String> {
         let me = session.and_then(|k| store::session_ticket(&s.tickets, k, None));
-        target(key, session, me, None, s, here)
+        target(key, session, me, None, s, here, None)
     }
 
     fn web_repo() -> PathBuf {
@@ -1505,11 +1531,11 @@ mod tests {
     #[test]
     fn names_a_ticket_the_user_has_in_hints() {
         let mut s = saved();
-        assert_eq!(example(&s), "taskman status ENG-52");
+        assert_eq!(example(&s, None), "taskman status ENG-52");
         s.tickets.retain(|t| t.agent.is_some());
-        assert_eq!(example(&s), "taskman status KEY");
+        assert_eq!(example(&s, None), "taskman status KEY");
         let args = |a: &[&str]| {
-            parse_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), &example(&s))
+            parse_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), &example(&s, None))
         };
         assert_eq!(
             args(&["login"]).unwrap_err(),
@@ -1629,16 +1655,17 @@ mod tests {
             Ok((Some("WP-1 in /src/alpha".into()), "alpha".into()))
         );
         assert_eq!(in_session(&s, "WP-2", 0), Ok((None, "alpha".into())));
-        // Another project's prefix is refused, with the way round it.
-        let refused = in_session(&s, "OPS-3", 0).unwrap_err();
-        assert!(refused.starts_with("that's project ops, and this session works in alpha"));
-        assert!(refused.contains("`env -u TASKMAN_REPO`"), "{refused}");
-        // A ticket only another project has open, from a project without its prefix.
+        // Another project's prefix is its own board's to answer, as a prefix no project has is:
+        // the answer doesn't say which.
+        assert_eq!(in_session(&s, "OPS-3", 0), Ok((None, "alpha".into())));
+        assert_eq!(in_session(&s, "ZZZ-3", 0), Ok((None, "alpha".into())));
+        // So is a ticket only another project has open, from a project without its prefix.
         let mut ops_session = boards();
         ops_session.tickets.push(Ticket { key: "WP-9".into(), ..s.tickets[0].clone() });
-        assert!(
-            in_session(&ops_session, "WP-9", 2).unwrap_err().starts_with("that's project alpha")
-        );
+        assert_eq!(in_session(&ops_session, "WP-9", 2), Ok((None, "ops".into())));
+        // A session's hint names a ticket of its own project.
+        assert_eq!(example(&s, Some(Path::new("/src/beta"))), "taskman status WP-1");
+        assert_eq!(example(&s, Some(Path::new("/src/ops"))), "taskman status KEY");
 
         // Every project's tickets, in a session, are its own project's.
         assert_eq!(within(Some(1), Target::All), Target::Project(1));
@@ -1686,13 +1713,13 @@ mod tests {
         let me = store::session_ticket(&s.tickets, "WP-1", Some(Path::new("/src/beta")));
         let beta = Some(PathBuf::from("/src/beta"));
         assert_eq!(
-            target(None, Some("WP-1"), me, None, &s, None),
+            target(None, Some("WP-1"), me, None, &s, None, None),
             Ok(Target::Ticket("WP-1".into(), beta))
         );
         // Without TASKMAN_REPO (an older taskman's session) the key alone can't say which.
         let me = store::session_ticket(&s.tickets, "WP-1", None);
         assert_eq!(
-            target(None, Some("WP-1"), me, None, &s, None),
+            target(None, Some("WP-1"), me, None, &s, None, None),
             Ok(Target::Ticket("WP-1".into(), None))
         );
         // From a ticket's worktree, that project's ticket.
@@ -1700,11 +1727,11 @@ mod tests {
             here("/src/alpha-WP-1/src", &[("/src/alpha", "main"), ("/src/alpha-WP-1", "wp-1")]);
         let alpha = Some(PathBuf::from("/src/alpha"));
         assert_eq!(
-            target(None, None, None, None, &s, Some(&wt)),
+            target(None, None, None, None, &s, Some(&wt), None),
             Ok(Target::Ticket("WP-1".into(), alpha))
         );
         // --project without a key: that project's tickets.
-        assert_eq!(target(None, None, None, Some(1), &s, Some(&wt)), Ok(Target::Project(1)));
+        assert_eq!(target(None, None, None, Some(1), &s, Some(&wt), None), Ok(Target::Project(1)));
     }
 
     /// The second review's case: alpha and beta boards each have WP-1, and only alpha's is open.
