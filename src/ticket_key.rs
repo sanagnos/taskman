@@ -350,6 +350,58 @@ mod tests {
             }
         }
 
+        /// A key glued to other characters, before or after, is never read out of the word: what
+        /// `exact` gives, if anything, is the whole input as one key (`ENG-52` and `3` make
+        /// `ENG-523`). This fails if `exact` looks inside a word, as `parse` does.
+        #[test]
+        fn exact_never_reads_a_key_from_inside_a_word(
+            (key, _) in key(),
+            before in "[A-Za-z0-9_,.;:!?()\\[\\]{}<>/#=&'\"*+~@$%^|-]{0,3}",
+            after in "[A-Za-z0-9_,.;:!?()\\[\\]{}<>/#=&'\"*+~@$%^|-]{0,3}",
+        ) {
+            prop_assume!(!before.is_empty() || !after.is_empty());
+            let glued = format!("{before}{key}{after}");
+            if let Some(k) = exact(&glued) {
+                prop_assert!(well_formed(&glued), "{glued:?} read as {k}");
+                prop_assert_eq!(k, glued.to_uppercase());
+            }
+        }
+
+        /// In a link, the key counts only right after `/browse/`, `/issue/` or `/issues/`, or as
+        /// `selectedIssue=`: in any other segment, the query's other fields or the fragment, it's
+        /// never read, however the link is built. This fails if `exact` takes a key from any
+        /// segment, as `parse` does.
+        #[test]
+        fn exact_reads_a_link_only_where_trackers_put_the_key(
+            (key, _) in key(),
+            host in prop::sample::select(vec![
+                "https://example.atlassian.net", "http://jira", "HTTPS://linear.app",
+                "linear.app", "https://example.com",
+            ]),
+            before in prop::collection::vec("[a-z]{1,8}|[A-Z]{2,4}-[0-9]{1,3}", 0..3),
+            marker in "[a-z]{1,8}|browsex|xbrowse|issuez|Browse|ISSUE|BROWSE|selectedIssue",
+            after in prop::collection::vec("[a-z0-9-]{1,8}", 0..3),
+            field in "[a-zA-Z]{1,12}",
+        ) {
+            let names_one = |seg: &str| matches!(seg, "browse" | "issue" | "issues");
+            prop_assume!(!names_one(&marker));
+            prop_assume!(!before.iter().chain(&after).any(|seg| names_one(seg)));
+            prop_assume!(field != "selectedIssue");
+            // `before` may hold a key of its own: a segment no tracker puts one in, never read
+            // either, so the link reads as nobody's.
+            let path = before.iter().chain([&marker, &key]).chain(&after).cloned().collect::<Vec<_>>().join("/");
+            for link in [
+                format!("{host}/{path}"),
+                format!("{host}/{path}?{field}={key}#{key}"),
+                format!("{host}/x?{field}={key}"),
+                format!("{host}/x#{key}"),
+                format!("{host}/x#/browse/{key}"),
+                format!("{host}/x?next=/browse/{key}"),
+            ] {
+                prop_assert_eq!(exact(&link), None, "{}", link);
+            }
+        }
+
         #[test]
         fn what_exact_reads_is_a_key_in_the_input(
             input in "(\\PC|[-/=?&# ]|[A-Za-z]{1,3}-[0-9]{1,3}|https?://|browse/|issue/){0,12}",
