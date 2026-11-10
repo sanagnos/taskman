@@ -534,9 +534,11 @@ struct Report {
     key: String,
     project: String,
     provider: Option<Provider>,
+    /// The ticket's page on the tracker.
     url: Option<String>,
-    /// `url` is a Local files ticket's file, not a link.
-    url_is_file: bool,
+    /// A Local files ticket's file, its page instead of `url`: kept a path, as its name may not
+    /// be text, for `untrusted::path` and `untrusted::exact` to show as it is.
+    file: Option<PathBuf>,
     /// None when the project has no tracker.
     issue: Option<Result<Issue, String>>,
     worktree: Option<PathBuf>,
@@ -613,20 +615,18 @@ fn fetch_report(
     let (worktree, branch) = wt;
     let session = ticket.and_then(|t| session_state(t, saved));
     let name = ticket.map_or_else(|| key.to_string(), |t| session_name(t, session.as_ref(), saved));
-    let (url, url_is_file) = match tracker.map(|t| (t, t.board(&project.repo))) {
+    let (url, file) = match tracker.map(|t| (t, t.board(&project.repo))) {
         // A Local files ticket's "page" is its file in the project folder.
-        Some((_, Some(board))) => {
-            (local::find(&board, key).ok().map(|f| store::tilde(&f.path)), true)
-        }
-        Some((t, None)) => (t.issue_url(key), false),
-        None => (None, false),
+        Some((_, Some(board))) => (None, local::find(&board, key).ok().map(|f| f.path)),
+        Some((t, None)) => (t.issue_url(key), None),
+        None => (None, None),
     };
     Report {
         key: key.to_string(),
         project: project.name.clone(),
         provider: tracker.map(|t| t.provider),
         url,
-        url_is_file,
+        file,
         issue,
         worktree,
         branch,
@@ -964,14 +964,13 @@ impl Report {
     /// The ticket's page on one line: a Local files ticket's is its file, whose name whoever
     /// committed it chose, and a newline in it would start a line that looks like taskman's own.
     /// A file goes through `untrusted::path`, which keeps its name exactly, since the brief has the
-    /// session edit it at this path; a link through `line`. `--json` keeps a file as it is
-    /// (`untrusted::exact`) and cleans a link.
+    /// session edit it at this path; a link through `line`. `--json` keeps a file as it is, the
+    /// whole path (`untrusted::exact`), and cleans a link.
     fn url_line(&self) -> Option<String> {
-        let url = self.url.as_deref()?;
-        Some(match self.url_is_file {
-            true => untrusted::path(Path::new(url)),
-            false => untrusted::line(url),
-        })
+        match &self.file {
+            Some(file) => Some(untrusted::path(file)),
+            None => self.url.as_deref().map(untrusted::line),
+        }
     }
 
     /// The full report for one ticket; `with_session` adds its session's state (left out when the
@@ -1114,9 +1113,9 @@ impl Report {
             "key": self.key,
             "project": self.project,
             "tracker": self.provider.map(|p| p.label().to_lowercase()),
-            "url": match (&self.url, self.url_is_file) {
-                (Some(file), true) => untrusted::exact(Path::new(file)),
-                (url, _) => json!(url),
+            "url": match &self.file {
+                Some(file) => untrusted::exact(file),
+                None => json!(self.url),
             },
             "issue": issue,
             "issue_error": self.issue.as_ref().and_then(|r| r.as_ref().err()),
@@ -1861,7 +1860,10 @@ mod tests {
     fn prints_a_report_url_on_one_line() {
         let with = |issue, url: &str, file| {
             let mut r = report(issue, Err("no PR".into()));
-            (r.url, r.url_is_file) = (Some(url.into()), file);
+            match file {
+                true => r.file = Some(store::home().join(url.trim_start_matches("~/"))),
+                false => r.url = Some(url.into()),
+            }
             r.text(true)
         };
         let file = "~/acme/workplan/todo/WP-2-x\nTicket: x.md";
@@ -1882,16 +1884,32 @@ mod tests {
             // them, and the text holds none of it raw; a link is cleaned as any string is.
             let hiding = "/src/My  Projects/a\u{200b}b\u{202e}c\u{9b}\u{7f}/WP-2-x.md";
             let mut r = report(issue.clone(), Err("no PR".into()));
-            (r.url, r.url_is_file) = (Some(hiding.into()), true);
+            r.file = Some(hiding.into());
             r.worktree = Some(hiding.into());
             let json = untrusted::labelled_json(r.to_json());
             assert!(!json.contains(['\u{200b}', '\u{202e}', '\u{9b}', '\u{7f}']), "{json:?}");
             let v: Value = serde_json::from_str(&json).unwrap();
             assert_eq!((v["url"].as_str(), v["worktree"].as_str()), (Some(hiding), Some(hiding)));
-            r.url_is_file = false;
+            (r.file, r.url) = (None, Some(hiding.into()));
             let v: Value = serde_json::from_str(&untrusted::labelled_json(r.to_json())).unwrap();
             assert_eq!(v["url"], "/src/My  Projects/abc/WP-2-x.md");
         }
+        // A file whose name isn't UTF-8 is told apart from another in the text (`\xff`), and
+        // the JSON gives the whole path, not one from `~`.
+        use std::os::unix::ffi::OsStrExt;
+        let odd = |b: &[u8]| {
+            let mut r = report(Ok(issue(0)), Err("no PR".into()));
+            let name = std::ffi::OsStr::from_bytes(&[b"WP-2-", b, b".md"].concat()).to_owned();
+            r.file = Some(store::home().join("acme").join(name));
+            r
+        };
+        let (ff, fe) = (odd(b"\xff").text(true), odd(b"\xfe").text(true));
+        assert!(ff.contains(r"~/acme/WP-2-\xff.md") && fe.contains(r"~/acme/WP-2-\xfe.md"), "{ff}");
+        let mut r = odd(b"x");
+        let v: Value = serde_json::from_str(&untrusted::labelled_json(r.to_json())).unwrap();
+        assert_eq!(v["url"], "/home/tester/acme/WP-2-x.md");
+        r.file = None;
+        assert_eq!(r.to_json()["url"], "https://linear.app/acme/issue/ENG-52");
     }
 
     #[test]
@@ -2088,7 +2106,7 @@ mod tests {
             project: "acme-web".into(),
             provider: Some(Provider::Linear),
             url: Some("https://linear.app/acme/issue/ENG-52".into()),
-            url_is_file: false,
+            file: None,
             issue,
             worktree: Some("/src/acme-web-ENG-52".into()),
             branch: Some("eng-52-login".into()),

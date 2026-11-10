@@ -31,9 +31,10 @@ fn heartbeat_due(last: Option<Instant>, now: Instant) -> bool {
 /// A reply's line for a toast: as it was built, from parts each cleaned for where it stands (a
 /// title on one line, a folder as it's named). Cleaning the whole line again as one field
 /// (`untrusted::line`) joined the spaces in a folder's name, so the toast named another folder
-/// than the reply did. Only a line break, which no reply line has, is taken out.
+/// than the reply did. Only what breaks a line, which no reply line has, is taken out: line
+/// breaks, tabs, and the line and paragraph separators.
 pub(super) fn toast_line(text: &str) -> String {
-    untrusted::clean(text).replace(['\n', '\t'], " ")
+    untrusted::clean(text).replace(['\n', '\t', '\u{2028}', '\u{2029}'], " ")
 }
 
 /// The reply for agent `t`, just added by `taskman add` to `project`: its session starts at once,
@@ -632,7 +633,10 @@ impl App {
             });
         }
         let toast = (!added.is_empty()).then(|| {
-            let who = req.from.as_ref().map_or("Added".to_string(), |f| format!("{f} added"));
+            let who = req
+                .from
+                .as_deref()
+                .map_or("Added".to_string(), |f| format!("{} added", untrusted::line(f)));
             let queued = if closed { " while taskman was closed" } else { "" };
             format!("{who} {}{queued}", added.join(", "))
         });

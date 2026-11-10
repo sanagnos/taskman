@@ -310,6 +310,13 @@ pub fn rel(board: &Path, path: &Path) -> String {
     untrusted::path(path.strip_prefix(base).unwrap_or(path))
 }
 
+/// Column `name`, a folder of the board, for a message or a brief: exactly as it's named
+/// (`untrusted::path`), as `taskman move` takes it so. On one line, `line` turned `In  Progress`
+/// into a name no column has.
+pub fn column_shown(name: &str) -> String {
+    untrusted::path(Path::new(name))
+}
+
 /// The key a new ticket gets: the highest number with `prefix` in any column, plus one.
 pub fn next_key(files: &[File], prefix: &str) -> String {
     let prefix = prefix.to_uppercase();
@@ -478,7 +485,7 @@ pub fn move_to(board: &Path, key: &str, column_name: &str) -> Result<(File, Stri
     let file = find(board, key)?;
     let cols = columns(board);
     let Some(to) = column(&cols, column_name) else {
-        let names = cols.iter().map(|c| untrusted::line(&c.name)).collect::<Vec<_>>().join(", ");
+        let names = cols.iter().map(|c| column_shown(&c.name)).collect::<Vec<_>>().join(", ");
         return Err(format!(
             "{} has no column {}; its columns are {names}",
             untrusted::path(board),
@@ -671,14 +678,9 @@ fn move_command(args: &[String]) -> Result<String, String> {
 fn moved(file: &File, from: &str) -> String {
     let path = untrusted::path(&file.path);
     if file.column == from {
-        format!("{} is already in {} ({path})", file.key, untrusted::line(from))
+        format!("{} is already in {} ({path})", file.key, column_shown(from))
     } else {
-        format!(
-            "{}: {} → {} ({path})",
-            file.key,
-            untrusted::line(from),
-            untrusted::line(&file.column)
-        )
+        format!("{}: {} → {} ({path})", file.key, column_shown(from), column_shown(&file.column))
     }
 }
 

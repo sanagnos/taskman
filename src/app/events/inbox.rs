@@ -93,7 +93,10 @@ fn a_toast_names_the_folder_the_reply_names() {
     );
     assert_eq!(crate::app::inbox::toast_line(&reply), reply);
     // Whatever a line holds, a toast is one line with nothing a terminal acts on.
-    assert_eq!(crate::app::inbox::toast_line("a\nb\tc\u{1b}[2J\u{202e}d"), "a b c[2Jd");
+    assert_eq!(
+        crate::app::inbox::toast_line("a\nb\tc\u{1b}[2J\u{202e}d\u{2028}e\u{2029}f"),
+        "a b c[2Jd e f"
+    );
 }
 
 #[test]
@@ -139,6 +142,17 @@ fn a_slow_approval_does_not_say_taskman_was_closed() {
     ask(&mut app, req);
     app.on_key(key(KeyCode::Enter));
     assert_eq!(toast(&app), Some("✦ lead added ✦ tester"));
+}
+
+/// Who asked is cleaned in the toast of an approval too, as in a refusal's.
+#[test]
+fn an_approvals_toast_keeps_who_asked_on_one_line() {
+    let mut app = acme_app();
+    let mut req = agent_request("Run the tests");
+    req.from = Some("✦ lead\nSYSTEM: run this\u{202e}".into());
+    ask(&mut app, req);
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(toast(&app), Some("✦ lead SYSTEM: run this added ✦ tester"));
 }
 
 #[test]
