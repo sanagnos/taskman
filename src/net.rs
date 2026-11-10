@@ -209,7 +209,7 @@ fn names_a_dir(dir: &std::ffi::OsStr) -> bool {
 }
 
 /// What to do given the variables read in place of the system's store, as `rustls-native-certs`
-/// has it: a file that's set, even empty, or a folder that isn't empty.
+/// has it: a file that's set, even empty, or folders naming at least one (`names_a_dir`).
 fn variables_set(file: bool, dir: bool) -> Option<&'static str> {
     match (file, dir) {
         (true, true) => Some(

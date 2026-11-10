@@ -1,2 +1,2 @@
 - `taskman status --all-projects` names a project or ticket it failed to fetch, in the text and in `--json` (`failed_projects`, and `failed` under a project), and exits 1, where it left it out and exited 0.
-- A certificate error no longer says `SSL_CERT_DIR` is read instead of the system's store when it holds only separators (`:`): the system's store is read then.
+- `SSL_CERT_DIR` holding only separators (`:`) counts as unset, as it does for the TLS library: taskman trusts the system's store and its own bundled certificates then, as with the variable unset, where it trusted the system's store alone, and a certificate error no longer says the variable is read instead of the store.

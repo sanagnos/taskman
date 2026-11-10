@@ -201,10 +201,11 @@ fn plan(
         match located {
             Err(e) => plan.lines.push(Line::err(e)),
             Ok((key, (None, project))) => {
-                plan.lines.push(Line::ok(format!(
-                    "{key} isn't open in {}",
-                    untrusted::line(&project.name)
-                )));
+                let line = format!("{key} isn't open in {}", untrusted::line(&project.name));
+                // In a session, always the way round: a plain shell may have found it open in
+                // another project, and saying so only when one has it would tell the session.
+                let line = if own.is_some() { cli::with_way_round(line) } else { line };
+                plan.lines.push(Line::ok(line));
             }
             Ok((_, (Some(t), project))) => {
                 let p =

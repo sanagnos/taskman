@@ -381,15 +381,21 @@ mod tests {
             before in prop::collection::vec("[a-z]{1,8}|[A-Z]{2,4}-[0-9]{1,3}", 0..3),
             marker in "[a-z]{1,8}|browsex|xbrowse|issuez|Browse|ISSUE|BROWSE|selectedIssue",
             after in prop::collection::vec("[a-z0-9-]{1,8}", 0..3),
-            field in "[a-zA-Z]{1,12}",
+            // Near misses of `selectedIssue`, and any other name.
+            field in prop_oneof![
+                Just("selectedissue".to_string()),
+                Just("SelectedIssue".to_string()),
+                Just("selectedIssues".to_string()),
+                "[a-zA-Z]{1,12}",
+            ],
         ) {
             let names_one = |seg: &str| matches!(seg, "browse" | "issue" | "issues");
             prop_assume!(!names_one(&marker));
             prop_assume!(!before.iter().chain(&after).any(|seg| names_one(seg)));
-            prop_assume!(field != "selectedIssue");
             // `before` may hold a key of its own: a segment no tracker puts one in, never read
             // either, so the link reads as nobody's.
-            let path = before.iter().chain([&marker, &key]).chain(&after).cloned().collect::<Vec<_>>().join("/");
+            let segments: Vec<&String> = before.iter().chain([&marker, &key]).chain(&after).collect();
+            let path = segments.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("/");
             for link in [
                 format!("{host}/{path}"),
                 format!("{host}/{path}?{field}={key}#{key}"),

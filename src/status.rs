@@ -96,7 +96,8 @@ fn status(args: &[String]) -> Result<bool, String> {
             if let Some(p) = saved.projects.iter().position(|p| p.repo == project.repo) {
                 cli::confine(p, own, &saved)?;
             }
-            let r = report(&key, ticket, project, &saved, &config, codex);
+            // A bug while fetching it says so and exits 1, as `--all-projects` names it.
+            let r = util::caught(|| report(&key, ticket, project, &saved, &config, codex))?;
             let own = me.is_some_and(|m| ticket.is_some_and(|t| t.is(&m.repo, &m.key)));
             cli::out!(
                 "{}",
@@ -603,7 +604,9 @@ fn fetch_report(
         };
         (
             issue.join().unwrap_or_else(|_| Some(Err("the tracker request crashed".into()))),
-            base_pr.join().ok().flatten(),
+            // A panic there is the whole report's: `each_at_once` names the ticket, and a lone
+            // report (`taskman status KEY`) is `util::caught`. Left as None, it read as "unknown".
+            base_pr.join().unwrap_or_else(|p| std::panic::resume_unwind(p)),
             (wt, pr),
         )
     });
@@ -1259,7 +1262,11 @@ impl Overview {
             "project": self.project,
             "repo": untrusted::exact(&self.repo),
             "tickets": self.tickets.iter().map(Report::to_json).collect::<Vec<_>>(),
-            "failed": self.failed.iter().map(|key| json!({ "key": key, "error": FAILED })).collect::<Vec<_>>(),
+            "failed": self
+                .failed
+                .iter()
+                .map(|key| json!({ "key": key, "error": FAILED }))
+                .collect::<Vec<_>>(),
             "agents": self.agents.iter().map(|a| json!({ "name": a.name, "session": a.session, "role": a.role, "state": session_json(a.state.as_ref()) })).collect::<Vec<_>>(),
         })
     }
@@ -1389,7 +1396,13 @@ impl All {
     fn to_json(&self) -> Value {
         json!({
             "projects": self.0.iter().map(Overview::to_json).collect::<Vec<_>>(),
-            "failed_projects": self.1.iter().map(|(name, repo)| json!({ "project": name, "repo": untrusted::exact(repo), "error": FAILED })).collect::<Vec<_>>(),
+            "failed_projects": self
+                .1
+                .iter()
+                .map(|(name, repo)| {
+                    json!({ "project": name, "repo": untrusted::exact(repo), "error": FAILED })
+                })
+                .collect::<Vec<_>>(),
         })
     }
 }
@@ -2745,7 +2758,9 @@ mod tests {
         crate::util::quiet_test_panics();
         let items = ["a", "boom", "c", "boom too"];
         let (done, failed) = each_at_once(&items, |i| {
-            assert!(!i.starts_with("boom"), "fetching {i}");
+            if i.starts_with("boom") {
+                std::panic::panic_any(crate::util::TestPanic);
+            }
             i.to_uppercase()
         });
         assert_eq!(done, ["A", "C"]);

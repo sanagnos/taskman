@@ -248,7 +248,8 @@ pub(crate) fn context(me: Option<&Ticket>, saved: &Saved, here: Option<&Here>) -
 }
 
 /// What lifts `confine`, `confine_all` and every other refusal a session gets that a plain shell
-/// would have answered otherwise (`status::locate`'s of another prefix, `resolve_key`'s). A command written this way matches no rule of the
+/// would have answered otherwise (`status::session_key`'s of another prefix, `resolve_key`'s,
+/// close's and resume's that nothing was found). A command written this way matches no rule of the
 /// allow-list, so the CLI's own permission settings decide: Claude Code asks the user, runs it
 /// (auto mode's classifier, a mode that skips prompts, a rule of the user's) or refuses it
 /// (`dontAsk`); Codex runs it, asks or refuses as its sandbox, approval policy and rules say. The

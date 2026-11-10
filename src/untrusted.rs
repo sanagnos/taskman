@@ -529,7 +529,10 @@ mod tests {
         let invisible = "\u{AD}\u{34F}\u{180E}\u{2060}\u{2061}\u{2062}\u{2063}\u{2064}\u{206A}\u{FEFF}\u{FFF9}\u{1D173}";
         assert_eq!(clean(&format!("a{invisible}b")), "ab");
         assert_eq!(clean("Fix \u{180B}\u{FE00}\u{FE0D}login"), "Fix login");
-        let more = "\u{17B4}\u{17B5}\u{2065}\u{1BCA0}\u{1BCA3}\u{FFF0}\u{FFF8}\u{E0080}\u{E00FF}\u{E01F0}\u{E0FFF}";
+        let more = concat!(
+            "\u{17B4}\u{17B5}\u{2065}\u{1BCA0}\u{1BCA3}",
+            "\u{FFF0}\u{FFF8}\u{E0080}\u{E00FF}\u{E01F0}\u{E0FFF}"
+        );
         assert_eq!(clean(&format!("Fix{more} login")), "Fix login");
     }
 
@@ -846,7 +849,9 @@ mod tests {
         ) {
             let s: String = parts
                 .iter()
-                .map(|(word, after, neutral, before, latin)| format!("{word}{after}{neutral}{before}{latin} "))
+                .map(|(word, after, neutral, before, latin)| {
+                    format!("{word}{after}{neutral}{before}{latin} ")
+                })
                 .collect();
             prop_assert_eq!(clean(&s), s.clone());
             prop_assert_eq!(line(&s), s.split_whitespace().collect::<Vec<_>>().join(" "));
@@ -860,7 +865,10 @@ mod tests {
         /// a right-to-left word is elsewhere in the text.
         #[test]
         fn marks_away_from_right_to_left_runs_go(
-            ascii in "([ -~]|[\u{591}-\u{5BD}\u{610}-\u{61A}\u{64B}-\u{65F}]|[\u{200E}\u{200F}\u{61C}]){0,40}",
+            ascii in concat!(
+                "([ -~]|[\u{591}-\u{5BD}\u{610}-\u{61A}\u{64B}-\u{65F}]",
+                "|[\u{200E}\u{200F}\u{61C}]){0,40}"
+            ),
             a in "[A-Za-z]{1,6}",
             gap in "[ .,!0-9]{0,3}",
             b in "[A-Za-z]{1,6}",

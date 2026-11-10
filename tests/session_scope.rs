@@ -207,6 +207,17 @@ fn a_sessions_answers_dont_depend_on_the_other_projects() {
             "tracker": {"provider": "local", "site": "workplan", "key": "DUP"},
         }));
     }
+    // And one with acme's own prefix, with ENG-5 open: a plain shell may find a key there.
+    let mirror = dir.join("mirror");
+    std::fs::create_dir_all(mirror.join("workplan/todo")).unwrap();
+    std::fs::write(mirror.join("workplan/todo/ENG-5-mirrored.md"), "# ENG-5 mirrored\n").unwrap();
+    saved["projects"].as_array_mut().unwrap().push(serde_json::json!({
+        "name": "mirror", "repo": mirror,
+        "tracker": {"provider": "local", "site": "workplan", "key": "ENG"},
+    }));
+    saved["tickets"].as_array_mut().unwrap().push(serde_json::json!(
+        {"key": "ENG-5", "repo": mirror, "cwd": mirror}
+    ));
     std::fs::write(&state, saved.to_string()).unwrap();
 
     // The exit status, and what was printed, with `asked` (the name or key) written as `ASKED`.
@@ -220,7 +231,7 @@ fn a_sessions_answers_dont_depend_on_the_other_projects() {
         (out.status.code(), text(&out.stdout), text(&out.stderr))
     };
     // Nothing of the other projects: their names, their prefixes, their tickets.
-    let others = ["private", "Side Project", "side-project", "SEC", "DUP", "shared"];
+    let others = ["private", "Side Project", "side-project", "SEC", "DUP", "shared", "mirror"];
     let silent = |what: &str, (_, out, err): &(Option<i32>, String, String)| {
         let said: Vec<_> = others.iter().filter(|o| out.contains(*o) || err.contains(*o)).collect();
         assert!(said.is_empty(), "{what} says {said:?}:\n{out}\n{err}");
@@ -291,6 +302,16 @@ fn a_sessions_answers_dont_depend_on_the_other_projects() {
             );
         }
     }
+    // A key with the session's own prefix that another project has open, and one open nowhere:
+    // `close` answers both alike, with the way round, as a plain shell may have found the first.
+    for session in ["ENG-1", "acme-lead"] {
+        let open = answer(Some(session), &["close", "ENG-5"], "ENG-5");
+        assert_eq!(open, answer(Some(session), &["close", "ENG-6"], "ENG-6"), "{session}");
+        assert!(open.1.contains("ASKED isn't open in acme"), "{session}: {open:#?}");
+        assert!(open.1.contains("`env -u TASKMAN_REPO`"), "{session}: {open:#?}");
+        silent(&format!("{session}: taskman close ENG-5"), &open);
+    }
+    assert!(mirror.join("workplan/todo/ENG-5-mirrored.md").exists());
     // Nothing was moved or asked of the running taskman.
     assert!(private.join("workplan/todo/SEC-7-secret.md").exists());
     assert!(acme.join("workplan/todo/ENG-1-test.md").exists());
@@ -298,7 +319,7 @@ fn a_sessions_answers_dont_depend_on_the_other_projects() {
     // From the user's own shell, the lists and hints as before.
     let (code, _, err) = answer(None, &["status", "--project", "nobody"], "ASKED");
     assert_eq!(code, Some(1));
-    assert!(err.contains("taskman has acme, private, Side Project, side-project"), "{err}");
+    assert!(err.contains("taskman has acme, private, Side Project, side-project, mirror"), "{err}");
     let (_, _, err) = answer(None, &["status", "--project", "Side_Project"], "ASKED");
     assert!(err.contains("could mean projects Side Project or side-project"), "{err}");
     let (_, _, err) = answer(None, &["add", "SEC-7", "--project", "acme"], "ASKED");
@@ -353,19 +374,36 @@ fn a_session_takes_its_own_project_by_its_exact_name_only() {
     // The exact name is its own project: its overview, its ticket.
     assert_eq!(exact[0].0, Some(0), "{exact:#?}");
     assert!(exact[0].1.contains("ENG-1") && exact[1].1.contains("\"key\": \"ENG-1\""));
-    // Every other spelling is refused, the same for each, nothing printed but the refusal.
+    // Every other spelling is refused, the same for each, nothing printed but the refusal: the
+    // session's own one with the way round, or `title`'s, which offers none.
     for (template, answers) in reads.iter().chain(&acts).zip(&refused) {
         let what = template.join(" ");
         assert_eq!(answers[0].0, Some(1), "{what}: {answers:#?}");
         assert!(answers[0].1.is_empty(), "{what}: {answers:#?}");
         assert!(answers.iter().all(|a| a == &answers[0]), "{what}: {answers:#?}");
+        let err = &answers[0].2;
+        let command = template[0];
+        if command == "title" {
+            assert_eq!(
+                err,
+                "taskman title: that's not this session's project, and a session sets only its \
+                 own ticket's title\n"
+            );
+        } else {
+            let refusal = format!(
+                "taskman {command}: this session works in acme: a session keeps to its own project. \
+                 If the user asked for it, run the same command with `env -u TASKMAN_REPO` in front"
+            );
+            assert!(err.starts_with(&refusal) && err.ends_with(".\n"), "{what}: {err}");
+            assert_eq!(err.lines().count(), 1, "{what}: {err}");
+        }
     }
     assert!(acme.join("workplan/todo/ENG-1-test.md").exists(), "a refused move moved it");
     // Projects named like some of those spellings change nothing in its session.
     let state = dir.join("state/taskman/tickets.json");
     let mut saved: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
-    for name in ["ACME", "acme!"] {
+    for name in variants {
         let repo = dir.join(format!("look-alike {name}"));
         std::fs::create_dir_all(repo.join("workplan/todo")).unwrap();
         saved["projects"].as_array_mut().unwrap().push(serde_json::json!({
@@ -378,7 +416,7 @@ fn a_session_takes_its_own_project_by_its_exact_name_only() {
     assert!(acme.join("workplan/todo/ENG-1-test.md").exists(), "a refused move moved it");
     // From the user's own shell they're told apart, as before.
     let mut cmd = common::taskman(&dir);
-    let out = cmd.args(["status", "--project", "Acme"]).current_dir(&acme).output().unwrap();
+    let out = cmd.args(["status", "--project", "aCmE"]).current_dir(&acme).output().unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("could mean projects acme or ACME"), "{err}");
+    assert!(err.contains("could mean projects acme or ACME or Acme"), "{err}");
 }
