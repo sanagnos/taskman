@@ -129,8 +129,10 @@ pub fn stop_all() {
     // Every group asked that was there when last looked at, not only those still listed. A
     // listed one hasn't been reaped, so its id is still its own. A reaped one's id can't pass to
     // another group while anything is left in it; once nothing is, the kill finds no one, unless
-    // pids wrapped around since it was last looked at and a new process made itself a group
-    // leader under it.
+    // pids wrapped around in that moment and a new process made itself a group leader under it.
+    // That moment is any sleep between two looks, not only the last: a group that empties in one
+    // and whose id is taken before the next look is found there and killed here. It needs the
+    // pid counter to come round to that very id within milliseconds, so it's left (see `stop`).
     live.groups.clear();
     for (group, _) in std::mem::take(&mut live.asked) {
         signal_group(group, libc::SIGKILL);
@@ -352,7 +354,8 @@ fn run_inner(
         if Instant::now() >= deadline {
             return Err(stop(&mut child, timeout, grace));
         }
-        std::thread::sleep(pause);
+        // Not past the limit, which a caller with a time of its own counts on.
+        std::thread::sleep(pause.min(deadline.saturating_duration_since(Instant::now())));
         pause = (pause * 2).min(Duration::from_millis(50));
     }
 }
@@ -430,14 +433,21 @@ fn stop(child: &mut Child, timeout: Duration, grace: Duration) -> io::Error {
         signal_group(group, libc::SIGTERM);
     }
     // The order is `stop_all`'s. The leader is reaped under the list's lock as soon as it has
-    // ended, since only then can the rest of the group be told from its zombie, and the group
-    // leaves the list with it. Until then the id is the group's own, and a kill reaches nothing
-    // else. From then on the id is kept only by what's left in the group, which signal 0 asks
-    // for: once nothing is, the id is free to pass to another group, so a group seen empty is
-    // never signalled again, and the last look and the SIGKILL come one after the other in the
-    // same hold of the lock. That leaves `stop_all`'s window and no other: the kill reaches
-    // another group only if this one emptied after that look, pids wrapped around in that moment
-    // and a new process made itself a group leader under its id.
+    // ended, since only then can the rest of the group be told from its zombie (signal 0 finds a
+    // zombie too), and the group leaves the list with it. Until then the id is the group's own,
+    // and a kill reaches nothing else. From then on the id is kept only by what's left in the
+    // group, which signal 0 asks for each look: a group seen empty is never signalled again, and
+    // the last look and the SIGKILL come in the same hold of the lock.
+    //
+    // That leaves a window, `stop_all`'s too, which `stop` didn't have before it reaped ahead of
+    // its SIGKILL: what's left can end in any sleep between two looks (up to 10 ms here, 5 in
+    // `stop_all`), and if pids wrapped around in that moment and a new process made itself a
+    // group leader under the same id, the next look finds that group, and the kill at the end of
+    // the grace reaches it. It needs the pid counter to come round to that very id within
+    // milliseconds, so it's left. Keeping the leader's zombie unreaped (`waitid` with `WNOWAIT`)
+    // would hold the id, but then signal 0 can't tell an empty group from that zombie: every
+    // leader that ends when asked would cost the whole grace, or what it left would be killed
+    // with none.
     let mut reaped = false;
     let mut pause = Duration::from_millis(1);
     loop {
@@ -464,7 +474,8 @@ fn stop(child: &mut Child, timeout: Duration, grace: Duration) -> io::Error {
             break;
         }
         drop(live);
-        std::thread::sleep(pause);
+        // Not past the grace, which a caller with a time of its own counts on.
+        std::thread::sleep(pause.min(grace.saturating_sub(asked.elapsed())));
         pause = (pause * 2).min(Duration::from_millis(10));
     }
     // A killed leader ends at once. Polled, not waited for, as the wait would be under the lock,

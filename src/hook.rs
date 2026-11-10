@@ -164,8 +164,10 @@ fn session_dir(started: Option<std::ffi::OsString>, v: &Value) -> Option<PathBuf
         .or_else(|| std::env::current_dir().ok())
 }
 
-/// How long a hook waits for one git call, stopping one that hangs included ([`git_limit`]). Tests
-/// run real git on machines that may be busy, and a hook's limit isn't what they're about.
+/// How long a hook gives one git call to answer before asking it to end, and all a prompt's start
+/// waits for its one call, stopping it included: so that call is asked to end at 550 ms
+/// ([`git_limit`]), which is plenty for `rev-parse HEAD`. Tests run real git on machines that may
+/// be busy, and a hook's limit isn't what they're about.
 const GIT_WAIT: Duration =
     if cfg!(test) { Duration::from_secs(60) } else { Duration::from_millis(800) };
 
@@ -187,14 +189,16 @@ enum Git {
 }
 
 /// The limit to give a git call that has `left` to be over in, at most `wait`: a git that doesn't
-/// end when asked at its limit takes `proc::STOP_GRACE` more before it's killed, which comes off,
-/// so the call is over in time either way. Zero when there's no time to run it in.
+/// end when asked at its limit takes `proc::STOP_GRACE` more before it's killed, which comes off
+/// what's left, so the call is over in time either way. Off what's left, not off `wait`: a slow
+/// git still answering at a turn's end gets its whole `wait` while there's time for the grace
+/// after it. Zero when there's no time to run it in.
 fn git_limit(left: Duration, wait: Duration) -> Duration {
-    left.min(wait).saturating_sub(crate::proc::STOP_GRACE)
+    left.saturating_sub(crate::proc::STOP_GRACE).min(wait)
 }
 
-/// Runs `git args` in `dir`, over by the time `until` at the latest and within `GIT_WAIT`, the
-/// stopping of a git that hangs included ([`git_limit`]).
+/// Runs `git args` in `dir`, over by the time `until` at the latest, the stopping of a git that
+/// hangs included, and asked to end after `GIT_WAIT` at most ([`git_limit`]).
 fn git_call(dir: &Path, args: &[&str], until: Instant) -> Git {
     let limit = git_limit(until.saturating_duration_since(Instant::now()), GIT_WAIT);
     if limit.is_zero() {
@@ -1386,16 +1390,33 @@ mod tests {
     }
 
     /// A git call is over within the time it has, the grace a hung git gets when it's stopped
-    /// included: with the real limits a prompt waits 800 ms at most, and a turn's end 2.5 s.
+    /// included, and a slow one still answering gets all of `GIT_WAIT` while there's room for the
+    /// grace after it. With the real limits: a turn's end, 2.5 s for three calls, gives the first
+    /// two 800 ms each; a prompt's start, 800 ms for one, gives it 550.
     #[test]
     fn a_git_calls_limit_leaves_time_to_stop_it() {
         let ms = Duration::from_millis;
         let grace = crate::proc::STOP_GRACE;
-        assert_eq!(git_limit(ms(2500), ms(800)) + grace, ms(800));
-        assert_eq!(git_limit(ms(500), ms(800)) + grace, ms(500));
+        assert_eq!(grace, ms(250));
+        let wait = ms(800);
+        // A turn's end with every git hung and ignoring the request to end: each call takes its
+        // limit and the grace, and the three are over by the 2.5 s.
+        let first = git_limit(ms(2500), wait);
+        assert_eq!(first, wait);
+        let second = git_limit(ms(2500) - first - grace, wait);
+        assert_eq!(second, wait);
+        let left = ms(2500) - first - grace - second - grace;
+        assert_eq!(git_limit(left, wait) + grace, left);
+        // A prompt's start.
+        assert_eq!(git_limit(wait, wait), ms(550));
+        // However much is left, the call and its stopping fit in it.
+        for left in (0..3000).step_by(50).map(ms) {
+            let limit = git_limit(left, wait);
+            assert!(limit <= wait);
+            assert!(limit.is_zero() || limit + grace <= left, "{left:?}");
+        }
         // No time to run it and stop it in: it isn't run.
-        assert_eq!(git_limit(grace, ms(800)), Duration::ZERO);
-        assert_eq!(git_limit(Duration::ZERO, ms(800)), Duration::ZERO);
-        assert!(grace < ms(800));
+        assert_eq!(git_limit(grace, wait), Duration::ZERO);
+        assert_eq!(git_limit(Duration::ZERO, wait), Duration::ZERO);
     }
 }

@@ -56,9 +56,25 @@ fn pid(dir: &Path, key: &str) -> Option<i32> {
     std::fs::read_to_string(dir.join(format!("{key}.pid"))).ok()?.trim().parse().ok()
 }
 
+/// Whether `pid` runs. A zombie doesn't: signal 0 finds one until its parent reaps it, and a
+/// process whose parent ended waits for whatever adopts it to, which a container may never do.
 fn alive(pid: i32) -> bool {
     // SAFETY: signal 0 only checks the process exists.
-    unsafe { libc::kill(pid, 0) == 0 }
+    if unsafe { libc::kill(pid, 0) } != 0 {
+        return false;
+    }
+    // `ps -o stat=` on Linux and macOS alike: Z for a zombie. Gone by now is gone too. Without a
+    // `ps` to ask, signal 0's answer stands, so a test can't pass for want of one.
+    let ps =
+        std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output();
+    match ps {
+        Ok(o) => {
+            let stat = String::from_utf8_lossy(&o.stdout);
+            let stat = stat.trim();
+            !stat.is_empty() && !stat.starts_with('Z')
+        }
+        Err(_) => true,
+    }
 }
 
 /// What the CLI last started for `key` was started with.
@@ -322,7 +338,10 @@ fn a_hung_git_still_leaves_the_turns_line() {
 }
 
 /// Nor one that doesn't end when it's asked to at its limit, which is given a moment more before
-/// it's killed: that moment is within the hook's time too.
+/// it's killed: that moment is within the hook's time too. The tightest margin in this file: the
+/// hook's git calls take all of their 2.5 s here (`STOP_WAIT`), which leaves about half a second
+/// of the 3 for starting taskman and the stub git and writing the files. A flake here on a slow
+/// machine is that margin.
 #[test]
 fn a_hung_git_that_ignores_being_stopped_still_leaves_the_turns_line() {
     let dir = scratch_dir("hook-stubborn-git");
