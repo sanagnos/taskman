@@ -1,0 +1,1 @@
+- Requests to Jira and Linear are more reliable: ureq 3.5.1 fixes connection reuse and, on macOS, responses lost when a closed connection refused a timeout change.
