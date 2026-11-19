@@ -2,6 +2,10 @@
 
 What changed in each release; a release's notes on GitHub are its section here. What's merged but not released yet is in [changelog.d/](changelog.d/), a file for each change, which the release moves in here. Versions follow Cargo's rule for 0.x: the patch number (0.1.1) for anything compatible, fixes and new features alike, and the minor (0.2.0) for breaking changes, such as changed keys, config or saved-state format, or a removed command.
 
+## 0.1.42 - 2026-11-19
+
+- Requests to Jira and Linear are more reliable: ureq 3.5.1 fixes connection reuse and, on macOS, responses lost when a closed connection refused a timeout change.
+
 ## 0.1.41 - 2026-11-09
 
 - A folded project's header shows the working spinner while one of its sessions is working, so it no longer looks the same as a project whose sessions are all idle. The `●` for a session that needs you, or finished a turn or ended since you looked, still wins over it, and the `↑ N more` and `↓ N more` rows of the sidebar and the find picker follow the same rule.
