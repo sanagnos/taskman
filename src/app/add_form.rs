@@ -401,7 +401,9 @@ impl App {
         let files = self.trackers.board_files(board);
         match pick {
             LocalInput::Key(key) => match local::find_in(&files, &key, board) {
-                Ok(f) => format!("{} in {}", local::rel(board, &f.path), f.column),
+                Ok(f) => {
+                    format!("{} in {}", local::rel(board, &f.path), local::column_shown(&f.column))
+                }
                 Err(e) => e,
             },
             LocalInput::Title => {

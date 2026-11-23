@@ -503,7 +503,9 @@ fn refusal(v: &Value, project: &str, type_name: &str, status: u16) -> String {
             None => format!("{field}: {m}"),
         }));
     }
-    let reasons = reasons.iter().map(|r| r.trim().trim_end_matches('.')).collect::<Vec<_>>();
+    // Jira's words, in a message that's printed as one of taskman's own lines.
+    let reasons: Vec<String> = reasons.iter().map(|r| crate::untrusted::line(r)).collect();
+    let reasons = reasons.iter().map(|r| r.trim_end_matches('.')).collect::<Vec<_>>();
     let reasons = if reasons.is_empty() { format!("HTTP {status}") } else { reasons.join("; ") };
     if reasons.to_lowercase().contains("required") {
         format!(

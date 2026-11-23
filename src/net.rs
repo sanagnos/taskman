@@ -197,12 +197,19 @@ pub fn certificate_failure(host: &str, why: &str) -> String {
 fn set_variables() -> Option<&'static str> {
     variables_set(
         std::env::var_os(CERT_FILE).is_some(),
-        std::env::var_os(CERT_DIR).is_some_and(|dir| !dir.is_empty()),
+        std::env::var_os(CERT_DIR).is_some_and(|dir| names_a_dir(&dir)),
     )
 }
 
+/// Whether `SSL_CERT_DIR` holding `dir` names a folder, as `rustls-native-certs` reads it: split
+/// on the platform's separator, empty entries dropped. `:` alone names none, so the crate reads
+/// the system's store, and saying the variable is read instead would send the user the wrong way.
+fn names_a_dir(dir: &std::ffi::OsStr) -> bool {
+    std::env::split_paths(dir).any(|p| !p.as_os_str().is_empty())
+}
+
 /// What to do given the variables read in place of the system's store, as `rustls-native-certs`
-/// has it: a file that's set, even empty, or a folder that isn't empty.
+/// has it: a file that's set, even empty, or folders naming at least one (`names_a_dir`).
 fn variables_set(file: bool, dir: bool) -> Option<&'static str> {
     match (file, dir) {
         (true, true) => Some(
@@ -432,6 +439,19 @@ mod tests {
             said(true, true),
             format!("{start}SSL_CERT_FILE and SSL_CERT_DIR are set and are {store} them, {end}")
         );
+    }
+
+    /// `SSL_CERT_DIR` counts as set only when it names a folder, as rustls-native-certs reads it:
+    /// separators alone, or nothing, leave the system's store read.
+    #[test]
+    fn a_cert_dir_of_separators_alone_names_no_folder() {
+        use std::ffi::OsStr;
+        for none in ["", ":", "::", ":::"] {
+            assert!(!names_a_dir(OsStr::new(none)), "{none:?}");
+        }
+        for some in ["/etc/ssl/certs", ":/etc/ssl/certs", "/a::/b", "/etc/ssl/certs:"] {
+            assert!(names_a_dir(OsStr::new(some)), "{some:?}");
+        }
     }
 
     #[test]

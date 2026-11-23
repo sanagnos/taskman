@@ -127,10 +127,12 @@ fn answer(status: u16, v: &Value) -> Result<Value, FetchError> {
         return Err(FetchError::Auth("Linear rejected the API key".into()));
     }
     if let Some(msg) = v["errors"][0]["message"].as_str() {
+        // Linear's words, in a message that's printed as one of taskman's own lines.
+        let said = crate::untrusted::line(msg);
         if msg.starts_with("Entity not found") {
-            return Err(FetchError::NotFound(msg.to_string()));
+            return Err(FetchError::NotFound(said));
         }
-        return Err(FetchError::Other(msg.to_string()));
+        return Err(FetchError::Other(said));
     }
     if status >= 500 {
         return Err(tracker::server_failed("Linear", status));
@@ -707,14 +709,16 @@ mod tests {
         #[test]
         fn only_linears_missing_entity_is_not_found(
             lead in prop::sample::select(vec!["", "Entity not found", "Team not found", "not found"]),
-            msg in "\\PC{0,30}",
+            msg in "(\\PC|[\n\r\x1b]){0,30}",
             status in prop::sample::select(vec![200u16, 400, 500]),
         ) {
             let msg = format!("{lead}{msg}");
+            // What Linear said, on one line with nothing hidden: it's printed as taskman's own.
+            let said = crate::untrusted::line(&msg);
             match answer(status, &json!({ "errors": [{ "message": msg }] })) {
-                Err(NotFound(m)) => prop_assert!(m == msg && m.starts_with("Entity not found")),
+                Err(NotFound(m)) => prop_assert!(m == said && msg.starts_with("Entity not found")),
                 Err(Auth(_)) => prop_assert!(msg.to_lowercase().contains("authentication")),
-                Err(Other(m)) => prop_assert!(m == msg && !m.starts_with("Entity not found")),
+                Err(Other(m)) => prop_assert!(m == said && !msg.starts_with("Entity not found")),
                 other => prop_assert!(false, "{:?}", other),
             }
         }
