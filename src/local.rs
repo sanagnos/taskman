@@ -143,24 +143,28 @@ fn column<'a>(columns: &'a [Column], name: &str) -> Result<Option<&'a Column>, V
 
 /// How a message or brief names each of `columns`: the first that names it alone (`column`) of
 /// its column name as shown, its folder's shown name and a `/`, and its folder's own name and a
-/// `/` when that has nothing to escape. So every one listed can be typed back to `taskman move`:
-/// `02-doing/` and `doing/` where both are named `doing`, and `~done/` beside a folder named
-/// `\x7edone`, which is what `~done` shows as.
+/// `/` when nothing in it hides but backslashes. So each one listed can be typed back to `taskman
+/// move`: `02-doing/` and `doing/` where both are named `doing`, `~done/` beside a folder named
+/// `\x7edone`, which is what `~done` shows as, and `a\b/` beside `a\\b`. Where none does (a
+/// zero-width space in a name beside a folder named as it shows, a name that starts with a
+/// space), it says the folder can't be named and should be renamed: failing safe, as `column`
+/// never picks one of several.
 pub fn column_labels(columns: &[Column]) -> Vec<String> {
     columns
         .iter()
         .map(|c| {
             let folder = folder(c);
-            let shown = format!("{}/", column_shown(&folder));
-            let raw = (!untrusted::hides(&folder)).then(|| format!("{folder}/"));
+            let shown = column_shown(&folder);
+            // As it's named, when nothing in it hides but backslashes, which `path` doubles.
+            let raw = (!untrusted::hides(&folder.replace('\\', ""))).then(|| format!("{folder}/"));
             let alone = |label: &String| {
                 matches!(column(columns, label), Ok(Some(only)) if std::ptr::eq(only, c))
             };
-            [Some(column_shown(&c.name)), Some(shown.clone()), raw]
+            [Some(column_shown(&c.name)), Some(format!("{shown}/")), raw]
                 .into_iter()
                 .flatten()
                 .find(alone)
-                .unwrap_or(shown)
+                .unwrap_or_else(|| format!("{shown} (can't be named: rename the folder)"))
         })
         .collect()
 }
@@ -547,12 +551,17 @@ pub fn move_to(board: &Path, key: &str, column_name: &str) -> Result<(File, Stri
         return Err(format!("name a column; its columns are {}", names()).into());
     }
     let to = column(&cols, column_name).map_err(|several| {
-        let folders: Vec<String> =
-            several.iter().map(|c| format!("{}/", column_shown(&folder(c)))).collect();
+        // Each as `taskman move` takes it back, which may not be its folder and a `/`: that can
+        // match the same columns again (`\x7edone/` beside `~done`).
+        let labels = column_labels(&cols);
+        let label = |c: &&Column| {
+            let at = cols.iter().position(|x| std::ptr::eq(x, *c)).unwrap_or_default();
+            labels[at].clone()
+        };
         format!(
-            "{} could mean the columns {} on {}; name the folder followed by /, as shown",
+            "{} could mean the columns {} on {}; name one as written here",
             untrusted::line(column_name),
-            folders.join(" or "),
+            several.iter().map(label).collect::<Vec<_>>().join(" or "),
             untrusted::path(board)
         )
     })?;
@@ -1104,13 +1113,17 @@ mod tests {
         assert_eq!(
             e,
             format!(
-                "\\x7edone could mean the columns \\\\x7edone/ or \\x7edone/ on {}; name the \
-                 folder followed by /, as shown",
+                "\\x7edone could mean the columns \\\\x7edone or ~done/ on {}; name one as \
+                 written here",
                 untrusted::path(&board)
             )
         );
         // Each column listed is one `taskman move` takes back: `~done/` for `~done`, whose shown
         // name is the decoy folder's own.
+        // What the refusal lists can be typed back, each to its own column.
+        for label in ["\\\\x7edone", "~done/"] {
+            assert!(column(&cols, label).is_ok_and(|c| c.is_some()), "{label:?}");
+        }
         let labels = column_labels(&columns(&board));
         assert!(labels.contains(&"~done/".to_string()), "{labels:?}");
         assert!(labels.contains(&"\\\\x7edone".to_string()), "{labels:?}");
@@ -1309,5 +1322,34 @@ mod tests {
         assert_eq!(named("02-todo/"), Ok(Some("02-Todo".into())));
         // Briefs and errors list each so it can be typed back.
         assert_eq!(column_labels(&cols), ["todo", "Todo", "02-doing/", "doing/"]);
+        // Each label reaches its own column, the folder pairs whose names show as each other's
+        // included; one that nothing could reach says so rather than naming another.
+        let boards: [&[&str]; 6] = [
+            &["~done", "\\x7edone"],
+            &["a\\b", "a\\\\b"],
+            &["~", "\\x7e"],
+            &["02-doing", "doing", "01-todo", "02-Todo"],
+            &["x\u{200b}y", "x\\u{200b}y"],
+            &[" doing", "todo"],
+        ];
+        for folders in boards {
+            let cols: Vec<Column> = folders.iter().map(|d| col(d)).collect();
+            for (label, c) in column_labels(&cols).iter().zip(&cols) {
+                if label.ends_with("(can't be named: rename the folder)") {
+                    continue;
+                }
+                let found = column(&cols, label).map(|f| f.map(folder));
+                assert_eq!(found, Ok(Some(folder(c))), "{label:?} in {folders:?}");
+            }
+        }
+        let labels =
+            |folders: &[&str]| column_labels(&folders.iter().map(|d| col(d)).collect::<Vec<_>>());
+        assert_eq!(labels(&["a\\b", "a\\\\b"]), ["a\\b/", "a\\\\\\\\b"]);
+        assert_eq!(labels(&["~done", "\\x7edone"]), ["~done/", "\\\\x7edone"]);
+        assert_eq!(
+            labels(&["x\u{200b}y", "x\\u{200b}y"])[0],
+            "x\\u{200b}y (can't be named: rename the folder)"
+        );
+        assert_eq!(labels(&[" doing", "todo"])[0], " doing (can't be named: rename the folder)");
     }
 }
