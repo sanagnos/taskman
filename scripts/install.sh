@@ -197,11 +197,13 @@ main() {
     # a regular expression that matches that one name, the workflow and the tag quoted so nothing
     # in them is read as part of the expression. signer_identity in src/update.rs builds the same.
     quote='s/[][\.^$*+?(){}|]/\\&/g'
-    workflow_re="$(printf '%s' "https://github.com/$repo/.github/workflows/release.yml" | sed "$quote")"
+    workflow_re="$(printf '%s' "https://github.com/$repo/.github/workflows/release.yml" \
+      | sed "$quote")"
     tag_re="$(printf '%s' "$tag" | sed "$quote")"
     status=0
     err="$(gh attestation verify "$tmp/$archive" --repo "$repo" \
-      --cert-identity-regex "^$workflow_re@refs/tags/$tag_re\$" --deny-self-hosted-runners 2>&1 >/dev/null)" \
+      --cert-identity-regex "^$workflow_re@refs/tags/$tag_re\$" \
+      --deny-self-hosted-runners 2>&1 >/dev/null)" \
       || status=$?
     if [ "$status" -ne 0 ]; then
       case "$status/$err" in
@@ -219,10 +221,11 @@ main() {
           hint=""
           case "$err" in
             # gh's verdict on the archive: its signature, signer or digest. gh words it tersely
-            # (for another signer, only `verifying with issuer "sigstore.dev"`), so this says what
-            # is asked of a signer, and never the way around the check.
+            # (for another signer or a runner that isn't GitHub's, only `verifying with issuer
+            # "sigstore.dev"`), so this says what is asked of a signer, and never the way around
+            # the check.
             *"Verification failed"* | *"verifying with issuer"* | *"certificate identity"* | *"SAN"* | *"digest"*)
-              hint=" An archive is refused unless the release workflow signed it from its release's own tag"
+              hint=" An archive is refused unless the release workflow signed it from its release's own tag, on GitHub's runners"
               if [ "$tag" = "$signed_from_main" ]; then
                 hint="$hint; $tag was signed from the main branch instead, so it stays refused: install a later release"
               fi
@@ -231,7 +234,7 @@ main() {
             # Something between here and GitHub or Sigstore: the archive may well be fine.
             *"HTTP 5"[0-9][0-9]* | *"HTTP 429"* | *"rate limit"* | *"dial tcp"* | *"no such host"* | *"connection refused"* \
               | *"connection reset"* | *"i/o timeout"* | *"TLS handshake"* | *"x509:"* | *"deadline exceeded"* \
-              | *"proxyconnect"* | *"network is unreachable"*)
+              | *"proxyconnect"* | *"network is unreachable"* | *"Sigstore verifier"*)
               hint=" Try again later; if your network blocks gh, TASKMAN_INSECURE_SKIP_ATTESTATION=1 installs on the checksum alone."
               ;;
           esac

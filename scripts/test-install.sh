@@ -276,7 +276,7 @@ check "verifies the attestation with gh" 0 "taskman 1.1.0" attest verified TASKM
 said "Verified its attestation with gh: $repo's release workflow built it."
 check "refuses an archive that fails its attestation" 1 "taskman 1.1.0" attest failed
 said "gh couldn't verify taskman-v1.2.0-$target.tar.gz's attestation (Error: verifying with issuer"
-said "nothing was installed. An archive is refused unless the release workflow signed it from its release's own tag."
+said "nothing was installed. An archive is refused unless the release workflow signed it from its release's own tag, on GitHub's runners."
 not_said "$skip_var"
 check "refuses an archive another workflow built" 1 "taskman 1.1.0" attest signer
 said "failed to verify certificate identity"
@@ -431,7 +431,7 @@ if [ -x "$exe" ]; then
   before="$(inode)"
   check "taskman update refuses an archive that fails its attestation" 1 "$version" upd_attest failed "$work/attestbin:$PATH"
   said "gh couldn't verify taskman-$tag-$target.tar.gz's attestation (Error: verifying with issuer"
-  said "nothing was installed. An archive is refused unless the release workflow signed it from its release's own tag"
+  said "nothing was installed. An archive is refused unless the release workflow signed it from its release's own tag, on GitHub's runners"
   not_said "$skip_var"
   [ "$(inode)" = "$before" ] || { echo "FAIL taskman update replaced the binary after a failed attestation"; failures=$((failures + 1)); }
   check "taskman update installs on the checksum alone with a gh too old to verify" 0 "$version" upd_attest old "$work/attestbin:$PATH"

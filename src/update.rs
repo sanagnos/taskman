@@ -501,7 +501,7 @@ impl Refusal {
         );
         if self.verdict {
             text.push_str(
-                ". An archive is refused unless the release workflow signed it from its release's own tag",
+                ". An archive is refused unless the release workflow signed it from its release's own tag, on GitHub's runners",
             );
             if tag == SIGNED_FROM_MAIN {
                 text.push_str(&format!(
@@ -653,7 +653,8 @@ fn attestation(
 }
 
 /// Whether gh's error is its verdict on the archive: its signature, signer or digest. For a signer
-/// that isn't the one asked for, gh 2.86 says only `verifying with issuer "sigstore.dev"`.
+/// that isn't the one asked for, or a runner that isn't GitHub's, gh 2.86 says only `verifying
+/// with issuer "sigstore.dev"`.
 fn verdict(err: &str) -> bool {
     const VERDICTS: &[&str] =
         &["Verification failed", "verifying with issuer", "certificate identity", "SAN", "digest"];
@@ -676,6 +677,8 @@ fn network_trouble(err: &str) -> bool {
         "deadline exceeded",
         "proxyconnect",
         "network is unreachable",
+        // What gh says with no network at all: it can't fetch Sigstore's trust root.
+        "Sigstore verifier",
     ];
     let server_error = err.match_indices("HTTP 5").any(|(i, _)| {
         let code = &err.as_bytes()[i + 6..];
@@ -1620,6 +1623,7 @@ mod tests {
             "failed to create TUF client: Get \"https://tuf-repo-cdn.sigstore.dev/\": net/http: TLS handshake timeout",
             "Error: Get \"https://api.github.com/\": x509: certificate signed by unknown authority",
             "Error: Get \"https://api.github.com/\": proxyconnect tcp: connection refused",
+            "error creating Sigstore verifier: no valid Sigstore verifiers could be initialized",
         ] {
             assert!(network(err), "{err}");
         }
@@ -1660,7 +1664,7 @@ mod tests {
             refusal("v1.2.3").text("taskman-v1.2.3-x.tar.gz", "v1.2.3"),
             "gh couldn't verify taskman-v1.2.3-x.tar.gz's attestation (Error: verifying with issuer \
              \"sigstore.dev\"); nothing was installed. An archive is refused unless the release \
-             workflow signed it from its release's own tag"
+             workflow signed it from its release's own tag, on GitHub's runners"
         );
         let from_main =
             refusal(SIGNED_FROM_MAIN).text("taskman-v0.1.26-x.tar.gz", SIGNED_FROM_MAIN);
@@ -1668,8 +1672,8 @@ mod tests {
             from_main,
             "gh couldn't verify taskman-v0.1.26-x.tar.gz's attestation (Error: verifying with issuer \
              \"sigstore.dev\"); nothing was installed. An archive is refused unless the release \
-             workflow signed it from its release's own tag; v0.1.26 was signed from the main branch \
-             instead, so it stays refused: install a later release"
+             workflow signed it from its release's own tag, on GitHub's runners; v0.1.26 was signed \
+             from the main branch instead, so it stays refused: install a later release"
         );
         // A verdict named to look like the network still names no way around.
         let both = Refusal { why: "dial tcp".into(), network: true, verdict: true };
@@ -1680,7 +1684,7 @@ mod tests {
         let line = script.lines().find_map(|l| l.trim().strip_prefix("signed_from_main="));
         assert_eq!(line, Some(SIGNED_FROM_MAIN));
         assert!(script.contains(
-            "An archive is refused unless the release workflow signed it from its release's own tag"
+            "An archive is refused unless the release workflow signed it from its release's own tag, on GitHub's runners"
         ));
         assert!(script.contains(
             "was signed from the main branch instead, so it stays refused: install a later release"
@@ -1781,9 +1785,11 @@ mod tests {
         let script = include_str!("../scripts/install.sh");
         for line in [
             r"quote='s/[][\.^$*+?(){}|]/\\&/g'",
-            r#"workflow_re="$(printf '%s' "https://github.com/$repo/.github/workflows/release.yml" | sed "$quote")""#,
+            r#"workflow_re="$(printf '%s' "https://github.com/$repo/.github/workflows/release.yml" \"#,
+            r#"| sed "$quote")""#,
             r#"tag_re="$(printf '%s' "$tag" | sed "$quote")""#,
-            r#"--cert-identity-regex "^$workflow_re@refs/tags/$tag_re\$" --deny-self-hosted-runners 2>&1 >/dev/null)" \"#,
+            r#"--cert-identity-regex "^$workflow_re@refs/tags/$tag_re\$" \"#,
+            r#"--deny-self-hosted-runners 2>&1 >/dev/null)" \"#,
         ] {
             assert!(script.lines().any(|l| l.trim() == line), "install.sh has no line: {line}");
         }
