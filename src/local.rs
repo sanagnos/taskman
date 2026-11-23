@@ -105,17 +105,18 @@ pub fn columns(board: &Path) -> Vec<Column> {
         .collect()
 }
 
-/// The column `name` names: the one whose folder it is exactly, as named or as taskman prints it
-/// (`column_shown`), so a column whose name `untrusted::path` escapes (`~done`, `a\b`, one with a
-/// hidden character) can be typed back as it's shown; else the one it names ignoring case, by
-/// folder or column name, raw or shown. Ok(None) when none does; Err with every one it could mean
+/// The column `name` names: the one whose folder or column name it is exactly, as named or as
+/// taskman prints it (`column_shown`; briefs and errors show column names), so a column whose name
+/// `untrusted::path` escapes (`~done`, `a\b`, one with a hidden character) can be typed back as
+/// it's shown; else the one it names ignoring case, by folder or column name, raw or shown. Ok(None) when none does; Err with every one it could mean
 /// when several do: `todo` beside `Todo` is `todo`, but `TODO` could be either, and folder names
 /// come from the repository, so one can be made to read exactly as another's shown name
 /// (`\x7edone` beside `~done`), where picking either would be a guess.
 fn column<'a>(columns: &'a [Column], name: &str) -> Result<Option<&'a Column>, Vec<&'a Column>> {
     let name = name.trim().trim_matches('/');
     let exactly = |n: &str| n == name || column_shown(n) == name;
-    let found: Vec<&Column> = columns.iter().filter(|c| exactly(&folder(c))).collect();
+    let found: Vec<&Column> =
+        columns.iter().filter(|c| exactly(&c.name) || exactly(&folder(c))).collect();
     let found = if found.is_empty() {
         let named =
             |n: &str| n.eq_ignore_ascii_case(name) || column_shown(n).eq_ignore_ascii_case(name);
@@ -1051,7 +1052,9 @@ mod tests {
         assert_eq!(column_shown("~done"), "\\x7edone");
         // A folder named as another's shown name is a decoy: what's typed could mean either, so
         // the move is refused, naming both as shown, and nothing moves.
-        std::fs::create_dir_all(board.join("\\x7edone")).unwrap();
+        // A backslash is an ordinary character in a Unix folder's name, not a separator.
+        let decoy = ["\\", "x7edone"].concat();
+        std::fs::create_dir_all(board.join(&decoy)).unwrap();
         let cols = columns(&board);
         let mut both: Vec<&str> =
             column(&cols, "\\x7edone").unwrap_err().iter().map(|c| c.name.as_str()).collect();
@@ -1068,7 +1071,7 @@ mod tests {
             )
         );
         assert_eq!(find(&board, "WP-1").unwrap().path, before, "it moved");
-        std::fs::remove_dir_all(board.join("\\x7edone")).unwrap();
+        std::fs::remove_dir_all(board.join(&decoy)).unwrap();
         for name in ["~done", "a\\b", "x\u{200b}y", "In  Progress"] {
             std::fs::remove_dir_all(board.join(name)).unwrap();
         }
@@ -1232,5 +1235,18 @@ mod tests {
         // By column name (a numbered folder's), ignoring case.
         assert_eq!(named("doing"), Ok(Some("02-Doing".into())));
         assert_eq!(named("nowhere"), Ok(None));
+        // A column's name counts exactly as its folder's does, as briefs and errors show names:
+        // `01-todo` and `02-Todo` show as `todo` and `Todo`, each typed back exactly; `02-doing`
+        // and `doing` both show as `doing`, which could mean either.
+        let cols = [col("01-todo"), col("02-Todo"), col("02-doing"), col("doing")];
+        let named = |typed: &str| {
+            column(&cols, typed)
+                .map(|c| c.map(folder))
+                .map_err(|several| several.into_iter().map(folder).collect::<Vec<_>>())
+        };
+        assert_eq!(named("Todo"), Ok(Some("02-Todo".into())));
+        assert_eq!(named("todo"), Ok(Some("01-todo".into())));
+        assert_eq!(named("doing"), Err(vec!["02-doing".into(), "doing".into()]));
+        assert_eq!(named("02-doing"), Ok(Some("02-doing".into())));
     }
 }

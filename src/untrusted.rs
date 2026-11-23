@@ -28,11 +28,28 @@ pub fn labelled_json(mut v: serde_json::Value) -> String {
     // everything else `sift` finds is inside a string, where an escape is valid JSON. A cleaned
     // string gains escapes only for its direction marks, which `sift` always escapes, and reads
     // back the same; a marked path gains them for whatever `clean` would drop.
-    sift(text.chars().map(|c| match c {
-        '\n' => Sifted::Kept(c),
-        c if c.is_control() => Sifted::Dropped(c),
-        c => Sifted::Asked(c),
-    }))
+    let mut parts = Vec::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        parts.push(match c {
+            // serde_json's own escapes (`\u0010`, `\n`, `\\`), only ever inside a string: as
+            // they are, and, as `sift`'s own, not a character what follows is judged beside.
+            '\\' => {
+                let mut escape = String::from(c);
+                if let Some(kind) = chars.next() {
+                    escape.push(kind);
+                    if kind == 'u' {
+                        escape.extend(chars.by_ref().take(4));
+                    }
+                }
+                Sifted::Escape(escape)
+            }
+            '\n' => Sifted::Kept(c),
+            c if c.is_control() => Sifted::Dropped(c),
+            c => Sifted::Asked(c),
+        });
+    }
+    sift(parts.into_iter())
 }
 
 /// The key of the one-entry object `exact` makes. No text from a tracker can pass for one: what
@@ -73,10 +90,10 @@ fn cleaned(v: serde_json::Value) -> serde_json::Value {
 /// letters to Unicode and draw as blanks; and the other characters Unicode marks as drawing
 /// nothing that no text needs (Khmer's U+17B4 and U+17B5, U+2065, the shorthand format controls).
 /// All are known ways to put instructions in text where a person looking at it won't see them.
-/// Direction marks (U+200E, U+200F, U+061C) stay wherever they are, one at a time: they only nudge
-/// the characters beside them, can't reverse text as the embeddings, overrides and isolates can,
-/// and right-to-left text uses them. The conjoining jamo fillers have a job in some text, so they stay
-/// where they have it (`kept`).
+/// Direction marks (U+200E, U+200F, U+061C) stay wherever they are, one at a time (`kept`): they
+/// only nudge the characters beside them, can't reverse text as the embeddings, overrides and
+/// isolates can, and right-to-left text uses them. The conjoining jamo fillers have a job in some
+/// text, so they stay where they have it (`kept`).
 fn hidden(c: char) -> bool {
     matches!(c,
         '\u{AD}' | '\u{34F}' | '\u{180E}' | '\u{200B}' | '\u{2060}'..='\u{2064}'
@@ -111,18 +128,25 @@ fn emoji_base(c: char) -> bool {
     if c.is_ascii() {
         return c.is_ascii_digit() || c == '#' || c == '*';
     }
-    !(c.is_alphabetic() || c.is_whitespace() || c.is_control() || selector(c) || joiner(c))
+    !(c.is_alphabetic()
+        || c.is_whitespace()
+        || c.is_control()
+        || selector(c)
+        || joiner(c)
+        || mark(c))
 }
 
 /// A character a joiner can stand beside: a visible one outside ASCII, as joiners only join emoji
-/// and the letters of scripts that aren't written in ASCII. Not a jamo filler, which may go
-/// itself and leave the joiner beside nothing.
+/// and the letters of scripts that aren't written in ASCII. Not a direction mark or jamo filler,
+/// which draw as nothing and join nothing a person sees: a filler may go itself and leave the
+/// joiner beside nothing, and `--json` escapes every mark, which would leave it raw before one.
 fn joinable(c: char) -> bool {
     !(c.is_ascii()
         || c.is_whitespace()
         || c.is_control()
         || hidden(c)
         || joiner(c)
+        || mark(c)
         || matches!(c, NO_CONSONANT | NO_VOWEL))
 }
 
@@ -158,8 +182,9 @@ fn jamo_vowel(c: char) -> bool {
 /// run of them a whole message. So a selector stays only straight after an emoji, one at a time;
 /// a joiner only between two characters it can join; and a jamo filler only in the syllable it
 /// completes, before a vowel or after a first consonant. A direction mark stays wherever it is,
-/// one at a time (`hidden`): a run of them has no job one doesn't do, and could spell out a
-/// message.
+/// but not straight after another that draws as nothing, a mark included (`job_only`): a run of
+/// them, with or without selectors and joiners between, has no job one doesn't do, and could
+/// spell out a message. Nor is a mark an emoji a selector follows, or a character a joiner joins.
 fn kept(prev: Option<char>, c: char, next: Option<char>) -> bool {
     if selector(c) {
         prev.is_some_and(emoji_base)
@@ -167,7 +192,7 @@ fn kept(prev: Option<char>, c: char, next: Option<char>) -> bool {
         prev.is_some_and(|p| joinable(p) || selector(p))
             && next.is_some_and(|n| joinable(n) && !selector(n))
     } else if mark(c) {
-        !prev.is_some_and(mark)
+        !prev.is_some_and(job_only)
     } else if c == NO_CONSONANT {
         next.is_some_and(jamo_vowel)
     } else if c == NO_VOWEL {
@@ -185,6 +210,8 @@ enum Sifted {
     Dropped(char),
     /// Stays if `kept` says so, where it is.
     Asked(char),
+    /// An escape already written (serde_json's), kept as it is.
+    Escape(String),
 }
 
 /// The characters that stay, in order, and each that goes written as a JSON escape (`\u200b`):
@@ -201,11 +228,16 @@ fn sift(s: impl Iterator<Item = Sifted>) -> String {
     while let Some(c) = chars.next() {
         let next = chars.peek().map(|n| match n {
             Sifted::Kept(n) | Sifted::Dropped(n) | Sifted::Asked(n) => *n,
+            Sifted::Escape(_) => '\\',
         });
         match c {
             Sifted::Kept(c) => {
                 out.push(c);
                 prev = Some(c);
+            }
+            Sifted::Escape(escape) => {
+                out.push_str(&escape);
+                prev = None;
             }
             Sifted::Asked(c)
                 if !mark(c) && (prev.is_some() || !job_only(c)) && kept(prev, c, next) =>
@@ -398,8 +430,27 @@ mod tests {
         assert_eq!(clean(&format!("Fix{run} login")), "Fix\u{200E} login");
         assert_eq!(line(&format!("עברית{run}!")), "עברית\u{200E}!");
         assert_eq!(clean("a\u{200E}\u{200B}\u{200F}b"), "a\u{200E}b");
-        // A joiner beside a mark joins nothing a person sees, but the mark stays, so it does too.
-        assert_eq!(clean("é\u{200D}\u{200E}\u{200F}x"), "é\u{200D}\u{200E}x");
+        // A joiner beside a mark joins nothing a person sees, so it goes, and the mark stays: in
+        // JSON, which escapes every mark, a joiner kept before one would come out raw.
+        assert_eq!(clean("é\u{200D}\u{200E}\u{200F}x"), "é\u{200E}x");
+        let json = labelled_json(serde_json::json!({ "title": "é\u{200D}\u{200E}x" }));
+        assert!(!json.contains('\u{200D}'), "{json:?}");
+        // Nor do marks run with selectors or joiners between them: each pair would add hidden
+        // bits. Only the first mark of such a run stays.
+        let pairs = |p: &str, n| p.repeat(n);
+        assert_eq!(
+            clean(&format!("Fix{} login", pairs("\u{200E}\u{FE0F}", 8))),
+            "Fix\u{200E} login"
+        );
+        assert_eq!(
+            clean(&format!("Fix{}\u{200E} login", pairs("\u{200E}\u{200D}", 8))),
+            "Fix\u{200E} login"
+        );
+        assert_eq!(clean(&format!("{}x", pairs("\u{200F}\u{FE0F}\u{200D}", 8))), "\u{200F}x");
+        assert_eq!(
+            line(&format!("⚠\u{FE0F}\u{200E}{}", pairs("\u{FE0F}\u{200E}", 4))),
+            "⚠\u{FE0F}"
+        );
         // In a path each is escaped, as it draws as nothing; in JSON it's an escape too.
         assert_eq!(path(std::path::Path::new("/src/a\u{200f}b")), "/src/a\\u{200f}b");
         let json = labelled_json(serde_json::json!({ "title": "עברית\u{200F}!" }));
@@ -576,6 +627,16 @@ mod tests {
         assert_eq!(v["tickets"][0]["branch"], "/src/abcd  e\u{a0}\u{200f}");
         assert_eq!(v["/src/abcd  e\u{a0}\u{200f}"], 1);
         assert_eq!(v["note"], NOTE);
+        // Nor after serde_json's own escape of a control character (`\u0010`), whose last digit
+        // would read as a keycap's.
+        let json = labelled_json(
+            serde_json::json!({ "p": exact(std::path::Path::new("\u{10}\u{FE0E}")) }),
+        );
+        assert!(json.contains(r#""p": "\u0010\ufe0e""#), "{json:?}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&json).unwrap()["p"],
+            "\u{10}\u{FE0E}"
+        );
         // A selector after an escape is escaped too, not taken for one after the escape's digit.
         for p in [
             "/a\u{2060}\u{FE0F}",
@@ -721,9 +782,11 @@ mod tests {
     fn nothing_hidden(out: &str) -> Result<(), TestCaseError> {
         prop_assert!(!out.chars().any(hidden), "{out:?}");
         prop_assert_eq!(out_of_place(out), None, "{:?}", out);
-        prop_assert!(
-            !out.chars().zip(out.chars().skip(1)).any(|(a, b)| selector(a) && selector(b))
-        );
+        // No two that draw as nothing side by side, which `out_of_place`, judging each on its
+        // own, can't see: a run of them could spell out a message. Only an emoji's selector
+        // followed by the joiner to its next part (🏳️‍🌈) is two in a row.
+        let together = |(a, b): (char, char)| placed(a) && placed(b) && !(selector(a) && joiner(b));
+        prop_assert!(!out.chars().zip(out.chars().skip(1)).any(together), "{:?}", out);
         Ok(())
     }
 
