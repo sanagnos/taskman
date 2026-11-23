@@ -383,6 +383,12 @@ impl TicketView {
                 self.status.seen = false;
             }
             waits = state == AgentState::Needs;
+            // A turn for the cap's grace (`sleep::FRESH`). Not "done": Claude's idle_prompt
+            // notification reports that too, for a session waiting on input, which isn't a turn.
+            // A turn too short for any poll to see it working counts from its next one.
+            if matches!(state, AgentState::Working | AgentState::Needs) {
+                self.watch.turned = true;
+            }
             self.status.state = state;
             // A repeated "needs" (Claude's reminder after a prompt) keeps the first one's time.
             self.status.waiting_since =
@@ -1457,5 +1463,23 @@ mod tests {
         assert_eq!(tv.status.input.as_deref(), Some("cargo test"));
         tv.hook_reported(rec("working"), false);
         assert_eq!((tv.status.waiting_since, tv.status.input), (None, None));
+    }
+
+    /// The cap's grace (`sleep::FRESH`) lasts until the session's first turn: "done" alone
+    /// isn't one, as Claude's idle_prompt notification reports it for a session waiting on input.
+    #[test]
+    fn a_turn_ends_the_grace_and_a_start_brings_it_back() {
+        let rec = |state: &str| parse(&format!(r#"{{"state":"{state}","ts":1}}"#)).unwrap();
+        let mut tv = TicketView::new(ticket());
+        tv.hook_reported(rec("idle"), false);
+        tv.hook_reported(rec("done"), false);
+        assert!(!tv.watch.turned);
+        tv.hook_reported(rec("working"), false);
+        assert!(tv.watch.turned);
+        let mut tv = TicketView::new(ticket());
+        tv.hook_reported(rec("needs"), false);
+        assert!(tv.watch.turned, "a prompt is part of a turn");
+        tv.watch = Watch::new(Instant::now());
+        assert!(!tv.watch.turned, "each start is fresh");
     }
 }

@@ -1,0 +1,1 @@
+- With "Keep awake at most" set, a session that hasn't had a turn yet, such as one an agent just added, is no longer put to sleep half a minute after it starts: the limit leaves it for its first 10 minutes, so the agent's first message reaches it.
