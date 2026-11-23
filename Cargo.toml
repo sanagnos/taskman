@@ -12,8 +12,9 @@ categories = ["command-line-utilities", "development-tools"]
 rust-version = "1.88"
 include = ["src/**", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE-*"]
 
-# cargo-binstall installs from the release archives: taskman-vX.Y.Z-<target>.tar.gz holding just
-# the binary. Their names must stay stable anyway, as installed copies update from them.
+# cargo-binstall installs from the release archives: taskman-vX.Y.Z-<target>.tar.gz, holding the
+# binary at the top level beside its license files. Their names must stay stable anyway, as
+# installed copies update from them.
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/taskman-v{ version }-{ target }.tar.gz"
 pkg-fmt = "tgz"

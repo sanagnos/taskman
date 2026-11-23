@@ -1,6 +1,7 @@
-# Formatting, lints, tests and a coverage report on every pull request and every push to main,
-# and every week the tests again and a dependency check, so a new runner image or toolchain and
-# new security advisories show up without a pull request. It can be started by hand too, for when
+# Formatting, lints, tests, a coverage report and a check of the workflows themselves on every
+# pull request and every push to main, and every week the tests, the dependency check and the
+# workflow check again, so a new runner image or toolchain and new security advisories show up
+# without a pull request. It can be started by hand too, for when
 # GitHub drops a push event or a run never ends: `gh workflow run ci.yml --ref main`.
 # The release gates (scripts/release.sh, release.yml's ci job) read the conclusion of a run on
 # main for the commit, pushed or started by hand: a job that's only a report mustn't fail it.
@@ -177,3 +178,43 @@ jobs:
             echo "LICENSE-THIRD-PARTY is out of date: run the cargo about command in about.toml and commit the result" >&2
             exit 1
           fi
+
+  # The workflows themselves, as nothing else reads them before GitHub runs them, and a mistake in
+  # release.yml's release job is first run by a release. actionlint checks they're valid (keys,
+  # expressions, runner labels, what a job needs) and runs shellcheck on each `run:` script;
+  # zizmor looks for what makes a workflow unsafe: text from a pull request in a script, actions
+  # not pinned by commit, permissions wider than needed, a token left in .git/config, and, asking
+  # GitHub, actions with a known vulnerability. What they're told to leave is in
+  # .github/actionlint.yaml, with why.
+  workflows:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          # Pinned, as cargo-deny is, so a new release with a new rule can't turn every pull
+          # request red: raise them by hand. shellcheck is the one actionlint runs.
+          tool: zizmor@1.32.0,shellcheck@0.11.0
+      # install-action has no actionlint, so its release archive, by checksum (the linux_amd64
+      # line of the release's actionlint_<version>_checksums.txt): raise both together.
+      - name: Install actionlint
+        env:
+          VERSION: 1.7.12
+          SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          archive="actionlint_${VERSION}_linux_amd64.tar.gz"
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location --retry 3 -O \
+            "https://github.com/rhysd/actionlint/releases/download/v$VERSION/$archive"
+          echo "$SHA256  $archive" | sha256sum -c
+          mkdir -p bin
+          tar xzf "$archive" -C bin actionlint
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: actionlint -shellcheck "$(command -v shellcheck)"
+      # The token only raises the API's rate limit for the audits that ask GitHub.
+      - run: zizmor .github/
+        env:
+          GH_TOKEN: ${{ github.token }}

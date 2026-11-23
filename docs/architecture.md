@@ -162,7 +162,7 @@ One thread draws the screen and feeds every session's terminal; everything slow 
 | `AGENTS.md`, `CLAUDE.md` | the instructions for coding agents; `CLAUDE.md` only imports `AGENTS.md` |
 | `CHANGELOG.md`, `changelog.d/` | what each release changed, its section the release's notes; what's merged but not released, a file per change, which `scripts/release.sh` moves into CHANGELOG.md under the version, so pull requests don't conflict on one file |
 | `CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md` | how to contribute, what taskman trusts and how to report a vulnerability (and verify a release), where to ask for help |
-| `.github/` | the CI and release workflows, issue and pull request templates, Dependabot, `CODEOWNERS` |
+| `.github/` | the CI and release workflows, `actionlint.yaml` (what CI's workflow lint is told to leave, and why), issue and pull request templates, Dependabot, `CODEOWNERS` |
 | `.config/nextest.toml` | cargo-nextest's settings, which CI runs the tests with: a timeout per test, one rerun for the tests in `tests/`, flaky ones reported (failing for `ownership` and `stopping`) and a JUnit report |
 | `deny.toml` | cargo-deny's settings, checked in CI: advisories, bans, the accepted licenses and sources |
 | `clippy.toml` | clippy's settings: the unit tests may unwrap, expect and panic, which `src/main.rs` warns of everywhere else in the binary |

@@ -120,10 +120,10 @@ repo="$(sed -n 's/^ *repo=//p' "$root/scripts/install.sh")"
 
 # A logged-in gh's `gh attestation verify ARCHIVE --repo REPO --cert-identity-regex IDENTITY
 # --deny-self-hosted-runners`, answering as $FAKE_ATTEST says, in gh's own words. The identity is
-# the release workflow run from a version tag or main; the archive must be in a folder only its
+# the release workflow run from a version tag; the archive must be in a folder only its
 # owner can open.
 repo_re="$(printf '%s' "$repo" | sed 's/[.]/\\./g')"
-printf '%s\n' "^https://github\\.com/$repo_re/\\.github/workflows/release\\.yml@refs/(tags/v[0-9]+\\.[0-9]+\\.[0-9]+|heads/main)\$" \
+printf '%s\n' "^https://github\\.com/$repo_re/\\.github/workflows/release\\.yml@refs/tags/v[0-9]+\\.[0-9]+\\.[0-9]+\$" \
   > "$work/identity"
 mkdir -p "$work/attestbin"
 printf '#!/bin/sh\nrepo="%s"\nidentity_file="%s"\n' "$repo" "$work/identity" > "$work/attestbin/gh"

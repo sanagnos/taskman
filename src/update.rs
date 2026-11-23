@@ -26,9 +26,10 @@ const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(60);
 /// The workflow that builds releases, in the repository: the only signer an attestation may have.
 const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
-/// The refs it may have run from, as a regular expression: a version tag, or main, where a release
-/// started by hand ran before it ran on its tag. install.sh's `signer_refs` is the same.
-const SIGNER_REFS: &str = r"refs/(tags/v[0-9]+\.[0-9]+\.[0-9]+|heads/main)";
+/// The refs it may have run from, as a regular expression: a version tag, as a release runs only
+/// on its tag, and the certificate names the ref the workflow ran from. install.sh's `signer_refs`
+/// is the same.
+const SIGNER_REFS: &str = r"refs/tags/v[0-9]+\.[0-9]+\.[0-9]+";
 /// The first release that must have an attestation: one without is refused rather than installed
 /// on its checksum, as a replaced archive would have none. v0.1.0 is the first built on the public
 /// repository; older ones have none and still fall back. install.sh's `require_from` is the same
@@ -427,7 +428,7 @@ fn install(exe: &Path, tag: &str, by: By) -> Result<(), String> {
             "Warning: {SKIP_ATTESTATION} is set, so its attestation wasn't verified: only its checksum was."
         )),
     }
-    // The archive holds just the binary.
+    // The binary is at the archive's top level, beside its license files; only it is taken out.
     let binary = stdout_of(proc::run_with_input(
         Command::new("tar").args(["-xzOf", "-", "taskman"]),
         data,
@@ -575,7 +576,7 @@ fn attest_command(path: &Path) -> Command {
 }
 
 /// What an attestation's certificate must name as its signer: the release workflow, run from a
-/// version tag or main. `--signer-workflow`, which gh won't take with this, accepts any ref, so a
+/// version tag. `--signer-workflow`, which gh won't take with this, accepts any ref, so a
 /// workflow run on any branch could sign.
 fn signer_identity() -> String {
     let workflow = format!("https://github.com/{}/{RELEASE_WORKFLOW}", repo());
@@ -1334,6 +1335,47 @@ mod tests {
                     && environment["name"].as_str() == Some("release")),
             "{environment:?}"
         );
+        // It waits for all three: without `ci` it would publish before CI passed on the commit
+        // (its `if` reads only `needs.version`, so it would still run), without `check` archives
+        // nobody checked. A job or step that may fail and carry on would pass a failure along.
+        let needs: Vec<_> =
+            job["needs"].as_vec().expect("needs").iter().map(Yaml::as_str).collect();
+        assert_eq!(needs, [Some("version"), Some("ci"), Some("check")]);
+        for (name, job) in jobs {
+            let steps = job["steps"].as_vec().expect("steps");
+            for map in steps.iter().chain([job]) {
+                assert!(!yaml_keys(map).contains(&"continue-on-error"), "{name:?}: {map:?}");
+            }
+        }
+        // What it may write: the release, and the attestations with the token that signs them.
+        let mut permissions: Vec<_> = job["permissions"]
+            .as_hash()
+            .expect("the release job's permissions")
+            .iter()
+            .map(|(scope, access)| (scope.as_str(), access.as_str()))
+            .collect();
+        permissions.sort_unstable();
+        let write = Some("write");
+        assert_eq!(
+            permissions,
+            [(Some("attestations"), write), (Some("contents"), write), (Some("id-token"), write)]
+        );
+        // One step attests, in the release job, whenever the repository is public: with another
+        // condition, or none on a private copy, a release would go out unsigned or fail.
+        let attests = |step: &&Yaml| {
+            step["uses"].as_str().is_some_and(|uses| uses.starts_with("actions/attest"))
+        };
+        let attesting: Vec<_> = jobs
+            .iter()
+            .flat_map(|(name, job)| {
+                let steps = job["steps"].as_vec().into_iter().flatten();
+                steps.filter(attests).map(move |step| (name.as_str(), step["if"].as_str()))
+            })
+            .collect();
+        assert_eq!(
+            attesting,
+            [(Some("release"), Some("github.event.repository.visibility == 'public'"))]
+        );
 
         // Everything but the release job, its keys included: the other jobs, run-name, concurrency.
         let mut strings = vec![];
@@ -1620,7 +1662,7 @@ mod tests {
         assert_eq!(cmd.get_program(), "gh");
         let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
         let identity = format!(
-            r"^https://github\.com/{}/\.github/workflows/release\.yml@refs/(tags/v[0-9]+\.[0-9]+\.[0-9]+|heads/main)$",
+            r"^https://github\.com/{}/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$",
             repo().replace('.', r"\.")
         );
         assert_eq!(
