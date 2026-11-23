@@ -273,7 +273,7 @@ pub(crate) fn session_project(
 }
 
 /// Refuses project `p` in a session whose project is another, `own`: sessions run `taskman
-/// status`, `add` and `move` without asking (`hook::settings_json`), so text a session read could
+/// status`, `events`, `add` and `move` without asking (`hook::settings_json`), so text a session read could
 /// otherwise send them to another project's tracker, account, board or repository. The allow-list
 /// can't tell arguments apart (a quoted `--proj""ect` gets past an ask rule), so the line is drawn
 /// here, and only a command that leaves the session's environment, which the CLI's permission

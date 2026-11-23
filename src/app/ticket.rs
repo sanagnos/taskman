@@ -106,6 +106,8 @@ pub struct TicketView {
     fresh_gh: Vec<String>,
     /// When its session's refused clipboard requests were last toasted, by why (`take_clipboards`).
     pub(super) clipboard_warned: Vec<(crate::session::Refused, Instant)>,
+    /// What `taskman events` was last told of it (`App::note_events`).
+    pub(super) feed: super::feed::Feed,
 }
 
 /// A session that ended because its conversation runs as a Claude background session.
@@ -164,6 +166,7 @@ impl TicketView {
             fresh_jira: Vec::new(),
             fresh_gh: Vec::new(),
             clipboard_warned: Vec::new(),
+            feed: Default::default(),
         }
     }
 
@@ -413,6 +416,7 @@ impl TicketView {
     ) -> bool {
         let mut changed = false;
         let res = res.map(|found| {
+            self.feed_pr(&found);
             // Adopt an open PR's branch; forget a remembered branch that's gone. A fork's branch
             // isn't the ticket's: anyone can open a PR that says it closes the issue.
             if let Some(p) = &found.pr

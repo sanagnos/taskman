@@ -12,6 +12,7 @@ mod background;
 mod cli;
 mod close;
 mod coding_cli;
+mod events;
 mod events_log;
 mod git;
 mod github;
@@ -349,6 +350,7 @@ fn main() -> anyhow::Result<()> {
     }
     let command: Option<fn(&[String]) -> i32> = match args.get(1).map(String::as_str) {
         Some("status") => Some(status::run),
+        Some("events") => Some(events::run),
         Some("add") => Some(add::run),
         Some("close") => Some(close::run),
         Some("move") => Some(local::run),
@@ -403,6 +405,12 @@ fn main() -> anyhow::Result<()> {
             );
             cli::out!(
                 "                            project (--project NAME, --json; --help for more)"
+            );
+            cli::out!(
+                "       taskman events       the project's PR and session changes as taskman sees them;"
+            );
+            cli::out!(
+                "                            --follow waits for each new one (--json; --help for more)"
             );
             cli::out!(
                 "       taskman add KEY...   add tickets to taskman without switching to them, with the"

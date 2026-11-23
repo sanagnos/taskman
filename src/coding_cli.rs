@@ -92,6 +92,15 @@ impl Cli {
         }
     }
 
+    /// Whether it has a tool that runs a command in the background and brings each line it prints
+    /// to the session as it comes (Claude Code's Monitor), for `taskman events --follow`.
+    pub fn follows_output(self) -> bool {
+        match self {
+            Cli::Claude => true,
+            Cli::Codex => false,
+        }
+    }
+
     /// Whether it runs commands in a sandbox that blocks network access and writes outside the
     /// session's folder, so a brief says which `taskman` commands to ask to run outside it.
     pub fn sandboxed(self) -> bool {
