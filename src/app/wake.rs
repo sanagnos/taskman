@@ -17,8 +17,9 @@ pub(super) struct Waking {
     id: String,
     req: Request,
     ticket: Id,
-    /// The start the session had when the wake came, if any: a start after it is the wake's.
-    launch: Option<String>,
+    /// The start the session had before the wake, if any: any other start is the wake's. None
+    /// for a session already starting when the wake came, whose own start counts.
+    before: Option<String>,
 }
 
 /// What a wake does for a ticket that can be woken.
@@ -26,7 +27,7 @@ pub(super) struct Waking {
 pub(super) enum Wake {
     /// Its session is dormant (asleep, or not started since taskman did): start it.
     Start,
-    /// It's running already.
+    /// It's running already: answered once its CLI is up.
     Awake,
 }
 
@@ -85,7 +86,7 @@ impl App {
         };
         let tv = &self.tickets[i];
         let ticket: Id = (tv.t.repo.clone(), tv.t.key.clone());
-        let (shown, name) = (tv.t.display().to_string(), self.message_name(i));
+        let (shown, name) = (tv.t.display().to_string(), self.session_name(i));
         // One wake waits per ticket, so the list never outgrows the tickets.
         if self.waking.iter().any(|w| w.ticket == ticket) {
             let msg = format!(
@@ -97,16 +98,20 @@ impl App {
         }
         match wake_answer(tv) {
             Err(e) => add::reply(&id, &req, &[Line::err(format!("{shown} wasn't woken: {e}"))]),
-            Ok(Wake::Awake) => {
+            Ok(Wake::Awake) if tv.status.reported() => {
                 let msg = format!("{shown} is awake; message it as {name}");
                 add::reply(&id, &req, &[Line::ok(msg)]);
             }
+            // Running, but its CLI hasn't reported its start (still loading, or on its trust
+            // question): it can't be messaged yet, so the answer waits for its start as for one
+            // the wake starts.
+            Ok(Wake::Awake) => self.waking.push(Waking { id, req, ticket, before: None }),
             Ok(Wake::Start) => {
-                let launch = tv.launch.clone();
+                let before = tv.launch.clone();
                 let tv = &mut self.tickets[i];
                 // `ensure_selected_session` starts it, once its last CLI is gone.
                 (tv.start, tv.woken) = (true, true);
-                self.waking.push(Waking { id, req, ticket, launch });
+                self.waking.push(Waking { id, req, ticket, before });
                 self.dirty.store(true, Ordering::Relaxed);
             }
         }
@@ -132,8 +137,8 @@ impl App {
             return Some(Line::err(format!("{key} was closed before its session was up")));
         };
         let tv = &self.tickets[i];
-        let (shown, name) = (tv.t.display(), self.message_name(i));
-        let started = tv.session.is_some() && tv.launch != w.launch;
+        let (shown, name) = (tv.t.display(), self.session_name(i));
+        let started = tv.session.is_some() && tv.launch != w.before;
         if started && tv.session.as_ref().is_some_and(|s| s.exited()) {
             return Some(Line::err(format!(
                 "{shown}'s session ended as it started; taskman shows the user why"
@@ -161,13 +166,6 @@ impl App {
             let key = untrusted::line(&w.ticket.1);
             add::reply(&w.id, &w.req, &[Line::err(format!("taskman quit before {key} was up"))]);
         }
-    }
-
-    /// The name ticket `i`'s session is messaged by: the one it started with, else the one it
-    /// will start with.
-    fn message_name(&self, i: usize) -> String {
-        let tv = &self.tickets[i];
-        tv.name.clone().unwrap_or_else(|| self.qualified(&tv.t))
     }
 }
 

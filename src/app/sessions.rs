@@ -152,9 +152,12 @@ impl App {
             && let Some(i) = self.tickets.iter().position(|tv| tv.start && !tv.reaping())
         {
             self.tickets[i].start = false;
-            // Not started yet, or asleep (`taskman wake`).
+            // Not started yet, or asleep (`taskman wake`). Otherwise it started some other way
+            // meanwhile, and a wake's grace goes with the start it asked for.
             if self.tickets[i].dormant() {
                 self.start_session(i);
+            } else {
+                self.tickets[i].woken = false;
             }
         }
     }

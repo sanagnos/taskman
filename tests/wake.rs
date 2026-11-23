@@ -41,9 +41,14 @@ fn a_session_wakes_another_tickets_session() {
     assert!(ok, "{out}\n{err}");
     assert!(out.contains("ENG-2 is awake; message it as ENG-2"), "{out}");
     assert!(started("ENG-2"));
-    // The view stays on ENG-1's session.
+    // The view stays on ENG-1's session: what's typed now goes to it, not to ENG-2's.
     let screen = tui.text();
     assert!(screen.contains("stub ready for ENG-1") && !screen.contains("stub ready for ENG-2"));
+    tui.send(b"still here\r");
+    tui.wait_text("got: still here");
+    let typed = |key: &str| std::fs::read_to_string(dir.join(format!("{key}.input")));
+    assert_eq!(typed("ENG-1").unwrap(), "still here\n");
+    assert!(typed("ENG-2").is_err(), "nothing reached ENG-2's session");
 
     tui.step("again: it's awake already");
     let (ok, out, err) = run(&dir, &repo, "ENG-1", &["2"]);

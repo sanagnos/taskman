@@ -1,4 +1,6 @@
 use super::*;
+use crate::app::test_support::ticket;
+use crate::store::Ticket;
 use crate::util;
 
 // ---- `taskman wake` through the inbox ------------------------------------------------------
@@ -89,6 +91,65 @@ fn a_wake_starts_a_sleeping_ticket_and_answers_once_it_is_up() {
     assert!(app.waking.is_empty());
 }
 
+/// Running isn't enough: a session whose CLI hasn't reported its start (still loading, or on its
+/// trust question) can't be messaged yet, so the answer waits for its start.
+#[test]
+fn a_running_session_is_awake_once_its_cli_reports() {
+    let mut app = acme_app();
+    started(&mut app, "ENG-53", "launch-1");
+    wake("0001", "ENG-53", 20);
+    app.take_inbox();
+    assert!(!replied("0001") && app.waking.len() == 1);
+    assert!(!app.tickets[index(&app, "ENG-53")].start, "nothing to start");
+    session_start(&mut app, "ENG-53", "launch-1");
+    app.take_inbox();
+    assert_eq!(reply("0001"), [add::Line::ok("ENG-53 is awake; message it as ENG-53")]);
+    assert!(app.waking.is_empty());
+}
+
+/// The name a woken session is messaged by is the one it starts with now, not the one it slept
+/// with: another project has opened the same key meanwhile.
+#[test]
+fn a_wake_names_the_session_as_it_will_start() {
+    let mut app = acme_app();
+    asleep(&mut app, "ENG-53");
+    let i = index(&app, "ENG-53");
+    app.tickets[i].name = Some("ENG-53".into());
+    let other = Ticket { key: "ENG-53".into(), repo: "/src/notes".into(), ..ticket() };
+    app.tickets.push(crate::app::ticket::TicketView::new(other));
+    wake("0001", "ENG-53", 1);
+    app.take_inbox();
+    let [line] = &reply("0001")[..] else { panic!() };
+    assert!(line.text.contains("message it as acme/ENG-53"), "{line:?}");
+}
+
+/// A ticket started some other way before the wake's start came round (the user selected it)
+/// doesn't keep the wake's grace for a later, ordinary start.
+#[test]
+fn a_wakes_grace_goes_with_the_start_it_asked_for() {
+    let mut app = acme_app();
+    lay_out(&mut app, 80, 24);
+    // The selected ticket runs, so `ensure_selected_session` starts no CLI of its own.
+    let selected = app.tickets[app.sel].t.key.clone();
+    assert_ne!(selected, "ENG-53");
+    attach(&mut app, &selected, "");
+    asleep(&mut app, "ENG-53");
+    wake("0001", "ENG-53", 20);
+    app.take_inbox();
+    let i = index(&app, "ENG-53");
+    assert!(app.tickets[i].start && app.tickets[i].woken);
+    started(&mut app, "ENG-53", "launch-2");
+    (app.tickets[i].start, app.tickets[i].woken) = (true, true);
+    app.ensure_selected_session();
+    assert!(!app.tickets[i].start && !app.tickets[i].woken);
+    // So its next start, resuming its conversation, is an ordinary one.
+    app.tickets[i].t.session_id = Some("sid-53".into());
+    crate::store::Cli::Claude.leave_transcript("sid-53");
+    let woken = app.tickets[i].woken;
+    let (_, watch) = app.starting(i, "ENG-53", "launch-3", std::time::Instant::now(), woken);
+    assert!(!watch.fresh, "resumed, and not woken");
+}
+
 /// The start a wake asks for gets the keep-awake grace though it resumes its conversation, and
 /// only that start.
 #[test]
@@ -107,7 +168,8 @@ fn a_woken_start_gets_the_grace() {
 #[test]
 fn a_wake_is_answered_at_once_when_there_is_nothing_to_start() {
     let mut app = acme_app();
-    attach(&mut app, "ENG-52", "");
+    started(&mut app, "ENG-52", "launch-1");
+    session_start(&mut app, "ENG-52", "launch-1");
     for (id, key, ok, says) in [
         ("0001", "ENG-52", true, "ENG-52 is awake; message it as ENG-52"),
         ("0002", "ENG-61", false, "can't be messaged"),
