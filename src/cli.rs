@@ -254,7 +254,9 @@ pub(crate) fn context(me: Option<&Ticket>, saved: &Saved, here: Option<&Here>) -
 /// (auto mode's classifier, a mode that skips prompts, a rule of the user's) or refuses it
 /// (`dontAsk`); Codex runs it, asks or refuses as its sandbox, approval policy and rules say. The
 /// refusal says only that much, as taskman can't tell which applies; the guide says more.
-pub(crate) const WIDER: &str = "If the user asked for it, run the same command with `env -u TASKMAN_REPO` in front; the session's permission settings decide whether it runs, asks the user or is refused";
+pub(crate) const WIDER: &str = "If the user asked for it, run the same command with `env -u \
+     TASKMAN_REPO` in front; the session's permission settings decide whether it runs, asks the \
+     user or is refused";
 
 /// The project of the session taskman started that the command runs in, by `TASKMAN_REPO`; None
 /// outside one.
@@ -954,7 +956,9 @@ pub(crate) mod tests {
         let own = session_project(&s, Some(Path::new("/src/acme-web"))).unwrap();
         assert_eq!(own, Some(0));
         assert_eq!(confine(0, own, &s), Ok(()));
-        let refusal = "this session works in acme-web: a session keeps to its own project. If the user asked for it, run the same command with `env -u TASKMAN_REPO` in front; the session's permission settings decide whether it runs, asks the user or is refused.";
+        let refusal = "this session works in acme-web: a session keeps to its own project. If the \
+            user asked for it, run the same command with `env -u TASKMAN_REPO` in front; the \
+            session's permission settings decide whether it runs, asks the user or is refused.";
         // The refusal names the session's project only, whichever other was meant.
         assert_eq!(confine(1, own, &s).unwrap_err(), refusal);
         assert_eq!(confine(2, own, &s).unwrap_err(), refusal);

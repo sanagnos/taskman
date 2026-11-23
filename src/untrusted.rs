@@ -26,8 +26,9 @@ pub fn labelled_json(mut v: serde_json::Value) -> String {
     let text = serde_json::to_string_pretty(&cleaned(v)).unwrap_or_default();
     // serde_json escapes C0 inside strings, so a newline here is its own, between values, and
     // everything else `sift` finds is inside a string, where an escape is valid JSON. A cleaned
-    // string gains escapes only for its direction marks, which `sift` always escapes, and reads
-    // back the same; a marked path gains them for whatever `clean` would drop.
+    // string gains escapes for its direction marks, which `sift` always escapes, and for a
+    // character that draws as nothing right after an escape (a jamo filler after `\n`, say); a
+    // marked path gains them for whatever `clean` would drop. Each reads back as it was.
     let mut parts = Vec::new();
     let mut chars = text.chars();
     while let Some(c) = chars.next() {
@@ -194,7 +195,9 @@ fn kept(prev: Option<char>, c: char, next: Option<char>) -> bool {
     } else if mark(c) {
         !prev.is_some_and(job_only)
     } else if c == NO_CONSONANT {
-        next.is_some_and(jamo_vowel)
+        // Not after a mark or selector, which would make two that draw as nothing in a row; after
+        // a vowel filler it starts the next syllable.
+        next.is_some_and(jamo_vowel) && !prev.is_some_and(|p| mark(p) || selector(p))
     } else if c == NO_VOWEL {
         prev.is_some_and(jamo_consonant)
     } else {
@@ -467,6 +470,23 @@ mod tests {
         }
         assert_eq!(clean("Fix\u{3164}\u{FFA0}\u{115F}\u{1160} login"), "Fix login");
         assert_eq!(clean("a\u{115F}b\u{1160}c"), "abc");
+        // Nor after a mark or selector, where it would make two that draw as nothing in a row;
+        // after a vowel filler it starts the next syllable, as old Korean text writes them.
+        for (s, kept) in [
+            ("\u{200E}\u{115F}\u{1161}", "\u{200E}\u{1161}"),
+            ("\u{200F}\u{115F}\u{1161}", "\u{200F}\u{1161}"),
+            ("\u{61C}\u{115F}\u{1161}", "\u{61C}\u{1161}"),
+            ("⚠\u{FE0F}\u{115F}\u{1161}", "⚠\u{FE0F}\u{1161}"),
+            ("⚠\u{FE0E}\u{115F}\u{1161}", "⚠\u{FE0E}\u{1161}"),
+            ("\u{1100}\u{1160}\u{115F}\u{1161}", "\u{1100}\u{1160}\u{115F}\u{1161}"),
+        ] {
+            assert_eq!(clean(s), kept, "{s:?}");
+            assert_eq!(line(s), kept, "{s:?}");
+        }
+        let p = "1\u{FE0E}\u{115F}\u{1161}";
+        let json = labelled_json(serde_json::json!({ "p": exact(std::path::Path::new(p)) }));
+        assert!(json.contains("1\u{FE0E}\\u115f\u{1161}"), "{json:?}");
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&json).unwrap()["p"], p);
         // A syllable of two fillers is a blank: neither completes anything.
         assert_eq!(clean("한\u{115F}\u{1160}글"), "한글");
         let run: String =
@@ -725,8 +745,9 @@ mod tests {
                 "\u{202e}", "\u{202c}", "\u{2066}", "\u{2069}",
                 "\u{e0001}", "\u{e0020}", "\u{e007f}", "\u{200b}", "\u{200c}", "\u{200d}", "\u{2060}",
                 "\u{feff}", "\u{fe0e}", "\u{fe0f}", "\u{fe0f}\u{fe0f}", "\u{fe00}", "\u{e0100}", "⚠", "👩", "1",
-                "\u{200e}", "\u{200f}", "\u{61c}", "\u{200f}\u{200e}", "א", "ب", "\u{115f}", "\u{1160}",
-                "\u{3164}", "\u{ffa0}", "\u{1100}", "\u{1161}", "\u{115f}\u{1160}", "\\", "\\x", "\\u{",
+                "\u{200e}", "\u{200f}", "\u{61c}", "\u{200f}\u{200e}", "א", "ب",
+                "\u{115f}", "\u{1160}", "\u{3164}", "\u{ffa0}", "\u{1100}", "\u{1161}",
+                "\u{115f}\u{1160}", "\\", "\\x", "\\u{",
                 "\u{17b4}", "\u{2065}", "\u{1bca0}", "~", "~/", "+", "!", "١", "/home/tester/",
                 "\u{5b0}", "\u{64b}", "\u{610}", "\u{fff0}", "\u{e0080}", "\u{e01f0}",
             ])
@@ -785,7 +806,13 @@ mod tests {
         // No two that draw as nothing side by side, which `out_of_place`, judging each on its
         // own, can't see: a run of them could spell out a message. Only an emoji's selector
         // followed by the joiner to its next part (🏳️‍🌈) is two in a row.
-        let together = |(a, b): (char, char)| placed(a) && placed(b) && !(selector(a) && joiner(b));
+        // Nor a syllable lacking its vowel before one lacking its first consonant (`ᄀᅠᅟᅡ`).
+        let together = |(a, b): (char, char)| {
+            placed(a)
+                && placed(b)
+                && !(selector(a) && joiner(b))
+                && !(a == NO_VOWEL && b == NO_CONSONANT)
+        };
         prop_assert!(!out.chars().zip(out.chars().skip(1)).any(together), "{:?}", out);
         Ok(())
     }

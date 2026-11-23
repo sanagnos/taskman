@@ -91,14 +91,11 @@ impl Gone {
 }
 
 /// The board's columns, for a brief. They are folder names from the repository, so each is shown
-/// as a path is (`local::column_shown`): on one line, nothing hidden, and named as `taskman move`
-/// takes it. A brief is the session's system prompt.
+/// as a path is (`local::column_labels`): on one line, nothing hidden, and named as `taskman move`
+/// takes it, a folder and `/` where two columns share a name. A brief is the session's system
+/// prompt.
 fn column_names(board: &Path) -> String {
-    local::columns(board)
-        .iter()
-        .map(|c| local::column_shown(&c.name))
-        .collect::<Vec<_>>()
-        .join(", ")
+    local::column_labels(&local::columns(board)).join(", ")
 }
 
 /// What a Local files ticket's brief says about its file: where the board is, and that only the
