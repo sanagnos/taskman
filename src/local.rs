@@ -146,8 +146,9 @@ fn column<'a>(columns: &'a [Column], name: &str) -> Result<Option<&'a Column>, V
 /// `/` when nothing in it hides but backslashes, which stay single there (`a\b/` beside `a\\b`,
 /// `a\nb/` beside a folder holding a line break). So `02-doing/` and `doing/` where both are
 /// named `doing`, and `~done/` beside a folder named `\x7edone`, which is what `~done` shows as.
-/// None where no name does (a zero-width space in a name beside a folder named as that shows, or
-/// a name starting with a space, which isn't listed by a name that reaches it): `columns_listed`
+/// None where none of the three does: a zero-width space in a name beside a folder named as that
+/// shows, or a name starting with a space. Such a column may still be reached another way (its
+/// raw name, hidden character and all; `/ doing/`), but no name listed here does: `columns_listed`
 /// says so, which fails safe, as `column` never picks one of several.
 pub fn column_labels(columns: &[Column]) -> Vec<Option<String>> {
     columns
@@ -167,10 +168,11 @@ pub fn column_labels(columns: &[Column]) -> Vec<Option<String>> {
         .collect()
 }
 
-/// What `UNNAMED` says, after a column's folder, of a column no name reaches alone. The `/` in it
-/// is in no folder's name, so typed back the whole never names a column, and no folder can be
-/// named to read as this note.
-const UNNAMED: &str = "(no name reaches it/rename the folder)";
+/// The note after a column's folder where no name `column_labels` tries reaches it alone. No folder
+/// holds it byte for byte, as no folder's name holds a `/`, so typed back it names no column. A
+/// folder can still be named to look like it (a look-alike slash, U+2215 or U+FF0F, shows as
+/// itself), but typed back such a name reaches only that folder.
+const UNNAMED: &str = "(no name listed here reaches it/rename the folder)";
 
 /// Each of `columns` as a message or brief lists it: its label (`column_labels`), or its folder's
 /// shown name and `UNNAMED`.
@@ -1337,9 +1339,10 @@ mod tests {
         // Briefs and errors list each so it can be typed back.
         assert_eq!(columns_listed(&cols), ["todo", "Todo", "02-doing/", "doing/"]);
         // Each label reaches its own column, the folder pairs whose names show as each other's
-        // included, and only the columns no name reaches alone have none. A folder named like the
-        // note `columns_listed` adds for those can't fake it: the note holds a `/`.
-        let note = "(no name reaches it/rename the folder)";
+        // included, and only the columns none of the tried names reaches alone have none. A folder
+        // named like the note `columns_listed` adds for those isn't it byte for byte: the note
+        // holds a `/`, so typed back it names no column.
+        let note = "(no name listed here reaches it/rename the folder)";
         let boards: [(&[&str], &[&str]); 10] = [
             (&["~done", "\\x7edone"], &[]),
             (&["a\\b", "a\\\\b"], &[]),
@@ -1350,7 +1353,7 @@ mod tests {
             (&["x\u{200b}y", "x\\u{200b}y"], &["x\u{200b}y"]),
             (&[" doing", "todo"], &[" doing"]),
             (&[" doing", "doing (can't be named: rename the folder)"], &[" doing"]),
-            (&["todo", "todo (no name reaches it"], &[]),
+            (&["todo", "todo (no name listed here reaches it"], &[]),
         ];
         for (folders, unnamed) in boards {
             let cols: Vec<Column> = folders.iter().map(|d| col(d)).collect();
@@ -1390,8 +1393,8 @@ mod tests {
             [format!(" doing {note}"), "doing (can't be named: rename the folder)".to_string()]
         );
         assert_eq!(
-            listed(&["todo", "todo (no name reaches it"]),
-            ["todo", "todo (no name reaches it"]
+            listed(&["todo", "todo (no name listed here reaches it"]),
+            ["todo", "todo (no name listed here reaches it"]
         );
     }
 }
