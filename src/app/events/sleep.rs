@@ -308,7 +308,14 @@ fn past_the_cap_a_new_conversation_waits_for_its_first_turn() {
             Cli::Claude.leave_transcript("sid-53");
         }
         let start = Instant::now();
-        app.tickets[i].watch = app.start_watch(i, start);
+        // What `start_session` starts it with: the watch is fresh just when the command doesn't
+        // resume.
+        let (cmd, watch) = app.starting(i, "ENG-53", "launch-1", start);
+        let argv: Vec<_> =
+            cmd.get_argv().iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(argv.iter().any(|a| a == "--resume"), resumes, "{argv:?}");
+        assert_eq!(watch.fresh, !resumes);
+        app.tickets[i].watch = watch;
         app.tickets[i].status.state = AgentState::Idle;
         (app, i, start)
     };

@@ -124,8 +124,8 @@ pub(super) struct Due {
 
 /// The sessions to put to sleep: the restful ones unselected for `after`, and, past `cap`
 /// sessions running, the longest-unselected restful ones until it's met, leaving out a fresh one
-/// for `FRESH` after it started or was last selected. And the ended ones to let go of, once seen and then unselected
-/// for `after`.
+/// for `FRESH` after it started or was last selected. And the ended ones to let go of, once seen
+/// and then unselected for `after`.
 pub(super) fn due(facts: &[Facts], after: Option<Duration>, cap: Option<usize>) -> Due {
     let long = |f: &Facts| after.is_some_and(|a| f.idle >= a);
     let release = (0..facts.len()).filter(|&i| facts[i].spent() && long(&facts[i])).collect();
@@ -242,12 +242,6 @@ impl App {
                 None => self.put_to_sleep(i),
             }
         }
-    }
-
-    /// What to watch of session `i`, starting at `now`: fresh when it starts a new conversation
-    /// rather than resuming one (`App::resume_id`).
-    pub(super) fn start_watch(&self, i: usize, now: Instant) -> Watch {
-        Watch::new(now, self.resume_id(&self.tickets[i].t).is_none())
     }
 
     fn facts(&self, now: Instant) -> Vec<Facts> {
