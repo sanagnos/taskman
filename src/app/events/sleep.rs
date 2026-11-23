@@ -1,5 +1,7 @@
 use super::*;
 use crate::app::sleep::Scan;
+use crate::status_file::parse;
+use crate::store::Cli;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
@@ -281,4 +283,55 @@ fn a_look_that_panics_ends_and_decides_nothing() {
     assert!(app.tickets[i].watch.scanning);
     settle_until(&mut app, |app| !app.tickets[i].watch.scanning);
     assert!(app.tickets[i].session.is_some() && !asleep(&app, "ENG-53"));
+}
+
+/// Past the cap, a ticket that started a new conversation (one an agent just added) waits for its
+/// first message: the cap leaves it for 10 minutes after it starts or was last selected, until
+/// its first turn. One that resumed its conversation sleeps once settled, as before.
+#[test]
+fn past_the_cap_a_new_conversation_waits_for_its_first_turn() {
+    let rec = |state: &str| parse(&format!(r#"{{"state":"{state}","ts":1}}"#)).unwrap();
+    // ENG-52 selected and ENG-61 working fill the cap; ENG-53 starts at `start`.
+    let setup = |resumes: bool| {
+        let mut app = acme_app();
+        lay_out(&mut app, 80, 24);
+        app.config.sleep_after = None;
+        app.config.max_awake = Some(2);
+        for key in ["ENG-52", "ENG-61", "ENG-53"] {
+            attach(&mut app, key, SCREEN);
+        }
+        let working = index(&app, "ENG-61");
+        app.tickets[working].status.state = AgentState::Working;
+        let i = index(&app, "ENG-53");
+        if resumes {
+            app.tickets[i].t.session_id = Some("sid-53".into());
+            Cli::Claude.leave_transcript("sid-53");
+        }
+        let start = Instant::now();
+        app.tickets[i].watch = app.start_watch(i, start);
+        app.tickets[i].status.state = AgentState::Idle;
+        (app, i, start)
+    };
+
+    let (mut app, _, start) = setup(false);
+    app.sleep_tick(start + minutes(1));
+    assert!(!asleep(&app, "ENG-53"), "settled, and left for now");
+    app.sleep_tick(start + minutes(9));
+    assert!(!asleep(&app, "ENG-53"));
+    app.sleep_tick(start + minutes(10));
+    assert!(asleep(&app, "ENG-53"), "not for good");
+
+    // Its first turn ends the wait at once.
+    let (mut app, i, start) = setup(false);
+    app.tickets[i].hook_reported(rec("working"), false);
+    app.tickets[i].hook_reported(rec("done"), false);
+    app.sleep_tick(start + minutes(1));
+    assert!(asleep(&app, "ENG-53"));
+
+    // Resumed (taskman started again, a sleeping ticket selected): no wait.
+    let (mut app, _, start) = setup(true);
+    app.sleep_tick(start + Duration::from_secs(29));
+    assert!(!asleep(&app, "ENG-53"), "not settled yet");
+    app.sleep_tick(start + Duration::from_secs(31));
+    assert!(asleep(&app, "ENG-53"));
 }

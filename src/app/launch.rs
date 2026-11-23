@@ -287,13 +287,18 @@ fn file_changes(cli: Cli) -> String {
 }
 
 impl App {
+    /// The conversation `t`'s next start resumes: its own, when the CLI still has its transcript
+    /// and no other ticket holds it. None starts a new one.
+    pub(super) fn resume_id<'a>(&self, t: &'a Ticket) -> Option<&'a str> {
+        t.session_id.as_deref().filter(|sid| t.cli.has_conversation(sid)).filter(|sid| {
+            session_ids::claim(self.tickets.iter().map(|tv| &tv.t), t, sid) == Claim::Adopt
+        })
+    }
+
     /// The command that starts `t`'s session in the pane, named `session`, as start `start`
     /// (`launch_id`).
     pub(super) fn build_command(&self, t: &Ticket, session: &str, start: &str) -> CommandBuilder {
-        let resume =
-            t.session_id.as_deref().filter(|sid| t.cli.has_conversation(sid)).filter(|sid| {
-                session_ids::claim(self.tickets.iter().map(|tv| &tv.t), t, sid) == Claim::Adopt
-            });
+        let resume = self.resume_id(t);
         let launch = self.launch(t, session, resume);
         let mut cmd = CommandBuilder::new(&launch.program);
         cmd.args(&launch.args);

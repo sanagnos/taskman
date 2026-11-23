@@ -160,7 +160,7 @@ impl TicketView {
             last_screen: None,
             switched: None,
             asleep: false,
-            watch: Watch::new(Instant::now()),
+            watch: Watch::new(Instant::now(), false),
             fresh_jira: Vec::new(),
             fresh_gh: Vec::new(),
             clipboard_warned: Vec::new(),
@@ -383,11 +383,11 @@ impl TicketView {
                 self.status.seen = false;
             }
             waits = state == AgentState::Needs;
-            // A turn for the cap's grace (`sleep::FRESH`). Not "done": Claude's idle_prompt
+            // A turn ends the cap's grace (`sleep::FRESH`). Not "done": Claude's idle_prompt
             // notification reports that too, for a session waiting on input, which isn't a turn.
             // A turn too short for any poll to see it working counts from its next one.
             if matches!(state, AgentState::Working | AgentState::Needs) {
-                self.watch.turned = true;
+                self.watch.fresh = false;
             }
             self.status.state = state;
             // A repeated "needs" (Claude's reminder after a prompt) keeps the first one's time.
@@ -1465,21 +1465,33 @@ mod tests {
         assert_eq!((tv.status.waiting_since, tv.status.input), (None, None));
     }
 
-    /// The cap's grace (`sleep::FRESH`) lasts until the session's first turn: "done" alone
-    /// isn't one, as Claude's idle_prompt notification reports it for a session waiting on input.
+    /// The cap's grace (`sleep::FRESH`) lasts until the session's first turn, whichever hook
+    /// reports it. "done" alone isn't one, as Claude's idle_prompt notification reports it for a
+    /// session waiting on input, nor is a session that ended.
     #[test]
-    fn a_turn_ends_the_grace_and_a_start_brings_it_back() {
+    fn a_turn_ends_the_grace() {
         let rec = |state: &str| parse(&format!(r#"{{"state":"{state}","ts":1}}"#)).unwrap();
-        let mut tv = TicketView::new(ticket());
-        tv.hook_reported(rec("idle"), false);
-        tv.hook_reported(rec("done"), false);
-        assert!(!tv.watch.turned);
+        let fresh = |t: Ticket| {
+            let mut tv = TicketView::new(t);
+            tv.watch = Watch::new(Instant::now(), true);
+            tv
+        };
+        let mut tv = fresh(ticket());
+        for state in ["idle", "done", "ended"] {
+            tv.hook_reported(rec(state), false);
+            assert!(tv.watch.fresh, "{state}");
+        }
         tv.hook_reported(rec("working"), false);
-        assert!(tv.watch.turned);
-        let mut tv = TicketView::new(ticket());
+        assert!(!tv.watch.fresh);
+        let mut tv = fresh(ticket());
         tv.hook_reported(rec("needs"), false);
-        assert!(tv.watch.turned, "a prompt is part of a turn");
-        tv.watch = Watch::new(Instant::now());
-        assert!(!tv.watch.turned, "each start is fresh");
+        assert!(!tv.watch.fresh, "a prompt is part of a turn");
+        // Codex's reviewer: a permission request shows as working, which is a turn too.
+        let mut tv = fresh(Ticket { cli: store::Cli::Codex, ..ticket() });
+        let permission =
+            parse(r#"{"state":"needs","reason":"permission","message":"","ts":1}"#).unwrap();
+        tv.hook_reported(permission, false);
+        assert_eq!(tv.status.state, AgentState::Working);
+        assert!(!tv.watch.fresh);
     }
 }

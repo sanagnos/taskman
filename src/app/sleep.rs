@@ -18,11 +18,13 @@ const SETTLE: Duration = Duration::from_secs(30);
 /// than twice this (`recheck`).
 const RECHECK: Duration = Duration::from_secs(60);
 
-/// How long the cap leaves alone a session that hasn't had a turn since it started: one an agent
-/// just added or started waits for the agent's first message, and without this it would be the
-/// first to go whenever the rest are working or agents, 30 s after it started (`SETTLE`). Bounded,
-/// not until its first turn: a session nobody ever writes to would otherwise hold its memory for
-/// good, which is what the cap is for. The time setting, 15 minutes at the least, isn't affected.
+/// How long after it starts or was last selected the cap leaves alone a session that started a new
+/// conversation and hasn't had a turn since (`Watch::fresh`): a ticket an agent just added waits
+/// for the agent's first message, and without this it would be the first to go whenever the rest
+/// are working or agents, 30 s after it started (`SETTLE`). Bounded, not until its first turn: a
+/// session nobody ever writes to would otherwise hold its memory for good, which is what the cap is
+/// for. A session that resumes its conversation (taskman starting again, a sleeping ticket
+/// selected) gets none, or every start would keep all of a project's tickets up for this long.
 const FRESH: Duration = Duration::from_secs(10 * 60);
 
 /// What the Settings presets for sleeping offer, in seconds; None never.
@@ -44,20 +46,15 @@ pub(super) struct Watch {
     pub(super) scanning: bool,
     /// When the process tree last showed work running.
     pub(super) busy: Option<Instant>,
-    /// Its hooks have reported a turn (working or needs you) since it started.
-    pub(super) turned: bool,
+    /// It started a new conversation, not resuming one, and its hooks haven't reported a turn
+    /// (working or needs you) since: the cap leaves it for `FRESH`.
+    pub(super) fresh: bool,
 }
 
 impl Watch {
-    pub(super) fn new(now: Instant) -> Self {
-        Self {
-            selected: now,
-            started: now,
-            baseline: None,
-            scanning: false,
-            busy: None,
-            turned: false,
-        }
+    /// A session started at `now`; `fresh` if it starts a new conversation.
+    pub(super) fn new(now: Instant, fresh: bool) -> Self {
+        Self { selected: now, started: now, baseline: None, scanning: false, busy: None, fresh }
     }
 }
 
@@ -91,7 +88,7 @@ pub(super) struct Facts {
     pub seen: bool,
     /// Since it started or was last selected.
     pub idle: Duration,
-    /// It hasn't had a turn since it started (`Watch::turned`).
+    /// It started a new conversation and hasn't had a turn since (`Watch::fresh`).
     pub fresh: bool,
 }
 
@@ -126,8 +123,8 @@ pub(super) struct Due {
 }
 
 /// The sessions to put to sleep: the restful ones unselected for `after`, and, past `cap`
-/// sessions running, the longest-unselected restful ones until it's met, leaving out one with no
-/// turn yet for its first `FRESH`. And the ended ones to let go of, once seen and then unselected
+/// sessions running, the longest-unselected restful ones until it's met, leaving out a fresh one
+/// for `FRESH` after it started or was last selected. And the ended ones to let go of, once seen and then unselected
 /// for `after`.
 pub(super) fn due(facts: &[Facts], after: Option<Duration>, cap: Option<usize>) -> Due {
     let long = |f: &Facts| after.is_some_and(|a| f.idle >= a);
@@ -247,6 +244,12 @@ impl App {
         }
     }
 
+    /// What to watch of session `i`, starting at `now`: fresh when it starts a new conversation
+    /// rather than resuming one (`App::resume_id`).
+    pub(super) fn start_watch(&self, i: usize, now: Instant) -> Watch {
+        Watch::new(now, self.resume_id(&self.tickets[i].t).is_none())
+    }
+
     fn facts(&self, now: Instant) -> Vec<Facts> {
         self.tickets
             .iter()
@@ -263,7 +266,7 @@ impl App {
                     && tv.status.state == AgentState::Exited,
                 seen: tv.status.seen,
                 idle: now.saturating_duration_since(tv.watch.selected),
-                fresh: !tv.watch.turned,
+                fresh: tv.watch.fresh,
             })
             .collect()
     }
