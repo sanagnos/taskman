@@ -1,7 +1,8 @@
 //! The hooks' status files when a SessionEnd hook fires late: a CLI runs it on the hangup that
 //! stops it, after taskman has removed the file. Closed and added again, the ticket doesn't take
 //! the old session's end for its own, or resume the old conversation; restarted (`prefix R`), the
-//! new session doesn't show as ended.
+//! new session doesn't show as ended. And the settings a session starts with keep its file
+//! tools off taskman's own files.
 
 mod common;
 
@@ -384,4 +385,28 @@ fn a_slow_log_doesnt_claim_the_default_branchs_commits() {
     let (log, _) = stop_with_git(&dir, &repo, start, &stub);
     assert!(log.contains(r#""message":"Done.""#), "{log}");
     assert!(!log.contains("commits"), "the rebase's commit isn't the turn's: {log}");
+}
+
+/// The settings a session starts with keep its file tools off taskman's own files, where the
+/// test's environment put them: no edits to the state folder, the config file or the tokens
+/// folder beside it, and no reads of the tokens. Claude takes `//` as the root.
+#[test]
+fn a_sessions_file_tools_keep_off_taskmans_files() {
+    let dir = scratch_dir("hooks-guarded");
+    let (_repo, mut tui) = start("hooks-guarded", &dir);
+    tui.wait_text("stub ready for ENG-1");
+    let args = args(&dir, "ENG-1");
+    let at = args.iter().position(|a| a == "--settings").expect("no --settings");
+    let settings: serde_json::Value = serde_json::from_str(&args[at + 1]).unwrap();
+    let deny = settings["permissions"]["deny"].as_array().unwrap();
+    let d = dir.display();
+    for rule in [
+        format!("Edit(/{d}/state/taskman/**)"),
+        format!("Edit(/{d}/config.json)"),
+        format!("Edit(/{d}/tokens/**)"),
+        format!("Read(/{d}/tokens/**)"),
+    ] {
+        assert!(deny.iter().any(|r| *r == rule), "{rule} isn't in {deny:?}");
+    }
+    quit(&mut tui);
 }
