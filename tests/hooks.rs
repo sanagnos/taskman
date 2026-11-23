@@ -56,9 +56,26 @@ fn pid(dir: &Path, key: &str) -> Option<i32> {
     std::fs::read_to_string(dir.join(format!("{key}.pid"))).ok()?.trim().parse().ok()
 }
 
+/// Whether `pid` runs. A zombie doesn't: signal 0 finds one until its parent reaps it, and a
+/// process whose parent ended waits for whatever adopts it to, which a container may never do.
 fn alive(pid: i32) -> bool {
     // SAFETY: signal 0 only checks the process exists.
-    unsafe { libc::kill(pid, 0) == 0 }
+    if unsafe { libc::kill(pid, 0) } != 0 {
+        return false;
+    }
+    // `ps -o stat=` on Linux and macOS alike: Z for a zombie. A `ps` that can't run or doesn't
+    // answer (one that takes neither option, or the process gone since) leaves signal 0's answer
+    // standing, so a test can't pass for want of one; a process that did end is seen at the next
+    // look.
+    let ps =
+        std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output();
+    match ps {
+        Ok(o) if o.status.success() => {
+            let stat = String::from_utf8_lossy(&o.stdout);
+            !stat.trim_start().starts_with('Z')
+        }
+        _ => true,
+    }
 }
 
 /// What the CLI last started for `key` was started with.
@@ -247,9 +264,9 @@ fn a_codex_session_logs_no_message() {
     assert!(logged("Claude"));
 }
 
-/// The real command with its real limits, given a Stop in the session at `repo`, whose turn began
-/// at `head`, with `git` first on PATH. Returns the log's text and how long the hook took.
-fn stop_with_git(dir: &Path, repo: &Path, head: &str, git: &str) -> (String, Duration) {
+/// The real command with its real limits, started and given a Stop in the session at `repo`, whose
+/// turn began at `head`, with `git` first on PATH. Returns it and its status file.
+fn start_stop(dir: &Path, repo: &Path, head: &str, git: &str) -> (std::process::Child, PathBuf) {
     use std::io::Write as _;
     use std::process::Stdio;
     let bin = dir.join("git-stub");
@@ -260,7 +277,6 @@ fn stop_with_git(dir: &Path, repo: &Path, head: &str, git: &str) -> (String, Dur
     let begun = format!("{{\"head\":\"{head}\",\"ts\":1}}\n");
     std::fs::write(status.with_extension("turn.jsonl"), begun).unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
-    let started = std::time::Instant::now();
     let mut child = taskman(dir)
         .args(["hook", "done"])
         .env("TASKMAN_STATUS_FILE", &status)
@@ -272,20 +288,71 @@ fn stop_with_git(dir: &Path, repo: &Path, head: &str, git: &str) -> (String, Dur
         .unwrap();
     let stop = r#"{"hook_event_name":"Stop","last_assistant_message":"Done."}"#;
     child.stdin.take().unwrap().write_all(stop.as_bytes()).unwrap();
+    (child, status)
+}
+
+/// [`start_stop`], run to its end. Returns the log's text and how long the hook took.
+fn stop_with_git(dir: &Path, repo: &Path, head: &str, git: &str) -> (String, Duration) {
+    let started = std::time::Instant::now();
+    let (mut child, status) = start_stop(dir, repo, head, git);
     assert!(child.wait().unwrap().success());
     let took = started.elapsed();
     (std::fs::read_to_string(status.with_extension("events.jsonl")).unwrap(), took)
 }
 
+/// A hook the CLI ends with SIGTERM, as Claude Code does one past its limit, stops the git it was
+/// waiting for: git runs in a session of its own, which a signal to the hook's group doesn't
+/// reach, so it would run on. (Codex kills the hook outright, which nothing can catch.)
+#[test]
+fn a_hook_ended_by_sigterm_stops_its_git() {
+    let dir = scratch_dir("hook-sigterm");
+    let pids = dir.join("git.pids");
+    let git = format!("#!/bin/sh\necho $$ >> '{}'\nexec sleep 60\n", pids.display());
+    let (mut child, _) = start_stop(&dir, &dir, "abc", &git);
+    // Its pid written, not only the file made: the shell makes the file before `echo` writes to
+    // it, and a git stopped in between (as the hook does on the signal) leaves it empty.
+    let written = || std::fs::read_to_string(&pids).is_ok_and(|p| p.ends_with('\n'));
+    assert!(common::wait_until(written), "git never started");
+    // SAFETY: kill only sends the signal, to the hook this test started and hasn't reaped.
+    unsafe { libc::kill(i32::try_from(child.id()).unwrap(), libc::SIGTERM) };
+    let ended = child.wait().unwrap();
+    assert!(!ended.success(), "the hook went on to the end: {ended:?}");
+    // Each git the hook started, the one it was waiting for when the signal came included.
+    let started: Vec<i32> = std::fs::read_to_string(&pids)
+        .unwrap()
+        .split_whitespace()
+        .map(|p| p.parse().unwrap())
+        .collect();
+    assert!(!started.is_empty(), "no pid in {}", pids.display());
+    assert!(common::wait_until(|| !started.iter().any(|&p| alive(p))), "git runs on: {started:?}");
+}
+
+/// What Codex gives a hook before it ends it (`CODEX_HOOK_TIMEOUT`); Claude gives 5 s.
+const HOOK_LIMIT: Duration = Duration::from_secs(3);
+
 /// A git that hangs must not cost the turn's line: the CLI ends a hook that takes too long, Codex's
-/// at 3 s. Sleeping, not working, so a busy machine doesn't change how long this takes by much.
+/// at 3 s, so the hook has to be over by then, and it gives its git calls 2.3 s between them.
+/// Sleeping, not working, so a busy machine doesn't change how long this takes by much.
 #[test]
 fn a_hung_git_still_leaves_the_turns_line() {
     let dir = scratch_dir("hook-hung-git");
     let (log, took) = stop_with_git(&dir, &dir, "abc", "#!/bin/sh\nexec sleep 60\n");
     assert!(log.contains(r#""message":"Done.""#), "{log}");
     assert!(!log.contains("commits") && !log.contains("on_origin"), "{log}");
-    assert!(took < Duration::from_secs(10), "{took:?}");
+    assert!(took < HOOK_LIMIT, "{took:?}");
+}
+
+/// Nor one that doesn't end when it's asked to at its limit, which is given a moment more before
+/// it's killed: that moment is within the hook's time too. The tightest margin in this file: the
+/// hook's two calls take 2.1 s of their 2.3 here (`STOP_WAIT`; the third has no time left to run
+/// in), which leaves about 0.9 s of the 3 for starting taskman and the stub git, writing the files
+/// and a busy machine. A flake here on a slow machine is that margin.
+#[test]
+fn a_hung_git_that_ignores_being_stopped_still_leaves_the_turns_line() {
+    let dir = scratch_dir("hook-stubborn-git");
+    let (log, took) = stop_with_git(&dir, &dir, "abc", "#!/bin/sh\ntrap '' TERM\nsleep 60\n");
+    assert!(log.contains(r#""message":"Done.""#), "{log}");
+    assert!(took < HOOK_LIMIT, "{took:?}");
 }
 
 /// A log too slow to answer isn't a default branch that's gone: asking again without leaving it out

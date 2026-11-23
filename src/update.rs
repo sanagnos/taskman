@@ -26,9 +26,10 @@ const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(60);
 /// The workflow that builds releases, in the repository: the only signer an attestation may have.
 const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
-/// The refs it may have run from, as a regular expression: a version tag, or main, where a release
-/// started by hand ran before it ran on its tag. install.sh's `signer_refs` is the same.
-const SIGNER_REFS: &str = r"refs/(tags/v[0-9]+\.[0-9]+\.[0-9]+|heads/main)";
+/// The one release signed from `main` rather than from its tag: it was started by hand when a
+/// hand start still ran there. Its attestation no longer verifies, and the refusal says why.
+/// install.sh's `signed_from_main` is the same.
+const SIGNED_FROM_MAIN: &str = "v0.1.26";
 /// The first release that must have an attestation: one without is refused rather than installed
 /// on its checksum, as a replaced archive would have none. v0.1.0 is the first built on the public
 /// repository; older ones have none and still fall back. install.sh's `require_from` is the same
@@ -412,7 +413,7 @@ fn install(exe: &Path, tag: &str, by: By) -> Result<(), String> {
     let attestation = if skip_attestation() {
         Attestation::Skipped
     } else {
-        verify(&data, &archive, tag).map_err(|r| r.text(&archive))?
+        verify(&data, &archive, tag).map_err(|r| r.text(&archive, tag))?
     };
     accepts(by, &attestation)?;
     match attestation {
@@ -427,7 +428,7 @@ fn install(exe: &Path, tag: &str, by: By) -> Result<(), String> {
             "Warning: {SKIP_ATTESTATION} is set, so its attestation wasn't verified: only its checksum was."
         )),
     }
-    // The archive holds just the binary.
+    // The binary is at the archive's top level, beside its license files; only it is taken out.
     let binary = stdout_of(proc::run_with_input(
         Command::new("tar").args(["-xzOf", "-", "taskman"]),
         data,
@@ -487,15 +488,27 @@ struct Refusal {
     why: String,
     /// It may be the network, not the archive: worth naming the way around the check.
     network: bool,
+    /// gh's verdict on the archive (its signature, signer or digest), which gh words tersely:
+    /// worth saying what is asked of a signer, and never the way around the check.
+    verdict: bool,
 }
 
 impl Refusal {
-    fn text(self, archive: &str) -> String {
+    fn text(self, archive: &str, tag: &str) -> String {
         let mut text = format!(
             "gh couldn't verify {archive}'s attestation ({}); nothing was installed",
             self.why
         );
-        if self.network {
+        if self.verdict {
+            text.push_str(
+                ". An archive is refused unless the release workflow signed it from its release's own tag, on GitHub's runners",
+            );
+            if tag == SIGNED_FROM_MAIN {
+                text.push_str(&format!(
+                    "; {tag} was signed from the main branch instead, so it stays refused: install a later release"
+                ));
+            }
+        } else if self.network {
             text.push_str(&format!(
                 ". Try again later; if your network blocks gh, {SKIP_ATTESTATION}=1 installs on the checksum alone"
             ));
@@ -510,8 +523,9 @@ fn verify(data: &[u8], archive: &str, tag: &str) -> Result<Attestation, Refusal>
     let copy = Private::write(&std::env::temp_dir(), archive, data).map_err(|e| Refusal {
         why: format!("couldn't write {archive} to a temporary folder: {e}"),
         network: false,
+        verdict: false,
     })?;
-    let out = proc::run(&mut attest_command(&copy.file), VERIFY_TIMEOUT);
+    let out = proc::run(&mut attest_command(&copy.file, tag), VERIFY_TIMEOUT);
     drop(copy);
     attestation(out, tag, REQUIRE_ATTESTATION_FROM)
 }
@@ -566,27 +580,30 @@ impl Drop for Private {
     }
 }
 
-fn attest_command(path: &Path) -> Command {
+fn attest_command(path: &Path, tag: &str) -> Command {
     let mut cmd = Command::new("gh");
     cmd.args(["attestation", "verify"]).arg(path).args(["--repo", repo()]);
-    cmd.arg("--cert-identity-regex").arg(signer_identity());
+    cmd.arg("--cert-identity-regex").arg(signer_identity(tag));
     cmd.arg("--deny-self-hosted-runners");
     cmd
 }
 
-/// What an attestation's certificate must name as its signer: the release workflow, run from a
-/// version tag or main. `--signer-workflow`, which gh won't take with this, accepts any ref, so a
-/// workflow run on any branch could sign.
-fn signer_identity() -> String {
+/// What an attestation's certificate must name as its signer, as a regular expression that
+/// matches that one name: the release workflow, run from release `tag`'s own tag, as a release
+/// runs only there and the certificate names the ref the workflow ran from. A branch, or another
+/// version's tag, isn't it. `--signer-workflow`, which gh won't take with this, accepts any ref,
+/// so a workflow run on any branch could sign. install.sh builds the same.
+fn signer_identity(tag: &str) -> String {
+    let quote = |text: &str| -> String {
+        text.chars()
+            .flat_map(|c| {
+                let special = r"\.+*?()|[]{}^$".contains(c);
+                special.then_some('\\').into_iter().chain([c])
+            })
+            .collect()
+    };
     let workflow = format!("https://github.com/{}/{RELEASE_WORKFLOW}", repo());
-    let escaped: String = workflow
-        .chars()
-        .flat_map(|c| {
-            let special = r"\.+*?()|[]{}^$".contains(c);
-            special.then_some('\\').into_iter().chain([c])
-        })
-        .collect();
-    format!("^{escaped}@{SIGNER_REFS}$")
+    format!("^{}@refs/tags/{}$", quote(&workflow), quote(tag))
 }
 
 /// Reads gh's answer. Without gh, logged out, with a gh too old to have the command, or for a
@@ -605,7 +622,7 @@ fn attestation(
         }
         Err(e) => {
             let network = e.kind() == std::io::ErrorKind::TimedOut;
-            return Err(Refusal { why: e.to_string(), network });
+            return Err(Refusal { why: e.to_string(), network, verdict: false });
         }
         Ok(out) => out,
     };
@@ -624,21 +641,29 @@ fn attestation(
             Some(from) if !newer(from, tag) => Err(Refusal {
                 why: format!("release {tag} has none, though every release from {from} on has one"),
                 network: false,
+                verdict: false,
             }),
             _ => unchecked(format!("release {tag} has no attestation to verify")),
         }
     } else {
         let last = err.lines().rev().map(str::trim).find(|l| !l.is_empty());
         let why = last.unwrap_or("it failed without saying why").to_string();
-        Err(Refusal { why, network: network_trouble(&err) })
+        Err(Refusal { why, network: network_trouble(&err), verdict: verdict(&err) })
     }
 }
 
-/// Whether gh's error could be the network or GitHub's limits rather than the archive. gh's
-/// verdicts on the archive (its signature, signer or digest) come first: they name no way around.
-fn network_trouble(err: &str) -> bool {
+/// Whether gh's error is its verdict on the archive: its signature, signer or digest. For a signer
+/// that isn't the one asked for, or a runner that isn't GitHub's, gh 2.86 says only `verifying
+/// with issuer "sigstore.dev"`.
+fn verdict(err: &str) -> bool {
     const VERDICTS: &[&str] =
         &["Verification failed", "verifying with issuer", "certificate identity", "SAN", "digest"];
+    VERDICTS.iter().any(|v| err.contains(v))
+}
+
+/// Whether gh's error could be the network or GitHub's limits rather than the archive. gh's
+/// verdicts on the archive come first: they name no way around.
+fn network_trouble(err: &str) -> bool {
     const NETWORK: &[&str] = &[
         "HTTP 429",
         "rate limit",
@@ -652,13 +677,14 @@ fn network_trouble(err: &str) -> bool {
         "deadline exceeded",
         "proxyconnect",
         "network is unreachable",
+        // What gh says with no network at all: it can't fetch Sigstore's trust root.
+        "Sigstore verifier",
     ];
     let server_error = err.match_indices("HTTP 5").any(|(i, _)| {
         let code = &err.as_bytes()[i + 6..];
         code.len() >= 2 && code[..2].iter().all(u8::is_ascii_digit)
     });
-    !VERDICTS.iter().any(|v| err.contains(v))
-        && (server_error || NETWORK.iter().any(|n| err.contains(n)))
+    !verdict(err) && (server_error || NETWORK.iter().any(|n| err.contains(n)))
 }
 
 /// Makes the new binary written to `staged` runnable, and checks it runs and says it's release
@@ -1334,6 +1360,47 @@ mod tests {
                     && environment["name"].as_str() == Some("release")),
             "{environment:?}"
         );
+        // It waits for all three: without `ci` it would publish before CI passed on the commit
+        // (its `if` reads only `needs.version`, so it would still run), without `check` archives
+        // nobody checked. A job or step that may fail and carry on would pass a failure along.
+        let needs: Vec<_> =
+            job["needs"].as_vec().expect("needs").iter().map(Yaml::as_str).collect();
+        assert_eq!(needs, [Some("version"), Some("ci"), Some("check")]);
+        for (name, job) in jobs {
+            let steps = job["steps"].as_vec().expect("steps");
+            for map in steps.iter().chain([job]) {
+                assert!(!yaml_keys(map).contains(&"continue-on-error"), "{name:?}: {map:?}");
+            }
+        }
+        // What it may write: the release, and the attestations with the token that signs them.
+        let mut permissions: Vec<_> = job["permissions"]
+            .as_hash()
+            .expect("the release job's permissions")
+            .iter()
+            .map(|(scope, access)| (scope.as_str(), access.as_str()))
+            .collect();
+        permissions.sort_unstable();
+        let write = Some("write");
+        assert_eq!(
+            permissions,
+            [(Some("attestations"), write), (Some("contents"), write), (Some("id-token"), write)]
+        );
+        // One step attests, in the release job, whenever the repository is public: with another
+        // condition, or none on a private copy, a release would go out unsigned or fail.
+        let attests = |step: &&Yaml| {
+            step["uses"].as_str().is_some_and(|uses| uses.starts_with("actions/attest"))
+        };
+        let attesting: Vec<_> = jobs
+            .iter()
+            .flat_map(|(name, job)| {
+                let steps = job["steps"].as_vec().into_iter().flatten();
+                steps.filter(attests).map(move |step| (name.as_str(), step["if"].as_str()))
+            })
+            .collect();
+        assert_eq!(
+            attesting,
+            [(Some("release"), Some("github.event.repository.visibility == 'public'"))]
+        );
 
         // Everything but the release job, its keys included: the other jobs, run-name, concurrency.
         let mut strings = vec![];
@@ -1529,14 +1596,20 @@ mod tests {
         let private = "\nError: HTTP 404: Not Found (https://api.github.com/repos/acme/taskman/attestations/sha256:00?per_page=30)\n";
         assert_eq!(a(gh_out(1, private)), none);
         // Anything else refuses the archive, with gh's last line.
-        let refused = |why: &str, network| Err(Refusal { why: why.into(), network });
+        let refused =
+            |why: &str, network, verdict| Err(Refusal { why: why.into(), network, verdict });
         assert_eq!(
             a(gh_out(1, "✗ Verification failed\nError: certificate's SAN doesn't match\n\n")),
-            refused("Error: certificate's SAN doesn't match", false)
+            refused("Error: certificate's SAN doesn't match", false, true)
         );
-        assert_eq!(a(gh_out(1, "")), refused("it failed without saying why", false));
+        // All gh 2.86 says of a release signed from a branch.
+        assert_eq!(
+            a(gh_out(1, "Error: verifying with issuer \"sigstore.dev\"\n")),
+            refused("Error: verifying with issuer \"sigstore.dev\"", false, true)
+        );
+        assert_eq!(a(gh_out(1, "")), refused("it failed without saying why", false, false));
         let slow = std::io::Error::new(std::io::ErrorKind::TimedOut, "it didn't finish within 60s");
-        assert_eq!(a(Err(slow)), refused("it didn't finish within 60s", true));
+        assert_eq!(a(Err(slow)), refused("it didn't finish within 60s", true, false));
     }
 
     #[test]
@@ -1550,6 +1623,7 @@ mod tests {
             "failed to create TUF client: Get \"https://tuf-repo-cdn.sigstore.dev/\": net/http: TLS handshake timeout",
             "Error: Get \"https://api.github.com/\": x509: certificate signed by unknown authority",
             "Error: Get \"https://api.github.com/\": proxyconnect tcp: connection refused",
+            "error creating Sigstore verifier: no valid Sigstore verifiers could be initialized",
         ] {
             assert!(network(err), "{err}");
         }
@@ -1566,18 +1640,87 @@ mod tests {
         ] {
             assert!(!network(err), "{err}");
         }
-        let refusal = |network| Refusal { why: "HTTP 503".into(), network };
+        let refusal = |network| Refusal { why: "HTTP 503".into(), network, verdict: false };
         let archive = "taskman-v1.2.3-x.tar.gz";
         assert_eq!(
-            refusal(false).text(archive),
+            refusal(false).text(archive, "v1.2.3"),
             "gh couldn't verify taskman-v1.2.3-x.tar.gz's attestation (HTTP 503); nothing was installed"
         );
         assert_eq!(
-            refusal(true).text(archive),
+            refusal(true).text(archive, "v1.2.3"),
             "gh couldn't verify taskman-v1.2.3-x.tar.gz's attestation (HTTP 503); nothing was installed. \
              Try again later; if your network blocks gh, TASKMAN_INSECURE_SKIP_ATTESTATION=1 installs \
              on the checksum alone"
         );
+    }
+
+    /// gh's verdict on a signer is one terse line, so the refusal says what is asked of a signer,
+    /// names the release that was signed from main, and never the way around the check.
+    #[test]
+    fn a_refused_signer_is_told_what_a_signer_must_be() {
+        let issuer = "Error: verifying with issuer \"sigstore.dev\"";
+        let refusal = |tag| attestation(gh_out(1, issuer), tag, None).unwrap_err();
+        assert_eq!(
+            refusal("v1.2.3").text("taskman-v1.2.3-x.tar.gz", "v1.2.3"),
+            "gh couldn't verify taskman-v1.2.3-x.tar.gz's attestation (Error: verifying with \
+             issuer \"sigstore.dev\"); nothing was installed. An archive is refused unless the \
+             release workflow signed it from its release's own tag, on GitHub's runners"
+        );
+        let from_main =
+            refusal(SIGNED_FROM_MAIN).text("taskman-v0.1.26-x.tar.gz", SIGNED_FROM_MAIN);
+        assert_eq!(
+            from_main,
+            "gh couldn't verify taskman-v0.1.26-x.tar.gz's attestation (Error: verifying with \
+             issuer \"sigstore.dev\"); nothing was installed. An archive is refused unless the \
+             release workflow signed it from its release's own tag, on GitHub's runners; v0.1.26 \
+             was signed from the main branch instead, so it stays refused: install a later release"
+        );
+        // A verdict named to look like the network still names no way around.
+        let both = Refusal { why: "dial tcp".into(), network: true, verdict: true };
+        assert!(!both.text("x", "v1.2.3").contains(SKIP_ATTESTATION));
+        assert!(!from_main.contains(SKIP_ATTESTATION));
+        // install.sh names the same release, in the same words.
+        let script = include_str!("../scripts/install.sh");
+        let line = script.lines().find_map(|l| l.trim().strip_prefix("signed_from_main="));
+        assert_eq!(line, Some(SIGNED_FROM_MAIN));
+        assert!(script.contains(
+            "An archive is refused unless the release workflow signed it from its release's own tag, on GitHub's runners"
+        ));
+        assert!(script.contains(
+            "was signed from the main branch instead, so it stays refused: install a later release"
+        ));
+    }
+
+    /// The identity gh is given matches the release workflow run from the tag being installed, and
+    /// nothing else: not a branch, not another version's tag, not a name that only starts or ends
+    /// like it. gh matches with Go's regexp, which reads these expressions as this crate does.
+    #[test]
+    fn the_signer_is_the_workflow_run_from_the_tag_being_installed() {
+        let workflow = format!("https://github.com/{}/.github/workflows/release.yml", repo());
+        let signer = |tag: &str| regex::Regex::new(&signer_identity(tag)).expect("an expression");
+        let identity = signer("v1.2.3");
+        assert!(identity.is_match(&format!("{workflow}@refs/tags/v1.2.3")));
+        for other in [
+            format!("{workflow}@refs/heads/main"),
+            format!("{workflow}@refs/heads/v1.2.3"),
+            format!("{workflow}@refs/pull/7/merge"),
+            format!("{workflow}@refs/tags/v1.2.4"),
+            format!("{workflow}@refs/tags/v1.2.30"),
+            format!("{workflow}@refs/tags/v1x2y3"),
+            format!("{workflow}@refs/tags/v1.2.3\n"),
+            format!("x{workflow}@refs/tags/v1.2.3"),
+            format!("{}@refs/tags/v1.2.3", workflow.replace("release.yml", "releasexyml")),
+            format!("{}@refs/tags/v1.2.3", workflow.replace("release.yml", "ci.yml")),
+            "https://github.com/acme/other/.github/workflows/release.yml@refs/tags/v1.2.3".into(),
+        ] {
+            assert!(!identity.is_match(&other), "{other}");
+        }
+        // The release that was signed from main names main, so its own tag's identity refuses it.
+        assert!(!signer(SIGNED_FROM_MAIN).is_match(&format!("{workflow}@refs/heads/main")));
+        // A tag is matched as written, whatever is in it.
+        assert!(signer("v1.*|x").is_match(&format!("{workflow}@refs/tags/v1.*|x")));
+        assert!(!signer("v1.*|x").is_match(&format!("{workflow}@refs/tags/v1.2.3")));
+        assert!(!signer(".*").is_match(&format!("{workflow}@refs/heads/main")));
     }
 
     #[test]
@@ -1599,6 +1742,7 @@ mod tests {
             let refused = Err(Refusal {
                 why: format!("release {tag} has none, though every release from v1.0.0 on has one"),
                 network: false,
+                verdict: false,
             });
             assert_eq!(attestation(none(), tag, on), refused, "{tag}");
             assert_eq!(attestation(private(), tag, on), refused, "{tag}");
@@ -1616,11 +1760,11 @@ mod tests {
 
     #[test]
     fn verifies_against_this_repository() {
-        let cmd = attest_command(Path::new("/tmp/taskman-v1.2.3-x.tar.gz"));
+        let cmd = attest_command(Path::new("/tmp/taskman-v1.2.3-x.tar.gz"), "v1.2.3");
         assert_eq!(cmd.get_program(), "gh");
         let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
         let identity = format!(
-            r"^https://github\.com/{}/\.github/workflows/release\.yml@refs/(tags/v[0-9]+\.[0-9]+\.[0-9]+|heads/main)$",
+            r"^https://github\.com/{}/\.github/workflows/release\.yml@refs/tags/v1\.2\.3$",
             repo().replace('.', r"\.")
         );
         assert_eq!(
@@ -1636,14 +1780,19 @@ mod tests {
                 "--deny-self-hosted-runners",
             ]
         );
-        // install.sh asks for the same refs, and the same flags.
+        // install.sh asks for the same identity, built the same way, and the same flags: the
+        // workflow and the tag, each quoted with the characters `signer_identity` quotes.
         let script = include_str!("../scripts/install.sh");
-        let refs = script.lines().find_map(|l| l.trim().strip_prefix("signer_refs="));
-        assert_eq!(refs, Some(format!("'{SIGNER_REFS}'").as_str()));
-        assert!(
-            script.contains("--cert-identity-regex")
-                && script.contains("--deny-self-hosted-runners")
-        );
+        for line in [
+            r"quote='s/[][\.^$*+?(){}|]/\\&/g'",
+            r#"workflow_re="$(printf '%s' "https://github.com/$repo/.github/workflows/release.yml" \"#,
+            r#"| sed "$quote")""#,
+            r#"tag_re="$(printf '%s' "$tag" | sed "$quote")""#,
+            r#"--cert-identity-regex "^$workflow_re@refs/tags/$tag_re\$" \"#,
+            r#"--deny-self-hosted-runners 2>&1 >/dev/null)" \"#,
+        ] {
+            assert!(script.lines().any(|l| l.trim() == line), "install.sh has no line: {line}");
+        }
         assert!(!script.contains("--signer-workflow"));
     }
 

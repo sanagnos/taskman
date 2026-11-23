@@ -1,0 +1,1 @@
+- With "Keep awake at most" set, a new session that hasn't had a turn since it started, such as a ticket an agent just added, is no longer put to sleep half a minute after it starts: the limit leaves it for 10 minutes after it starts or was last selected, so the agent's first message reaches it. Sessions that resume their conversation sleep as before.

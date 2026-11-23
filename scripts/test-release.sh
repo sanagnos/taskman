@@ -4,8 +4,9 @@
 # binary (or fails), and sleep moves a fake clock that date reads, so an hour's wait takes no time.
 # A release goes out, also when GitHub's answers flap, its CI run never ends or it starts none
 # (then CI is started by hand); one that fails (main moved, a failed or interrupted build, a
-# refused push) leaves the checkout as it was and releases nothing; and the Release workflow is
-# started by hand only when no run for the tag is.
+# refused push) leaves the checkout as it was and releases nothing; the Release workflow is
+# started by hand only when no run for the tag is; and lines left under "## Unreleased" in
+# CHANGELOG.md, as after a version that wasn't released, go into the new version's section.
 #
 # Usage: scripts/test-release.sh   (run from anywhere)
 set -euo pipefail
@@ -291,6 +292,61 @@ released
 ! grep -q release.yml "$work/dispatched" 2>/dev/null \
   || fail "$name: started the Release workflow by hand again"
 said "The Release workflow is already running for v0.2.0 (workflow_dispatch)."
+passed "$name"
+
+# After a release the workflow itself failed, the version's section is renamed "## Unreleased"
+# with a line saying so (AGENTS.md, "Releasing"): its lines are entries, and go first.
+carry_over() { # [a script run in the checkout before the commit]
+  (
+    cd "$work/repo"
+    printf '%s\n' '# Changelog' '' '## Unreleased' '' \
+      '- 0.1.1 was not released; its changes are here.' '- Old.' '' \
+      '## 0.1.0 - 2026-01-01' '' '- First.' >CHANGELOG.md
+    ${1:+eval "$1"}
+    git add -A
+    git commit -q -m "Carry 0.1.1 over"
+    git push -q origin main
+  )
+  start="$(git -C "$work/repo" rev-parse HEAD)"
+}
+# origin's CHANGELOG.md, its new section's date aside, is the lines given.
+changelog_is() {
+  local got
+  got="$(git -C "$work/origin.git" show main:CHANGELOG.md \
+    | sed 's/^## 0\.2\.0 - .*/## 0.2.0 - DATE/')"
+  [ "$got" = "$(printf '%s\n' "$@")" ] || fail "$name: CHANGELOG.md is:"$'\n'"$got"
+}
+
+name="lines under Unreleased go first in the new version's section"
+fresh
+carry_over
+release
+released
+changelog_is '# Changelog' '' '## 0.2.0 - DATE' '' \
+  '- 0.1.1 was not released; its changes are here.' '- Old.' '- Fixed a thing.' '' \
+  '## 0.1.0 - 2026-01-01' '' '- First.'
+passed "$name"
+
+name="lines under Unreleased are enough to release"
+fresh
+carry_over 'git rm -q changelog.d/fixed-a-thing.md'
+release
+[ "$status" = 0 ] || fail "$name: release.sh exited $status"
+[ "$(git -C "$work/origin.git" rev-parse "v0.2.0^{commit}" 2>/dev/null)" \
+  = "$(git -C "$work/origin.git" rev-parse main)" ] || fail "$name: origin's v0.2.0 isn't its main"
+changelog_is '# Changelog' '' '## 0.2.0 - DATE' '' \
+  '- 0.1.1 was not released; its changes are here.' '- Old.' '' \
+  '## 0.1.0 - 2026-01-01' '' '- First.'
+passed "$name"
+
+name="nothing under Unreleased and no entry"
+fresh
+carry_over 'git rm -q changelog.d/fixed-a-thing.md
+  printf "%s\n" "# Changelog" "" "## Unreleased" "" "## 0.1.0 - 2026-01-01" "" "- First." \
+    >CHANGELOG.md'
+release
+untouched
+said "Nothing to release"
 passed "$name"
 
 echo "All release.sh tests passed."

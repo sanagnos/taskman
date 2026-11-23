@@ -3,6 +3,7 @@
 //! session handed to another terminal keeps all of it.
 
 use super::App;
+use super::sleep::Watch;
 use crate::coding_cli::ForkStart;
 use crate::session_ids::{self, Claim};
 use crate::store::{self, Cli, Config, Fork, Saved, Ticket};
@@ -10,6 +11,7 @@ use crate::{github, local, resume, stack, status_file, untrusted, update};
 use portable_pty::CommandBuilder;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 /// How a session's CLI starts (`App::launch`): the pane builds its pseudo-terminal's command from
 /// it, and `taskman resume` a command in the user's own terminal.
@@ -290,13 +292,39 @@ fn file_changes(cli: Cli) -> String {
 }
 
 impl App {
+    /// The conversation `t`'s next start resumes: its own, when the CLI still has its transcript
+    /// and no other ticket holds it. None starts a new one.
+    pub(super) fn resume_id<'a>(&self, t: &'a Ticket) -> Option<&'a str> {
+        t.session_id.as_deref().filter(|sid| t.cli.has_conversation(sid)).filter(|sid| {
+            session_ids::claim(self.tickets.iter().map(|tv| &tv.t), t, sid) == Claim::Adopt
+        })
+    }
+
+    /// What `start_session` starts ticket `i` with at `now`: the command, and what the sleep
+    /// decisions watch of it, which is fresh (`Watch::fresh`) when the command starts a new
+    /// conversation. Both from one look at the transcript, which for Codex walks its dated
+    /// folders, so they can't disagree.
+    pub(super) fn starting(
+        &self,
+        i: usize,
+        session: &str,
+        start: &str,
+        now: Instant,
+    ) -> (CommandBuilder, Watch) {
+        let t = &self.tickets[i].t;
+        let resume = self.resume_id(t);
+        (self.build_command(t, session, start, resume), Watch::new(now, resume.is_none()))
+    }
+
     /// The command that starts `t`'s session in the pane, named `session`, as start `start`
-    /// (`launch_id`).
-    pub(super) fn build_command(&self, t: &Ticket, session: &str, start: &str) -> CommandBuilder {
-        let resume =
-            t.session_id.as_deref().filter(|sid| t.cli.has_conversation(sid)).filter(|sid| {
-                session_ids::claim(self.tickets.iter().map(|tv| &tv.t), t, sid) == Claim::Adopt
-            });
+    /// (`launch_id`), resuming conversation `resume` (`resume_id`).
+    pub(super) fn build_command(
+        &self,
+        t: &Ticket,
+        session: &str,
+        start: &str,
+        resume: Option<&str>,
+    ) -> CommandBuilder {
         let launch = self.launch(t, session, resume);
         let mut cmd = CommandBuilder::new(&launch.program);
         cmd.args(&launch.args);
@@ -647,7 +675,7 @@ mod tests {
 
         // The pane runs exactly that, in a terminal of its own.
         let app = offline(saved(&t));
-        let cmd = app.build_command(&t, "ENG-52", "1-1");
+        let cmd = app.build_command(&t, "ENG-52", "1-1", app.resume_id(&t));
         assert_eq!(cmd.get_cwd().map(Path::new), Some(Path::new("/src/acme-ENG-52")));
         let argv: Vec<String> =
             cmd.get_argv().iter().map(|a| a.to_string_lossy().into_owned()).collect();
@@ -780,7 +808,7 @@ mod tests {
     fn the_pane_resumes_only_a_conversation_that_is_there_and_its_own() {
         let argv = |app: &App, key: &str| -> Vec<String> {
             let t = ticket_in(app, key);
-            let cmd = app.build_command(&t, &t.key, "1-1");
+            let cmd = app.build_command(&t, &t.key, "1-1", app.resume_id(&t));
             cmd.get_argv().iter().map(|a| a.to_string_lossy().into_owned()).collect()
         };
         let resumes = |app: &App, key: &str| argv(app, key).iter().any(|a| a.contains("resume"));
@@ -808,7 +836,7 @@ mod tests {
     fn a_fork_starts_as_one_until_it_has_a_conversation_of_its_own() {
         let argv = |app: &App, key: &str| -> Vec<String> {
             let t = ticket_in(app, key);
-            let cmd = app.build_command(&t, &t.key, "1-1");
+            let cmd = app.build_command(&t, &t.key, "1-1", app.resume_id(&t));
             cmd.get_argv().iter().skip(1).map(|a| a.to_string_lossy().into_owned()).collect()
         };
         let mut app = acme_app();
@@ -957,7 +985,7 @@ mod tests {
         let mut app = acme_app();
         app.bin_dir = link_bin(Path::new("/opt/taskman"));
         let t = ticket_in(&app, "ENG-52");
-        let cmd = app.build_command(&t, "ENG-52", "1-1");
+        let cmd = app.build_command(&t, "ENG-52", "1-1", app.resume_id(&t));
         let env = |k: &str| cmd.get_env(k).map(|v| v.to_string_lossy().into_owned());
         assert_eq!(env("TASKMAN_TICKET").as_deref(), Some("ENG-52"));
         assert_eq!(env("TASKMAN_REPO").as_deref(), Some("/src/acme"));

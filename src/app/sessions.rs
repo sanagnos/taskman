@@ -229,7 +229,7 @@ impl App {
         let area = self.areas.claude;
         let name = self.qualified(&self.tickets[i].t);
         let launch = super::launch::launch_id();
-        let cmd = self.build_command(&self.tickets[i].t, &name, &launch);
+        let (cmd, watch) = self.starting(i, &name, &launch, Instant::now());
         // What the status file says is an earlier start's: at taskman's next start it would pass
         // for the session's latest conversation (`take_leftover_status`).
         let status = store::status_file(&self.tickets[i].t.repo, &self.tickets[i].t.key);
@@ -248,7 +248,7 @@ impl App {
                 tv.hold = Some(hold);
                 tv.name = Some(name);
                 tv.launch = Some(launch);
-                tv.watch = super::sleep::Watch::new(Instant::now());
+                tv.watch = watch;
                 tv.status.started();
             }
             // The pane says why; the toast only points there from another ticket.
