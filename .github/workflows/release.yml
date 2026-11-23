@@ -12,15 +12,27 @@
 # A release runs on its tag, started either way: the release job's condition lets nothing else
 # through, and its environment, once set up, lets only version tags deploy. Started by hand on a
 # tag, it runs the workflow as it is at the tag, as the tag push does (GitHub runs the copy at the
-# ref it's given; the first hand start after this changed is the first to show it). A run for a
-# tag that already has a published release builds nothing and ends green: that's the tag push
-# GitHub delivered late, after the release script had started a run by hand.
+# ref it's given; the first hand start after this changed is the first to show it), so a release
+# runs only what its tag holds. Starting it again therefore gets past a failure that came from
+# outside (GitHub, a runner, CI on the commit), never one this file causes: a fix on main doesn't
+# reach the tag, a version tag isn't moved, and the fix goes out as the next patch version, the
+# failed tag left without a release, and any draft its run left deleted by hand (gh release
+# delete v1.2.3), as only a later run for the same tag would clear it. The failed version's
+# changelog section goes out with it: the fix's pull request renames its heading in CHANGELOG.md
+# to "## Unreleased" and adds a line saying that version wasn't released, and the release script
+# moves those lines under the next version, so its notes (the check job, below) hold both. A run
+# for a tag that already has a published release builds nothing and ends green: that's the tag
+# push GitHub delivered late, after the release script had started a run by hand.
 #
 # A dry run builds, runs and checks every binary and archive as a release would, for Cargo.toml's
-# version, and keeps the archives and SHA256SUMS as the run's artifacts; it needs no tag, doesn't
-# wait for CI, and skips the release job, so it publishes and attests nothing. A pull request that
-# changes what a release builds or reads (the paths below) gets one on its merge commit, and one
-# can be started on a branch's latest commit:
+# version, writes the release's notes and the request that would create it, and keeps all of
+# those as the run's artifacts; it needs no tag, doesn't wait for CI, and skips the release job,
+# so it publishes and attests nothing. That job's own steps are what no dry run runs: the
+# attestation (actions/attest-build-provenance, which only signs for real) and the calls that
+# clear a draft, create one, upload to it and publish it. A change to them, a Dependabot update
+# of that action included, is first run by the next release, so read it with that in mind. A pull
+# request that changes what a release builds or reads (the paths below) gets a dry run on its
+# merge commit, and one can be started on a branch's latest commit:
 #   gh workflow run release.yml --ref my-branch -f dry_run=true
 #
 # The build jobs run every dependency's build script, so they get a read-only token that isn't
@@ -39,9 +51,10 @@ on:
     tags: ["v*"]
   # What a release builds or reads that CI doesn't: the Linux builds on an older Ubuntu (glibc_min)
   # and for musl, the Intel macOS and arm64 Linux builds, the dist profile, install.sh's builds,
-  # and the actions only this file uses, which Dependabot updates. The paths are compared with the
-  # commit the pull request left main at, so every push to one runs it again. It isn't a required
-  # check: a pull request these paths skip would wait for it forever.
+  # and this file's own steps and actions, which Dependabot updates, all but the release job's
+  # (see above: a dry run skips that job, and with it the one action only it uses). The paths are
+  # compared with the commit the pull request left main at, so every push to one runs it again. It
+  # isn't a required check: a pull request these paths skip would wait for it forever.
   pull_request:
     paths:
       - .github/workflows/release.yml
@@ -122,9 +135,11 @@ jobs:
             echo "$tag isn't a version tag like v1.2.3" >&2
             exit 1
           fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "dry_run=$dry_run" >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=$tag"
+            echo "ref=$ref"
+            echo "dry_run=$dry_run"
+          } >> "$GITHUB_OUTPUT"
           # A release's runs queue one after another (concurrency above), so one that finds the
           # tag released came after the run that released it: a tag push GitHub delivered after
           # the release script had given up on it and started a run by hand. Skipped, not failed
@@ -155,6 +170,7 @@ jobs:
     # CI's slowest job has 30 minutes, after waiting for a runner.
     timeout-minutes: 60
     permissions:
+      # To list CI's runs and their jobs.
       actions: read
       contents: read
     steps:
@@ -408,8 +424,9 @@ jobs:
 
   # The archives together, in a release and a dry run alike: one for each build install.sh can
   # pick (the unit test in update.rs keeps that list, `taskman update`'s and the build matrix the
-  # same), each holding what it should, and SHA256SUMS for them. Runs no project code: install.sh
-  # is read through the API.
+  # same), each holding what it should, and SHA256SUMS for them. Then the release's notes and the
+  # request that creates it, written here rather than in the release job so a dry run writes them
+  # too. Runs no project code: install.sh and CHANGELOG.md are read through the API.
   check:
     needs: [version, build]
     runs-on: ubuntu-24.04
@@ -471,12 +488,52 @@ jobs:
           path: SHA256SUMS
           if-no-files-found: error
 
+      # The notes are the version's section of CHANGELOG.md at the commit being built
+      # ("## 1.2.3 - 2026-10-12" up to the next heading), read through the API. A tag from before
+      # the changelog gets notes generated from its commits. The request makes a draft: see the
+      # release job, which sends it.
+      - name: Write the release's notes and request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ needs.version.outputs.ref }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/contents/CHANGELOG.md?ref=$REF" \
+            -H 'Accept: application/vnd.github.raw' > CHANGELOG.md || : > CHANGELOG.md
+          awk -v v="${TAG#v}" '/^## / { if (p) exit; p = ($2 == v); next } p' CHANGELOG.md \
+            | tee notes.md
+          if grep -q '[^[:space:]]' notes.md; then
+            jq -n --arg tag "$TAG" --rawfile body notes.md \
+              '{tag_name: $tag, name: "taskman \($tag)", body: $body, draft: true}'
+          else
+            jq -n --arg tag "$TAG" \
+              '{tag_name: $tag, name: "taskman \($tag)", generate_release_notes: true, draft: true}'
+          fi > release.json
+          jq -r '"The request: " + (del(.body) | tojson)' release.json
+          # The release job's own check of the request before it sends it, so a dry run runs it.
+          if ! jq -e --arg tag "$TAG" '.tag_name == $tag and .draft == true' release.json \
+            >/dev/null; then
+            echo "release.json isn't a draft for $TAG:" >&2
+            cat release.json >&2
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-request
+          path: |
+            notes.md
+            release.json
+          if-no-files-found: error
+
   # The only job that can write, and only for a version tag, pushed or started by hand on the tag:
   # the condition says what may publish rather than what mayn't, as a pull request runs this file
   # as the pull request has it, and Dependabot's get the write permissions asked for below (a
   # fork's token is read-only whatever it asks for). Skipped too for a tag already released, and
   # whenever a build, the check or CI failed: nothing is published, attested or drafted. A unit
-  # test in update.rs keeps the condition and the environment.
+  # test in update.rs keeps the condition, the environment, the jobs it waits for (without `ci`
+  # it would publish before CI passed), its permissions and the Attest step's condition.
+  # No dry run runs this job, and a hand start runs it as the tag has it, so a mistake here costs
+  # a version (see the top of the file): keep it to what can't run anywhere else.
   release:
     needs: [version, ci, check]
     if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/tags/v') && needs.version.outputs.dry_run == 'false' }}
@@ -487,6 +544,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
+      # To create the release and upload its files.
       contents: write
       # Only for the attestations: a token to sign them with (OIDC), and the right to store them.
       id-token: write
@@ -498,12 +556,21 @@ jobs:
         with:
           merge-multiple: true
 
-      # The archives the check job checked, and nothing else.
-      - name: Check the checksums
+      # The archives the check job checked, and nothing else; and its request, which must make a
+      # draft for this tag.
+      - name: Check the archives and the request
         run: |
           sha256sum -c SHA256SUMS
-          if [ "$(ls taskman-*.tar.gz | sort)" != "$(awk '{print $2}' SHA256SUMS | sort)" ]; then
+          listed="$(awk '{print $2}' SHA256SUMS | sort)"
+          if [ "$(printf '%s\n' taskman-*.tar.gz | sort)" != "$listed" ]; then
             echo "The archives aren't the ones SHA256SUMS lists." >&2
+            exit 1
+          fi
+          # As the check job checked it, again here on what was downloaded.
+          if ! jq -e --arg tag "$TAG" '.tag_name == $tag and .draft == true' release.json \
+            >/dev/null; then
+            echo "release.json isn't a draft for $TAG:" >&2
+            cat release.json >&2
             exit 1
           fi
 
@@ -541,34 +608,17 @@ jobs:
             taskman-*.tar.gz
             SHA256SUMS
 
-      # The notes are the version's section of CHANGELOG.md at the tag ("## 1.2.3 - 2026-10-12" up
-      # to the next heading), read through the API so this job still runs no project code. A tag
-      # from before the changelog gets notes generated from its commits.
-      - name: Release notes
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh api "repos/$GITHUB_REPOSITORY/contents/CHANGELOG.md?ref=$TAG" \
-            -H 'Accept: application/vnd.github.raw' > CHANGELOG.md || : > CHANGELOG.md
-          awk -v v="${TAG#v}" '/^## / { if (p) exit; p = ($2 == v); next } p' CHANGELOG.md | tee notes.md
-
-      # A draft first, published once every file is on it: the install script, `taskman update`
-      # and an immutable release only ever see a complete one. Nobody but the repository's writers
-      # sees a draft, and releases/latest skips it. The draft is created through the API and then
-      # used by its id: a list of releases can lag a create by a while, so the new draft isn't
-      # looked for in one (nor by `gh release upload`, which lists releases to find a draft).
+      # A draft first (release.json, written by the check job with the notes), published once
+      # every file is on it: the install script, `taskman update` and an immutable release only
+      # ever see a complete one. Nobody but the repository's writers sees a draft, and
+      # releases/latest skips it. The draft is created through the API and then used by its id: a
+      # list of releases can lag a create by a while, so the new draft isn't looked for in one (nor
+      # by `gh release upload`, which lists releases to find a draft).
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           api="repos/$GITHUB_REPOSITORY/releases"
-          if grep -q '[^[:space:]]' notes.md; then
-            jq -n --arg tag "$TAG" --rawfile body notes.md \
-              '{tag_name: $tag, name: "taskman \($tag)", body: $body, draft: true}'
-          else
-            jq -n --arg tag "$TAG" \
-              '{tag_name: $tag, name: "taskman \($tag)", generate_release_notes: true, draft: true}'
-          fi > release.json
           created="$(gh api -X POST "$api" --input release.json --jq '"\(.id) \(.upload_url)"')"
           read -r id upload <<<"$created" || :
           if ! [[ "$id" =~ ^[0-9]+$ ]] || [ -z "$upload" ]; then

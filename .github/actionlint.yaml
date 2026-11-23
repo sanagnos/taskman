@@ -1,0 +1,7 @@
+# actionlint's settings (CI's workflows job, and `actionlint` run in a checkout).
+paths:
+  .github/workflows/release.yml:
+    ignore:
+      # GitHub takes `queue: max` under concurrency (releases have run with it); actionlint 1.7.12
+      # doesn't know the key yet. Remove this once a newer actionlint does.
+      - 'unexpected key "queue" for "concurrency" section'
