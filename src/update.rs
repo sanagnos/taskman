@@ -1662,18 +1662,18 @@ mod tests {
         let refusal = |tag| attestation(gh_out(1, issuer), tag, None).unwrap_err();
         assert_eq!(
             refusal("v1.2.3").text("taskman-v1.2.3-x.tar.gz", "v1.2.3"),
-            "gh couldn't verify taskman-v1.2.3-x.tar.gz's attestation (Error: verifying with issuer \
-             \"sigstore.dev\"); nothing was installed. An archive is refused unless the release \
-             workflow signed it from its release's own tag, on GitHub's runners"
+            "gh couldn't verify taskman-v1.2.3-x.tar.gz's attestation (Error: verifying with \
+             issuer \"sigstore.dev\"); nothing was installed. An archive is refused unless the \
+             release workflow signed it from its release's own tag, on GitHub's runners"
         );
         let from_main =
             refusal(SIGNED_FROM_MAIN).text("taskman-v0.1.26-x.tar.gz", SIGNED_FROM_MAIN);
         assert_eq!(
             from_main,
-            "gh couldn't verify taskman-v0.1.26-x.tar.gz's attestation (Error: verifying with issuer \
-             \"sigstore.dev\"); nothing was installed. An archive is refused unless the release \
-             workflow signed it from its release's own tag, on GitHub's runners; v0.1.26 was signed \
-             from the main branch instead, so it stays refused: install a later release"
+            "gh couldn't verify taskman-v0.1.26-x.tar.gz's attestation (Error: verifying with \
+             issuer \"sigstore.dev\"); nothing was installed. An archive is refused unless the \
+             release workflow signed it from its release's own tag, on GitHub's runners; v0.1.26 \
+             was signed from the main branch instead, so it stays refused: install a later release"
         );
         // A verdict named to look like the network still names no way around.
         let both = Refusal { why: "dial tcp".into(), network: true, verdict: true };

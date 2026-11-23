@@ -16,12 +16,13 @@
 # runs only what its tag holds. Starting it again therefore gets past a failure that came from
 # outside (GitHub, a runner, CI on the commit), never one this file causes: a fix on main doesn't
 # reach the tag, a version tag isn't moved, and the fix goes out as the next patch version, the
-# failed tag left without a release. The failed version's changelog section goes out with it:
-# the fix's pull request renames its heading in CHANGELOG.md to "## Unreleased" and adds a line
-# saying that version wasn't released, and the release script moves those lines under the next
-# version, so its notes (the check job, below) hold both. A run for a tag that already has a
-# published release builds nothing and ends green: that's the tag push GitHub delivered late,
-# after the release script had started a run by hand.
+# failed tag left without a release, and any draft its run left deleted by hand (gh release
+# delete v1.2.3), as only a later run for the same tag would clear it. The failed version's
+# changelog section goes out with it: the fix's pull request renames its heading in CHANGELOG.md
+# to "## Unreleased" and adds a line saying that version wasn't released, and the release script
+# moves those lines under the next version, so its notes (the check job, below) hold both. A run
+# for a tag that already has a published release builds nothing and ends green: that's the tag
+# push GitHub delivered late, after the release script had started a run by hand.
 #
 # A dry run builds, runs and checks every binary and archive as a release would, for Cargo.toml's
 # version, writes the release's notes and the request that would create it, and keeps all of
