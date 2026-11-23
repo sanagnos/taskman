@@ -2130,6 +2130,7 @@ dependencies = [
  "proptest",
  "ratatui",
  "rcgen",
+ "regex",
  "rustls",
  "rustls-native-certs",
  "serde",

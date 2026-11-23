@@ -58,11 +58,11 @@ taskman updates itself: at every start and every hour it looks up the latest Git
 
 Only then is it renamed over the old one, so a failed or broken download leaves the working copy in place. It applies at the next start; taskman never restarts itself. The checksum comes from the same release, so it catches broken and truncated downloads, not a compromised release; the release workflow guards that, with pinned actions and a write token only in the job that runs no project code.
 
-What a checksum can't show, an attestation can: each release's archives and `SHA256SUMS` carry a GitHub artifact attestation, a signed record that this repository's release workflow built the file. taskman and the install script verify it with the GitHub CLI (`gh attestation verify`), which must find it signed by `.github/workflows/release.yml` run from a version tag or `main`, on a GitHub-hosted runner, and install nothing if it fails. gh reads the archive from a new folder only you can open. Every release from v0.1.0 on has an attestation, so one from then on without one is refused, as a replaced archive would have none. You can verify a file you downloaded yourself:
+What a checksum can't show, an attestation can: each release's archives and `SHA256SUMS` carry a GitHub artifact attestation, a signed record that this repository's release workflow built the file. taskman and the install script verify it with the GitHub CLI (`gh attestation verify`), which must find it signed by `.github/workflows/release.yml` run from that release's own tag, on a GitHub-hosted runner, and install nothing if it fails. gh reads the archive from a new folder only you can open. Every release from v0.1.0 on has an attestation, so one from then on without one is refused, as a replaced archive would have none. You can verify a file you downloaded yourself:
 
 ```bash
 gh attestation verify taskman-vX.Y.Z-<target>.tar.gz --repo sanagnos/taskman \
-  --cert-identity-regex '^https://github\.com/sanagnos/taskman/\.github/workflows/release\.yml@refs/(tags/v[0-9]+\.[0-9]+\.[0-9]+|heads/main)$' \
+  --cert-identity-regex '^https://github\.com/sanagnos/taskman/\.github/workflows/release\.yml@refs/tags/vX\.Y\.Z$' \
   --deny-self-hosted-runners
 ```
 
