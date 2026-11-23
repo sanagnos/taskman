@@ -309,17 +309,21 @@ fn a_hook_ended_by_sigterm_stops_its_git() {
     let pids = dir.join("git.pids");
     let git = format!("#!/bin/sh\necho $$ >> '{}'\nexec sleep 60\n", pids.display());
     let (mut child, _) = start_stop(&dir, &dir, "abc", &git);
-    assert!(common::wait_until(|| pids.exists()), "git never started");
+    // Its pid written, not only the file made: the shell makes the file before `echo` writes to
+    // it, and a git stopped in between (as the hook does on the signal) leaves it empty.
+    let written = || std::fs::read_to_string(&pids).is_ok_and(|p| p.ends_with('\n'));
+    assert!(common::wait_until(written), "git never started");
     // SAFETY: kill only sends the signal, to the hook this test started and hasn't reaped.
     unsafe { libc::kill(i32::try_from(child.id()).unwrap(), libc::SIGTERM) };
-    child.wait().unwrap();
+    let ended = child.wait().unwrap();
+    assert!(!ended.success(), "the hook went on to the end: {ended:?}");
     // Each git the hook started, the one it was waiting for when the signal came included.
     let started: Vec<i32> = std::fs::read_to_string(&pids)
         .unwrap()
         .split_whitespace()
         .map(|p| p.parse().unwrap())
         .collect();
-    assert!(!started.is_empty());
+    assert!(!started.is_empty(), "no pid in {}", pids.display());
     assert!(common::wait_until(|| !started.iter().any(|&p| alive(p))), "git runs on: {started:?}");
 }
 
