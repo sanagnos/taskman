@@ -120,16 +120,18 @@ repo="$(sed -n 's/^ *repo=//p' "$root/scripts/install.sh")"
 
 # A logged-in gh's `gh attestation verify ARCHIVE --repo REPO --cert-identity-regex IDENTITY
 # --deny-self-hosted-runners`, answering as $FAKE_ATTEST says, in gh's own words. The identity is
-# the release workflow run from a version tag; the archive must be in a folder only its
-# owner can open.
+# the release workflow run from the tag of the release the archive is named after; the archive
+# must be in a folder only its owner can open.
 repo_re="$(printf '%s' "$repo" | sed 's/[.]/\\./g')"
-printf '%s\n' "^https://github\\.com/$repo_re/\\.github/workflows/release\\.yml@refs/tags/v[0-9]+\\.[0-9]+\\.[0-9]+\$" \
+printf '%s\n' "^https://github\\.com/$repo_re/\\.github/workflows/release\\.yml@refs/tags/" \
   > "$work/identity"
 mkdir -p "$work/attestbin"
 printf '#!/bin/sh\nrepo="%s"\nidentity_file="%s"\n' "$repo" "$work/identity" > "$work/attestbin/gh"
 cat >> "$work/attestbin/gh" <<'GH'
+tag_re="$(basename "$3" | sed -n 's/^taskman-\(v[0-9][0-9.]*\)-.*/\1/p' | sed 's/[.]/\\./g')"
 if [ "$1 $2" != "attestation verify" ] || [ ! -f "$3" ] || [ "$4 $5" != "--repo $repo" ] \
-  || [ "$6" != "--cert-identity-regex" ] || [ "$7" != "$(cat "$identity_file")" ] \
+  || [ "$6" != "--cert-identity-regex" ] || [ -z "$tag_re" ] \
+  || [ "$7" != "$(cat "$identity_file")$tag_re\$" ] \
   || [ "$8" != "--deny-self-hosted-runners" ] || [ $# -ne 8 ]; then
   echo "fake gh: unexpected arguments: $*" >&2; exit 1
 fi
@@ -274,6 +276,7 @@ check "verifies the attestation with gh" 0 "taskman 1.1.0" attest verified TASKM
 said "Verified its attestation with gh: $repo's release workflow built it."
 check "refuses an archive that fails its attestation" 1 "taskman 1.1.0" attest failed
 said "gh couldn't verify taskman-v1.2.0-$target.tar.gz's attestation (Error: verifying with issuer"
+said "nothing was installed. An archive is refused unless the release workflow signed it from its release's own tag."
 not_said "$skip_var"
 check "refuses an archive another workflow built" 1 "taskman 1.1.0" attest signer
 said "failed to verify certificate identity"
@@ -428,6 +431,7 @@ if [ -x "$exe" ]; then
   before="$(inode)"
   check "taskman update refuses an archive that fails its attestation" 1 "$version" upd_attest failed "$work/attestbin:$PATH"
   said "gh couldn't verify taskman-$tag-$target.tar.gz's attestation (Error: verifying with issuer"
+  said "nothing was installed. An archive is refused unless the release workflow signed it from its release's own tag"
   not_said "$skip_var"
   [ "$(inode)" = "$before" ] || { echo "FAIL taskman update replaced the binary after a failed attestation"; failures=$((failures + 1)); }
   check "taskman update installs on the checksum alone with a gh too old to verify" 0 "$version" upd_attest old "$work/attestbin:$PATH"

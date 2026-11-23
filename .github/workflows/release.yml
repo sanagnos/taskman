@@ -16,9 +16,12 @@
 # runs only what its tag holds. Starting it again therefore gets past a failure that came from
 # outside (GitHub, a runner, CI on the commit), never one this file causes: a fix on main doesn't
 # reach the tag, a version tag isn't moved, and the fix goes out as the next patch version, the
-# failed tag left without a release. A run for a tag that already has a published release builds
-# nothing and ends green: that's the tag push GitHub delivered late, after the release script had
-# started a run by hand.
+# failed tag left without a release. The failed version's changelog section goes out with it:
+# the fix's pull request renames its heading in CHANGELOG.md to "## Unreleased" and adds a line
+# saying that version wasn't released, and the release script moves those lines under the next
+# version, so its notes (the check job, below) hold both. A run for a tag that already has a
+# published release builds nothing and ends green: that's the tag push GitHub delivered late,
+# after the release script had started a run by hand.
 #
 # A dry run builds, runs and checks every binary and archive as a release would, for Cargo.toml's
 # version, writes the release's notes and the request that would create it, and keeps all of
@@ -495,7 +498,8 @@ jobs:
         run: |
           gh api "repos/$GITHUB_REPOSITORY/contents/CHANGELOG.md?ref=$REF" \
             -H 'Accept: application/vnd.github.raw' > CHANGELOG.md || : > CHANGELOG.md
-          awk -v v="${TAG#v}" '/^## / { if (p) exit; p = ($2 == v); next } p' CHANGELOG.md | tee notes.md
+          awk -v v="${TAG#v}" '/^## / { if (p) exit; p = ($2 == v); next } p' CHANGELOG.md \
+            | tee notes.md
           if grep -q '[^[:space:]]' notes.md; then
             jq -n --arg tag "$TAG" --rawfile body notes.md \
               '{tag_name: $tag, name: "taskman \($tag)", body: $body, draft: true}'
@@ -504,6 +508,13 @@ jobs:
               '{tag_name: $tag, name: "taskman \($tag)", generate_release_notes: true, draft: true}'
           fi > release.json
           jq -r '"The request: " + (del(.body) | tojson)' release.json
+          # The release job's own check of the request before it sends it, so a dry run runs it.
+          if ! jq -e --arg tag "$TAG" '.tag_name == $tag and .draft == true' release.json \
+            >/dev/null; then
+            echo "release.json isn't a draft for $TAG:" >&2
+            cat release.json >&2
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -549,11 +560,14 @@ jobs:
       - name: Check the archives and the request
         run: |
           sha256sum -c SHA256SUMS
-          if [ "$(printf '%s\n' taskman-*.tar.gz | sort)" != "$(awk '{print $2}' SHA256SUMS | sort)" ]; then
+          listed="$(awk '{print $2}' SHA256SUMS | sort)"
+          if [ "$(printf '%s\n' taskman-*.tar.gz | sort)" != "$listed" ]; then
             echo "The archives aren't the ones SHA256SUMS lists." >&2
             exit 1
           fi
-          if ! jq -e --arg tag "$TAG" '.tag_name == $tag and .draft == true' release.json >/dev/null; then
+          # As the check job checked it, again here on what was downloaded.
+          if ! jq -e --arg tag "$TAG" '.tag_name == $tag and .draft == true' release.json \
+            >/dev/null; then
             echo "release.json isn't a draft for $TAG:" >&2
             cat release.json >&2
             exit 1

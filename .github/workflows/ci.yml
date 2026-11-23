@@ -183,9 +183,11 @@ jobs:
   # release.yml's release job is first run by a release. actionlint checks they're valid (keys,
   # expressions, runner labels, what a job needs) and runs shellcheck on each `run:` script;
   # zizmor looks for what makes a workflow unsafe: text from a pull request in a script, actions
-  # not pinned by commit, permissions wider than needed, a token left in .git/config, and, asking
-  # GitHub, actions with a known vulnerability. What they're told to leave is in
-  # .github/actionlint.yaml, with why.
+  # not pinned by commit, permissions wider than needed, a token left in .git/config. Offline,
+  # so its answer depends on the files and its pinned version alone: the audits that ask GitHub
+  # (an action with a known vulnerability, say) would turn main red, and with it every pull
+  # request and the release gate, for a new advisory or an API outage. What actionlint is told to
+  # leave is in .github/actionlint.yaml, with why.
   workflows:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -214,7 +216,4 @@ jobs:
           tar xzf "$archive" -C bin actionlint
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - run: actionlint -shellcheck "$(command -v shellcheck)"
-      # The token only raises the API's rate limit for the audits that ask GitHub.
-      - run: zizmor .github/
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - run: zizmor --offline .github/
