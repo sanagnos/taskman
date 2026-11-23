@@ -426,7 +426,7 @@ taskman status KEY shows one ticket in full.
 
 Claude sessions run it without asking. In Codex it needs network access, which Codex's sandbox blocks, so Codex asks before running it; answer "don't ask again for commands that start with `taskman status`" once to allow it from then on.
 
-`--all-projects` shows every project from any folder, reading each one's tracker with its account. If taskman itself fails while fetching a project or a ticket, the answer names it (`failed` and `failed_projects` in `--json`) and the command exits 1, as it does when a tracker or GitHub can't be read. In a session it's refused; `env -u TASKMAN_REPO taskman status --all-projects` is up to your permission settings, as above. Without the flag, `env -u TASKMAN_REPO taskman status` still shows the session's own ticket or project.
+`--all-projects` shows every project from any folder, reading each one's tracker with its account. If taskman itself fails while fetching a project or a ticket, the answer names it (`failed` and `failed_projects` in `--json`) and the command exits 1, as it does when a tracker or GitHub can't be read. So does `taskman status KEY` for a stacked ticket whose base's PR it failed to fetch: the report still prints, its stack line says the base's PR couldn't be read, `--json` lists it under `failed`, and the command exits 1. In a session it's refused; `env -u TASKMAN_REPO taskman status --all-projects` is up to your permission settings, as above. Without the flag, `env -u TASKMAN_REPO taskman status` still shows the session's own ticket or project.
 
 ## Adding tickets from a shell or a session: `taskman add`
 

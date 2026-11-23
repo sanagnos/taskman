@@ -73,9 +73,9 @@ fn cleaned(v: serde_json::Value) -> serde_json::Value {
 /// letters to Unicode and draw as blanks; and the other characters Unicode marks as drawing
 /// nothing that no text needs (Khmer's U+17B4 and U+17B5, U+2065, the shorthand format controls).
 /// All are known ways to put instructions in text where a person looking at it won't see them.
-/// Direction marks (U+200E, U+200F, U+061C) stay wherever they are: they only nudge the
-/// characters beside them, can't reverse text as the embeddings, overrides and isolates can, and
-/// right-to-left text uses them. The conjoining jamo fillers have a job in some text, so they stay
+/// Direction marks (U+200E, U+200F, U+061C) stay wherever they are, one at a time: they only nudge
+/// the characters beside them, can't reverse text as the embeddings, overrides and isolates can,
+/// and right-to-left text uses them. The conjoining jamo fillers have a job in some text, so they stay
 /// where they have it (`kept`).
 fn hidden(c: char) -> bool {
     matches!(c,
@@ -115,15 +115,14 @@ fn emoji_base(c: char) -> bool {
 }
 
 /// A character a joiner can stand beside: a visible one outside ASCII, as joiners only join emoji
-/// and the letters of scripts that aren't written in ASCII. Not a direction mark or jamo filler,
-/// which draw as nothing and may go themselves, leaving the joiner beside nothing.
+/// and the letters of scripts that aren't written in ASCII. Not a jamo filler, which may go
+/// itself and leave the joiner beside nothing.
 fn joinable(c: char) -> bool {
     !(c.is_ascii()
         || c.is_whitespace()
         || c.is_control()
         || hidden(c)
         || joiner(c)
-        || mark(c)
         || matches!(c, NO_CONSONANT | NO_VOWEL))
 }
 
@@ -158,14 +157,17 @@ fn jamo_vowel(c: char) -> bool {
 /// jamo filler draws as nothing, so one that has no job where it is could carry hidden text, a
 /// run of them a whole message. So a selector stays only straight after an emoji, one at a time;
 /// a joiner only between two characters it can join; and a jamo filler only in the syllable it
-/// completes, before a vowel or after a first consonant. A direction mark stays wherever it is
-/// (`hidden`).
+/// completes, before a vowel or after a first consonant. A direction mark stays wherever it is,
+/// one at a time (`hidden`): a run of them has no job one doesn't do, and could spell out a
+/// message.
 fn kept(prev: Option<char>, c: char, next: Option<char>) -> bool {
     if selector(c) {
         prev.is_some_and(emoji_base)
     } else if joiner(c) {
         prev.is_some_and(|p| joinable(p) || selector(p))
             && next.is_some_and(|n| joinable(n) && !selector(n))
+    } else if mark(c) {
+        !prev.is_some_and(mark)
     } else if c == NO_CONSONANT {
         next.is_some_and(jamo_vowel)
     } else if c == NO_VOWEL {
@@ -390,6 +392,14 @@ mod tests {
             assert_eq!(clean(s), s);
             assert_eq!(line(s), s);
         }
+        // One at a time: a run keeps its first, wherever it is, so no gap holds more than one.
+        let run: String =
+            (0..64).map(|i| if i % 3 == 0 { '\u{200E}' } else { '\u{200F}' }).collect();
+        assert_eq!(clean(&format!("Fix{run} login")), "Fix\u{200E} login");
+        assert_eq!(line(&format!("עברית{run}!")), "עברית\u{200E}!");
+        assert_eq!(clean("a\u{200E}\u{200B}\u{200F}b"), "a\u{200E}b");
+        // A joiner beside a mark joins nothing a person sees, but the mark stays, so it does too.
+        assert_eq!(clean("é\u{200D}\u{200E}\u{200F}x"), "é\u{200D}\u{200E}x");
         // In a path each is escaped, as it draws as nothing; in JSON it's an escape too.
         assert_eq!(path(std::path::Path::new("/src/a\u{200f}b")), "/src/a\\u{200f}b");
         let json = labelled_json(serde_json::json!({ "title": "עברית\u{200F}!" }));

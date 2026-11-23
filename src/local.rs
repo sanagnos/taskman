@@ -105,27 +105,34 @@ pub fn columns(board: &Path) -> Vec<Column> {
         .collect()
 }
 
-/// The column `name` names, by its shown name or its folder's, ignoring case, as typed or as
-/// taskman prints it (`column_shown`), so a column whose name `untrusted::path` escapes (`~done`,
-/// `a\b`, one with a hidden character) can be typed back as it's shown. Ok(None) when none does;
-/// Err with every one it could mean when several do: folder names come from the repository, so
-/// one can be made to read as another's shown name (`\x7edone` beside `~done`), and picking
-/// either would be a guess.
+/// The column `name` names: the one whose folder it is exactly, as named or as taskman prints it
+/// (`column_shown`), so a column whose name `untrusted::path` escapes (`~done`, `a\b`, one with a
+/// hidden character) can be typed back as it's shown; else the one it names ignoring case, by
+/// folder or column name, raw or shown. Ok(None) when none does; Err with every one it could mean
+/// when several do: `todo` beside `Todo` is `todo`, but `TODO` could be either, and folder names
+/// come from the repository, so one can be made to read exactly as another's shown name
+/// (`\x7edone` beside `~done`), where picking either would be a guess.
 fn column<'a>(columns: &'a [Column], name: &str) -> Result<Option<&'a Column>, Vec<&'a Column>> {
     let name = name.trim().trim_matches('/');
-    let named =
-        |n: &str| n.eq_ignore_ascii_case(name) || column_shown(n).eq_ignore_ascii_case(name);
-    let found: Vec<&Column> = columns
-        .iter()
-        .filter(|c| {
-            named(&c.name) || c.dir.file_name().is_some_and(|d| named(&d.to_string_lossy()))
-        })
-        .collect();
+    let exactly = |n: &str| n == name || column_shown(n) == name;
+    let found: Vec<&Column> = columns.iter().filter(|c| exactly(&folder(c))).collect();
+    let found = if found.is_empty() {
+        let named =
+            |n: &str| n.eq_ignore_ascii_case(name) || column_shown(n).eq_ignore_ascii_case(name);
+        columns.iter().filter(|c| named(&c.name) || named(&folder(c))).collect()
+    } else {
+        found
+    };
     match found[..] {
         [] => Ok(None),
         [c] => Ok(Some(c)),
         _ => Err(found),
     }
+}
+
+/// Column `c`'s folder's name.
+fn folder(c: &Column) -> String {
+    c.dir.file_name().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
 /// The status category the panel colours by, from the column's name.
@@ -501,7 +508,8 @@ pub fn move_to(board: &Path, key: &str, column_name: &str) -> Result<(File, Stri
     let file = find(board, key)?;
     let cols = columns(board);
     let to = column(&cols, column_name).map_err(|several| {
-        let names = several.iter().map(|c| column_shown(&c.name)).collect::<Vec<_>>().join(" or ");
+        let names =
+            several.iter().map(|c| column_shown(&folder(c))).collect::<Vec<_>>().join(" or ");
         format!(
             "{} could mean the columns {names} on {}; name the folder exactly as it is",
             untrusted::line(column_name),
@@ -1051,10 +1059,13 @@ mod tests {
         assert_eq!(both, ["\\x7edone", "~done"]);
         let before = find(&board, "WP-1").unwrap().path;
         let e = move_to(&board, "WP-1", "\\x7edone").unwrap_err().message;
-        assert!(e.contains("\\x7edone could mean the columns "), "{e}");
-        assert!(
-            e.contains(&column_shown("~done")) && e.contains(&column_shown("\\x7edone")),
-            "{e}"
+        assert_eq!(
+            e,
+            format!(
+                "\\x7edone could mean the columns \\\\x7edone or \\x7edone on {}; name the \
+                 folder exactly as it is",
+                untrusted::path(&board)
+            )
         );
         assert_eq!(find(&board, "WP-1").unwrap().path, before, "it moved");
         std::fs::remove_dir_all(board.join("\\x7edone")).unwrap();
@@ -1195,5 +1206,31 @@ mod tests {
             let issue = parse(&content, &file("WP-3", "fix-login", "todo"), |t| t.to_string());
             prop_assert!(!issue.summary.is_empty());
         }
+    }
+
+    /// A column is the one whose folder the input is exactly, as named or as shown; else the one
+    /// it names ignoring case. Several either way is a refusal naming each. Built, not made on
+    /// disk: macOS's disk can't hold `todo` beside `Todo`.
+    #[test]
+    fn a_column_is_named_exactly_before_by_case() {
+        let col =
+            |d: &str| Column { name: column_name(d).1.to_string(), dir: Path::new("/b").join(d) };
+        let cols = [col("todo"), col("Todo"), col("~done"), col("\\x7edone"), col("02-Doing")];
+        let named = |typed: &str| {
+            column(&cols, typed)
+                .map(|c| c.map(folder))
+                .map_err(|several| several.into_iter().map(folder).collect::<Vec<_>>())
+        };
+        assert_eq!(named("todo"), Ok(Some("todo".into())));
+        assert_eq!(named("Todo"), Ok(Some("Todo".into())));
+        assert_eq!(named("TODO"), Err(vec!["todo".into(), "Todo".into()]));
+        assert_eq!(named("~done"), Ok(Some("~done".into())));
+        // What taskman shows for `~done` is also the decoy's folder name: either, so neither.
+        assert_eq!(named("\\x7edone"), Err(vec!["~done".into(), "\\x7edone".into()]));
+        // The decoy's own shown name is only its.
+        assert_eq!(named("\\\\x7edone"), Ok(Some("\\x7edone".into())));
+        // By column name (a numbered folder's), ignoring case.
+        assert_eq!(named("doing"), Ok(Some("02-Doing".into())));
+        assert_eq!(named("nowhere"), Ok(None));
     }
 }

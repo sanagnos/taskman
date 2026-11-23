@@ -1178,7 +1178,9 @@ impl Report {
             "branch": self.branch.as_deref().map(untrusted::line),
             "stacked_on": self.stack.as_ref().map(|(b, hint)| json!({ "key": b.key, "branch": untrusted::line(&b.branch), "note": hint })),
             "failed": match (&self.stack, self.base_failed) {
-                (Some((b, _)), true) => json!([{ "what": "base PR", "key": b.key, "error": FAILED }]),
+                (Some((b, _)), true) => {
+                    json!([{ "what": "base PR", "key": b.key, "error": FAILED }])
+                }
                 _ => json!([]),
             },
             "pr": pr,

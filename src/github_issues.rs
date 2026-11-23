@@ -118,9 +118,12 @@ pub fn names_others_issue(input: &str, repo: &Repo) -> bool {
         let theirs = Repo { host: host.into(), owner: owner.into(), name: name.into() };
         !repo.same(host, owner, name) && names_issue(s, &theirs)
     };
+    // `owner/name#12`, as `key_from_input` reads one: a number after the `#`, one `/` before it.
     if !s.contains("://")
-        && let Some((path, _)) = s.split_once('#')
+        && let Some((path, n)) = s.split_once('#')
         && let Some((owner, name)) = path.split_once('/')
+        && ticket_key::is_number(n)
+        && !name.contains('/')
     {
         return other(&repo.host, owner, name);
     }
@@ -791,6 +794,8 @@ pub(crate) mod tests {
             "https://github.com/acme/api/issues/3",
             "github.com/acme/api/issues/3/",
             " https://github.com/ACME/api/issues/3?x=1#c ",
+            "github.com/acme/api/issues/3#issuecomment-1",
+            "https://github.com/acme/api/issues/3#issuecomment-1",
         ] {
             assert!(names_others_issue(others, &web), "{others:?}");
         }
