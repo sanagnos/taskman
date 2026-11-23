@@ -183,6 +183,11 @@ impl Status {
     }
 
     /// A hook wrote the status file: whatever a key or the screen suggested is settled by it.
+    /// A hook of this start has reported: its CLI is up (SessionStart comes first).
+    pub(super) fn reported(&self) -> bool {
+        self.last_event.is_some()
+    }
+
     fn hook_fired(&mut self) {
         self.last_event = Some(Instant::now());
         self.esc_at = None;

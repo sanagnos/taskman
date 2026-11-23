@@ -123,8 +123,9 @@ impl App {
         // An agent can only message sessions that are running: once a project's agent that
         // messages runs, start its ticket sessions that can be messaged too, one per tick. A
         // ticket that's away won't start, and finding it every tick would hold up the rest. One
-        // asleep stays asleep: waking it would undo the memory it was put to sleep to save, and
-        // the agent is told it can't be messaged (`taskman status` says "asleep").
+        // asleep stays asleep: waking them all would undo the memory they were put to sleep to
+        // save. The agent sees it asleep (`taskman status`) and wakes the one it needs (`taskman
+        // wake`).
         if area.width > 0
             && let Some(i) = (0..self.tickets.len()).find(|&i| {
                 let tv = &self.tickets[i];
@@ -151,15 +152,16 @@ impl App {
             && let Some(i) = self.tickets.iter().position(|tv| tv.start && !tv.reaping())
         {
             self.tickets[i].start = false;
-            if self.tickets[i].session.is_none()
-                && self.tickets[i].status.state == AgentState::NotStarted
-            {
+            // Not started yet, or asleep (`taskman wake`).
+            if self.tickets[i].dormant() {
                 self.start_session(i);
             }
         }
     }
 
     fn start_session(&mut self, i: usize) {
+        // A wake's grace is for this start only, whether or not it happens.
+        let woken = std::mem::take(&mut self.tickets[i].woken);
         // Never in the main checkout in place of a worktree the user asked for, and never while
         // it's away: running elsewhere, or handed off until the user brings it back.
         if self.tickets[i].waiting() || self.tickets[i].away.is_some() {
@@ -229,7 +231,7 @@ impl App {
         let area = self.areas.claude;
         let name = self.qualified(&self.tickets[i].t);
         let launch = super::launch::launch_id();
-        let (cmd, watch) = self.starting(i, &name, &launch, Instant::now());
+        let (cmd, watch) = self.starting(i, &name, &launch, Instant::now(), woken);
         // What the status file says is an earlier start's: at taskman's next start it would pass
         // for the session's latest conversation (`take_leftover_status`).
         let status = store::status_file(&self.tickets[i].t.repo, &self.tickets[i].t.key);

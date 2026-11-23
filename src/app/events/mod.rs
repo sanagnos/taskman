@@ -34,6 +34,7 @@ mod sync;
 mod tickets;
 mod toasts;
 mod turns;
+mod wake;
 
 /// What a thread whose work panicked reports (`sync::Reporter`).
 const BUG: &str = "taskman hit a bug; details in ~/.local/state/taskman/panics.log";
