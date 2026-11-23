@@ -171,8 +171,10 @@ const RELEASE_GIT_WAIT: Duration = Duration::from_millis(800);
 
 /// How long a turn's end waits for all its git calls together, stopping those that hang included:
 /// the CLIs give a hook 3 s (Codex, as taskman sets it) or 5 s, and a hook they end hasn't written
-/// the turn's line, which matters more than what git says.
-const RELEASE_STOP_WAIT: Duration = Duration::from_millis(2500);
+/// the turn's line, which matters more than what git says. The 0.7 s left of Codex's 3 is for
+/// starting taskman and for a machine that's busy: under heavy load, starting and ending the hook
+/// and stopping its git took up to 0.3 s more than the calls' own time.
+const RELEASE_STOP_WAIT: Duration = Duration::from_millis(2300);
 
 // The unit tests run real git on machines that may be busy, and a hook's limit isn't what they're
 // about, so they get longer limits; a unit test checks the release values against the CLIs'.
@@ -1408,8 +1410,9 @@ mod tests {
     fn a_git_calls_limit_leaves_time_to_stop_it() {
         let grace = crate::proc::STOP_GRACE;
         let (wait, total) = (RELEASE_GIT_WAIT, RELEASE_STOP_WAIT);
-        // Writing the line and starting taskman need some of what the CLI gives the hook.
-        assert!(total + Duration::from_millis(400) <= Duration::from_secs(CODEX_HOOK_TIMEOUT));
+        // Starting taskman, writing the line and a busy machine need some of what the CLI gives
+        // the hook (`RELEASE_STOP_WAIT`).
+        assert!(total + Duration::from_millis(700) <= Duration::from_secs(CODEX_HOOK_TIMEOUT));
         // A turn's end makes three calls (`log_turn`), each taking its limit and the grace; one
         // left no time isn't run.
         let mut left = total;

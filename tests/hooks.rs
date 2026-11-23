@@ -327,7 +327,7 @@ fn a_hook_ended_by_sigterm_stops_its_git() {
 const HOOK_LIMIT: Duration = Duration::from_secs(3);
 
 /// A git that hangs must not cost the turn's line: the CLI ends a hook that takes too long, Codex's
-/// at 3 s, so the hook has to be over by then, and it gives its git calls 2.5 s between them.
+/// at 3 s, so the hook has to be over by then, and it gives its git calls 2.3 s between them.
 /// Sleeping, not working, so a busy machine doesn't change how long this takes by much.
 #[test]
 fn a_hung_git_still_leaves_the_turns_line() {
@@ -340,9 +340,9 @@ fn a_hung_git_still_leaves_the_turns_line() {
 
 /// Nor one that doesn't end when it's asked to at its limit, which is given a moment more before
 /// it's killed: that moment is within the hook's time too. The tightest margin in this file: the
-/// hook's git calls take all of their 2.5 s here (`STOP_WAIT`), which leaves about half a second
-/// of the 3 for starting taskman and the stub git and writing the files. A flake here on a slow
-/// machine is that margin.
+/// hook's two calls take 2.1 s of their 2.3 here (`STOP_WAIT`; the third has no time left to run
+/// in), which leaves about 0.9 s of the 3 for starting taskman and the stub git, writing the files
+/// and a busy machine. A flake here on a slow machine is that margin.
 #[test]
 fn a_hung_git_that_ignores_being_stopped_still_leaves_the_turns_line() {
     let dir = scratch_dir("hook-stubborn-git");
