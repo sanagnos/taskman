@@ -435,17 +435,23 @@ impl Prs {
             let snap = match self.find(*n) {
                 Some(i) => {
                     let mut known = self.seen.remove(i);
-                    if known.state == PrState::Open {
-                        match state {
-                            PrState::Merged => events.push(Event::PrMerged(*n)),
-                            PrState::Closed => events.push(Event::PrClosed(*n)),
-                            PrState::Open | PrState::Other(_) => {}
+                    match (&known.state, state) {
+                        (PrState::Open | PrState::Closed, PrState::Merged) => {
+                            events.push(Event::PrMerged(*n));
                         }
+                        (PrState::Open, PrState::Closed) => events.push(Event::PrClosed(*n)),
+                        _ => {}
                     }
-                    // Merged is for good: a list that still says open (GitHub's search index can
-                    // lag behind the PR itself) mustn't have it told merged again when it catches
-                    // up. Closed can be reopened.
-                    if known.state != PrState::Merged {
+                    // Merged is for good, and a list that says open isn't believed of a PR known
+                    // merged or closed: GitHub's search index can lag behind the PR itself, and
+                    // taking its word had the PR told merged, or closed, again when it caught up.
+                    // A closed PR is open again once it's the one shown (`pr_events`); one that
+                    // reopens unshown and merges is told merged from closed, above.
+                    let behind = matches!(
+                        (&known.state, state),
+                        (PrState::Merged, _) | (PrState::Closed, PrState::Open)
+                    );
+                    if !behind {
                         known.state = state.clone();
                     }
                     known
@@ -1182,11 +1188,20 @@ mod tests {
         // The search index lags: #10 listed open again, then merged once it catches up.
         assert_eq!(prs.see(Some(snap(11)), &[(10, Open), (11, Open)]), []);
         assert_eq!(prs.see(Some(snap(11)), &[(10, Merged), (11, Open)]), [], "once");
-        // A closed one reopened, and closed again, is told closed again.
+        // A closed one listed open again isn't believed either, so it isn't told closed twice.
         assert_eq!(prs.see(Some(snap(11)), &[(10, Merged), (12, Open)]), []);
         assert_eq!(prs.see(Some(snap(11)), &[(12, Closed)]), [Event::PrClosed(12)]);
         assert_eq!(prs.see(Some(snap(11)), &[(12, Open)]), []);
-        assert_eq!(prs.see(Some(snap(11)), &[(12, Closed)]), [Event::PrClosed(12)]);
+        assert_eq!(prs.see(Some(snap(11)), &[(12, Closed)]), [], "once");
+        // Had it reopened and merged meanwhile, that's told: no list says merged falsely.
+        assert_eq!(prs.see(Some(snap(11)), &[(12, Open)]), []);
+        assert_eq!(prs.see(Some(snap(11)), &[(12, Merged)]), [Event::PrMerged(12)]);
+        assert_eq!(prs.see(Some(snap(11)), &[(12, Merged)]), [], "once");
+        // Reopened and shown, it's open again, and its next close is told.
+        assert_eq!(prs.see(Some(snap(11)), &[(13, Open)]), []);
+        assert_eq!(prs.see(Some(snap(11)), &[(13, Closed)]), [Event::PrClosed(13)]);
+        assert_eq!(prs.see(Some(snap(13)), &[(11, Open)]), [Event::PrOpened(13)]);
+        assert_eq!(prs.see(Some(snap(11)), &[(13, Closed)]), [Event::PrClosed(13)]);
     }
 
     #[test]

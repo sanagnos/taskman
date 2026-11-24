@@ -223,7 +223,10 @@ impl World {
             let checks = [Overall::None, Overall::Pending, Overall::Pass, Overall::Fail];
             moves
                 .extend(checks.into_iter().filter(|c| *c != pr.checks).map(|c| Move::Checks(n, c)));
-            moves.extend([Move::Approve(n), Move::RequestChanges(n), Move::Comment(n)]);
+            // Twice as likely as a change of checks, of which there are three.
+            for _ in 0..2 {
+                moves.extend([Move::Approve(n), Move::RequestChanges(n), Move::Comment(n)]);
+            }
         }
         moves
     }
@@ -293,6 +296,9 @@ pub(crate) struct Trace {
     looks: Vec<BTreeMap<u64, State>>,
     /// Each PR's last reading: in which of `looks`, and its state there.
     last: BTreeMap<u64, (usize, State)>,
+    /// The PRs no list read closed since they were last shown open, or first read open: a list
+    /// that says open of a PR read closed may be behind, so it settles nothing.
+    open: Vec<u64>,
     /// Each event told but the comments: its PR, its kind and how many lookups had counted by
     /// then.
     told: Vec<(u64, &'static str, usize)>,
@@ -309,6 +315,7 @@ impl Trace {
             baselined,
             looks: Vec::new(),
             last: BTreeMap::new(),
+            open: Vec::new(),
             told: Vec::new(),
             comments: BTreeMap::new(),
         }
@@ -317,6 +324,7 @@ impl Trace {
     pub(crate) fn restart(&mut self) {
         self.baselined = false;
         (self.looks, self.last, self.told) = (Vec::new(), BTreeMap::new(), Vec::new());
+        self.open = Vec::new();
     }
 
     /// Whether `told` is something a lookup that read `seen` of `world` may tell, and all it
@@ -357,8 +365,13 @@ impl Trace {
                 (_, None) => {}
             }
         }
+        let shown = seen.shown.as_ref().map(|s| s.number);
         for (&n, &state) in &now {
-            self.last.insert(n, (self.looks.len(), state));
+            let first = self.last.insert(n, (self.looks.len(), state)).is_none();
+            self.open.retain(|m| *m != n || (state == State::Open));
+            if state == State::Open && (first || shown == Some(n)) && !self.open.contains(&n) {
+                self.open.push(n);
+            }
         }
         self.looks.push(now);
         Ok(())
@@ -378,22 +391,21 @@ impl Trace {
         others.len()
     }
 
-    /// An end is owed for a PR last read open and not forgotten since: the lookups from that one
-    /// on have read fewer other PRs than are remembered. But for a PR once read merged: a list
-    /// that then says open is behind.
+    /// An end is owed for a PR read before and not forgotten since: the lookups from its last
+    /// reading on have read fewer other PRs than are remembered. A merge, unless it was once read
+    /// merged already; a close, when it was open for sure (`open`).
     fn owed(&self, now: &BTreeMap<u64, State>, told: &[Event]) -> Result<(), String> {
         for (&n, &state) in now {
+            let Some(&(at, _)) = self.last.get(&n) else { continue };
             let owed = match state {
-                State::Merged => Event::PrMerged(n),
-                State::Closed => Event::PrClosed(n),
-                State::Open => continue,
+                State::Merged if !self.looks.iter().any(|l| l.get(&n) == Some(&state)) => {
+                    Event::PrMerged(n)
+                }
+                State::Closed if self.open.contains(&n) => Event::PrClosed(n),
+                _ => continue,
             };
-            let Some(&(at, State::Open)) = self.last.get(&n) else { continue };
-            let merged = self.looks.iter().any(|l| l.get(&n) == Some(&State::Merged));
-            if !merged && self.others_since(n, at, None) < self.kept && !told.contains(&owed) {
-                return Err(format!(
-                    "{owed} not told, though it was last read open and is remembered"
-                ));
+            if self.others_since(n, at, None) < self.kept && !told.contains(&owed) {
+                return Err(format!("{owed} not told, of a PR read before and still remembered"));
             }
         }
         Ok(())
@@ -528,12 +540,13 @@ impl Model {
                 continue;
             };
             match (known.state, state) {
-                (State::Open, State::Merged) => events.push(Event::PrMerged(n)),
+                (State::Open | State::Closed, State::Merged) => events.push(Event::PrMerged(n)),
                 (State::Open, State::Closed) => events.push(Event::PrClosed(n)),
                 _ => {}
             }
-            // Merged is for good, whatever a list says after.
-            if known.state != State::Merged {
+            // Merged is for good, and a list that says open isn't believed of a closed PR: it
+            // reopens when it's shown open.
+            if !matches!((known.state, state), (State::Merged, _) | (State::Closed, State::Open)) {
                 known.state = state;
             }
             known.at = at;
@@ -625,8 +638,8 @@ pub(crate) fn action(world: &World) -> impl Strategy<Value = Action> + use<> {
     )
         .prop_map(|(shown, weighed, repo)| Look { shown, weighed, repo });
     prop_oneof![
-        10 => moved.prop_map(Action::Move),
-        10 => look.prop_map(Action::Look),
+        20 => moved.prop_map(Action::Move),
+        20 => look.prop_map(Action::Look),
         1 => Just(Action::Restart),
     ]
 }

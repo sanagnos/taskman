@@ -510,6 +510,5 @@ mod modelled {
         }
         let rest = [reached.lookups, reached.behind, reached.elsewhere, reached.restarts];
         assert!(rest.iter().all(|n| *n >= 5) && reached.forgotten >= 5, "{reached:?}");
-        eprintln!("{reached:?}");
     }
 }
