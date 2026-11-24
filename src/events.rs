@@ -709,7 +709,7 @@ fn events(args: &[String]) -> Result<i32, String> {
     let mut out = Out { json: a.json };
     if a.follow {
         let parent = parent();
-        let gone = || stdout_gone() || self::parent() != parent;
+        let gone = || reader_gone(libc::STDOUT_FILENO) || self::parent() != parent;
         follow(&path, &mut |k| shown.takes(k), &mut out, add::tui_running, gone);
         return Ok(0);
     }
@@ -899,13 +899,42 @@ fn parent() -> libc::pid_t {
     unsafe { libc::getppid() }
 }
 
-/// Whether stdout's reader has gone (a pipe whose other end closed), seen without writing: so a
-/// follow nobody reads ends while there's nothing to print, rather than at its next event.
-fn stdout_gone() -> bool {
-    let mut fd = libc::pollfd { fd: libc::STDOUT_FILENO, events: 0, revents: 0 };
+/// Whether the reader of `fd`, the write end of a pipe (stdout), has gone, seen without writing:
+/// so a follow nobody reads ends while there's nothing to print, rather than at its next event.
+/// Linux's poll says so on the write end (POLLERR); macOS's doesn't, and kqueue's write filter
+/// does, setting EV_EOF "when the reader disconnects" (kqueue(2)).
+#[cfg(not(target_vendor = "apple"))]
+fn reader_gone(fd: std::os::fd::RawFd) -> bool {
+    let mut fd = libc::pollfd { fd, events: 0, revents: 0 };
     // SAFETY: polls one descriptor in a struct this function owns, without waiting.
     let n = unsafe { libc::poll(&raw mut fd, 1, 0) };
     n > 0 && fd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0
+}
+
+#[cfg(target_vendor = "apple")]
+fn reader_gone(fd: std::os::fd::RawFd) -> bool {
+    let Ok(ident) = libc::uintptr_t::try_from(fd) else { return false };
+    let change = libc::kevent {
+        ident,
+        filter: libc::EVFILT_WRITE,
+        flags: libc::EV_ADD | libc::EV_ONESHOT,
+        fflags: 0,
+        data: 0,
+        udata: std::ptr::null_mut(),
+    };
+    let mut event = change;
+    let zero = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: makes a kqueue of its own, which it closes below.
+    let kq = unsafe { libc::kqueue() };
+    if kq < 0 {
+        return false;
+    }
+    // SAFETY: one change in and at most one event out, in structs this function owns; a zero
+    // timeout polls without waiting.
+    let n = unsafe { libc::kevent(kq, &raw const change, 1, &raw mut event, 1, &raw const zero) };
+    // SAFETY: closes the kqueue made above, used no more.
+    unsafe { libc::close(kq) };
+    n > 0 && event.flags & libc::EV_ERROR == 0 && event.flags & libc::EV_EOF != 0
 }
 
 #[cfg(test)]
@@ -1451,6 +1480,20 @@ mod tests {
         std::fs::rename(&path, older(&path)).unwrap();
         add(&path, "four\n");
         assert_eq!(tail.read(), ["three", "four"]);
+    }
+
+    #[test]
+    fn a_pipes_reader_going_is_seen_without_writing() {
+        let mut fds = [0; 2];
+        // SAFETY: fills the two descriptors of a new pipe into an array this test owns.
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let [read, write] = fds;
+        assert!(!reader_gone(write), "its reader is there");
+        // SAFETY: closes the read end, which nothing else uses.
+        unsafe { libc::close(read) };
+        assert!(reader_gone(write), "its reader has gone");
+        // SAFETY: closes the write end, which nothing else uses.
+        unsafe { libc::close(write) };
     }
 
     #[test]
