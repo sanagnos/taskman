@@ -28,6 +28,7 @@ The invariants in docs/architecture.md, as rules; that file and design.md say wh
 cargo build                 # debug build: target/debug/taskman
 cargo test                  # unit tests live next to the code (#[cfg(test)] mod tests); tests/ runs the binary
 cargo nextest run --profile ci  # as CI runs the tests (.config/nextest.toml): a timeout each, tests/ rerun once
+cargo test model            # the PR events against their model (src/events/model.rs); PROPTEST_CASES=2000 for a longer run
 INSTA_UPDATE=always cargo test screens  # rewrite the screen snapshots after a change to drawing; review the diff
 cargo fmt                   # CI fails on unformatted code (rustfmt.toml)
 cargo clippy --all-targets -- -D warnings  # as CI runs it: zero warnings

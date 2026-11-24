@@ -21,6 +21,20 @@ pub(super) struct Feed {
     state: Option<AgentState>,
     /// Changes seen and not written yet.
     pending: Vec<Event>,
+    /// How many PRs its memory keeps, when a test says (`TicketView::restart_feed`).
+    #[cfg(test)]
+    kept: Option<usize>,
+}
+
+impl Feed {
+    /// A PR memory with nothing in it yet.
+    fn memory(&self) -> Prs {
+        #[cfg(test)]
+        if let Some(kept) = self.kept {
+            return Prs::bounded(kept);
+        }
+        Prs::default()
+    }
 }
 
 impl TicketView {
@@ -39,11 +53,18 @@ impl TicketView {
         match &mut self.feed.prs {
             Some(prs) => self.feed.pending.extend(prs.see(shown, &found.weighed)),
             None => {
-                let mut prs = Prs::default();
+                let mut prs = self.feed.memory();
                 prs.see(shown, &found.weighed);
                 self.feed.prs = Some(prs);
             }
         }
+    }
+
+    /// The feed as taskman starts with it, its PR memory keeping `kept`: the next lookup is the
+    /// baseline again.
+    #[cfg(test)]
+    pub(super) fn restart_feed(&mut self, kept: usize) {
+        self.feed = Feed { kept: Some(kept), ..Feed::default() };
     }
 
     /// The session's change since the last status poll, as one event at most however often its

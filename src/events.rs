@@ -397,12 +397,29 @@ pub fn pr_events(before: Option<&PrSnap>, after: &PrSnap) -> Vec<Event> {
 /// ones, or a merged one shown once a newer one closed) isn't new; one seen open that merges or
 /// closes while another is shown in its place (an open one that mentions the key, an older merged
 /// one) is told merged or closed; one never seen open is no news.
-#[derive(Debug, Default)]
-pub struct Prs(Vec<PrSnap>);
+#[derive(Debug)]
+#[cfg_attr(test, derive(Clone))]
+pub struct Prs {
+    seen: Vec<PrSnap>,
+    /// The most it keeps, the latest seen: `KEPT`, but in tests of what happens at the bound.
+    kept: usize,
+}
+
+impl Default for Prs {
+    fn default() -> Prs {
+        Prs { seen: Vec::new(), kept: Prs::KEPT }
+    }
+}
 
 impl Prs {
-    /// The most PRs a ticket's memory keeps, the latest seen.
+    /// The most PRs a ticket's memory keeps.
     const KEPT: usize = 50;
+
+    /// One that keeps `kept` PRs, so a test gets to the bound in a few lookups.
+    #[cfg(test)]
+    pub(crate) fn bounded(kept: usize) -> Prs {
+        Prs { seen: Vec::new(), kept }
+    }
 
     /// The changes in what a lookup found: the PR it shows, and every PR it weighed. The shown
     /// PR as known is taken out before the weighed ones go in, and put back last, so however many
@@ -411,11 +428,11 @@ impl Prs {
     pub fn see(&mut self, shown: Option<PrSnap>, weighed: &[(u64, PrState)]) -> Vec<Event> {
         let mut events = Vec::new();
         let shown_number = shown.as_ref().map(|p| p.number);
-        let before = shown_number.and_then(|n| self.find(n)).map(|i| self.0.remove(i));
+        let before = shown_number.and_then(|n| self.find(n)).map(|i| self.seen.remove(i));
         for (n, state) in weighed.iter().filter(|(n, _)| Some(*n) != shown_number) {
             let snap = match self.find(*n) {
                 Some(i) => {
-                    let mut known = self.0.remove(i);
+                    let mut known = self.seen.remove(i);
                     if known.state == PrState::Open {
                         match state {
                             PrState::Merged => events.push(Event::PrMerged(*n)),
@@ -443,14 +460,14 @@ impl Prs {
     }
 
     fn find(&self, number: u64) -> Option<usize> {
-        self.0.iter().position(|p| p.number == number)
+        self.seen.iter().position(|p| p.number == number)
     }
 
     /// `snap` as the latest seen, the oldest let go past `KEPT`.
     fn keep(&mut self, snap: PrSnap) {
-        self.0.push(snap);
-        if self.0.len() > Prs::KEPT {
-            self.0.remove(0);
+        self.seen.push(snap);
+        if self.seen.len() > self.kept {
+            self.seen.remove(0);
         }
     }
 }
@@ -938,6 +955,9 @@ fn reader_gone(fd: std::os::fd::RawFd) -> bool {
 }
 
 #[cfg(test)]
+pub(crate) mod model;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::AgentState;
@@ -1195,7 +1215,7 @@ mod tests {
         for n in 0..100 {
             prs.see(Some(snap(n)), &[]);
         }
-        assert_eq!(prs.0.len(), Prs::KEPT);
+        assert_eq!(prs.seen.len(), Prs::KEPT);
         // The latest seen are kept: shown again, no news.
         assert_eq!(prs.see(Some(snap(99)), &[]), []);
         // A lookup weighing more new PRs than it keeps, beside the one it shows (the oldest
@@ -1208,7 +1228,7 @@ mod tests {
         let many: Vec<(u64, PrState)> = (1000..1100).map(|n| (n, PrState::Merged)).collect();
         assert_eq!(prs.see(Some(snap(1)), &many), []);
         assert_eq!(prs.see(Some(snap(1)), &many), []);
-        assert_eq!(prs.0.last().map(|p| p.number), Some(1));
+        assert_eq!(prs.seen.last().map(|p| p.number), Some(1));
     }
 
     #[test]
