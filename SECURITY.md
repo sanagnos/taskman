@@ -24,9 +24,10 @@ On a public repository anyone can open an issue or comment on a PR, and on a sha
 
 ### What a session can run without asking
 
-taskman gives Claude sessions permission (through `--settings`, for that session only) to run four of its own commands without a prompt, each kept to the session's own project:
+taskman gives Claude sessions permission (through `--settings`, for that session only) to run five of its own commands without a prompt, each kept to the session's own project:
 
 - `taskman status`: reads the project's tickets and their PRs, with the project's own tracker account.
+- `taskman events`: prints the project's ticket PR and session changes as taskman saw them, as ticket keys, PR numbers and fixed words only, so nothing others wrote reaches the session through it.
 - `taskman add`: adds tickets. Adding an **agent** or changing an agent's **role**, which becomes part of a session's system prompt, waits for you to approve it in taskman, so text a session read can't create one unattended. So does creating a ticket with **`--new`**: its title and description are published in the tracker under your account, so taskman shows you both in full and creates nothing until you approve, so text a session read can't have it post a secret, such as a `.env` file, as an issue.
 - `taskman move`: moves a Local files ticket between columns.
 - `taskman wake`: starts a ticket's sleeping session again, so an agent can message it.

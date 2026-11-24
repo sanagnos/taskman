@@ -39,6 +39,7 @@ mod accounts;
 mod add_form;
 #[cfg(test)]
 mod events;
+mod feed;
 mod find;
 mod fork;
 mod forms;
@@ -246,6 +247,10 @@ pub struct App {
     clipboard_owner: Option<crate::session::Selected>,
     /// Notifications left to the terminal (`notify::escape`), to write on the next frame.
     pub notify_out: Vec<String>,
+    /// The last write to an events file failed, and was warned of (`note_events`).
+    events_failed: bool,
+    /// An events file couldn't be moved aside since the last that could, and that was warned of.
+    events_unrotated: bool,
     /// Whether the terminal has the focus, as it last said (focus reports); None until it does.
     pub focused: Option<bool>,
     /// Shows a notification (`notify::send`, run on a thread), returning whether it's left to the
@@ -410,6 +415,8 @@ impl App {
             clipboard_out: Vec::new(),
             clipboard_owner: None,
             notify_out: Vec::new(),
+            events_failed: false,
+            events_unrotated: false,
             focused: None,
             notifier: Arc::new(crate::notify::send),
             clipboard: Arc::new(selection::copy),

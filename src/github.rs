@@ -599,12 +599,25 @@ fn gh_error(err: &str) -> String {
     err.to_string()
 }
 
+/// The PRs a lookup weighed for a ticket, by number, with their states (`Lookup::weighed`).
+pub type Weighed = Vec<(u64, PrState)>;
+
 /// What the PR lookup found for a ticket.
+#[derive(Default)]
 pub struct Lookup {
     /// The PR to show: open if there is one, else merged.
     pub pr: Option<Pr>,
     /// When there's nothing to show, the newest PR closed without merging, for a note.
     pub closed: Option<u64>,
+    /// Every PR the lookup weighed for the ticket, by number, with its state, the one shown
+    /// included: so `taskman events` hears of a PR merged or closed while another is shown in its
+    /// place (an open one that mentions the key, an older merged one).
+    pub weighed: Weighed,
+    /// Whether `pr` and `weighed` can't be taken as PRs of the checkout's own repository: the
+    /// issue's (`Closes::repo`) is another, whose numbers name other PRs, or the checkout's
+    /// couldn't be told (`default_repo`). `taskman events` tells nothing of such a lookup, as an
+    /// event's PR number must be one `gh pr view` finds in the checkout.
+    pub elsewhere: bool,
     /// The remembered branch exists neither locally nor on the remote and has no open PR.
     pub branch_gone: bool,
 }
@@ -729,6 +742,11 @@ fn candidate(p: &Value, exact: bool) -> Option<Candidate> {
     })
 }
 
+/// The number and state of each of the PRs `pick` chooses among (`Lookup::weighed`).
+fn weighed<'a>(c: impl IntoIterator<Item = &'a Candidate>) -> Vec<(u64, PrState)> {
+    c.into_iter().map(|x| (x.number, x.state.clone())).collect()
+}
+
 /// The PR to show (newest open, else newest merged; the branch's own before those that only
 /// mention the key) and the newest closed-unmerged one.
 fn pick<'a>(c: impl IntoIterator<Item = &'a Candidate>) -> (Option<&'a Candidate>, Option<u64>) {
@@ -829,19 +847,37 @@ pub fn fetch_all(
     wanted: &[Wanted],
     gh: impl Fn(&[&str]) -> Result<String, String> + Sync,
 ) -> Vec<Result<Lookup, String>> {
+    lookups(repo, default_repo(repo).as_ref(), wanted, gh)
+}
+
+/// `fetch_all`, the checkout's repository being `here`.
+fn lookups(
+    repo: &Path,
+    here: Option<&DefaultRepo>,
+    wanted: &[Wanted],
+    gh: impl Fn(&[&str]) -> Result<String, String> + Sync,
+) -> Vec<Result<Lookup, String>> {
     let mut out: Vec<Option<Result<Lookup, String>>> = wanted.iter().map(|_| None).collect();
+    // The PRs linked as closing an issue when none of them is shown, for the list's lookup when
+    // they're the checkout's repository's.
+    let mut also: Vec<Weighed> = wanted.iter().map(|_| Vec::new()).collect();
     let closes: Vec<usize> = (0..wanted.len()).filter(|&i| wanted[i].closes.is_some()).collect();
-    let found =
-        each(&closes, |&i| wanted[i].closes.as_ref().and_then(|c| linked(&gh, &wanted[i], c)));
+    let found = each(&closes, |&i| {
+        let c = wanted[i].closes.as_ref()?;
+        let elsewhere = !same_repo(here, &c.repo);
+        Some((linked(&gh, &wanted[i], c, elsewhere), elsewhere))
+    });
     for (&i, found) in closes.iter().zip(found) {
-        out[i] = found;
+        if let Some(((lookup, linked), elsewhere)) = found {
+            out[i] = lookup;
+            if !elsewhere {
+                also[i] = linked;
+            }
+        }
     }
     let rest: Vec<usize> = (0..wanted.len()).filter(|&i| out[i].is_none()).collect();
     // gh picks the repository, but `gh api` takes its host from `--hostname`, not the remote.
-    let host = match rest.is_empty() {
-        true => None,
-        false => default_repo(repo).map(|d| d.host),
-    };
+    let host = here.map(|d| d.host.clone());
     for chunk in rest.chunks(BATCH) {
         let asked: Vec<&Wanted> = chunk.iter().map(|&i| &wanted[i]).collect();
         let args = list_args(host.as_deref(), &asked);
@@ -855,7 +891,13 @@ pub fn fetch_all(
             })
         });
         for (&(_, i), found) in tickets.iter().zip(found) {
-            out[i] = found;
+            out[i] = found.map(|res| {
+                res.map(|mut l| {
+                    weigh_too(&mut l.weighed, std::mem::take(&mut also[i]));
+                    l.elsewhere = here.is_none();
+                    l
+                })
+            });
         }
     }
     out.into_iter().map(|r| r.unwrap_or_else(|| Err("the PR lookup crashed".into()))).collect()
@@ -872,15 +914,39 @@ fn each<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> Option<R> + Sync) -> Ve
 
 /// The open or merged PR GitHub links as closing the issue, viewed in the issue's repository.
 /// None when there's none, or the query failed: that only means falling back to the list, whose
-/// call says what's wrong.
+/// call says what's wrong. Either way, the PRs it found linked (`Lookup::weighed`), which the
+/// list's lookup adds to its own when it falls back: a PR that closes the issue, closed unmerged,
+/// is told closed though it's on no branch of the ticket's and doesn't mention the key.
 fn linked(
     gh: &(impl Fn(&[&str]) -> Result<String, String> + Sync),
     w: &Wanted,
     c: &Closes,
-) -> Option<Result<Lookup, String>> {
-    let found = closing(gh, c).ok()?;
-    let pr = details(gh, pick(&found).0?, w.shown.as_ref());
-    Some(pr.map(|pr| Lookup { pr: Some(pr), closed: None, branch_gone: false }))
+    elsewhere: bool,
+) -> (Option<Result<Lookup, String>>, Weighed) {
+    let Ok(found) = closing(gh, c) else { return (None, Vec::new()) };
+    let weighed = weighed(&found);
+    let Some(best) = pick(&found).0 else { return (None, weighed) };
+    let pr = details(gh, best, w.shown.as_ref());
+    let lookup = pr.map(|pr| Lookup { pr: Some(pr), weighed, elsewhere, ..Lookup::default() });
+    (Some(lookup), Vec::new())
+}
+
+/// Whether the issue repository `c` is `here`, the checkout's: else its PR numbers name other PRs
+/// than the checkout's. Not when the checkout's can't be told (`Lookup::elsewhere`).
+fn same_repo(here: Option<&DefaultRepo>, c: &crate::github_issues::Repo) -> bool {
+    here.is_some_and(|d| {
+        d.host.eq_ignore_ascii_case(&c.host)
+            && d.name.eq_ignore_ascii_case(&format!("{}/{}", c.owner, c.name))
+    })
+}
+
+/// `more` added to `weighed`, but for PRs it already has.
+fn weigh_too(weighed: &mut Weighed, more: Weighed) {
+    for (n, state) in more {
+        if !weighed.iter().any(|(m, _)| *m == n) {
+            weighed.push((n, state));
+        }
+    }
 }
 
 /// The ticket's PR among those listed for it: the PRs on its branch, and when none of them is
@@ -900,6 +966,7 @@ fn settle(
             }
         }
     }
+    let weighed = weighed(found.iter().copied());
     let (best, closed) = pick(found);
     let branch_gone = match &w.branch {
         Some(b) if !open_on_branch => !branch_exists(repo, b),
@@ -909,7 +976,8 @@ fn settle(
         Some(c) => Some(details(gh, c, w.shown.as_ref())?),
         None => None,
     };
-    Ok(Lookup { pr, closed: if best.is_none() { closed } else { None }, branch_gone })
+    let shown = if best.is_none() { closed } else { None };
+    Ok(Lookup { pr, closed: shown, weighed, branch_gone, ..Lookup::default() })
 }
 
 /// The PR found, in full: the one shown when it hasn't changed, else fetched.
@@ -1753,6 +1821,33 @@ mod tests {
         calls.iter().map(|c| c.split(':').next().unwrap()).collect()
     }
 
+    /// As `lookup` for an issue a PR closes, the checkout's repository being `here`.
+    fn lookup_in(
+        here: Option<&DefaultRepo>,
+        closes: &Closes,
+        replies: &[(&str, Result<&str, &str>)],
+    ) -> (Result<Lookup, String>, Vec<String>) {
+        let calls = std::sync::Mutex::new(Vec::new());
+        let gh = |args: &[&str]| {
+            let c = call(args);
+            calls.lock().unwrap().push(format!("{c}: {}", args[..args.len().min(6)].join(" ")));
+            let reply = replies.iter().find(|(name, _)| *name == c).map(|(_, r)| *r);
+            reply.unwrap_or(Err("no reply")).map(String::from).map_err(String::from)
+        };
+        let wanted = Wanted {
+            key: "ENG-52".into(),
+            branch: None,
+            closes: Some(closes.clone()),
+            shown: None,
+        };
+        let mut found = lookups(Path::new("/src/acme"), here, &[wanted], gh);
+        (found.pop().unwrap(), calls.into_inner().unwrap())
+    }
+
+    fn acme_web() -> DefaultRepo {
+        DefaultRepo { name: "Acme/Web".into(), host: "github.com".into(), several: false }
+    }
+
     fn acme_web_12() -> Closes {
         Closes { repo: crate::github_issues::Repo::parse("acme/web").unwrap(), number: 12 }
     }
@@ -1761,7 +1856,7 @@ mod tests {
     fn takes_the_pr_github_links_as_closing_the_issue() {
         let replies =
             [("closing", Ok(CLOSING_JSON)), ("details", Ok(PR_DETAILS)), ("list", Ok(PR_SEARCH))];
-        let (res, calls) = lookup(Path::new("/src/acme"), None, Some(&acme_web_12()), &replies);
+        let (res, calls) = lookup_in(Some(&acme_web()), &acme_web_12(), &replies);
         let found = res.unwrap();
         // The open one in the issue's repository, fetched there; no list.
         assert_eq!(names(&calls), ["closing", "details"]);
@@ -1770,6 +1865,16 @@ mod tests {
         let pr = found.pr.unwrap();
         assert_eq!((pr.number, pr.head.as_str(), pr.cross_repository), (45, "eng-52-login", false));
         assert_eq!((found.closed, found.branch_gone), (None, false));
+        // Every PR linked in the issue's repository was weighed, for `taskman events`; it's the
+        // checkout's (case aside), so their numbers are the checkout's.
+        assert_eq!(found.weighed, [(40, PrState::Closed), (45, PrState::Open)]);
+        assert!(!found.elsewhere);
+        let api =
+            DefaultRepo { name: "acme/api".into(), host: "github.com".into(), several: false };
+        let (res, _) = lookup_in(Some(&api), &acme_web_12(), &replies);
+        assert!(res.unwrap().elsewhere, "acme/web's PRs, from acme/api's checkout");
+        let (res, _) = lookup_in(None, &acme_web_12(), &replies);
+        assert!(res.unwrap().elsewhere, "the checkout's repository not known");
         // The threads came with it, and the review its page.
         assert_eq!(pr.threads.as_ref().unwrap().list[0].path, "src/auth/link.rs");
         assert_eq!(pr.reviews[0].url, "https://github.com/acme/web/pull/45#pullrequestreview-1");
@@ -1786,14 +1891,35 @@ mod tests {
         let (res, calls) = lookup(Path::new("/src/acme"), None, Some(&acme_web_12()), &replies);
         assert_eq!(names(&calls), ["closing", "list", "details"]);
         assert_eq!(res.unwrap().pr.unwrap().number, 45);
-        // As when the issue links only a PR closed without merging.
+        // As when the issue links only PRs closed without merging: they're weighed beside the
+        // list's, once each (#40 is in both), so `taskman events` hears #77 closed, which is on
+        // no branch of the ticket's and doesn't mention the key.
         let closed = r#"{"data":{"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":[
-            {"number":40,"state":"CLOSED","updatedAt":"t","repository":{"nameWithOwner":"acme/web"}}]}}}}}"#;
+            {"number":40,"state":"CLOSED","updatedAt":"t","repository":{"nameWithOwner":"acme/web"}},
+            {"number":77,"state":"CLOSED","updatedAt":"t","repository":{"nameWithOwner":"acme/web"}}]}}}}}"#;
         let replies =
             [("closing", Ok(closed)), ("list", Ok(PR_SEARCH)), ("details", Ok(PR_DETAILS))];
-        let (res, calls) = lookup(Path::new("/src/acme"), None, Some(&acme_web_12()), &replies);
+        let (res, calls) = lookup_in(Some(&acme_web()), &acme_web_12(), &replies);
         assert_eq!(names(&calls), ["closing", "list", "details"]);
-        assert_eq!(res.unwrap().pr.unwrap().number, 45);
+        let found = res.unwrap();
+        assert_eq!(found.pr.as_ref().unwrap().number, 45);
+        assert!(found.weighed.contains(&(77, PrState::Closed)), "{:?}", found.weighed);
+        assert_eq!(found.weighed.iter().filter(|(n, _)| *n == 40).count(), 1);
+        assert!(found.weighed.contains(&(45, PrState::Open)), "{:?}", found.weighed);
+        assert!(!found.elsewhere);
+        // The issue in another repository than the checkout's: its #40 and #77 are other PRs
+        // than the checkout's #40 and #77, so they aren't weighed with the list's.
+        let api =
+            DefaultRepo { name: "acme/api".into(), host: "github.com".into(), several: false };
+        let (res, _) = lookup_in(Some(&api), &acme_web_12(), &replies);
+        let found = res.unwrap();
+        assert!(!found.weighed.contains(&(77, PrState::Closed)), "{:?}", found.weighed);
+        assert!(!found.elsewhere, "the list's PRs are the checkout's");
+        // The checkout's repository not known: nothing can be taken as its PRs.
+        let (res, _) = lookup_in(None, &acme_web_12(), &replies);
+        let found = res.unwrap();
+        assert!(!found.weighed.contains(&(77, PrState::Closed)), "{:?}", found.weighed);
+        assert!(found.elsewhere);
     }
 
     #[test]
@@ -1808,6 +1934,9 @@ mod tests {
         let found = res.unwrap();
         let pr = found.pr.unwrap();
         assert_eq!((pr.number, found.closed), (45, None));
+        // The others weighed beside it, for `taskman events`.
+        assert!(found.weighed.contains(&(40, PrState::Closed)), "{:?}", found.weighed);
+        assert!(found.weighed.contains(&(45, PrState::Open)), "{:?}", found.weighed);
         // Threads GitHub didn't send still leave the PR.
         assert!(pr.threads.is_err());
         // An open PR on the ticket's branch beats a newer open one that only mentions the key.
@@ -2040,6 +2169,7 @@ mod tests {
         let found = res.unwrap();
         assert!(found.pr.is_none());
         assert_eq!((found.closed, found.branch_gone), (Some(40), false));
+        assert!(found.weighed.contains(&(40, PrState::Closed)), "{:?}", found.weighed);
     }
 
     #[test]

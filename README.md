@@ -74,7 +74,7 @@ taskman organises the work the way you think about it, **project → ticket**, a
 - **Links:** ctrl+click (cmd+click on macOS) opens a session's links, the issue, the PR, a check or a review; `ctrl+a l` lists them.
 - **Agents:** sessions with no ticket, for planning, reviewing or coordinating; a role gives one a standing job.
 - **Messaging:** sessions are named after their ticket (`ENG-52`) or agent, so any Claude session can message any other: "ENG-52, your e2e check fails; can you fix it?"
-- **Fan out:** a planner adds tickets with `taskman add`, each with its own session it can direct; agents it adds wait for your OK.
+- **Fan out:** a planner adds tickets with `taskman add`, each with its own session it can direct, and hears of their merges, failing checks and reviews with `taskman events --follow`; agents it adds wait for your OK.
 
 None of the integrations are needed to start. A project is just a folder, and taskman shows only what each project has connected:
 

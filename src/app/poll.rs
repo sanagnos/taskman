@@ -630,6 +630,7 @@ impl App {
         if changed {
             self.save();
         }
+        self.note_events(true);
     }
 
     /// Session `i` just started waiting on the user: the bell if it's out of sight, and a

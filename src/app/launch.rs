@@ -252,6 +252,7 @@ fn agent_brief_head(
             .to_string()
             + if t.cli.sandboxed() { SANDBOX_STATUS_NOTE } else { "" },
     );
+    lines.push(events_line(t.cli));
     lines.push(
         "When a ticket should be worked on in its own session, such as one you just created, `taskman add <KEY>` adds it \
          to taskman with the project's worktree settings, without switching the user's view (several keys at once; \
@@ -274,6 +275,24 @@ fn agent_brief_head(
             + if t.cli.sandboxed() { SANDBOX_STATE_NOTE } else { "" },
     );
     lines
+}
+
+/// How an agent hears of the changes in the project's tickets (`taskman events`): as they come,
+/// where the CLI can follow a command's output (`Cli::follows_output`), else by asking. Agents
+/// have no events of their own, so agents following them don't wake each other.
+fn events_line(cli: Cli) -> String {
+    let what = "when a ticket's PR opens, closes or merges, its checks pass or fail, it's approved, changes are \
+                requested or comments arrive, and when a ticket's session needs the user, finishes its turn or ends";
+    if cli.follows_output() {
+        format!(
+            "To hear of changes as they happen, start `taskman events --follow` with the Monitor tool, once per session: \
+             it prints a line {what}, until the session ends. Don't start a second one, which would bring each line twice. \
+             It starts at the newest change, so starting it again doesn't repeat what came before: `taskman events` \
+             prints the latest ones."
+        )
+    } else {
+        format!("`taskman events` prints the latest changes: a line {what}.")
+    }
 }
 
 /// What an agent in a project with a tracker does with work that changes code or files: it goes to
@@ -770,6 +789,7 @@ mod tests {
             settings["permissions"]["allow"],
             json!([
                 "Bash(taskman status:*)",
+                "Bash(taskman events:*)",
                 "Bash(taskman add:*)",
                 "Bash(taskman move:*)",
                 "Bash(taskman wake:*)"
@@ -1270,6 +1290,26 @@ mod tests {
         app.tickets.retain(|tv| tv.t.agent.is_some());
         let b = brief(&launch_of(&app, "acme-lead"));
         assert!(b.ends_with("\nThe project has no ticket sessions yet."), "{b}");
+    }
+
+    #[test]
+    fn an_agents_brief_says_to_follow_the_events_once() {
+        let mut app = acme_app();
+        let follow = "start `taskman events --follow` with the Monitor tool, once per session";
+        let b = brief(&launch_of(&app, "acme-lead"));
+        assert!(b.contains(follow) && b.contains("doesn't repeat what came before"), "{b}");
+        assert!(b.contains("its checks pass or fail"), "{b}");
+        // Without a tracker there are no tickets, and agents have no events.
+        assert!(!brief(&launch_of(&app, "notes-writer")).contains("taskman events"));
+        // Codex has no Monitor: it asks.
+        let i = app.tickets.iter().position(|tv| tv.t.key == "acme-lead").unwrap();
+        app.tickets[i].t.cli = Cli::Codex;
+        let b = brief(&launch_of(&app, "acme-lead"));
+        assert!(
+            !b.contains("--follow") && b.contains("`taskman events` prints the latest changes")
+        );
+        // A ticket's own brief doesn't: its session isn't told of its own changes.
+        assert!(!brief(&launch_of(&app, "ENG-52")).contains("taskman events"));
     }
 
     #[test]
