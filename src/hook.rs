@@ -59,7 +59,7 @@ impl Guarded {
     }
 }
 
-/// `p` made absolute against taskman's own folder, as taskman opens it, then also as the system
+/// `p` made absolute against the folder taskman was started in, as taskman opens it, then also as the system
 /// resolves it when that differs: a deny rule matches either the path a tool is given or the file
 /// it resolves to, so a path through a link (macOS's `/var`, a linked home) needs both forms to
 /// cover a tool given the other. A file not made yet resolves through its folder.
@@ -74,26 +74,38 @@ fn forms(p: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Absolute path `p` as a rule's pattern, for everything under it when it's a `folder`: `//` then
-/// the path, since one leading `/` would mean the folder of the settings. Patterns follow
-/// gitignore, so its pattern characters in the path are escaped with `\`, as Claude escapes them
-/// in the rules it writes, and so is a file's trailing space, which gitignore would drop.
+/// Absolute path `p` as a rule's content, for everything under it when it's a `folder`: `//` then
+/// the path, since one leading `/` would mean the folder of the settings. Escaped twice, in this
+/// order. First for gitignore, which rules' patterns follow: `\ * ? [ ]`, and a file's trailing
+/// space, which gitignore would drop. Then for Claude, which undoes `\\`, `\(` and `\)` in a rule's
+/// content before gitignore sees it, and whose own rule writer escapes those three the same way.
+/// With only the first, a path holding `\` named another path, and its rule matched nothing
+/// (checked with Claude Code 2.1.330).
 fn pattern(p: &Path, folder: bool) -> Option<String> {
     let s = p.to_str().filter(|s| s.starts_with('/'))?;
-    let mut out = String::from("/");
+    let mut glob = String::from("/");
     for c in s.chars() {
         if matches!(c, '\\' | '*' | '?' | '[' | ']') {
-            out.push('\\');
+            glob.push('\\');
         }
-        out.push(c);
+        glob.push(c);
     }
-    if folder {
+    let glob = if folder {
         // `/` itself would leave `/**`, which is the settings' folder, not the root.
-        let base = out.trim_end_matches('/');
-        return (base.len() > 1).then(|| format!("{base}/**"));
+        let base = glob.trim_end_matches('/');
+        (base.len() > 1).then(|| format!("{base}/**"))?
+    } else {
+        let trimmed = glob.trim_end_matches(' ');
+        format!("{trimmed}{}", r"\ ".repeat(glob.len() - trimmed.len()))
+    };
+    let mut content = String::new();
+    for c in glob.chars() {
+        if matches!(c, '\\' | '(' | ')') {
+            content.push('\\');
+        }
+        content.push(c);
     }
-    let trimmed = out.trim_end_matches(' ');
-    Some(format!("{trimmed}{}", r"\ ".repeat(out.len() - trimmed.len())))
+    Some(content)
 }
 
 /// The `--settings` JSON that wires every relevant hook event to `taskman hook`, lets
@@ -1483,13 +1495,18 @@ mod tests {
     fn rule_paths_are_literal() {
         let folder = |p: &str| pattern(Path::new(p), true);
         let file = |p: &str| pattern(Path::new(p), false);
-        assert_eq!(folder("/home/a[1]/st*te?/x\\y").unwrap(), r"//home/a\[1\]/st\*te\?/x\\y/**");
+        // Escaped for gitignore (`\[`), then that escaped again for Claude (`\\[`), which undoes
+        // the second before gitignore reads it.
+        assert_eq!(
+            folder("/home/a[1]/st*te?/x\\y").unwrap(),
+            r"//home/a\\[1\\]/st\\*te\\?/x\\\\y/**"
+        );
         assert_eq!(folder("/home/tester/state/").unwrap(), "//home/tester/state/**");
         assert_eq!(
             file("/home/tester/My Config (2)/c.json").unwrap(),
-            "//home/tester/My Config (2)/c.json"
+            r"//home/tester/My Config \(2\)/c.json"
         );
-        assert_eq!(file("/home/tester/c.json  ").unwrap(), r"//home/tester/c.json\ \ ");
+        assert_eq!(file("/home/tester/c.json  ").unwrap(), r"//home/tester/c.json\\ \\ ");
         // Never a rule that means something else: relative to the settings' folder or the
         // session's, or the root's every file.
         assert_eq!(folder("state/taskman"), None);
@@ -1525,8 +1542,25 @@ mod tests {
         assert!(g.secret.contains(&crate::token_file::dir()), "{g:?}");
     }
 
-    /// Undoes `pattern`'s escapes, or None where a pattern character is left unescaped.
-    fn literal(pattern: &str) -> Option<String> {
+    /// What Claude makes of a rule's content before matching (Claude Code 2.1.330): `\\`, `\(`
+    /// and `\)` undone, any other `\` left for gitignore. None for a bare parenthesis, which
+    /// `pattern` never leaves, as a parser looking for the rule's end could stop there.
+    fn claude_unescape(content: &str) -> Option<String> {
+        let mut out = String::new();
+        let mut chars = content.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' if matches!(chars.peek(), Some('\\' | '(' | ')')) => out.push(chars.next()?),
+                '(' | ')' => return None,
+                c => out.push(c),
+            }
+        }
+        Some(out)
+    }
+
+    /// The path a gitignore pattern names literally, or None where a pattern character is left
+    /// unescaped, or a `\` escapes nothing.
+    fn gitignore_literal(pattern: &str) -> Option<String> {
         let mut out = String::new();
         let mut chars = pattern.chars();
         while let Some(c) = chars.next() {
@@ -1539,18 +1573,25 @@ mod tests {
         Some(out)
     }
 
+    /// The path a rule's content names, as Claude then gitignore read it.
+    fn named(content: &str) -> Option<String> {
+        gitignore_literal(&claude_unescape(content)?)
+    }
+
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
 
         #[test]
-        fn a_rule_names_exactly_its_path(parts in proptest::collection::vec("[^/\\x00]{1,12}", 1..5)) {
+        fn a_rule_names_exactly_its_path(
+            parts in proptest::collection::vec(r"[a-z\\()\[\]*? ]{1,8}|[^/\x00]{1,12}", 1..5),
+        ) {
             let path = format!("/{}", parts.join("/"));
             let p = pattern(Path::new(&path), false).unwrap();
             proptest::prop_assert!(p.starts_with("//"), "{p}");
-            proptest::prop_assert_eq!(literal(&p[1..]), Some(path.clone()));
+            proptest::prop_assert_eq!(named(&p[1..]), Some(path.clone()));
             let f = pattern(Path::new(&path), true).unwrap();
             let base = f.strip_suffix("/**").unwrap();
-            proptest::prop_assert_eq!(literal(&base[1..]), Some(path));
+            proptest::prop_assert_eq!(named(&base[1..]), Some(path));
         }
     }
 
