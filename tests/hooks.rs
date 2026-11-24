@@ -1,7 +1,8 @@
 //! The hooks' status files when a SessionEnd hook fires late: a CLI runs it on the hangup that
 //! stops it, after taskman has removed the file. Closed and added again, the ticket doesn't take
 //! the old session's end for its own, or resume the old conversation; restarted (`prefix R`), the
-//! new session doesn't show as ended.
+//! new session doesn't show as ended. And the settings a session starts with keep its file
+//! tools off taskman's own files.
 
 mod common;
 
@@ -384,4 +385,60 @@ fn a_slow_log_doesnt_claim_the_default_branchs_commits() {
     let (log, _) = stop_with_git(&dir, &repo, start, &stub);
     assert!(log.contains(r#""message":"Done.""#), "{log}");
     assert!(!log.contains("commits"), "the rebase's commit isn't the turn's: {log}");
+}
+
+/// The deny rules in the `--settings` the CLI last started for ENG-1 got.
+fn deny_rules(dir: &Path) -> Vec<String> {
+    let args = args(dir, "ENG-1");
+    let at = args.iter().position(|a| a == "--settings").expect("no --settings");
+    let settings: serde_json::Value = serde_json::from_str(&args[at + 1]).unwrap();
+    let deny = settings["permissions"]["deny"].as_array().unwrap();
+    deny.iter().map(|r| r.as_str().unwrap().to_string()).collect()
+}
+
+/// The settings a session starts with keep its file tools off taskman's own files, where the
+/// test's environment put them: no edits to the state folder, the config file or the tokens
+/// folder beside it, and no reads of the tokens. Claude takes `//` as the root.
+#[test]
+fn a_sessions_file_tools_keep_off_taskmans_files() {
+    let dir = scratch_dir("hooks-guarded");
+    let (_repo, mut tui) = start("hooks-guarded", &dir);
+    tui.wait_text("stub ready for ENG-1");
+    let deny = deny_rules(&dir);
+    let d = dir.display();
+    for rule in [
+        format!("Edit(/{d}/state/taskman/**)"),
+        format!("Edit(/{d}/config.json)"),
+        format!("Edit(/{d}/tokens/**)"),
+        format!("Read(/{d}/tokens/**)"),
+    ] {
+        assert!(deny.contains(&rule), "{rule} isn't in {deny:?}");
+    }
+    quit(&mut tui);
+}
+
+/// Without `TASKMAN_CONFIG`, the whole config folder `XDG_CONFIG_HOME` gives is taskman's, so
+/// nothing under it may be edited, and its tokens not read.
+#[test]
+fn a_sessions_file_tools_keep_off_taskmans_config_folder() {
+    let dir = scratch_dir("hooks-guarded-folder");
+    common::project(&dir, &["ENG-1"]);
+    let mut cmd = taskman(&dir);
+    cmd.env_remove("TASKMAN_CONFIG")
+        .env("TASKMAN_CLAUDE", hooked_cli(&dir))
+        .env("CLAUDE_CONFIG_DIR", dir.join("claude-config"));
+    let mut tui = Tui::start("hooks-guarded-folder", &dir, cmd, Duration::from_secs(90));
+    tui.wait_text("stub ready for ENG-1");
+    let deny = deny_rules(&dir);
+    let config = dir.join("home/.config/taskman");
+    let c = config.display();
+    for rule in [
+        format!("Edit(/{}/state/taskman/**)", dir.display()),
+        format!("Edit(/{c}/**)"),
+        format!("Read(/{c}/tokens/**)"),
+    ] {
+        assert!(deny.contains(&rule), "{rule} isn't in {deny:?}");
+    }
+    assert!(!deny.iter().any(|r| r.ends_with("config.json)")), "{deny:?}");
+    quit(&mut tui);
 }

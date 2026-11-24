@@ -786,16 +786,24 @@ mod tests {
         assert_eq!(after(&l.args, "--name"), "ENG-52");
         let settings: Value = serde_json::from_str(after(&l.args, "--settings")).unwrap();
         assert_eq!(
-            settings["permissions"],
-            json!({ "allow": [
+            settings["permissions"]["allow"],
+            json!([
                 "Bash(taskman status:*)",
                 "Bash(taskman events:*)",
                 "Bash(taskman add:*)",
                 "Bash(taskman move:*)",
                 "Bash(taskman wake:*)"
-            ] }),
+            ]),
             "`taskman close` stops sessions and removes worktrees, so the session's permission settings decide"
         );
+        // Besides, only rules that keep the session's file tools off taskman's own files.
+        assert_eq!(settings["permissions"].as_object().unwrap().len(), 2);
+        let deny = settings["permissions"]["deny"].as_array().unwrap();
+        assert_eq!(
+            *deny,
+            json!(crate::hook::Guarded::current().deny_rules()).as_array().unwrap()[..]
+        );
+        assert!(!deny.is_empty(), "{deny:?}");
         let hooks = settings["hooks"].as_object().unwrap();
         let states = [
             ("SessionStart", "idle"),
