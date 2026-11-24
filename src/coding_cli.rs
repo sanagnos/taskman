@@ -204,10 +204,11 @@ impl Cli {
     }
 
     /// What a session is started with to report its state through `taskman hook`, run as `exe`:
-    /// the `--settings` JSON for Claude, with the allow-list; the `-c` overrides for Codex.
+    /// the `--settings` JSON for Claude, with the allow-list and the rules that keep its file tools
+    /// off taskman's own files; the `-c` overrides for Codex.
     pub fn hooks(self, exe: &Path) -> Vec<String> {
         match self {
-            Cli::Claude => vec![hook::settings_json(exe)],
+            Cli::Claude => vec![hook::settings_json(exe, &hook::Guarded::current())],
             Cli::Codex => hook::codex_config(exe),
         }
     }
@@ -575,9 +576,13 @@ mod tests {
     fn claude_gets_its_hooks_as_settings_and_codex_as_overrides() {
         let exe = Path::new("/opt/taskman");
         let claude = Cli::Claude.hooks(exe);
-        assert_eq!(claude, [hook::settings_json(exe)]);
+        assert_eq!(claude, [hook::settings_json(exe, &hook::Guarded::current())]);
         let settings: Value = serde_json::from_str(&claude[0]).unwrap();
         assert!(settings["hooks"].is_object() && settings["permissions"].is_object());
+        // The unit tests' state folder, where their config is too.
+        let state = store::state_dir().display().to_string();
+        let deny = settings["permissions"]["deny"].as_array().unwrap();
+        assert!(deny.iter().any(|r| *r == format!("Edit(/{state}/**)")), "{deny:?}");
         let codex = Cli::Codex.hooks(exe);
         assert_eq!(codex, hook::codex_config(exe));
         assert!(codex.iter().all(|h| h.starts_with("hooks.")), "{codex:?}");

@@ -11,9 +11,110 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// The `--settings` JSON that wires every relevant hook event to `taskman hook`, and lets
-/// `taskman status`, `taskman add`, `taskman move` and `taskman wake` run without a prompt.
-pub fn settings_json(exe: &Path) -> String {
+/// taskman's own files, which a Claude session's file tools may not change: what taskman reads
+/// back as its state, config and tokens. taskman's commands write them as a process of their
+/// own, which no rule sees, so `taskman add` and the hooks still reach them.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Guarded {
+    /// Folders nothing under may be edited: the state folder, and the config folder when it's
+    /// taskman's own.
+    pub folders: Vec<PathBuf>,
+    /// Single files that may not be edited: config.json, when `TASKMAN_CONFIG` puts it in a
+    /// folder that may hold other things.
+    pub files: Vec<PathBuf>,
+    /// Folders nothing under may be read either: the token files, which `folders` covers for
+    /// edits.
+    pub secret: Vec<PathBuf>,
+}
+
+impl Guarded {
+    /// taskman's files as it finds them itself: the state folder, and the config folder or, with
+    /// `TASKMAN_CONFIG`, the file and its tokens folder.
+    pub fn current() -> Self {
+        let mut g = Guarded::default();
+        g.folders.extend(forms(&crate::store::state_dir()));
+        match crate::store::own_config_dir() {
+            Some(dir) => g.folders.extend(forms(&dir)),
+            None => {
+                g.files.extend(forms(&crate::store::config_path()));
+                g.folders.extend(forms(&crate::token_file::dir()));
+            }
+        }
+        g.secret.extend(forms(&crate::token_file::dir()));
+        g
+    }
+
+    /// Claude's permission rules for these: `deny` rules, which no other settings or mode can
+    /// allow (code.claude.com/docs/en/permissions). An `Edit` rule covers every tool that edits
+    /// files, Write included, and redirects in a shell command Claude can read; a `Write` rule
+    /// would match nothing. A path that isn't UTF-8, or holds a control character, gets no rule
+    /// and is left out.
+    pub fn deny_rules(&self) -> Vec<String> {
+        let folders = self.folders.iter().filter_map(|p| pattern(p, true));
+        let files = self.files.iter().filter_map(|p| pattern(p, false));
+        let edit = folders.chain(files).map(|r| format!("Edit({r})"));
+        let secret = self.secret.iter().filter_map(|p| pattern(p, true));
+        let read = secret.map(|r| format!("Read({r})"));
+        let mut seen = std::collections::HashSet::new();
+        edit.chain(read).filter(|r| seen.insert(r.clone())).collect()
+    }
+}
+
+/// `p` made absolute against the folder taskman was started in, as taskman opens it, then also as
+/// the system resolves it when that differs: a deny rule matches either the path a tool is given or
+/// the file it resolves to, so a path through a link (macOS's `/var`, a linked home) needs both
+/// forms to cover a tool given the other. A file not made yet resolves through its folder.
+fn forms(p: &Path) -> Vec<PathBuf> {
+    let Ok(abs) = std::path::absolute(p) else { return vec![] };
+    let real = std::fs::canonicalize(&abs).ok().or_else(|| {
+        let real = std::fs::canonicalize(abs.parent()?).ok()?;
+        Some(real.join(abs.file_name()?))
+    });
+    let mut out = vec![abs];
+    out.extend(real.filter(|r| *r != out[0]));
+    out
+}
+
+/// Absolute path `p` as a rule's content, for everything under it when it's a `folder`: `//` then
+/// the path, since one leading `/` would mean the folder of the settings. Escaped twice, in this
+/// order. First for gitignore, which rules' patterns follow: `\ * ? [ ]`, and a file's trailing
+/// space, which gitignore would drop. Then for Claude, which undoes `\\`, `\(` and `\)` in a rule's
+/// content before gitignore sees it, and whose own rule writer escapes those three the same way.
+/// With only the first, a path holding `\` named another path, and its rule matched nothing
+/// (checked with Claude Code 2.1.330). A path with a control character gets no rule, as one that
+/// isn't UTF-8: gitignore reads a pattern per line, so a line break would leave a second pattern,
+/// relative and matching at any depth.
+fn pattern(p: &Path, folder: bool) -> Option<String> {
+    let s = p.to_str().filter(|s| s.starts_with('/') && !s.chars().any(char::is_control))?;
+    let mut glob = String::from("/");
+    for c in s.chars() {
+        if matches!(c, '\\' | '*' | '?' | '[' | ']') {
+            glob.push('\\');
+        }
+        glob.push(c);
+    }
+    let glob = if folder {
+        // `/` itself would leave `/**`, which is the settings' folder, not the root.
+        let base = glob.trim_end_matches('/');
+        (base.len() > 1).then(|| format!("{base}/**"))?
+    } else {
+        let trimmed = glob.trim_end_matches(' ');
+        format!("{trimmed}{}", r"\ ".repeat(glob.len() - trimmed.len()))
+    };
+    let mut content = String::new();
+    for c in glob.chars() {
+        if matches!(c, '\\' | '(' | ')') {
+            content.push('\\');
+        }
+        content.push(c);
+    }
+    Some(content)
+}
+
+/// The `--settings` JSON that wires every relevant hook event to `taskman hook`, lets
+/// `taskman status`, `taskman add`, `taskman move` and `taskman wake` run without a prompt, and
+/// keeps the session's file tools off `guarded`.
+pub fn settings_json(exe: &Path, guarded: &Guarded) -> String {
     let cmd = |state: &str| {
         json!([{ "matcher": "*", "hooks": [{
             "type": "command",
@@ -40,12 +141,15 @@ pub fn settings_json(exe: &Path) -> String {
     // worktrees, so the session's own permission settings decide. So is `taskman title`: what it
     // writes shows on the user's card, so where Claude asks, the prompt shows them the text first,
     // and they can allow it for good.
-    "permissions": { "allow": [
-        "Bash(taskman status:*)",
-        "Bash(taskman add:*)",
-        "Bash(taskman move:*)",
-        "Bash(taskman wake:*)"
-    ] }})
+    "permissions": {
+        "allow": [
+            "Bash(taskman status:*)",
+            "Bash(taskman add:*)",
+            "Bash(taskman move:*)",
+            "Bash(taskman wake:*)"
+        ],
+        "deny": guarded.deny_rules(),
+    }})
     .to_string()
 }
 
@@ -1353,8 +1457,11 @@ mod tests {
 
     #[test]
     fn lets_sessions_run_taskman_status() {
-        let v: Value =
-            serde_json::from_str(&settings_json(Path::new("/usr/local/bin/taskman"))).unwrap();
+        let v: Value = serde_json::from_str(&settings_json(
+            Path::new("/usr/local/bin/taskman"),
+            &Guarded::default(),
+        ))
+        .unwrap();
         assert_eq!(
             v["permissions"]["allow"],
             json!([
@@ -1375,9 +1482,154 @@ mod tests {
     }
 
     #[test]
-    fn quotes_the_binary_path_for_the_shell() {
+    fn denies_edits_to_taskmans_files_and_reads_of_its_tokens() {
+        let guarded = Guarded {
+            folders: vec!["/home/tester/.local/state/taskman".into(), "/srv/cfg/tokens".into()],
+            files: vec!["/srv/cfg/config.json".into()],
+            secret: vec!["/srv/cfg/tokens".into()],
+        };
         let v: Value =
-            serde_json::from_str(&settings_json(Path::new("/home/o'neil/bin/taskman"))).unwrap();
+            serde_json::from_str(&settings_json(Path::new("/usr/local/bin/taskman"), &guarded))
+                .unwrap();
+        // `//` is the root; one `/` would be the settings' folder. Edit covers Write, and a
+        // `Write(...)` rule would match nothing.
+        assert_eq!(
+            v["permissions"]["deny"],
+            json!([
+                "Edit(//home/tester/.local/state/taskman/**)",
+                "Edit(//srv/cfg/tokens/**)",
+                "Edit(//srv/cfg/config.json)",
+                "Read(//srv/cfg/tokens/**)",
+            ])
+        );
+        assert_eq!(v["permissions"]["allow"].as_array().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn rule_paths_are_literal() {
+        let folder = |p: &str| pattern(Path::new(p), true);
+        let file = |p: &str| pattern(Path::new(p), false);
+        // Escaped for gitignore (`\[`), then that escaped again for Claude (`\\[`), which undoes
+        // the second before gitignore reads it.
+        assert_eq!(
+            folder("/home/a[1]/st*te?/x\\y").unwrap(),
+            r"//home/a\\[1\\]/st\\*te\\?/x\\\\y/**"
+        );
+        assert_eq!(folder("/home/tester/state/").unwrap(), "//home/tester/state/**");
+        assert_eq!(
+            file("/home/tester/My Config (2)/c.json").unwrap(),
+            r"//home/tester/My Config \(2\)/c.json"
+        );
+        assert_eq!(file("/home/tester/c.json  ").unwrap(), r"//home/tester/c.json\\ \\ ");
+        // Never a rule that means something else: relative to the settings' folder or the
+        // session's, or the root's every file.
+        assert_eq!(folder("state/taskman"), None);
+        assert_eq!(folder("/"), None);
+        use std::os::unix::ffi::OsStrExt;
+        let odd = Path::new(std::ffi::OsStr::from_bytes(b"/home/\xff/state"));
+        assert_eq!(pattern(odd, true), None);
+        // A line break would leave a second pattern, matching `state/taskman` at any depth.
+        for odd in ["/home/tester\nstate/taskman", "/home/tester\r/state", "/home/a\u{1b}b"] {
+            assert_eq!(pattern(Path::new(odd), true), None, "{odd:?}");
+            assert_eq!(pattern(Path::new(odd), false), None, "{odd:?}");
+        }
+    }
+
+    #[test]
+    fn guards_a_path_through_a_link_in_both_forms() {
+        let dir = crate::store::state_dir().join("forms");
+        std::fs::create_dir_all(dir.join("real")).unwrap();
+        let link = dir.join("link");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(dir.join("real"), &link).unwrap();
+        let real = std::fs::canonicalize(dir.join("real")).unwrap();
+        assert_eq!(forms(&link), [link.clone(), real.clone()]);
+        // A config file not made yet resolves through its folder.
+        assert_eq!(
+            forms(&link.join("config.json")),
+            [link.join("config.json"), real.join("config.json")]
+        );
+        assert_eq!(forms(&real), std::slice::from_ref(&real));
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(forms(Path::new("no-such-config.json"))[0], cwd.join("no-such-config.json"));
+    }
+
+    #[test]
+    fn guards_the_state_and_config_taskman_uses() {
+        let g = Guarded::current();
+        assert!(g.folders.contains(&crate::store::state_dir()), "{g:?}");
+        assert!(g.secret.contains(&crate::token_file::dir()), "{g:?}");
+    }
+
+    /// What Claude makes of a rule's content before matching (Claude Code 2.1.330): `\\`, `\(`
+    /// and `\)` undone, any other `\` left for gitignore. None for a bare parenthesis, which
+    /// `pattern` never leaves, as a parser looking for the rule's end could stop there.
+    fn claude_unescape(content: &str) -> Option<String> {
+        let mut out = String::new();
+        let mut chars = content.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' if matches!(chars.peek(), Some('\\' | '(' | ')')) => out.push(chars.next()?),
+                '(' | ')' => return None,
+                c => out.push(c),
+            }
+        }
+        Some(out)
+    }
+
+    /// The path a gitignore pattern names literally, or None where a pattern character is left
+    /// unescaped, a `\` escapes nothing, a line break splits it, or it ends in an unescaped
+    /// space, which gitignore drops.
+    fn gitignore_literal(pattern: &str) -> Option<String> {
+        let mut out = String::new();
+        let mut chars = pattern.chars();
+        let mut escaped = false;
+        while let Some(c) = chars.next() {
+            escaped = c == '\\';
+            match c {
+                '\\' => out.push(chars.next()?),
+                '*' | '?' | '[' | ']' | '\n' | '\r' => return None,
+                c => out.push(c),
+            }
+        }
+        (escaped || !out.ends_with(' ')).then_some(out)
+    }
+
+    /// The path a rule's content names, as Claude then gitignore read it.
+    fn named(content: &str) -> Option<String> {
+        gitignore_literal(&claude_unescape(content)?)
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn a_rule_names_exactly_its_path(
+            parts in proptest::collection::vec(r"[a-z\\()\[\]*? ]{1,8}|[^/\x00]{1,12}", 1..5),
+        ) {
+            let path = format!("/{}", parts.join("/"));
+            if path.chars().any(char::is_control) {
+                proptest::prop_assert_eq!(pattern(Path::new(&path), false), None);
+                proptest::prop_assert_eq!(pattern(Path::new(&path), true), None);
+                return Ok(());
+            }
+            let p = pattern(Path::new(&path), false).unwrap();
+            proptest::prop_assert!(p.starts_with("//"), "{p}");
+            proptest::prop_assert_eq!(named(&p[1..]), Some(path.clone()));
+            // A folder's `/**` follows the path, so a file in it stands for what it matches.
+            let f = pattern(Path::new(&path), true).unwrap();
+            let base = f.strip_suffix("/**").unwrap();
+            proptest::prop_assert_eq!(named(&format!("{}/f", &base[1..])), Some(path + "/f"));
+        }
+    }
+
+    #[test]
+    fn quotes_the_binary_path_for_the_shell() {
+        let v: Value = serde_json::from_str(&settings_json(
+            Path::new("/home/o'neil/bin/taskman"),
+            &Guarded::default(),
+        ))
+        .unwrap();
         assert_eq!(
             v["hooks"]["Stop"][0]["hooks"][0]["command"],
             r"'/home/o'\''neil/bin/taskman' hook done"
