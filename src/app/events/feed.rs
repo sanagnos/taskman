@@ -1,5 +1,6 @@
-//! What the TUI notes for `taskman events` (`app/feed.rs`): each change in a PR and a session
-//! once, from a baseline, and a TUI that goes on when the file can't be written.
+//! What the TUI notes for `taskman events` (`app/feed.rs`): each change in a ticket's PRs and
+//! session once, from a baseline, nothing of agents, and a TUI that goes on when the file can't be
+//! written.
 
 use super::*;
 use crate::events::{self, Event, Line};
@@ -15,11 +16,16 @@ fn noted() -> Vec<String> {
 
 /// Ticket `key`'s PR lookup finds `pr`, as its thread would send it.
 fn found(app: &mut App, key: &str, pr: crate::github::Pr) {
+    found_closed(app, key, pr, None);
+}
+
+/// As `found`, with `closed` the newest PR closed without merging.
+fn found_closed(app: &mut App, key: &str, pr: crate::github::Pr, closed: Option<u64>) {
     app.fetches += 1;
     let (n, i) = (app.fetches, index(app, key));
     app.tickets[i].pr.start(n);
     let id = (app.tickets[i].t.repo.clone(), key.to_string());
-    let lookup = Lookup { pr: Some(pr), closed: None, branch_gone: false };
+    let lookup = Lookup { pr: Some(pr), closed: None, newest_closed: closed, branch_gone: false };
     app.tx.send(Msg::Pr(n, id, Box::new(Ok(lookup)), None)).unwrap();
     app.drain_messages();
 }
@@ -63,6 +69,55 @@ fn a_prs_changes_are_noted_once_each_after_the_first_lookup() {
 }
 
 #[test]
+fn a_pr_closed_while_an_older_merged_one_is_shown_is_closed_not_merged_again() {
+    let mut app = acme_app();
+    let mut merged = pr_52();
+    (merged.number, merged.state) = (96, PrState::Merged);
+    found(&mut app, "ENG-52", merged.clone());
+    // #97 opens, then closes without merging: the lookup goes back to showing merged #96.
+    found(&mut app, "ENG-52", pr_52_as(97));
+    found_closed(&mut app, "ENG-52", merged.clone(), Some(97));
+    found_closed(&mut app, "ENG-52", merged, Some(97));
+    assert_eq!(noted(), ["ENG-52  PR #97 opened", "ENG-52  PR #97 closed"]);
+    // Two open PRs the lookup switches between: each opened once.
+    for n in [98, 99, 98, 99, 98] {
+        found(&mut app, "ENG-52", pr_52_as(n));
+    }
+    assert_eq!(noted()[2..], ["ENG-52  PR #98 opened", "ENG-52  PR #99 opened"]);
+}
+
+/// ENG-52's PR as number `number`, with no checks: only its opening and closing are news.
+fn pr_52_as(number: u64) -> crate::github::Pr {
+    crate::github::Pr { number, checks: Vec::new(), ..pr_52() }
+}
+
+#[test]
+fn agents_have_no_events_so_two_cant_wake_each_other() {
+    let mut app = acme_app();
+    app.poll_status();
+    // A lead and a reviewer agent, both told to follow, taking turns: neither hears of the other.
+    for _ in 0..3 {
+        for (key, state) in [
+            ("acme-lead", AgentState::Working),
+            ("acme-release-notes-reviewer", AgentState::Done),
+            ("acme-lead", AgentState::Done),
+            ("acme-release-notes-reviewer", AgentState::Working),
+        ] {
+            let i = index(&app, key);
+            app.tickets[i].status.state = state;
+            app.poll_status();
+        }
+    }
+    let i = index(&app, "acme-lead");
+    app.tickets[i].status.state = AgentState::Needs;
+    app.poll_status();
+    app.tickets[i].status.state = AgentState::Exited;
+    app.poll_status();
+    assert_eq!(noted(), Vec::<String>::new());
+    assert!(!events::path(Path::new("/src/notes")).exists());
+}
+
+#[test]
 fn a_session_is_noted_once_per_change_at_each_status_poll() {
     let mut app = acme_app();
     let set = |app: &mut App, key: &str, state| {
@@ -85,17 +140,13 @@ fn a_session_is_noted_once_per_change_at_each_status_poll() {
     app.poll_status();
     assert_eq!(noted().len(), 1);
     set(&mut app, "ENG-61", AgentState::Done);
-    set(&mut app, "acme-lead", AgentState::Working);
+    set(&mut app, "ENG-53", AgentState::Working);
     app.poll_status();
-    set(&mut app, "acme-lead", AgentState::Exited);
+    set(&mut app, "ENG-53", AgentState::Exited);
     app.poll_status();
     assert_eq!(
         noted(),
-        [
-            "ENG-61  session needs you",
-            "ENG-61  session finished its turn",
-            "acme-lead  session ended",
-        ]
+        ["ENG-61  session needs you", "ENG-61  session finished its turn", "ENG-53  session ended",]
     );
     // Put to sleep to save memory isn't an end.
     let i = index(&app, "ENG-61");
@@ -142,16 +193,19 @@ fn a_file_that_cant_be_written_is_warned_of_once_and_taskman_goes_on() {
 #[test]
 fn events_of_a_project_go_to_its_own_file() {
     let mut app = acme_app();
+    // A ticket of another project, with the same key as one of acme's.
+    let notes: crate::store::Ticket = serde_json::from_value(
+        serde_json::json!({ "key": "ENG-52", "repo": "/src/notes", "cwd": "/src/notes" }),
+    )
+    .unwrap();
+    app.tickets.push(super::super::TicketView::new(notes));
     app.poll_status();
-    let i = index(&app, "notes-writer");
+    let i = app.tickets.len() - 1;
     app.tickets[i].status.state = AgentState::Done;
     app.poll_status();
     assert_eq!(noted(), Vec::<String>::new(), "notes isn't acme");
-    let notes = std::fs::read_to_string(events::path(&app.tickets[i].t.repo)).unwrap();
-    let lines: Vec<Line> = notes.lines().filter_map(Line::parse).collect();
+    let text = std::fs::read_to_string(events::path(Path::new("/src/notes"))).unwrap();
+    let lines: Vec<Line> = text.lines().filter_map(Line::parse).collect();
     assert_eq!(lines.len(), 1);
-    assert_eq!(
-        (lines[0].key.to_string(), lines[0].event),
-        ("notes-writer".into(), Event::YourTurn)
-    );
+    assert_eq!((lines[0].key.to_string(), lines[0].event), ("ENG-52".into(), Event::YourTurn));
 }

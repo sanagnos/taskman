@@ -29,8 +29,9 @@ saw them, and exits; with --follow, prints each new one as it comes instead, unt
   ENG-52  session needs you             ENG-52  session finished its turn
 
 PRs: opened, closed, merged, checks passed or failed (all of them), approved, changes requested,
-new comments (a count). Sessions: needs you, finished its turn, ended. Never a title or the text
-of a review or comment: `taskman status KEY` shows those.
+new comments (a count). Ticket sessions: needs you, finished its turn, ended. Never a title or the
+text of a review or comment: `taskman status KEY` shows those. Only the project's tickets have
+events, not its agents.
 
   --follow   wait for new changes and print each one as it comes; for Claude Code's Monitor tool.
              It starts at the newest: a restart doesn't print what came before
@@ -39,8 +40,8 @@ of a review or comment: `taskman status KEY` shows those.
   --json     a JSON object per line
 
 taskman notes changes only while it runs, and from its first look at each PR and session after
-it starts, so it says nothing of what changed while it wasn't running. A session isn't told of
-its own.";
+it starts, so it says nothing of what changed while it wasn't running. A ticket's session isn't
+told of its own.";
 
 /// The events a run without `--follow` prints.
 const RECENT: usize = 20;
@@ -236,7 +237,7 @@ impl Line {
     }
 }
 
-// ---- what counts as a change -------------------------------------------------------------------
+// ---- what counts as a change --------------------------------------------------------------------
 
 /// What `pr_events` compares of a ticket's PR between two lookups.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -265,7 +266,16 @@ pub enum Overall {
 }
 
 impl Overall {
+    /// By GitHub's rollup of every check, which the check list, the first 100 only, can miss a
+    /// failure past; by that list when GitHub sent no rollup.
     fn of(pr: &Pr) -> Overall {
+        match pr.stamp.checks.as_str() {
+            "SUCCESS" => return Overall::Pass,
+            "FAILURE" | "ERROR" => return Overall::Fail,
+            "PENDING" | "EXPECTED" => return Overall::Pending,
+            "" => {}
+            _ => return Overall::Pending,
+        }
         if pr.checks.is_empty() {
             Overall::None
         } else if pr.count(CheckState::Fail) > 0 {
@@ -309,7 +319,7 @@ impl PrSnap {
         }
     }
 
-    /// A PR the lookup knows only as closed without merging (`Lookup::closed`).
+    /// A PR the lookup knows only as closed without merging (`Lookup::newest_closed`).
     pub fn closed(number: u64) -> PrSnap {
         PrSnap {
             number,
@@ -323,13 +333,16 @@ impl PrSnap {
     }
 }
 
-/// The changes from `before` (None: the ticket had no PR) to `after`, a lookup's, each kind at
-/// most once. A PR not seen before is opened, or merged or closed when it's found so, with what
-/// it already says (its reviews and comments) taken as read.
+/// The changes from `before`, the PR as last seen (None: never seen), to `after`, a lookup's, each
+/// kind at most once. A PR not seen before counts as opened when it's open, with what it already
+/// says (its reviews and comments) taken as read; one first seen merged or closed is no news, as
+/// it may be an old PR the lookup found only now (one that mentions the key), and a false "merged"
+/// would be worse than a missed one.
 pub fn pr_events(before: Option<&PrSnap>, after: &PrSnap) -> Vec<Event> {
     let n = after.number;
     let (before, new) = match before {
         Some(b) if b.number == n => (b.clone(), false),
+        _ if after.state != PrState::Open => return Vec::new(),
         _ => {
             let read = PrSnap {
                 approvals: after.approvals.clone(),
@@ -372,6 +385,55 @@ pub fn pr_events(before: Option<&PrSnap>, after: &PrSnap) -> Vec<Event> {
     events
 }
 
+/// The PRs a ticket's lookups have found, each as last seen, by number: a PR shown again after
+/// another (two open ones, or a merged one shown once a newer one closed) isn't new, and one that
+/// closed while another is shown in its place is told closed (`Lookup::newest_closed`).
+#[derive(Debug, Default)]
+pub struct Prs(Vec<PrSnap>);
+
+impl Prs {
+    /// The most PRs a ticket's memory keeps, the latest seen.
+    const KEPT: usize = 20;
+
+    /// The changes in what a lookup found: the PR it shows, and the newest closed without
+    /// merging.
+    pub fn see(&mut self, shown: Option<PrSnap>, closed: Option<u64>) -> Vec<Event> {
+        let mut events = Vec::new();
+        let shown_number = shown.as_ref().map(|p| p.number);
+        if let Some(after) = shown {
+            let i = self.find(after.number);
+            events.extend(pr_events(i.map(|i| &self.0[i]), &after));
+            self.keep(i, after);
+        }
+        if let Some(n) = closed.filter(|&n| Some(n) != shown_number) {
+            match self.find(n) {
+                Some(i) if self.0[i].state != PrState::Closed => {
+                    events.push(Event::PrClosed(n));
+                    self.0[i].state = PrState::Closed;
+                }
+                Some(_) => {}
+                // Never seen open: an old one, as in `pr_events`.
+                None => self.keep(None, PrSnap::closed(n)),
+            }
+        }
+        events
+    }
+
+    fn find(&self, number: u64) -> Option<usize> {
+        self.0.iter().position(|p| p.number == number)
+    }
+
+    fn keep(&mut self, at: Option<usize>, snap: PrSnap) {
+        if let Some(i) = at {
+            self.0.remove(i);
+        }
+        self.0.push(snap);
+        if self.0.len() > Prs::KEPT {
+            self.0.remove(0);
+        }
+    }
+}
+
 /// A session state the events tell of, or None for the others.
 pub fn session_event(state: crate::app::AgentState, asleep: bool) -> Option<Event> {
     use crate::app::AgentState;
@@ -384,22 +446,39 @@ pub fn session_event(state: crate::app::AgentState, asleep: bool) -> Option<Even
     }
 }
 
-// ---- the file ------------------------------------------------------------------------------------
+// ---- the file -----------------------------------------------------------------------------------
 
 /// Adds `lines` to the file at `path` in one write, first moving a file past `ROTATE_AT` aside
 /// (over the one before it). The folder is the user's alone and the files too, as the rest of the
-/// state folder.
+/// state folder. On the UI thread, so neither the folder nor the file may be a link, which would
+/// have it write elsewhere, and the file must be a regular one: opened without waiting on a pipe,
+/// then checked, as the inbox reads its requests.
 pub fn append(path: &Path, lines: &[Line]) -> io::Result<()> {
     if lines.is_empty() {
         return Ok(());
     }
     let dir = path.parent().ok_or_else(|| io::Error::other("no folder"))?;
+    match std::fs::symlink_metadata(dir) {
+        Ok(m) if !m.is_dir() => return Err(io::Error::other("its folder isn't a folder")),
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
     store::private_dir(dir)?;
-    if std::fs::metadata(path).is_ok_and(|m| m.len() >= ROTATE_AT) {
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && m.len() >= ROTATE_AT) {
         std::fs::rename(path, older(path))?;
     }
-    let mut file = std::fs::OpenOptions::new().append(true).create(true).mode(0o600).open(path)?;
-    if file.metadata()?.permissions().mode() & 0o777 != 0o600 {
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(io::Error::other("it isn't a regular file"));
+    }
+    if meta.permissions().mode() & 0o777 != 0o600 {
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
     let mut text = String::new();
@@ -408,6 +487,17 @@ pub fn append(path: &Path, lines: &[Line]) -> io::Result<()> {
         text.push('\n');
     }
     file.write_all(text.as_bytes())
+}
+
+/// The file at `path` to read, when it's a regular file: not through a link, and without waiting
+/// on a pipe.
+fn open_regular(path: &Path) -> Option<std::fs::File> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
+    file.metadata().is_ok_and(|m| m.is_file()).then_some(file)
 }
 
 /// The events in `bytes`, a file's text, skipping what isn't one.
@@ -422,7 +512,7 @@ fn parse_all(bytes: &[u8]) -> Vec<Line> {
 /// The end of the file at `path`, at most `READ_MAX` of it from a line's start; empty when there's
 /// none.
 fn tail_of(path: &Path) -> Vec<u8> {
-    let Ok(mut file) = std::fs::File::open(path) else { return Vec::new() };
+    let Some(mut file) = open_regular(path) else { return Vec::new() };
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
     let start = len.saturating_sub(READ_MAX);
     let mut bytes = Vec::new();
@@ -439,12 +529,12 @@ fn tail_of(path: &Path) -> Vec<u8> {
     bytes
 }
 
-/// The newest `n` events in the file at `path` and the one before it, oldest first, but for those
-/// of `own` (the session asking).
-fn recent(path: &Path, own: Option<&str>, n: usize) -> Vec<Line> {
+/// The newest `n` events in the file at `path` and the one before it, oldest first, of the tickets
+/// `shown` takes.
+fn recent(path: &Path, shown: &mut impl FnMut(&Key) -> bool, n: usize) -> Vec<Line> {
     let mut lines = parse_all(&tail_of(&older(path)));
     lines.extend(parse_all(&tail_of(path)));
-    lines.retain(|l| own.is_none_or(|k| !l.key.is(k)));
+    lines.retain(|l| shown(&l.key));
     let skip = lines.len().saturating_sub(n);
     lines.split_off(skip)
 }
@@ -464,7 +554,7 @@ impl Tail {
     /// From the end of the file there now, or from the start of one made later.
     pub fn at_end(path: &Path) -> Tail {
         let mut t = Tail { path: path.to_path_buf(), file: None, ino: 0, pos: 0, partial: vec![] };
-        if let Ok(file) = std::fs::File::open(path)
+        if let Some(file) = open_regular(path)
             && let Ok(m) = file.metadata()
         {
             (t.ino, t.pos, t.file) = (m.ino(), m.len(), Some(file));
@@ -476,17 +566,22 @@ impl Tail {
     pub fn read(&mut self) -> Vec<String> {
         let mut lines = Vec::new();
         self.drain(&mut lines);
-        // Moved aside, removed or cut short: the rest of the old one is read above.
-        let now = std::fs::metadata(&self.path).ok();
+        // Moved aside, removed or cut short: the rest of the old one is read above. Not a regular
+        // file (a link, a pipe) counts as none.
+        let now = std::fs::symlink_metadata(&self.path).ok().filter(std::fs::Metadata::is_file);
         let moved = match (&self.file, &now) {
             (Some(_), Some(m)) => m.ino() != self.ino || m.len() < self.pos,
             (None, Some(_)) => true,
+            // Between a rotation's move and the next write, too: the old one's last lines first.
             (_, None) => {
+                self.drain(&mut lines);
                 self.file = None;
                 false
             }
         };
-        if moved && let Ok(file) = std::fs::File::open(&self.path) {
+        if moved && let Some(file) = open_regular(&self.path) {
+            // Lines added to the old one after the read above, just before it was moved aside.
+            self.drain(&mut lines);
             self.ino = file.metadata().map(|m| m.ino()).unwrap_or(0);
             (self.file, self.pos) = (Some(file), 0);
             self.partial.clear();
@@ -514,7 +609,7 @@ impl Tail {
     }
 }
 
-// ---- the command ---------------------------------------------------------------------------------
+// ---- the command --------------------------------------------------------------------------------
 
 pub fn run(args: &[String]) -> i32 {
     cli::run("events", USAGE, args, events)
@@ -563,16 +658,20 @@ fn events(args: &[String]) -> Result<i32, String> {
     let (session, session_repo) = store::session_env();
     let own = cli::session_project(&saved, session_repo.as_deref())?;
     let p = project(&a, &saved, own)?;
-    let path = path(&saved.projects[p].repo);
-    // A session isn't told of its own changes: an agent following them would hear of each of its
+    let repo = &saved.projects[p].repo;
+    let path = path(repo);
+    // A session isn't told of its own changes: one following them would hear of each of its own
     // turns ending, which Monitor would bring it as a new turn.
     let own_key = session.filter(|_| own.is_some());
+    let mut shown = Shown::new(&saved, repo, own_key);
     let mut out = Out { json: a.json };
     if a.follow {
-        follow(&path, own_key.as_deref(), &mut out, add::tui_running, stdout_gone);
+        let parent = parent();
+        let gone = || stdout_gone() || self::parent() != parent;
+        follow(&path, &mut |k| shown.takes(k), &mut out, add::tui_running, gone);
         return Ok(0);
     }
-    let lines = recent(&path, own_key.as_deref(), RECENT);
+    let lines = recent(&path, &mut |k| shown.takes(k), RECENT);
     if lines.is_empty() && !a.json {
         let _ = out.notice(Notice::Empty);
     }
@@ -585,6 +684,59 @@ fn events(args: &[String]) -> Result<i32, String> {
         let _ = out.notice(Notice::NotRunning);
     }
     Ok(0)
+}
+
+/// The tickets whose events the command prints: the project's as taskman has them, but the
+/// session's own. Only their keys, so a line someone else wrote in the file can't spell words with
+/// its key; agents have no events. Read again when a line names a key it doesn't have and
+/// tickets.json changed since, so a ticket added while following is told of: taskman saves it
+/// before it can have an event.
+struct Shown {
+    repo: PathBuf,
+    own: Option<String>,
+    keys: Vec<String>,
+    /// tickets.json's time when the keys were read.
+    read: Option<std::time::SystemTime>,
+}
+
+impl Shown {
+    fn new(saved: &Saved, repo: &Path, own: Option<String>) -> Shown {
+        let read = saved_at();
+        Shown { repo: repo.to_path_buf(), own, keys: keys_of(saved, repo), read }
+    }
+
+    fn takes(&mut self, key: &Key) -> bool {
+        if self.own.as_deref().is_some_and(|k| key.is(k)) {
+            return false;
+        }
+        let knows = |keys: &[String]| keys.iter().any(|k| key.is(k));
+        if knows(&self.keys) {
+            return true;
+        }
+        let now = saved_at();
+        if now == self.read {
+            return false;
+        }
+        if let Ok(saved) = store::load() {
+            (self.keys, self.read) = (keys_of(&saved, &self.repo), now);
+        }
+        knows(&self.keys)
+    }
+}
+
+/// When tickets.json last changed.
+fn saved_at() -> Option<std::time::SystemTime> {
+    std::fs::metadata(store::state_dir().join("tickets.json")).and_then(|m| m.modified()).ok()
+}
+
+/// The keys of the tickets in project `repo`.
+fn keys_of(saved: &Saved, repo: &Path) -> Vec<String> {
+    saved
+        .tickets
+        .iter()
+        .filter(|t| t.repo == repo && t.agent.is_none())
+        .map(|t| t.key.clone())
+        .collect()
 }
 
 /// What `--follow` says of taskman itself, in words of its own (or `--json`'s `"taskman"`).
@@ -652,12 +804,13 @@ impl Out {
     }
 }
 
-/// Prints each new event in the file at `path` but `own`'s, and when taskman stops or starts
-/// (`running`), until the output's reader goes (a write fails, or `gone` says so between them).
-/// SIGTERM ends it as it would any program: there's nothing to finish.
+/// Prints each new event in the file at `path` of the tickets `shown` takes, and when taskman stops
+/// or starts (`running`), until the output's reader goes (a write fails, or `gone` says so between
+/// them: a closed pipe, or the process that started it ended, leaving it to nobody). SIGTERM ends
+/// it as it would any program: there's nothing to finish.
 fn follow(
     path: &Path,
-    own: Option<&str>,
+    shown: &mut impl FnMut(&Key) -> bool,
     out: &mut Out,
     running: impl Fn() -> bool,
     gone: impl Fn() -> bool,
@@ -671,10 +824,7 @@ fn follow(
     loop {
         for text in tail.read() {
             let Some(l) = Line::parse(&text) else { continue };
-            if own.is_some_and(|k| l.key.is(k)) {
-                continue;
-            }
-            if out.event(&l).is_err() {
+            if shown(&l.key) && out.event(&l).is_err() {
                 return;
             }
         }
@@ -694,6 +844,12 @@ fn follow(
         }
         std::thread::sleep(POLL);
     }
+}
+
+/// The process that started this one, or the one that took it over when that ended.
+fn parent() -> libc::pid_t {
+    // SAFETY: getppid takes nothing, touches no memory and can't fail.
+    unsafe { libc::getppid() }
 }
 
 /// Whether stdout's reader has gone (a pipe whose other end closed), seen without writing: so a
@@ -797,7 +953,8 @@ mod tests {
         fn output_is_only_ever_fixed_words(
             key in prop_oneof!["\\PC{0,20}", "[A-Za-z0-9_-]{1,12}"],
             kind in prop::sample::select(vec![
-                "pr_opened", "pr_merged", "comments", "needs_you", "ended", "x", "",
+                "pr_opened", "pr_closed", "pr_merged", "checks_passed", "checks_failed", "approved",
+                "changes_requested", "comments", "needs_you", "your_turn", "ended", "x", "",
             ]),
             pr in prop::option::of(any::<i64>()),
             count in prop::option::of(any::<i64>()),
@@ -852,13 +1009,78 @@ mod tests {
         assert_eq!(pr_events(None, &failing), [Event::PrOpened(97), Event::ChecksFailed(97)]);
         let reviewed = PrSnap { approvals: ids(&["r:6"]), ..snap(97) };
         assert_eq!(pr_events(None, &reviewed), [Event::PrOpened(97)]);
+        // First found merged or closed: an old PR the lookup only now finds, maybe. No news.
         let merged = PrSnap { state: PrState::Merged, ..snap(97) };
-        assert_eq!(pr_events(None, &merged), [Event::PrMerged(97)]);
-        assert_eq!(pr_events(None, &PrSnap::closed(96)), [Event::PrClosed(96)]);
+        assert_eq!(pr_events(None, &merged), []);
+        assert_eq!(pr_events(None, &PrSnap::closed(96)), []);
         // Another PR replaces it.
         assert_eq!(pr_events(Some(&PrSnap::closed(96)), &snap(97)), [Event::PrOpened(97)]);
         // Nothing changed: nothing, however often it's looked up.
         assert_eq!(pr_events(Some(&snap(97)), &snap(97)), []);
+    }
+
+    #[test]
+    fn a_pr_shown_again_after_another_is_not_new() {
+        let merged = |n| PrSnap { state: PrState::Merged, ..snap(n) };
+        let mut prs = Prs::default();
+        prs.see(Some(merged(96)), None);
+        // #97 opens, and is closed without merging: the lookup shows merged #96 again, with #97
+        // as the newest closed.
+        assert_eq!(prs.see(Some(snap(97)), None), [Event::PrOpened(97)]);
+        assert_eq!(prs.see(Some(merged(96)), Some(97)), [Event::PrClosed(97)]);
+        assert_eq!(prs.see(Some(merged(96)), Some(97)), [], "once");
+        // Nothing shown, #97 the closed one: no news either.
+        assert_eq!(prs.see(None, Some(97)), []);
+        // Reopened.
+        assert_eq!(prs.see(Some(snap(97)), None), [Event::PrOpened(97)]);
+
+        // Two open PRs the lookup switches between are each opened once.
+        let mut prs = Prs::default();
+        assert_eq!(prs.see(Some(snap(1)), None), [Event::PrOpened(1)]);
+        assert_eq!(prs.see(Some(snap(2)), None), [Event::PrOpened(2)]);
+        for n in [1, 2, 1, 2] {
+            assert_eq!(prs.see(Some(snap(n)), None), [], "#{n}");
+        }
+        // A closed PR never seen open is an old one: kept, not told.
+        assert_eq!(prs.see(Some(snap(2)), Some(40)), []);
+        assert_eq!(prs.see(Some(snap(2)), Some(40)), []);
+    }
+
+    #[test]
+    fn a_tickets_pr_memory_is_bounded() {
+        let mut prs = Prs::default();
+        for n in 0..100 {
+            prs.see(Some(snap(n)), None);
+        }
+        assert_eq!(prs.0.len(), Prs::KEPT);
+        // The latest seen are kept: shown again, no news.
+        assert_eq!(prs.see(Some(snap(99)), None), []);
+    }
+
+    #[test]
+    fn checks_go_by_githubs_rollup_of_all_of_them() {
+        // The fixture's list has a failing check; its rollup, when GitHub sends one, wins: the
+        // list holds the first 100 checks only.
+        let mut pr = crate::app::test_support::pr(128, "eng-52-login");
+        assert_eq!(Overall::of(&pr), Overall::Fail, "no rollup: by the list");
+        pr.stamp.checks = "SUCCESS".into();
+        assert_eq!(Overall::of(&pr), Overall::Pass);
+        for c in &mut pr.checks {
+            c.state = CheckState::Pass;
+        }
+        for (rollup, overall) in [
+            ("FAILURE", Overall::Fail),
+            ("ERROR", Overall::Fail),
+            ("PENDING", Overall::Pending),
+            ("EXPECTED", Overall::Pending),
+            ("SOMETHING_NEW", Overall::Pending),
+            ("", Overall::Pass),
+        ] {
+            pr.stamp.checks = rollup.into();
+            assert_eq!(Overall::of(&pr), overall, "{rollup}");
+        }
+        pr.checks.clear();
+        assert_eq!(Overall::of(&pr), Overall::None);
     }
 
     #[test]
@@ -956,7 +1178,7 @@ mod tests {
         append(&path, &[line("ENG-2", Event::NeedsYou)]).unwrap();
         assert_eq!(mode(&path), 0o600);
         // The newest of both files, but for the session's own.
-        let recent = recent(&path, Some("eng-2"), 3);
+        let recent = recent(&path, &mut |k| !k.is("eng-2"), 3);
         assert_eq!(
             recent,
             [
@@ -1021,6 +1243,71 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "first\n").unwrap();
         assert_eq!(tail.read(), ["first"]);
+    }
+
+    #[test]
+    fn links_and_pipes_are_never_written_or_waited_on() {
+        let dir = store::state_dir();
+        let path = path_in(&dir, Path::new("/src/acme"));
+        let events = path.parent().unwrap();
+        std::fs::create_dir_all(events).unwrap();
+        let one = [line("ENG-1", Event::NeedsYou)];
+        // A pipe where the file goes: refused at once, not waited on for a reader.
+        let fifo = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: makes a pipe at a path the test owns, from a string it owns.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert!(append(&path, &one).is_err());
+        assert!(recent(&path, &mut |_| true, 5).is_empty());
+        assert!(Tail::at_end(&path).read().is_empty());
+        std::fs::remove_file(&path).unwrap();
+        // A link to a file elsewhere: neither written nor made the user's alone.
+        let elsewhere = dir.join("elsewhere.txt");
+        std::fs::write(&elsewhere, "theirs\n").unwrap();
+        std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &path).unwrap();
+        assert!(append(&path, &one).is_err());
+        assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "theirs\n");
+        assert_eq!(mode(&elsewhere), 0o644);
+        // Nor read: what a link points to isn't the TUI's.
+        std::fs::write(&elsewhere, format!("{}\n", one[0].to_json())).unwrap();
+        assert!(recent(&path, &mut |_| true, 5).is_empty());
+        let mut tail = Tail::at_end(&path);
+        std::fs::write(&elsewhere, format!("{}\n{}\n", one[0].to_json(), one[0].to_json()))
+            .unwrap();
+        assert!(tail.read().is_empty());
+        std::fs::remove_file(&path).unwrap();
+        // A link where the folder goes: refused, and the folder it points to left as it was.
+        std::fs::remove_dir(events).unwrap();
+        let other = dir.join("other");
+        std::fs::create_dir(&other).unwrap();
+        std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(&other, events).unwrap();
+        assert!(append(&path, &one).is_err());
+        assert_eq!(mode(&other), 0o755);
+        assert_eq!(std::fs::read_dir(&other).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_tail_keeps_lines_written_just_before_a_rotation() {
+        let path = store::state_dir().join("events/p.jsonl");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "").unwrap();
+        let mut tail = Tail::at_end(&path);
+        let add = |path: &Path, text: &str| {
+            let mut f = std::fs::OpenOptions::new().append(true).create(true).open(path).unwrap();
+            f.write_all(text.as_bytes()).unwrap();
+        };
+        // Written and moved aside between two reads, with no new file yet: kept for the next.
+        add(&path, "one\n");
+        std::fs::rename(&path, older(&path)).unwrap();
+        assert_eq!(tail.read(), ["one"]);
+        add(&path, "two\n");
+        assert_eq!(tail.read(), ["two"]);
+        // Written, moved aside and the new file begun, all between two reads.
+        add(&path, "three\n");
+        std::fs::rename(&path, older(&path)).unwrap();
+        add(&path, "four\n");
+        assert_eq!(tail.read(), ["three", "four"]);
     }
 
     #[test]

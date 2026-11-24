@@ -162,6 +162,7 @@ fn a_pr_found_for_a_closed_ticket_is_not_the_reopened_tickets() {
         Ok(crate::github::Lookup {
             pr: Some(crate::app::test_support::pr(146, "eng-70-export")),
             closed: None,
+            newest_closed: None,
             branch_gone: false,
         })
     };
@@ -468,7 +469,14 @@ fn a_pr_lookup_never_moves_a_ticket_out_of_the_worktree_taskman_made() {
     let tv = &mut app.tickets[i];
     (tv.session, tv.t.session_id) = (None, None);
     assert!(crate::app::ticket::own_worktree(tv));
-    let lookup = || Ok(crate::github::Lookup { pr: None, closed: None, branch_gone: false });
+    let lookup = || {
+        Ok(crate::github::Lookup {
+            pr: None,
+            closed: None,
+            newest_closed: None,
+            branch_gone: false,
+        })
+    };
     let found = || Some((std::path::PathBuf::from("/src/wf/ENG-70"), "change/ENG-70".to_string()));
     let n = looking_up(&mut app, "ENG-70");
     app.tx.send(Msg::Pr(n, id(&app, "ENG-70"), Box::new(lookup()), found())).unwrap();

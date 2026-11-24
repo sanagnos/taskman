@@ -1,10 +1,12 @@
-//! The TUI's side of `taskman events`: what it last saw of each ticket's PR and session
+//! The TUI's side of `taskman events`: what it last saw of each ticket's PRs and session
 //! (`Feed`), and the changes it notes in the project's events file (`App::note_events`). Each is
-//! noted once, as it's seen: the first look at a PR (a fetch) or a session (a status poll) after
-//! taskman starts, or the ticket is added, is only the baseline, so a start floods nothing.
+//! noted once, as it's seen: the first look at a ticket's PRs (a lookup) or its session (a status
+//! poll) after taskman starts, or the ticket is added, is only the baseline, so a start floods
+//! nothing. Agents have no events: every agent's brief says to follow them, so two agents would
+//! wake each other with each turn's end, without end.
 
 use super::{AgentState, App, TicketView};
-use crate::events::{self, Event, Line, PrSnap};
+use crate::events::{self, Event, Line, PrSnap, Prs};
 use crate::github::Lookup;
 use crate::{store, util};
 use std::path::PathBuf;
@@ -13,9 +15,8 @@ use std::path::PathBuf;
 /// finds, and `taskman events --follow` says to look at `taskman status` for what came between.
 #[derive(Default)]
 pub(super) struct Feed {
-    /// Its PR at the last lookup that found one; None before the first lookup, Some(None) while
-    /// none has been found.
-    pr: Option<Option<PrSnap>>,
+    /// Its PRs as the lookups found them; None before the first lookup.
+    prs: Option<Prs>,
     /// Its session's state at the last status poll; None before the first.
     state: Option<AgentState>,
     /// Changes seen and not written yet.
@@ -25,25 +26,26 @@ pub(super) struct Feed {
 impl TicketView {
     /// The PR changes since the last lookup, from this one's.
     pub(super) fn feed_pr(&mut self, found: &Lookup) {
-        let after = match (&found.pr, found.closed) {
-            (Some(pr), _) => Some(PrSnap::of(pr)),
-            (None, Some(n)) => Some(PrSnap::closed(n)),
-            (None, None) => None,
-        };
-        match (&mut self.feed.pr, after) {
-            (None, after) => self.feed.pr = Some(after),
-            // Not found this time: one that comes back is the same PR, not a new one.
-            (Some(_), None) => {}
-            (Some(before), Some(after)) => {
-                self.feed.pending.extend(events::pr_events(before.as_ref(), &after));
-                *before = Some(after);
+        if self.t.agent.is_some() {
+            return;
+        }
+        let shown = found.pr.as_ref().map(PrSnap::of);
+        match &mut self.feed.prs {
+            Some(prs) => self.feed.pending.extend(prs.see(shown, found.newest_closed)),
+            None => {
+                let mut prs = Prs::default();
+                prs.see(shown, found.newest_closed);
+                self.feed.prs = Some(prs);
             }
         }
     }
 
     /// The session's change since the last status poll, as one event at most however often its
-    /// state moved in between.
+    /// state moved in between. A ticket's only.
     fn feed_state(&mut self) {
+        if self.t.agent.is_some() {
+            return;
+        }
         let now = self.status.state;
         if let Some(before) = self.feed.state.replace(now)
             && before != now
@@ -53,7 +55,6 @@ impl TicketView {
         }
     }
 }
-
 impl App {
     /// Writes the changes seen since the last call to each project's events file; `polled` after
     /// a status poll, which the session states are compared at. A write that fails is warned of

@@ -1219,7 +1219,7 @@ mod tests {
     }
 
     fn found(pr: Option<Pr>, closed: Option<u64>, branch_gone: bool) -> Result<Lookup, String> {
-        Ok(Lookup { pr, closed, branch_gone })
+        Ok(Lookup { pr, closed, newest_closed: closed, branch_gone })
     }
 
     #[test]

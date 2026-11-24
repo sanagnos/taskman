@@ -605,6 +605,9 @@ pub struct Lookup {
     pub pr: Option<Pr>,
     /// When there's nothing to show, the newest PR closed without merging, for a note.
     pub closed: Option<u64>,
+    /// The newest PR closed without merging, whether or not another is shown: so `taskman
+    /// events` hears of a PR closed while an older merged one is shown in its place.
+    pub newest_closed: Option<u64>,
     /// The remembered branch exists neither locally nor on the remote and has no open PR.
     pub branch_gone: bool,
 }
@@ -879,8 +882,9 @@ fn linked(
     c: &Closes,
 ) -> Option<Result<Lookup, String>> {
     let found = closing(gh, c).ok()?;
-    let pr = details(gh, pick(&found).0?, w.shown.as_ref());
-    Some(pr.map(|pr| Lookup { pr: Some(pr), closed: None, branch_gone: false }))
+    let (best, newest_closed) = pick(&found);
+    let pr = details(gh, best?, w.shown.as_ref());
+    Some(pr.map(|pr| Lookup { pr: Some(pr), closed: None, newest_closed, branch_gone: false }))
 }
 
 /// The ticket's PR among those listed for it: the PRs on its branch, and when none of them is
@@ -909,7 +913,8 @@ fn settle(
         Some(c) => Some(details(gh, c, w.shown.as_ref())?),
         None => None,
     };
-    Ok(Lookup { pr, closed: if best.is_none() { closed } else { None }, branch_gone })
+    let shown = if best.is_none() { closed } else { None };
+    Ok(Lookup { pr, closed: shown, newest_closed: closed, branch_gone })
 }
 
 /// The PR found, in full: the one shown when it hasn't changed, else fetched.
@@ -1808,6 +1813,8 @@ mod tests {
         let found = res.unwrap();
         let pr = found.pr.unwrap();
         assert_eq!((pr.number, found.closed), (45, None));
+        // The closed one, beside the PR shown, for `taskman events`.
+        assert_eq!(found.newest_closed, Some(40));
         // Threads GitHub didn't send still leave the PR.
         assert!(pr.threads.is_err());
         // An open PR on the ticket's branch beats a newer open one that only mentions the key.
@@ -2040,6 +2047,7 @@ mod tests {
         let found = res.unwrap();
         assert!(found.pr.is_none());
         assert_eq!((found.closed, found.branch_gone), (Some(40), false));
+        assert_eq!(found.newest_closed, Some(40));
     }
 
     #[test]

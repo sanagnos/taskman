@@ -213,7 +213,6 @@ fn agent_brief_head(
                 .to_string()
                 + if t.cli.sandboxed() { SANDBOX_STATUS_NOTE } else { "" },
         );
-        lines.push(events_line(t.cli, false));
         lines.push(
             "To set up a helper agent, such as a tester, `taskman add --agent NAME --role \"...\"` adds a project agent whose \
              startup brief carries the role as a standing instruction; it waits until someone writes to it."
@@ -252,7 +251,7 @@ fn agent_brief_head(
             .to_string()
             + if t.cli.sandboxed() { SANDBOX_STATUS_NOTE } else { "" },
     );
-    lines.push(events_line(t.cli, true));
+    lines.push(events_line(t.cli));
     lines.push(
         "When a ticket should be worked on in its own session, such as one you just created, `taskman add <KEY>` adds it \
          to taskman with the project's worktree settings, without switching the user's view (several keys at once; \
@@ -277,16 +276,12 @@ fn agent_brief_head(
     lines
 }
 
-/// How an agent hears of the project's changes (`taskman events`): as they come, where the CLI can
-/// follow a command's output (`Cli::follows_output`), else by asking. `tickets`: the project has
-/// ticket sessions and their PRs, not only agents.
-fn events_line(cli: Cli, tickets: bool) -> String {
-    let what = if tickets {
-        "when a ticket's PR opens, closes or merges, its checks pass or fail, it's approved, changes are requested or \
-         comments arrive, and when a session needs the user, finishes its turn or ends"
-    } else {
-        "when an agent's session needs the user, finishes its turn or ends"
-    };
+/// How an agent hears of the changes in the project's tickets (`taskman events`): as they come,
+/// where the CLI can follow a command's output (`Cli::follows_output`), else by asking. Agents
+/// have no events of their own, so agents following them don't wake each other.
+fn events_line(cli: Cli) -> String {
+    let what = "when a ticket's PR opens, closes or merges, its checks pass or fail, it's approved, changes are \
+                requested or comments arrive, and when a ticket's session needs the user, finishes its turn or ends";
     if cli.follows_output() {
         format!(
             "To hear of changes as they happen, start `taskman events --follow` with the Monitor tool, once per session: \
@@ -1288,12 +1283,11 @@ mod tests {
     fn an_agents_brief_says_to_follow_the_events_once() {
         let mut app = acme_app();
         let follow = "start `taskman events --follow` with the Monitor tool, once per session";
-        for agent in ["acme-lead", "notes-writer"] {
-            let b = brief(&launch_of(&app, agent));
-            assert!(b.contains(follow) && b.contains("doesn't repeat what came before"), "{b}");
-        }
-        assert!(brief(&launch_of(&app, "acme-lead")).contains("its checks pass or fail"));
-        assert!(!brief(&launch_of(&app, "notes-writer")).contains("checks"));
+        let b = brief(&launch_of(&app, "acme-lead"));
+        assert!(b.contains(follow) && b.contains("doesn't repeat what came before"), "{b}");
+        assert!(b.contains("its checks pass or fail"), "{b}");
+        // Without a tracker there are no tickets, and agents have no events.
+        assert!(!brief(&launch_of(&app, "notes-writer")).contains("taskman events"));
         // Codex has no Monitor: it asks.
         let i = app.tickets.iter().position(|tv| tv.t.key == "acme-lead").unwrap();
         app.tickets[i].t.cli = Cli::Codex;
