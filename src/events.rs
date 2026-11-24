@@ -253,6 +253,9 @@ pub struct PrSnap {
     pub change_requests: Vec<String>,
     /// The ids of its comments and its other reviews (`c:` and `r:`), as the panel's.
     pub comments: Vec<String>,
+    /// Whether it was a lookup's PR, with what it says, rather than only weighed beside it, its
+    /// state alone known (`bare`).
+    pub detailed: bool,
 }
 
 /// All of a PR's checks as one.
@@ -310,6 +313,7 @@ impl PrSnap {
             checks: Overall::of(pr),
             approvals: reviews(ReviewState::Approved),
             change_requests: reviews(ReviewState::ChangesRequested),
+            detailed: true,
             comments: pr
                 .comments
                 .iter()
@@ -319,16 +323,18 @@ impl PrSnap {
         }
     }
 
-    /// A PR the lookup knows only as closed without merging (`Lookup::newest_closed`).
-    pub fn closed(number: u64) -> PrSnap {
+    /// A PR the lookup only weighed beside the one it shows: its state, nothing it says
+    /// (`Lookup::weighed`).
+    pub fn bare(number: u64, state: PrState) -> PrSnap {
         PrSnap {
             number,
-            state: PrState::Closed,
+            state,
             head: String::new(),
             checks: Overall::None,
             approvals: Vec::new(),
             change_requests: Vec::new(),
             comments: Vec::new(),
+            detailed: false,
         }
     }
 }
@@ -340,18 +346,19 @@ impl PrSnap {
 /// would be worse than a missed one.
 pub fn pr_events(before: Option<&PrSnap>, after: &PrSnap) -> Vec<Event> {
     let n = after.number;
+    // What it said when it's first seen in full, taken as read.
+    let read = |state: PrState| PrSnap {
+        approvals: after.approvals.clone(),
+        change_requests: after.change_requests.clone(),
+        comments: after.comments.clone(),
+        ..PrSnap::bare(n, state)
+    };
     let (before, new) = match before {
-        Some(b) if b.number == n => (b.clone(), false),
+        Some(b) if b.number == n && b.detailed => (b.clone(), false),
+        // Weighed before, and so not new: what it says is seen now for the first time.
+        Some(b) if b.number == n => (read(b.state.clone()), false),
         _ if after.state != PrState::Open => return Vec::new(),
-        _ => {
-            let read = PrSnap {
-                approvals: after.approvals.clone(),
-                change_requests: after.change_requests.clone(),
-                comments: after.comments.clone(),
-                ..PrSnap::closed(n)
-            };
-            (read, true)
-        }
+        _ => (read(PrState::Open), true),
     };
     let added =
         |now: &[String], then: &[String]| now.iter().filter(|id| !then.contains(id)).count();
@@ -385,36 +392,42 @@ pub fn pr_events(before: Option<&PrSnap>, after: &PrSnap) -> Vec<Event> {
     events
 }
 
-/// The PRs a ticket's lookups have found, each as last seen, by number: a PR shown again after
-/// another (two open ones, or a merged one shown once a newer one closed) isn't new, and one that
-/// closed while another is shown in its place is told closed (`Lookup::newest_closed`).
+/// The PRs a ticket's lookups have found, each as last seen, by number: the one each lookup shows,
+/// and those it weighed beside it (`Lookup::weighed`). A PR shown again after another (two open
+/// ones, or a merged one shown once a newer one closed) isn't new; one seen open that merges or
+/// closes while another is shown in its place (an open one that mentions the key, an older merged
+/// one) is told merged or closed; one never seen open is no news.
 #[derive(Debug, Default)]
 pub struct Prs(Vec<PrSnap>);
 
 impl Prs {
     /// The most PRs a ticket's memory keeps, the latest seen.
-    const KEPT: usize = 20;
+    const KEPT: usize = 50;
 
-    /// The changes in what a lookup found: the PR it shows, and the newest closed without
-    /// merging.
-    pub fn see(&mut self, shown: Option<PrSnap>, closed: Option<u64>) -> Vec<Event> {
+    /// The changes in what a lookup found: the PR it shows, and every PR it weighed.
+    pub fn see(&mut self, shown: Option<PrSnap>, weighed: &[(u64, PrState)]) -> Vec<Event> {
         let mut events = Vec::new();
         let shown_number = shown.as_ref().map(|p| p.number);
+        for (n, state) in weighed.iter().filter(|(n, _)| Some(*n) != shown_number) {
+            match self.find(*n) {
+                Some(i) => {
+                    let known = &mut self.0[i];
+                    if known.state == PrState::Open {
+                        match state {
+                            PrState::Merged => events.push(Event::PrMerged(*n)),
+                            PrState::Closed => events.push(Event::PrClosed(*n)),
+                            PrState::Open | PrState::Other(_) => {}
+                        }
+                    }
+                    known.state = state.clone();
+                }
+                None => self.keep(None, PrSnap::bare(*n, state.clone())),
+            }
+        }
         if let Some(after) = shown {
             let i = self.find(after.number);
             events.extend(pr_events(i.map(|i| &self.0[i]), &after));
             self.keep(i, after);
-        }
-        if let Some(n) = closed.filter(|&n| Some(n) != shown_number) {
-            match self.find(n) {
-                Some(i) if self.0[i].state != PrState::Closed => {
-                    events.push(Event::PrClosed(n));
-                    self.0[i].state = PrState::Closed;
-                }
-                Some(_) => {}
-                // Never seen open: an old one, as in `pr_events`.
-                None => self.keep(None, PrSnap::closed(n)),
-            }
         }
         events
     }
@@ -448,14 +461,26 @@ pub fn session_event(state: crate::app::AgentState, asleep: bool) -> Option<Even
 
 // ---- the file -----------------------------------------------------------------------------------
 
+/// Whether an append moved the file aside first (`append`).
+#[derive(Debug)]
+pub enum Rotation {
+    NotDue,
+    Done,
+    /// It couldn't (`<file>.1` is a folder, say), so the lines went to the file as it is, which
+    /// grows until a move works: nothing is removed to make room.
+    Failed(io::Error),
+}
+
 /// Adds `lines` to the file at `path` in one write, first moving a file past `ROTATE_AT` aside
 /// (over the one before it). The folder is the user's alone and the files too, as the rest of the
-/// state folder. On the UI thread, so neither the folder nor the file may be a link, which would
-/// have it write elsewhere, and the file must be a regular one: opened without waiting on a pipe,
-/// then checked, as the inbox reads its requests.
-pub fn append(path: &Path, lines: &[Line]) -> io::Result<()> {
+/// state folder. On the UI thread, so the file must be a regular one, opened without following a
+/// link or waiting on a pipe and then checked, as the inbox reads its requests, and a folder that's
+/// a link is refused. The folder is checked by its path before it's used by its path again, so a
+/// link put in its place in between would be followed: only something running as the user could,
+/// which could write there anyway.
+pub fn append(path: &Path, lines: &[Line]) -> io::Result<Rotation> {
     if lines.is_empty() {
-        return Ok(());
+        return Ok(Rotation::NotDue);
     }
     let dir = path.parent().ok_or_else(|| io::Error::other("no folder"))?;
     match std::fs::symlink_metadata(dir) {
@@ -465,9 +490,15 @@ pub fn append(path: &Path, lines: &[Line]) -> io::Result<()> {
         Err(e) => return Err(e),
     }
     store::private_dir(dir)?;
-    if std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && m.len() >= ROTATE_AT) {
-        std::fs::rename(path, older(path))?;
-    }
+    let rotation =
+        if std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && m.len() >= ROTATE_AT) {
+            match std::fs::rename(path, older(path)) {
+                Ok(()) => Rotation::Done,
+                Err(e) => Rotation::Failed(e),
+            }
+        } else {
+            Rotation::NotDue
+        };
     let mut file = std::fs::OpenOptions::new()
         .append(true)
         .create(true)
@@ -486,7 +517,8 @@ pub fn append(path: &Path, lines: &[Line]) -> io::Result<()> {
         text.push_str(&l.to_json().to_string());
         text.push('\n');
     }
-    file.write_all(text.as_bytes())
+    file.write_all(text.as_bytes())?;
+    Ok(rotation)
 }
 
 /// The file at `path` to read, when it's a regular file: not through a link, and without waiting
@@ -654,6 +686,8 @@ fn project(a: &Args, saved: &Saved, own: Option<usize>) -> Result<usize, String>
 
 fn events(args: &[String]) -> Result<i32, String> {
     let a = parse_args(args)?;
+    // Before the load: a save in between then reads as a change, and its tickets are taken.
+    let stamp = saved_at();
     let saved = store::load()?;
     let (session, session_repo) = store::session_env();
     let own = cli::session_project(&saved, session_repo.as_deref())?;
@@ -663,7 +697,7 @@ fn events(args: &[String]) -> Result<i32, String> {
     // A session isn't told of its own changes: one following them would hear of each of its own
     // turns ending, which Monitor would bring it as a new turn.
     let own_key = session.filter(|_| own.is_some());
-    let mut shown = Shown::new(&saved, repo, own_key);
+    let mut shown = Shown::new(&saved, stamp, repo, own_key);
     let mut out = Out { json: a.json };
     if a.follow {
         let parent = parent();
@@ -695,13 +729,13 @@ struct Shown {
     repo: PathBuf,
     own: Option<String>,
     keys: Vec<String>,
-    /// tickets.json's time when the keys were read.
-    read: Option<std::time::SystemTime>,
+    /// tickets.json as it was just before the keys were read (`saved_at`).
+    read: Option<Stamp>,
 }
 
 impl Shown {
-    fn new(saved: &Saved, repo: &Path, own: Option<String>) -> Shown {
-        let read = saved_at();
+    /// `saved`, loaded just after tickets.json was `read`.
+    fn new(saved: &Saved, read: Option<Stamp>, repo: &Path, own: Option<String>) -> Shown {
         Shown { repo: repo.to_path_buf(), own, keys: keys_of(saved, repo), read }
     }
 
@@ -724,9 +758,14 @@ impl Shown {
     }
 }
 
-/// When tickets.json last changed.
-fn saved_at() -> Option<std::time::SystemTime> {
-    std::fs::metadata(store::state_dir().join("tickets.json")).and_then(|m| m.modified()).ok()
+/// Which tickets.json is there, and when it last changed: by its inode too, as each save writes
+/// a new file and renames it over the old one (`store::write_atomic`), so two saves within the
+/// clock's grain still differ.
+type Stamp = (u64, Option<std::time::SystemTime>);
+
+fn saved_at() -> Option<Stamp> {
+    let m = std::fs::metadata(store::state_dir().join("tickets.json")).ok()?;
+    Some((m.ino(), m.modified().ok()))
 }
 
 /// The keys of the tickets in project `repo`.
@@ -880,6 +919,7 @@ mod tests {
             approvals: vec![],
             change_requests: vec!["r:5".into()],
             comments: vec!["c:1".into()],
+            detailed: true,
         }
     }
 
@@ -1012,49 +1052,99 @@ mod tests {
         // First found merged or closed: an old PR the lookup only now finds, maybe. No news.
         let merged = PrSnap { state: PrState::Merged, ..snap(97) };
         assert_eq!(pr_events(None, &merged), []);
-        assert_eq!(pr_events(None, &PrSnap::closed(96)), []);
+        assert_eq!(pr_events(None, &PrSnap::bare(96, PrState::Closed)), []);
         // Another PR replaces it.
-        assert_eq!(pr_events(Some(&PrSnap::closed(96)), &snap(97)), [Event::PrOpened(97)]);
+        let closed = PrSnap::bare(96, PrState::Closed);
+        assert_eq!(pr_events(Some(&closed), &snap(97)), [Event::PrOpened(97)]);
+        // Weighed before and open: not new, and what it says is taken as read, but its checks.
+        let weighed = PrSnap::bare(97, PrState::Open);
+        assert_eq!(pr_events(Some(&weighed), &snap(97)), []);
+        assert_eq!(pr_events(Some(&weighed), &failing), [Event::ChecksFailed(97)]);
+        // Weighed closed, now shown open: reopened.
+        let weighed = PrSnap::bare(97, PrState::Closed);
+        assert_eq!(pr_events(Some(&weighed), &snap(97)), [Event::PrOpened(97)]);
         // Nothing changed: nothing, however often it's looked up.
         assert_eq!(pr_events(Some(&snap(97)), &snap(97)), []);
     }
 
     #[test]
     fn a_pr_shown_again_after_another_is_not_new() {
-        let merged = |n| PrSnap { state: PrState::Merged, ..snap(n) };
+        use PrState::{Closed, Merged, Open};
+        let merged = |n| PrSnap { state: Merged, ..snap(n) };
         let mut prs = Prs::default();
-        prs.see(Some(merged(96)), None);
-        // #97 opens, and is closed without merging: the lookup shows merged #96 again, with #97
-        // as the newest closed.
-        assert_eq!(prs.see(Some(snap(97)), None), [Event::PrOpened(97)]);
-        assert_eq!(prs.see(Some(merged(96)), Some(97)), [Event::PrClosed(97)]);
-        assert_eq!(prs.see(Some(merged(96)), Some(97)), [], "once");
+        prs.see(Some(merged(96)), &[(96, Merged)]);
+        // #97 opens, and is closed without merging: the lookup shows merged #96 again.
+        assert_eq!(prs.see(Some(snap(97)), &[(96, Merged), (97, Open)]), [Event::PrOpened(97)]);
+        let after = [(96, Merged), (97, Closed)];
+        assert_eq!(prs.see(Some(merged(96)), &after), [Event::PrClosed(97)]);
+        assert_eq!(prs.see(Some(merged(96)), &after), [], "once");
         // Nothing shown, #97 the closed one: no news either.
-        assert_eq!(prs.see(None, Some(97)), []);
+        assert_eq!(prs.see(None, &after), []);
         // Reopened.
-        assert_eq!(prs.see(Some(snap(97)), None), [Event::PrOpened(97)]);
+        assert_eq!(prs.see(Some(snap(97)), &[(96, Merged), (97, Open)]), [Event::PrOpened(97)]);
 
         // Two open PRs the lookup switches between are each opened once.
         let mut prs = Prs::default();
-        assert_eq!(prs.see(Some(snap(1)), None), [Event::PrOpened(1)]);
-        assert_eq!(prs.see(Some(snap(2)), None), [Event::PrOpened(2)]);
+        assert_eq!(prs.see(Some(snap(1)), &[(1, Open)]), [Event::PrOpened(1)]);
+        assert_eq!(prs.see(Some(snap(2)), &[(1, Open), (2, Open)]), [Event::PrOpened(2)]);
         for n in [1, 2, 1, 2] {
-            assert_eq!(prs.see(Some(snap(n)), None), [], "#{n}");
+            assert_eq!(prs.see(Some(snap(n)), &[(1, Open), (2, Open)]), [], "#{n}");
         }
-        // A closed PR never seen open is an old one: kept, not told.
-        assert_eq!(prs.see(Some(snap(2)), Some(40)), []);
-        assert_eq!(prs.see(Some(snap(2)), Some(40)), []);
+        // A PR never seen open, merged or closed, is an old one: kept, not told.
+        let old = [(1, Open), (2, Open), (40, Closed), (41, Merged)];
+        assert_eq!(prs.see(Some(snap(2)), &old), []);
+        assert_eq!(prs.see(Some(snap(2)), &old), []);
+    }
+
+    #[test]
+    fn a_pr_merged_while_an_open_one_takes_its_place_is_told_merged() {
+        use PrState::{Merged, Open};
+        // ENG-52's own #10 is open; #50, open too, only mentions the key, and isn't weighed
+        // while #10 is open on the branch.
+        let mut prs = Prs::default();
+        prs.see(Some(snap(10)), &[(10, Open)]);
+        // #10 merges: the lookup now shows #50, which is new to it.
+        assert_eq!(
+            prs.see(Some(snap(50)), &[(10, Merged), (50, Open)]),
+            [Event::PrMerged(10), Event::PrOpened(50)]
+        );
+        assert_eq!(prs.see(Some(snap(50)), &[(10, Merged), (50, Open)]), [], "once");
+        // Had #50 been weighed already, it isn't new when it's shown.
+        let mut prs = Prs::default();
+        prs.see(Some(snap(10)), &[(10, Open), (50, Open)]);
+        assert_eq!(prs.see(Some(snap(50)), &[(10, Merged), (50, Open)]), [Event::PrMerged(10)]);
+    }
+
+    #[test]
+    fn prs_closing_between_lookups_are_each_told() {
+        use PrState::{Closed, Merged, Open};
+        let mut prs = Prs::default();
+        prs.see(Some(snap(11)), &[(10, Open), (11, Open)]);
+        // #10 was only weighed, but seen open: its end is news too.
+        assert_eq!(
+            prs.see(None, &[(10, Closed), (11, Closed)]),
+            [Event::PrClosed(10), Event::PrClosed(11)]
+        );
+        assert_eq!(prs.see(None, &[(10, Closed), (11, Closed)]), []);
+        // One merged, one closed, the merged one shown.
+        let mut prs = Prs::default();
+        prs.see(Some(snap(11)), &[(10, Open), (11, Open)]);
+        let merged = PrSnap { state: Merged, ..snap(11) };
+        assert_eq!(
+            prs.see(Some(merged), &[(10, Closed), (11, Merged)]),
+            [Event::PrClosed(10), Event::PrMerged(11)]
+        );
     }
 
     #[test]
     fn a_tickets_pr_memory_is_bounded() {
         let mut prs = Prs::default();
         for n in 0..100 {
-            prs.see(Some(snap(n)), None);
+            prs.see(Some(snap(n)), &[]);
         }
         assert_eq!(prs.0.len(), Prs::KEPT);
         // The latest seen are kept: shown again, no news.
-        assert_eq!(prs.see(Some(snap(99)), None), []);
+        assert_eq!(prs.see(Some(snap(99)), &[]), []);
     }
 
     #[test]
@@ -1169,7 +1259,7 @@ mod tests {
         let many: Vec<Line> = (0..1500).map(|n| line("ENG-1", Event::PrOpened(n))).collect();
         append(&path, &many).unwrap();
         assert!(std::fs::metadata(&path).unwrap().len() >= ROTATE_AT);
-        append(&path, &[line("ENG-2", Event::Ended)]).unwrap();
+        assert!(matches!(append(&path, &[line("ENG-2", Event::Ended)]), Ok(Rotation::Done)));
         assert_eq!(parse_all(&std::fs::read(&path).unwrap()), [line("ENG-2", Event::Ended)]);
         assert_eq!(parse_all(&std::fs::read(older(&path)).unwrap()).len(), 1501);
         assert_eq!((mode(&path), mode(&older(&path))), (0o600, 0o600));
@@ -1187,6 +1277,24 @@ mod tests {
                 line("ENG-1", Event::PrOpened(1499)),
             ]
         );
+    }
+
+    #[test]
+    fn a_file_that_cant_be_moved_aside_is_still_written_and_nothing_removed() {
+        let path = path_in(&store::state_dir(), Path::new("/src/acme"));
+        let big: Vec<Line> = (0..1500).map(|n| line("ENG-1", Event::PrOpened(n))).collect();
+        append(&path, &big).unwrap();
+        // A folder where the older file goes, with something in it.
+        std::fs::create_dir(older(&path)).unwrap();
+        std::fs::write(older(&path).join("keep"), "mine").unwrap();
+        for _ in 0..2 {
+            let r = append(&path, &[line("ENG-2", Event::Ended)]);
+            assert!(matches!(r, Ok(Rotation::Failed(_))), "{r:?}");
+        }
+        let written = parse_all(&std::fs::read(&path).unwrap());
+        assert_eq!(written.len(), 1502);
+        assert_eq!(written[1501], line("ENG-2", Event::Ended));
+        assert_eq!(std::fs::read_to_string(older(&path).join("keep")).unwrap(), "mine");
     }
 
     #[test]

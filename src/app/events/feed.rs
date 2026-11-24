@@ -14,18 +14,20 @@ fn noted() -> Vec<String> {
     text.lines().filter_map(Line::parse).map(|l| l.text()).collect()
 }
 
-/// Ticket `key`'s PR lookup finds `pr`, as its thread would send it.
+/// Ticket `key`'s PR lookup finds `pr`, and weighs only it, as its thread would send it.
 fn found(app: &mut App, key: &str, pr: crate::github::Pr) {
-    found_closed(app, key, pr, None);
+    let weighed = [(pr.number, pr.state.clone())];
+    found_among(app, key, pr, &weighed);
 }
 
-/// As `found`, with `closed` the newest PR closed without merging.
-fn found_closed(app: &mut App, key: &str, pr: crate::github::Pr, closed: Option<u64>) {
+/// As `found`, the lookup having weighed the PRs `weighed` (`Lookup::weighed`).
+fn found_among(app: &mut App, key: &str, pr: crate::github::Pr, weighed: &[(u64, PrState)]) {
     app.fetches += 1;
     let (n, i) = (app.fetches, index(app, key));
     app.tickets[i].pr.start(n);
     let id = (app.tickets[i].t.repo.clone(), key.to_string());
-    let lookup = Lookup { pr: Some(pr), closed: None, newest_closed: closed, branch_gone: false };
+    let weighed = weighed.to_vec();
+    let lookup = Lookup { pr: Some(pr), closed: None, weighed, branch_gone: false };
     app.tx.send(Msg::Pr(n, id, Box::new(Ok(lookup)), None)).unwrap();
     app.drain_messages();
 }
@@ -75,15 +77,29 @@ fn a_pr_closed_while_an_older_merged_one_is_shown_is_closed_not_merged_again() {
     (merged.number, merged.state) = (96, PrState::Merged);
     found(&mut app, "ENG-52", merged.clone());
     // #97 opens, then closes without merging: the lookup goes back to showing merged #96.
-    found(&mut app, "ENG-52", pr_52_as(97));
-    found_closed(&mut app, "ENG-52", merged.clone(), Some(97));
-    found_closed(&mut app, "ENG-52", merged, Some(97));
+    let open = [(96, PrState::Merged), (97, PrState::Open)];
+    found_among(&mut app, "ENG-52", pr_52_as(97), &open);
+    let closed = [(96, PrState::Merged), (97, PrState::Closed)];
+    found_among(&mut app, "ENG-52", merged.clone(), &closed);
+    found_among(&mut app, "ENG-52", merged, &closed);
     assert_eq!(noted(), ["ENG-52  PR #97 opened", "ENG-52  PR #97 closed"]);
     // Two open PRs the lookup switches between: each opened once.
     for n in [98, 99, 98, 99, 98] {
         found(&mut app, "ENG-52", pr_52_as(n));
     }
     assert_eq!(noted()[2..], ["ENG-52  PR #98 opened", "ENG-52  PR #99 opened"]);
+}
+
+#[test]
+fn a_pr_merged_while_an_open_one_that_mentions_the_key_takes_its_place_is_told_merged() {
+    let mut app = acme_app();
+    // ENG-52's own #10 is open; #50, open too, only mentions ENG-52.
+    found(&mut app, "ENG-52", pr_52_as(10));
+    // #10 merges, so the lookup weighs the PRs that mention the key too and shows #50.
+    let weighed = [(10, PrState::Merged), (50, PrState::Open)];
+    found_among(&mut app, "ENG-52", pr_52_as(50), &weighed);
+    found_among(&mut app, "ENG-52", pr_52_as(50), &weighed);
+    assert_eq!(noted(), ["ENG-52  PR #10 merged", "ENG-52  PR #50 opened"]);
 }
 
 /// ENG-52's PR as number `number`, with no checks: only its opening and closing are news.
@@ -188,6 +204,30 @@ fn a_file_that_cant_be_written_is_warned_of_once_and_taskman_goes_on() {
     app.tickets[i].status.state = AgentState::Needs;
     app.poll_status();
     assert!(warned(&mut app));
+}
+
+#[test]
+fn a_file_that_cant_be_moved_aside_is_warned_of_once_and_still_written() {
+    let mut app = acme_app();
+    app.poll_status();
+    let path = events::path(Path::new("/src/acme"));
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let full = usize::try_from(events::ROTATE_AT).unwrap();
+    std::fs::write(&path, "x".repeat(full) + "\n").unwrap();
+    let mut older = path.clone().into_os_string();
+    older.push(".1");
+    std::fs::create_dir(&older).unwrap();
+    let i = index(&app, "ENG-61");
+    let mut warned = 0;
+    for state in [AgentState::Needs, AgentState::Done] {
+        app.tickets[i].status.state = state;
+        app.poll_status();
+        warned += usize::from(toast(&app).is_some_and(|t| t.starts_with("Couldn't move")));
+        app.toast = None;
+    }
+    assert_eq!(warned, 1);
+    assert_eq!(noted(), ["ENG-61  session needs you", "ENG-61  session finished its turn"]);
+    assert!(std::path::Path::new(&older).is_dir());
 }
 
 #[test]

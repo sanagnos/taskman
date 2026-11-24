@@ -162,7 +162,7 @@ fn a_pr_found_for_a_closed_ticket_is_not_the_reopened_tickets() {
         Ok(crate::github::Lookup {
             pr: Some(crate::app::test_support::pr(146, "eng-70-export")),
             closed: None,
-            newest_closed: None,
+            weighed: Vec::new(),
             branch_gone: false,
         })
     };
@@ -473,7 +473,7 @@ fn a_pr_lookup_never_moves_a_ticket_out_of_the_worktree_taskman_made() {
         Ok(crate::github::Lookup {
             pr: None,
             closed: None,
-            newest_closed: None,
+            weighed: Vec::new(),
             branch_gone: false,
         })
     };

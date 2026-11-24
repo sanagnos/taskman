@@ -294,8 +294,7 @@ fn a_follower_left_by_the_process_that_started_it_ends() {
         .unwrap();
     assert!(status.success());
     let pid: libc::pid_t = std::fs::read_to_string(&pid).unwrap().trim().parse().unwrap();
-    // SAFETY: signal 0 only asks whether the process is there.
-    let gone = common::wait_until(|| unsafe { libc::kill(pid, 0) } != 0);
+    let gone = common::wait_until(|| ended(pid));
     if !gone {
         // SAFETY: ends the follower the test started.
         unsafe { libc::kill(pid, libc::SIGKILL) };
@@ -305,6 +304,23 @@ fn a_follower_left_by_the_process_that_started_it_ends() {
         "still following with nobody to read it: {}",
         std::fs::read_to_string(&out).unwrap()
     );
+}
+
+/// Whether process `pid` has ended: gone, or a zombie its new parent hasn't reaped yet.
+fn ended(pid: libc::pid_t) -> bool {
+    // SAFETY: signal 0 only asks whether the process is there.
+    if unsafe { libc::kill(pid, 0) } != 0 {
+        return true;
+    }
+    // Linux: the state follows the command's name, which is in parentheses and may hold any.
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        return stat.rsplit_once(')').is_some_and(|(_, rest)| rest.trim_start().starts_with('Z'));
+    }
+    // macOS, which has no /proc.
+    std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim_start().starts_with('Z'))
 }
 
 #[test]

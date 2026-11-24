@@ -605,9 +605,10 @@ pub struct Lookup {
     pub pr: Option<Pr>,
     /// When there's nothing to show, the newest PR closed without merging, for a note.
     pub closed: Option<u64>,
-    /// The newest PR closed without merging, whether or not another is shown: so `taskman
-    /// events` hears of a PR closed while an older merged one is shown in its place.
-    pub newest_closed: Option<u64>,
+    /// Every PR the lookup weighed for the ticket, by number, with its state, the one shown
+    /// included: so `taskman events` hears of a PR merged or closed while another is shown in its
+    /// place (an open one that mentions the key, an older merged one).
+    pub weighed: Vec<(u64, PrState)>,
     /// The remembered branch exists neither locally nor on the remote and has no open PR.
     pub branch_gone: bool,
 }
@@ -730,6 +731,11 @@ fn candidate(p: &Value, exact: bool) -> Option<Candidate> {
         stamp: Stamp::read(p),
         exact,
     })
+}
+
+/// The number and state of each of the PRs `pick` chooses among (`Lookup::weighed`).
+fn weighed<'a>(c: impl IntoIterator<Item = &'a Candidate>) -> Vec<(u64, PrState)> {
+    c.into_iter().map(|x| (x.number, x.state.clone())).collect()
 }
 
 /// The PR to show (newest open, else newest merged; the branch's own before those that only
@@ -882,9 +888,9 @@ fn linked(
     c: &Closes,
 ) -> Option<Result<Lookup, String>> {
     let found = closing(gh, c).ok()?;
-    let (best, newest_closed) = pick(&found);
-    let pr = details(gh, best?, w.shown.as_ref());
-    Some(pr.map(|pr| Lookup { pr: Some(pr), closed: None, newest_closed, branch_gone: false }))
+    let weighed = weighed(&found);
+    let pr = details(gh, pick(&found).0?, w.shown.as_ref());
+    Some(pr.map(|pr| Lookup { pr: Some(pr), closed: None, weighed, branch_gone: false }))
 }
 
 /// The ticket's PR among those listed for it: the PRs on its branch, and when none of them is
@@ -904,6 +910,7 @@ fn settle(
             }
         }
     }
+    let weighed = weighed(found.iter().copied());
     let (best, closed) = pick(found);
     let branch_gone = match &w.branch {
         Some(b) if !open_on_branch => !branch_exists(repo, b),
@@ -914,7 +921,7 @@ fn settle(
         None => None,
     };
     let shown = if best.is_none() { closed } else { None };
-    Ok(Lookup { pr, closed: shown, newest_closed: closed, branch_gone })
+    Ok(Lookup { pr, closed: shown, weighed, branch_gone })
 }
 
 /// The PR found, in full: the one shown when it hasn't changed, else fetched.
@@ -1813,8 +1820,9 @@ mod tests {
         let found = res.unwrap();
         let pr = found.pr.unwrap();
         assert_eq!((pr.number, found.closed), (45, None));
-        // The closed one, beside the PR shown, for `taskman events`.
-        assert_eq!(found.newest_closed, Some(40));
+        // The others weighed beside it, for `taskman events`.
+        assert!(found.weighed.contains(&(40, PrState::Closed)), "{:?}", found.weighed);
+        assert!(found.weighed.contains(&(45, PrState::Open)), "{:?}", found.weighed);
         // Threads GitHub didn't send still leave the PR.
         assert!(pr.threads.is_err());
         // An open PR on the ticket's branch beats a newer open one that only mentions the key.
@@ -2047,7 +2055,7 @@ mod tests {
         let found = res.unwrap();
         assert!(found.pr.is_none());
         assert_eq!((found.closed, found.branch_gone), (Some(40), false));
-        assert_eq!(found.newest_closed, Some(40));
+        assert!(found.weighed.contains(&(40, PrState::Closed)), "{:?}", found.weighed);
     }
 
     #[test]

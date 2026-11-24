@@ -31,10 +31,10 @@ impl TicketView {
         }
         let shown = found.pr.as_ref().map(PrSnap::of);
         match &mut self.feed.prs {
-            Some(prs) => self.feed.pending.extend(prs.see(shown, found.newest_closed)),
+            Some(prs) => self.feed.pending.extend(prs.see(shown, &found.weighed)),
             None => {
                 let mut prs = Prs::default();
-                prs.see(shown, found.newest_closed);
+                prs.see(shown, &found.weighed);
                 self.feed.prs = Some(prs);
             }
         }
@@ -58,7 +58,8 @@ impl TicketView {
 impl App {
     /// Writes the changes seen since the last call to each project's events file; `polled` after
     /// a status poll, which the session states are compared at. A write that fails is warned of
-    /// once until one succeeds, and its events dropped: the TUI goes on either way.
+    /// once until one succeeds, and its events dropped, and a file that can't be moved aside once
+    /// until one is: the TUI goes on either way.
     pub(super) fn note_events(&mut self, polled: bool) {
         let ts = util::now();
         let mut by_project: Vec<(PathBuf, Vec<Line>)> = Vec::new();
@@ -80,16 +81,31 @@ impl App {
         }
         for (repo, lines) in by_project {
             let path = events::path(&repo);
-            match events::append(&path, &lines) {
-                Ok(()) => self.events_failed = false,
+            let rotation = match events::append(&path, &lines) {
+                Ok(rotation) => {
+                    self.events_failed = false;
+                    rotation
+                }
                 Err(e) if !self.events_failed => {
                     self.events_failed = true;
                     self.warn(format!(
                         "Couldn't note changes for `taskman events` in {}: {e}",
                         store::tilde(&path)
                     ));
+                    continue;
                 }
-                Err(_) => {}
+                Err(_) => continue,
+            };
+            match rotation {
+                events::Rotation::Failed(e) if !self.events_unrotated => {
+                    self.events_unrotated = true;
+                    self.warn(format!(
+                        "Couldn't move {} aside, so it grows until it can: {e}",
+                        store::tilde(&path)
+                    ));
+                }
+                events::Rotation::Done => self.events_unrotated = false,
+                _ => {}
             }
         }
     }
