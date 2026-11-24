@@ -423,7 +423,12 @@ impl Prs {
                             PrState::Open | PrState::Other(_) => {}
                         }
                     }
-                    known.state = state.clone();
+                    // Merged is for good: a list that still says open (GitHub's search index can
+                    // lag behind the PR itself) mustn't have it told merged again when it catches
+                    // up. Closed can be reopened.
+                    if known.state != PrState::Merged {
+                        known.state = state.clone();
+                    }
                     known
                 }
                 None => PrSnap::bare(*n, state.clone()),
@@ -1116,6 +1121,22 @@ mod tests {
         let mut prs = Prs::default();
         prs.see(Some(snap(10)), &[(10, Open), (50, Open)]);
         assert_eq!(prs.see(Some(snap(50)), &[(10, Merged), (50, Open)]), [Event::PrMerged(10)]);
+    }
+
+    #[test]
+    fn a_merged_pr_listed_open_again_is_not_told_merged_twice() {
+        use PrState::{Closed, Merged, Open};
+        let mut prs = Prs::default();
+        prs.see(Some(snap(11)), &[(10, Open), (11, Open)]);
+        assert_eq!(prs.see(Some(snap(11)), &[(10, Merged), (11, Open)]), [Event::PrMerged(10)]);
+        // The search index lags: #10 listed open again, then merged once it catches up.
+        assert_eq!(prs.see(Some(snap(11)), &[(10, Open), (11, Open)]), []);
+        assert_eq!(prs.see(Some(snap(11)), &[(10, Merged), (11, Open)]), [], "once");
+        // A closed one reopened, and closed again, is told closed again.
+        assert_eq!(prs.see(Some(snap(11)), &[(10, Merged), (12, Open)]), []);
+        assert_eq!(prs.see(Some(snap(11)), &[(12, Closed)]), [Event::PrClosed(12)]);
+        assert_eq!(prs.see(Some(snap(11)), &[(12, Open)]), []);
+        assert_eq!(prs.see(Some(snap(11)), &[(12, Closed)]), [Event::PrClosed(12)]);
     }
 
     #[test]
