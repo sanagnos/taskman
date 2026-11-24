@@ -1,1 +1,0 @@
-- Claude sessions can no longer edit taskman's state folder or config with their file tools, or read its saved tokens, in any permission mode. taskman's own commands still work from a session. It's hardening, not a sandbox: a command Claude doesn't recognise (`cp`, `mv`, a script, `python3`) isn't covered.

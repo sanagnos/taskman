@@ -2,6 +2,12 @@
 
 What changed in each release; a release's notes on GitHub are its section here. What's merged but not released yet is in [changelog.d/](changelog.d/), a file for each change, which the release moves in here. Versions follow Cargo's rule for 0.x: the patch number (0.1.1) for anything compatible, fixes and new features alike, and the minor (0.2.0) for breaking changes, such as changed keys, config or saved-state format, or a removed command.
 
+## 0.1.44 - 2026-11-24
+
+- `taskman wake KEY` starts a ticket's sleeping session again in its own pane, as selecting it does, without switching your view, and answers once the session is up, so an agent can message a session taskman put to sleep instead of waiting for you to select it. Sessions run it without a prompt, in their own project only. It doesn't start a session handed to another terminal, one that ended, or a Codex session. The guide now also says that Claude Code's messaging between sessions isn't limited to a project.
+- Claude sessions can no longer edit taskman's state folder or config with their file tools, or read its saved tokens, in any permission mode. taskman's own commands still work from a session. It's hardening, not a sandbox: a command Claude doesn't recognise (`cp`, `mv`, a script, `python3`) isn't covered.
+- `taskman events --follow` prints a line for each change in the project's tickets: their PRs (opened, closed, merged, checks passed or failed, approved, changes requested, new comments) and their sessions (needs you, finished its turn, ended), as taskman sees them, so a project agent running it with Claude Code's Monitor tool hears of merges, failures and reviews without asking. It prints ticket keys, PR numbers and fixed words only, never a title or a comment's text, and agents' startup instructions mention it. Without `--follow` it prints the latest 20.
+
 ## 0.1.43 - 2026-11-23
 
 - The install script and `taskman update` now accept only an attestation signed by the release workflow run from the tag of the release being installed, no longer one run from `main` or from another version's tag. Every release but v0.1.26 was signed from its own tag, so only installing v0.1.26 by name (`TASKMAN_VERSION=v0.1.26`) with `gh` logged in is now refused, with a message that says why.
