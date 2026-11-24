@@ -1484,16 +1484,13 @@ mod tests {
 
     #[test]
     fn a_pipes_reader_going_is_seen_without_writing() {
-        let mut fds = [0; 2];
-        // SAFETY: fills the two descriptors of a new pipe into an array this test owns.
-        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-        let [read, write] = fds;
-        assert!(!reader_gone(write), "its reader is there");
-        // SAFETY: closes the read end, which nothing else uses.
-        unsafe { libc::close(read) };
-        assert!(reader_gone(write), "its reader has gone");
-        // SAFETY: closes the write end, which nothing else uses.
-        unsafe { libc::close(write) };
+        use std::os::fd::AsRawFd;
+        // Close-on-exec, as `libc::pipe` isn't: a test that runs git meanwhile in this process
+        // would otherwise hand the read end to git, which would keep it open.
+        let (read, write) = std::io::pipe().unwrap();
+        assert!(!reader_gone(write.as_raw_fd()), "its reader is there");
+        drop(read);
+        assert!(reader_gone(write.as_raw_fd()), "its reader has gone");
     }
 
     #[test]
