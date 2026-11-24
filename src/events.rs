@@ -422,9 +422,11 @@ impl Prs {
     }
 
     /// The changes in what a lookup found: the PR it shows, and every PR it weighed. The shown
-    /// PR as known is taken out before the weighed ones go in, and put back last, so however many
-    /// new ones a lookup weighs, they can't push it out and have it told opened again; the known
-    /// weighed ones move up too, so the PRs a ticket still has are the last to go.
+    /// PR as known is taken out before the weighed ones go in, and put back last, and the oldest
+    /// are let go only once the whole lookup is in: so however many new ones a lookup weighs, they
+    /// can't push out the shown one and have it told opened again, nor a known one the same lookup
+    /// then finds merged or closed, which would go untold. The known weighed ones move up too, so
+    /// the PRs a ticket still has are the last to go.
     pub fn see(&mut self, shown: Option<PrSnap>, weighed: &[(u64, PrState)]) -> Vec<Event> {
         let mut events = Vec::new();
         let shown_number = shown.as_ref().map(|p| p.number);
@@ -456,6 +458,8 @@ impl Prs {
             events.extend(pr_events(before.as_ref(), &after));
             self.keep(after);
         }
+        let over = self.seen.len().saturating_sub(self.kept);
+        self.seen.drain(..over);
         events
     }
 
@@ -463,12 +467,9 @@ impl Prs {
         self.seen.iter().position(|p| p.number == number)
     }
 
-    /// `snap` as the latest seen, the oldest let go past `KEPT`.
+    /// `snap` as the latest seen.
     fn keep(&mut self, snap: PrSnap) {
         self.seen.push(snap);
-        if self.seen.len() > self.kept {
-            self.seen.remove(0);
-        }
     }
 }
 
@@ -1229,6 +1230,21 @@ mod tests {
         assert_eq!(prs.see(Some(snap(1)), &many), []);
         assert_eq!(prs.see(Some(snap(1)), &many), []);
         assert_eq!(prs.seen.last().map(|p| p.number), Some(1));
+    }
+
+    #[test]
+    fn a_pr_seen_merged_by_the_lookup_that_fills_the_memory_is_still_told() {
+        use PrState::{Merged, Open};
+        // As many PRs as are kept, #1 the one seen longest ago, and open.
+        let mut prs = Prs::default();
+        for n in 1..=u64::try_from(Prs::KEPT).unwrap() {
+            prs.see(None, &[(n, Open)]);
+        }
+        // A lookup lists a new PR before #1, now merged: the new one doesn't push #1 out before
+        // the lookup gets to it. (Found by the model's tests, `events::model`.)
+        assert_eq!(prs.see(None, &[(1000, Open), (1, Merged)]), [Event::PrMerged(1)]);
+        assert_eq!(prs.seen.len(), Prs::KEPT);
+        assert_eq!(prs.see(None, &[(1000, Open), (1, Merged)]), [], "once");
     }
 
     #[test]
