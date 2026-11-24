@@ -13,7 +13,10 @@
 //! - `Trace` holds the rules that need no memory of the code's kind, only what GitHub did, what
 //!   the lookups read and what was told. Nothing is told that didn't happen or wasn't watched
 //!   happening; nothing is told more often than it happened, unless the PR was forgotten in
-//!   between; and an end read of a PR still remembered is told.
+//!   between; a PR first read as the one shown, open, is told opened; and of a PR still
+//!   remembered, a merge is told, and a close when it was open for sure. It does hold two of the
+//!   feed's decisions: a PR is open again only once it's shown open, and a merge is told of a
+//!   closed PR too.
 //! - `Model` is the events owed, exactly: a map of what each remembered PR last said, by number,
 //!   forgetting the ones seen longest ago past the bound. It follows `Prs`'s rules closely, so it
 //!   catches what the rules above can't know (a check untold), and they catch what it shares
@@ -353,13 +356,13 @@ impl Trace {
                 self.may_tell(world, seen, &now, *e)
                     .map_err(|why| format!("{e} told, but {why}"))?;
             }
-            self.owed(&now, told)?;
+            self.owed(seen, &now, told)?;
         }
         self.baselined = true;
         for e in told {
             match (*e, e.pr()) {
                 (Event::Comments { pr, count }, _) => {
-                    *self.comments.entry(pr).or_default() += count
+                    *self.comments.entry(pr).or_default() += count;
                 }
                 (_, Some(n)) => self.told.push((n, e.kind(), self.looks.len())),
                 (_, None) => {}
@@ -377,24 +380,32 @@ impl Trace {
         Ok(())
     }
 
-    /// How many PRs other than `n` the lookups from `from` on read, this one's (`now`) too: once
-    /// it's as many as are remembered, `n` may have been forgotten.
-    fn others_since(&self, n: u64, from: usize, now: Option<&BTreeMap<u64, State>>) -> usize {
-        let mut others: Vec<u64> = self.looks[from..]
-            .iter()
-            .chain(now)
-            .flat_map(|l| l.keys().copied())
-            .filter(|m| *m != n)
-            .collect();
+    /// How many PRs other than `n` the lookups from `from` on read, up to this one: once it's as
+    /// many as are remembered, `n` may have been forgotten. This one's don't count, as nothing is
+    /// forgotten before a whole lookup is in.
+    fn others_since(&self, n: u64, from: usize) -> usize {
+        let since = self.looks[from..].iter().flat_map(|l| l.keys().copied());
+        let mut others: Vec<u64> = since.filter(|m| *m != n).collect();
         others.sort_unstable();
         others.dedup();
         others.len()
     }
 
-    /// An end is owed for a PR read before and not forgotten since: the lookups from its last
-    /// reading on have read fewer other PRs than are remembered. A merge, unless it was once read
-    /// merged already; a close, when it was open for sure (`open`).
-    fn owed(&self, now: &BTreeMap<u64, State>, told: &[Event]) -> Result<(), String> {
+    /// What a lookup must tell. "Opened", of a PR it shows open that no lookup has read. An end,
+    /// of a PR read before and not forgotten since, the lookups from its last reading on having
+    /// read fewer other PRs than are remembered: a merge, unless it was once read merged already,
+    /// and a close when it was open for sure (`open`), which a PR that reopened without being
+    /// shown isn't.
+    fn owed(&self, seen: &Seen, now: &BTreeMap<u64, State>, told: &[Event]) -> Result<(), String> {
+        if let Some(shown) = seen.shown.as_ref().filter(|s| s.state == State::Open)
+            && !self.last.contains_key(&shown.number)
+            && !told.contains(&Event::PrOpened(shown.number))
+        {
+            return Err(format!(
+                "PR #{} opened not told, though no lookup had read it",
+                shown.number
+            ));
+        }
         for (&n, &state) in now {
             let Some(&(at, _)) = self.last.get(&n) else { continue };
             let owed = match state {
@@ -404,7 +415,7 @@ impl Trace {
                 State::Closed if self.open.contains(&n) => Event::PrClosed(n),
                 _ => continue,
             };
-            if self.others_since(n, at, None) < self.kept && !told.contains(&owed) {
+            if self.others_since(n, at) < self.kept && !told.contains(&owed) {
                 return Err(format!("{owed} not told, of a PR read before and still remembered"));
             }
         }
@@ -461,13 +472,18 @@ impl Trace {
             | Event::ChecksFailed(n) => n,
         };
         // And no more often than it happened, but for a PR forgotten since it was last told.
-        let times = self.told.iter().filter(|(m, kind, _)| (*m, *kind) == (n, e.kind()));
-        let (times, last) = (times.clone().count(), times.last().map(|(_, _, at)| *at));
+        let times: Vec<usize> = self
+            .told
+            .iter()
+            .filter(|(m, kind, _)| (*m, *kind) == (n, e.kind()))
+            .map(|(_, _, at)| *at)
+            .collect();
+        let (times, last) = (times.len(), times.last().copied());
         let happened = world.happened(n, e.kind());
         match last {
             _ if u32::try_from(times).is_ok_and(|times| times < happened) => Ok(()),
             None => Err("that never happened".into()),
-            Some(at) if self.others_since(n, at, Some(now)) >= self.kept => Ok(()),
+            Some(at) if self.others_since(n, at) >= self.kept => Ok(()),
             Some(_) => Err(format!("that happened {happened} times, told {times} times already")),
         }
     }
@@ -897,6 +913,45 @@ mod tests {
                 }),
             ),
             (
+                "a closed PR taken as open again from a list",
+                Box::new(|prs, seen| {
+                    for (n, state) in &seen.weighed {
+                        if let Some(known) = prs.seen.iter_mut().find(|p| p.number == *n)
+                            && (*state, &known.state) == (State::Open, &PrState::Closed)
+                        {
+                            known.state = PrState::Open;
+                        }
+                    }
+                    see(prs, seen)
+                }),
+            ),
+            (
+                "the shown PR let go by the PRs weighed beside it",
+                Box::new(|prs, seen| {
+                    // As when the memory was cut to its bound before the shown PR was looked for.
+                    let shown = seen.shown.as_ref().map(|s| s.number);
+                    let new = seen.weighed.iter().filter(|(n, _)| {
+                        Some(*n) != shown && !prs.seen.iter().any(|p| p.number == *n)
+                    });
+                    let over = (prs.seen.len() + new.count()).saturating_sub(prs.kept);
+                    let old: Vec<usize> = (0..prs.seen.len())
+                        .filter(|i| !seen.weighed.iter().any(|(n, _)| *n == prs.seen[*i].number))
+                        .take(over)
+                        .collect();
+                    for i in old.into_iter().rev() {
+                        prs.seen.remove(i);
+                    }
+                    see(prs, seen)
+                }),
+            ),
+            (
+                "opened untold",
+                Box::new(|prs, seen| {
+                    let told = see(prs, seen);
+                    told.into_iter().filter(|e| !matches!(e, Event::PrOpened(_))).collect()
+                }),
+            ),
+            (
                 "the oldest PR let go as each one goes in",
                 Box::new(|prs, seen| {
                     let mut told = Vec::new();
@@ -932,6 +987,19 @@ mod tests {
             (
                 "checks passed at each lookup that shows them passing",
                 adding(|seen| shown(seen, Event::ChecksPassed, |s| s.checks == Overall::Pass)),
+            ),
+            (
+                "checks failed at each lookup that shows them failing",
+                adding(|seen| shown(seen, Event::ChecksFailed, |s| s.checks == Overall::Fail)),
+            ),
+            (
+                "a comment at each lookup that shows one",
+                adding(|seen| {
+                    let one = |pr| Event::Comments { pr, count: 1 };
+                    let told = shown(seen, one, |s| s.comments > 0);
+                    // Not beside the comments it tells anyway.
+                    told.into_iter().filter(|_| seen.weighed.is_empty()).collect()
+                }),
             ),
         ];
         for (wrong, see) in wrong {
