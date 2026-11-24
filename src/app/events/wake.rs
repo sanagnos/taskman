@@ -1,0 +1,330 @@
+use super::*;
+use crate::app::test_support::ticket;
+use crate::store::Ticket;
+use crate::util;
+
+// ---- `taskman wake` through the inbox ------------------------------------------------------
+
+/// Leaves a `taskman wake` request for `key` whose command waits `wait` seconds more.
+fn wake(id: &str, key: &str, wait: i64) {
+    request(
+        id,
+        &serde_json::json!({
+            "repo": "/src/acme", "from": "✦ lead", "reply_by": util::now() + wait,
+            "items": [{ "kind": "wake", "key": key }],
+        }),
+    );
+}
+
+/// Puts `key` to sleep as taskman does, as far as a wake goes: no session, asleep.
+fn asleep(app: &mut App, key: &str) {
+    let i = index(app, key);
+    let tv = &mut app.tickets[i];
+    (tv.session, tv.asleep, tv.status.state) = (None, true, AgentState::Done);
+}
+
+fn replied(id: &str) -> bool {
+    store::state_dir().join("inbox").join(format!("{id}.reply.json")).exists()
+}
+
+/// As `start_session` leaves a ticket it started, as start `launch`, without a CLI.
+fn started(app: &mut App, key: &str, launch: &str) {
+    attach(app, key, "");
+    let i = index(app, key);
+    let tv = &mut app.tickets[i];
+    (tv.start, tv.launch) = (false, Some(launch.into()));
+    tv.status.started();
+}
+
+/// A record of `launch`'s SessionStart in `key`'s status file, which the next poll reads.
+fn session_start(app: &mut App, key: &str, launch: &str) {
+    let path = store::status_file("/src/acme".as_ref(), key);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut r = crate::hook::status_record(
+        crate::status_file::HookState::Idle,
+        Some("sid-53"),
+        None,
+        "",
+        1,
+    );
+    r.launch = Some(launch.into());
+    std::fs::write(&path, r.to_string()).unwrap();
+    // Two writes within the file system's clock tick share a time, which the poll takes for no
+    // change.
+    let i = index(app, key);
+    app.tickets[i].status.mtime = None;
+    app.poll_status();
+}
+
+/// A sleeping ticket is started without being selected, and the command is answered once its
+/// CLI reports its start. Another wake meanwhile shares the start rather than waiting too.
+#[test]
+fn a_wake_starts_a_sleeping_ticket_and_answers_once_it_is_up() {
+    let mut app = acme_app();
+    let sel = app.sel;
+    let i = index(&app, "ENG-53");
+    asleep(&mut app, "ENG-53");
+    app.tickets[i].launch = Some("launch-1".into());
+    wake("0001", "ENG-53", 20);
+    app.take_inbox();
+    let tv = &app.tickets[i];
+    assert!(tv.start && tv.woken, "started on the next tick, with the grace");
+    assert_eq!(app.sel, sel, "the user's view stays");
+    assert!(!replied("0001"), "not until it's up");
+
+    // A second wake for it is answered at once; only one waits.
+    wake("0002", "ENG-53", 20);
+    app.take_inbox();
+    let [line] = &reply("0002")[..] else { panic!() };
+    assert!(line.ok && line.text.contains("already starting"), "{line:?}");
+    assert_eq!(app.waking.len(), 1);
+
+    // Started, but its CLI hasn't reported: still waiting. A record of the start before isn't
+    // this one's.
+    started(&mut app, "ENG-53", "launch-2");
+    session_start(&mut app, "ENG-53", "launch-1");
+    app.take_inbox();
+    assert!(!replied("0001"));
+    session_start(&mut app, "ENG-53", "launch-2");
+    app.take_inbox();
+    assert_eq!(reply("0001"), [add::Line::ok("ENG-53 is awake; message it as ENG-53")]);
+    assert!(app.waking.is_empty());
+}
+
+/// Running isn't enough: a session whose CLI hasn't reported its start (still loading, or on its
+/// trust question) can't be messaged yet, so the answer waits for its start.
+#[test]
+fn a_running_session_is_awake_once_its_cli_reports() {
+    let mut app = acme_app();
+    started(&mut app, "ENG-53", "launch-1");
+    wake("0001", "ENG-53", 20);
+    app.take_inbox();
+    assert!(!replied("0001") && app.waking.len() == 1);
+    assert!(!app.tickets[index(&app, "ENG-53")].start, "nothing to start");
+    session_start(&mut app, "ENG-53", "launch-1");
+    app.take_inbox();
+    assert_eq!(reply("0001"), [add::Line::ok("ENG-53 is awake; message it as ENG-53")]);
+    assert!(app.waking.is_empty());
+}
+
+/// The name a woken session is messaged by is the one it starts with now, not the one it slept
+/// with: another project has opened the same key meanwhile.
+#[test]
+fn a_wake_names_the_session_as_it_will_start() {
+    let mut app = acme_app();
+    asleep(&mut app, "ENG-53");
+    let i = index(&app, "ENG-53");
+    app.tickets[i].name = Some("ENG-53".into());
+    let other = Ticket { key: "ENG-53".into(), repo: "/src/notes".into(), ..ticket() };
+    app.tickets.push(crate::app::ticket::TicketView::new(other));
+    wake("0001", "ENG-53", 1);
+    app.take_inbox();
+    let [line] = &reply("0001")[..] else { panic!() };
+    assert!(line.text.contains("message it as acme/ENG-53"), "{line:?}");
+}
+
+/// A ticket started some other way before the wake's start came round (the user selected it)
+/// doesn't keep the wake's grace for a later, ordinary start.
+#[test]
+fn a_wakes_grace_goes_with_the_start_it_asked_for() {
+    let mut app = acme_app();
+    lay_out(&mut app, 80, 24);
+    // The selected ticket runs, so `ensure_selected_session` starts no CLI of its own.
+    let selected = app.tickets[app.sel].t.key.clone();
+    assert_ne!(selected, "ENG-53");
+    attach(&mut app, &selected, "");
+    asleep(&mut app, "ENG-53");
+    wake("0001", "ENG-53", 20);
+    app.take_inbox();
+    let i = index(&app, "ENG-53");
+    assert!(app.tickets[i].start && app.tickets[i].woken);
+    started(&mut app, "ENG-53", "launch-2");
+    (app.tickets[i].start, app.tickets[i].woken) = (true, true);
+    app.ensure_selected_session();
+    assert!(!app.tickets[i].start && !app.tickets[i].woken);
+    // So its next start, resuming its conversation, is an ordinary one.
+    app.tickets[i].t.session_id = Some("sid-53".into());
+    crate::store::Cli::Claude.leave_transcript("sid-53");
+    let woken = app.tickets[i].woken;
+    let (_, watch) = app.starting(i, "ENG-53", "launch-3", std::time::Instant::now(), woken);
+    assert!(!watch.fresh, "resumed, and not woken");
+}
+
+/// The start a wake asks for gets the keep-awake grace though it resumes its conversation, and
+/// only that start.
+#[test]
+fn a_woken_start_gets_the_grace() {
+    let mut app = acme_app();
+    let i = index(&app, "ENG-53");
+    app.tickets[i].t.session_id = Some("sid-53".into());
+    crate::store::Cli::Claude.leave_transcript("sid-53");
+    let now = std::time::Instant::now();
+    let (cmd, watch) = app.starting(i, "ENG-53", "launch-1", now, true);
+    assert!(cmd.get_argv().iter().any(|a| a == "--resume") && watch.fresh);
+    let (_, watch) = app.starting(i, "ENG-53", "launch-1", now, false);
+    assert!(!watch.fresh, "resumed, and not woken");
+}
+
+#[test]
+fn a_wake_is_answered_at_once_when_there_is_nothing_to_start() {
+    let mut app = acme_app();
+    started(&mut app, "ENG-52", "launch-1");
+    session_start(&mut app, "ENG-52", "launch-1");
+    for (id, key, ok, says) in [
+        ("0001", "ENG-52", true, "ENG-52 is awake; message it as ENG-52"),
+        ("0002", "ENG-61", false, "can't be messaged"),
+        ("0003", "acme-lead", false, "agents don't sleep"),
+        ("0004", "ENG-99", false, "ENG-99 isn't open in taskman"),
+    ] {
+        wake(id, key, 20);
+        app.take_inbox();
+        let [line] = &reply(id)[..] else { panic!("{id}") };
+        assert!(line.ok == ok && line.text.contains(says), "{line:?}");
+    }
+    assert!(app.waking.is_empty());
+    assert!(app.tickets.iter().all(|tv| !tv.start && !tv.woken));
+}
+
+/// Taken after the command stopped waiting (taskman quit, or hung, meanwhile): nobody waits for
+/// that session, so nothing starts.
+#[test]
+fn a_late_wake_is_dropped() {
+    let mut app = acme_app();
+    asleep(&mut app, "ENG-53");
+    wake("0001", "ENG-53", -1);
+    app.take_inbox();
+    assert!(!app.tickets[index(&app, "ENG-53")].start);
+    assert!(app.waking.is_empty() && !replied("0001"));
+}
+
+/// Every wake is answered: still starting just before the command stops waiting, couldn't start,
+/// or taskman quitting; none is left waiting.
+#[test]
+fn a_wake_that_does_not_come_up_is_answered_all_the_same() {
+    // Slow: its command is about to stop waiting.
+    let mut app = acme_app();
+    asleep(&mut app, "ENG-53");
+    wake("0001", "ENG-53", 1);
+    app.take_inbox();
+    let [line] = &reply("0001")[..] else { panic!() };
+    assert!(line.ok && line.text.contains("ENG-53 is starting"), "{line:?}");
+    assert!(app.waking.is_empty());
+
+    // Tried, and refused: taken in another terminal meanwhile, or failed (the pane says why).
+    let mut app = acme_app();
+    let i = index(&app, "ENG-53");
+    asleep(&mut app, "ENG-53");
+    asleep(&mut app, "ENG-52");
+    wake("0002", "ENG-53", 20);
+    app.take_inbox();
+    (app.tickets[i].start, app.tickets[i].away) = (false, Some(Away::Outside));
+    app.take_inbox();
+    assert!(reply("0002")[0].text.contains("another terminal"));
+    wake("0003", "ENG-52", 20);
+    app.take_inbox();
+    let j = index(&app, "ENG-52");
+    // As a start that failed leaves it: no longer asleep (`start_session` rouses it first), ended.
+    let tv = &mut app.tickets[j];
+    (tv.start, tv.asleep, tv.status.state) = (false, false, AgentState::Exited);
+    app.take_inbox();
+    assert!(reply("0003")[0].text.contains("couldn't start"));
+
+    // Quitting answers what still waits.
+    let mut app = acme_app();
+    asleep(&mut app, "ENG-53");
+    wake("0004", "ENG-53", 20);
+    app.take_inbox();
+    assert_eq!(app.waking.len(), 1);
+    app.stop_sessions();
+    assert_eq!(reply("0004"), [add::Line::err("taskman quit before ENG-53 was up")]);
+    assert!(app.waking.is_empty());
+}
+
+/// A wake mirrors a selection: a running session it's answered for starts its idle time again,
+/// with the cap's grace, so waking another session next doesn't put this one to sleep before the
+/// agent's message reaches it.
+#[test]
+fn a_session_a_wake_found_awake_is_kept_awake_under_the_cap() {
+    use std::collections::HashSet;
+    use std::time::{Duration, Instant};
+    let mut app = acme_app();
+    app.config.sleep_after = None;
+    app.config.max_awake = Some(3);
+    // The agent, the selected ENG-61 (working), and ENG-52 idle and unselected for 40 minutes.
+    attach(&mut app, "acme-lead", "");
+    attach(&mut app, "ENG-61", "");
+    app.sel = index(&app, "ENG-61");
+    app.tickets[app.sel].status.state = AgentState::Working;
+    started(&mut app, "ENG-52", "launch-1");
+    session_start(&mut app, "ENG-52", "launch-1");
+    let x = index(&app, "ENG-52");
+    let long_ago = Instant::now().checked_sub(Duration::from_secs(40 * 60)).unwrap();
+    let watch = &mut app.tickets[x].watch;
+    (watch.started, watch.selected, watch.baseline) = (long_ago, long_ago, Some(HashSet::new()));
+    wake("0001", "ENG-52", 20);
+    app.take_inbox();
+    assert!(reply("0001")[0].text.contains("ENG-52 is awake"));
+    // Then ENG-53 is woken and starts, which takes the count past the cap.
+    asleep(&mut app, "ENG-53");
+    wake("0002", "ENG-53", 20);
+    app.take_inbox();
+    started(&mut app, "ENG-53", "launch-2");
+    let z = index(&app, "ENG-53");
+    app.tickets[z].watch = app.starting(z, "ENG-53", "launch-2", Instant::now(), true).1;
+    app.tickets[z].watch.baseline = Some(HashSet::new());
+    app.sleep_tick(Instant::now() + Duration::from_secs(60));
+    assert!(app.tickets[x].session.is_some(), "the session the agent was told is awake");
+    assert!(app.tickets[z].session.is_some());
+}
+
+/// The deadline for "still starting" is on the monotonic clock, taken once: the wall clock, which
+/// WSL steps by seconds, doesn't move it.
+#[test]
+fn a_wake_still_starting_is_answered_by_its_own_deadline() {
+    let mut app = acme_app();
+    asleep(&mut app, "ENG-53");
+    wake("0001", "ENG-53", 20);
+    app.take_inbox();
+    assert!(!replied("0001"));
+    app.waking[0].until = std::time::Instant::now();
+    app.take_inbox();
+    assert!(reply("0001")[0].text.contains("ENG-53 is starting"));
+}
+
+/// The user restarting the session a wake waits for (`ctrl+a R`) isn't a failed start: the wake
+/// waits for the start that follows.
+#[test]
+fn a_restart_while_a_wake_waits_is_not_a_failure() {
+    let mut app = acme_app();
+    asleep(&mut app, "ENG-53");
+    wake("0001", "ENG-53", 20);
+    app.take_inbox();
+    started(&mut app, "ENG-53", "launch-2");
+    let i = index(&app, "ENG-53");
+    app.restart_session(i);
+    app.take_inbox();
+    assert!(!replied("0001"), "dormant again, about to start");
+    started(&mut app, "ENG-53", "launch-3");
+    session_start(&mut app, "ENG-53", "launch-3");
+    app.take_inbox();
+    assert!(reply("0001")[0].text.contains("ENG-53 is awake"));
+}
+
+/// A start put off while the ticket's last CLI is still being reaped keeps the wake's grace for
+/// the try that follows.
+#[test]
+fn a_wakes_grace_waits_out_the_reaping() {
+    let mut app = acme_app();
+    lay_out(&mut app, 80, 24);
+    let (_sent, _release) = attach_slow(&mut app, "ENG-53");
+    let i = index(&app, "ENG-53");
+    app.tickets[i].sleep();
+    assert!(app.tickets[i].reaping());
+    wake("0001", "ENG-53", 20);
+    app.take_inbox();
+    assert!(app.tickets[i].woken);
+    // The user selects it: the start is put off until the CLI is gone, and nothing spawns.
+    app.sel = i;
+    app.ensure_selected_session();
+    assert!(app.tickets[i].session.is_none() && app.tickets[i].woken);
+}

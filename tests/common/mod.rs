@@ -697,6 +697,11 @@ pub fn project(dir: &Path, keys: &[&str]) -> PathBuf {
 /// - `colour` asks the terminal for its background (OSC 11) and prints `colour ` and the reply,
 ///   without its escapes
 /// - anything else is answered with `got: <line>`
+///
+/// With `TASKMAN_TEST_SESSION_START=1` in taskman's environment, which its sessions inherit, the
+/// stub first reports its start as Claude Code's SessionStart hook would, through the `taskman
+/// hook idle` the session's settings name, so the start can be told up. Tests only: taskman never
+/// sets it.
 pub fn stub_session(dir: &Path) -> PathBuf {
     let text = r#"#!/bin/sh
 f="DIR/$TASKMAN_TICKET"
@@ -708,6 +713,10 @@ stop() { echo $1 >> "$f.signals"; [ -s "$f.stream.pid" ] && kill $(cat "$f.strea
 trap 'stop HUP' HUP
 trap 'stop TERM' TERM
 echo "stub ready for $TASKMAN_TICKET"
+if [ "$TASKMAN_TEST_SESSION_START" = 1 ]; then
+  start='{"hook_event_name":"SessionStart","session_id":"sid-%s"}'
+  printf "$start" "$TASKMAN_TICKET" | taskman hook idle
+fi
 fails=0
 while :; do
   # A trapped signal ends a read early; only a run of failures is the terminal gone.
