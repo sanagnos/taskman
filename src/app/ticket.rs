@@ -1219,14 +1219,7 @@ mod tests {
     }
 
     fn found(pr: Option<Pr>, closed: Option<u64>, branch_gone: bool) -> Result<Lookup, String> {
-        Ok(Lookup {
-            pr,
-            closed,
-            weighed: Vec::new(),
-            elsewhere: false,
-            linked_elsewhere: Vec::new(),
-            branch_gone,
-        })
+        Ok(Lookup { pr, closed, weighed: Vec::new(), elsewhere: false, branch_gone })
     }
 
     #[test]

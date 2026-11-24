@@ -164,7 +164,6 @@ fn a_pr_found_for_a_closed_ticket_is_not_the_reopened_tickets() {
             closed: None,
             weighed: Vec::new(),
             elsewhere: false,
-            linked_elsewhere: Vec::new(),
             branch_gone: false,
         })
     };
@@ -477,7 +476,6 @@ fn a_pr_lookup_never_moves_a_ticket_out_of_the_worktree_taskman_made() {
             closed: None,
             weighed: Vec::new(),
             elsewhere: false,
-            linked_elsewhere: Vec::new(),
             branch_gone: false,
         })
     };

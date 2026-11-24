@@ -2263,7 +2263,6 @@ mod tests {
                 closed: None,
                 weighed: Vec::new(),
                 elsewhere: false,
-                linked_elsewhere: Vec::new(),
                 branch_gone: false,
             }),
             true,
@@ -2314,7 +2313,6 @@ mod tests {
                 closed: None,
                 weighed: Vec::new(),
                 elsewhere: false,
-                linked_elsewhere: Vec::new(),
                 branch_gone: false,
             }),
             true,
@@ -2340,7 +2338,6 @@ mod tests {
                 closed: None,
                 weighed: Vec::new(),
                 elsewhere: false,
-                linked_elsewhere: Vec::new(),
                 branch_gone: false,
             }),
             false,
@@ -2363,7 +2360,6 @@ mod tests {
                 closed: None,
                 weighed: Vec::new(),
                 elsewhere: false,
-                linked_elsewhere: Vec::new(),
                 branch_gone: false,
             }),
             true,
@@ -2378,7 +2374,6 @@ mod tests {
                     closed: Some(9),
                     weighed: Vec::new(),
                     elsewhere: false,
-                    linked_elsewhere: Vec::new(),
                     branch_gone: true
                 }),
                 true
@@ -2404,7 +2399,6 @@ mod tests {
                 closed: None,
                 weighed: Vec::new(),
                 elsewhere: false,
-                linked_elsewhere: Vec::new(),
                 branch_gone: false,
             }),
         );
@@ -2427,7 +2421,6 @@ mod tests {
                 closed: None,
                 weighed: Vec::new(),
                 elsewhere: false,
-                linked_elsewhere: Vec::new(),
                 branch_gone: false,
             }),
         );
@@ -2534,7 +2527,6 @@ mod tests {
                 closed: None,
                 weighed: Vec::new(),
                 elsewhere: false,
-                linked_elsewhere: Vec::new(),
                 branch_gone: false,
             }),
         );
@@ -2572,7 +2564,6 @@ mod tests {
                     closed: None,
                     weighed: Vec::new(),
                     elsewhere: false,
-                    linked_elsewhere: Vec::new(),
                     branch_gone: false,
                 }),
             )
@@ -2601,7 +2592,6 @@ mod tests {
                     closed: None,
                     weighed: Vec::new(),
                     elsewhere: false,
-                    linked_elsewhere: Vec::new(),
                     branch_gone: false,
                 }),
             )],
@@ -2816,7 +2806,6 @@ mod tests {
                 closed: None,
                 weighed: Vec::new(),
                 elsewhere: false,
-                linked_elsewhere: Vec::new(),
                 branch_gone: false,
             }),
         );
@@ -2865,7 +2854,6 @@ mod tests {
                                 closed: None,
                                 weighed: Vec::new(),
                                 elsewhere: false,
-                                linked_elsewhere: Vec::new(),
                                 branch_gone: false,
                             }),
                         ),

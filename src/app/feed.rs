@@ -15,10 +15,8 @@ use std::path::PathBuf;
 /// finds, and `taskman events --follow` says to look at `taskman status` for what came between.
 #[derive(Default)]
 pub(super) struct Feed {
-    /// Its PRs as the lookups found them, the checkout's repository's and the issue's when that's
-    /// another (`Lookup::elsewhere`), apart, as their numbers name different PRs; None before the
-    /// first lookup.
-    prs: Option<[Prs; 2]>,
+    /// Its PRs as the lookups found them; None before the first lookup that counts.
+    prs: Option<Prs>,
     /// Its session's state at the last status poll; None before the first.
     state: Option<AgentState>,
     /// Changes seen and not written yet.
@@ -26,23 +24,25 @@ pub(super) struct Feed {
 }
 
 impl TicketView {
-    /// The PR changes since the last lookup, from this one's.
+    /// The PR changes since the last lookup that counted, from this one's: only lookups of the
+    /// checkout's own repository's PRs count (`Lookup::elsewhere`).
     pub(super) fn feed_pr(&mut self, found: &Lookup) {
         if self.t.agent.is_some() {
             return;
         }
+        // Not the checkout's repository's PRs, or it can't be told: a number in an event must be
+        // one `gh pr view` finds in the checkout, and another repository's would name another PR.
+        if found.elsewhere {
+            return;
+        }
         let shown = found.pr.as_ref().map(PrSnap::of);
-        let first = self.feed.prs.is_none();
-        let [here, there] = self.feed.prs.get_or_insert_with(Default::default);
-        let events = if found.elsewhere {
-            there.see(shown, &found.weighed)
-        } else {
-            let mut events = here.see(shown, &found.weighed);
-            events.extend(there.see(None, &found.linked_elsewhere));
-            events
-        };
-        if !first {
-            self.feed.pending.extend(events);
+        match &mut self.feed.prs {
+            Some(prs) => self.feed.pending.extend(prs.see(shown, &found.weighed)),
+            None => {
+                let mut prs = Prs::default();
+                prs.see(shown, &found.weighed);
+                self.feed.prs = Some(prs);
+            }
         }
     }
 
