@@ -47,7 +47,8 @@ impl Guarded {
     /// Claude's permission rules for these: `deny` rules, which no other settings or mode can
     /// allow (code.claude.com/docs/en/permissions). An `Edit` rule covers every tool that edits
     /// files, Write included, and redirects in a shell command Claude can read; a `Write` rule
-    /// would match nothing. A path that isn't UTF-8 can't be written as a rule and is left out.
+    /// would match nothing. A path that isn't UTF-8, or holds a control character, gets no rule
+    /// and is left out.
     pub fn deny_rules(&self) -> Vec<String> {
         let folders = self.folders.iter().filter_map(|p| pattern(p, true));
         let files = self.files.iter().filter_map(|p| pattern(p, false));
@@ -59,10 +60,10 @@ impl Guarded {
     }
 }
 
-/// `p` made absolute against the folder taskman was started in, as taskman opens it, then also as the system
-/// resolves it when that differs: a deny rule matches either the path a tool is given or the file
-/// it resolves to, so a path through a link (macOS's `/var`, a linked home) needs both forms to
-/// cover a tool given the other. A file not made yet resolves through its folder.
+/// `p` made absolute against the folder taskman was started in, as taskman opens it, then also as
+/// the system resolves it when that differs: a deny rule matches either the path a tool is given or
+/// the file it resolves to, so a path through a link (macOS's `/var`, a linked home) needs both
+/// forms to cover a tool given the other. A file not made yet resolves through its folder.
 fn forms(p: &Path) -> Vec<PathBuf> {
     let Ok(abs) = std::path::absolute(p) else { return vec![] };
     let real = std::fs::canonicalize(&abs).ok().or_else(|| {
@@ -80,9 +81,11 @@ fn forms(p: &Path) -> Vec<PathBuf> {
 /// space, which gitignore would drop. Then for Claude, which undoes `\\`, `\(` and `\)` in a rule's
 /// content before gitignore sees it, and whose own rule writer escapes those three the same way.
 /// With only the first, a path holding `\` named another path, and its rule matched nothing
-/// (checked with Claude Code 2.1.330).
+/// (checked with Claude Code 2.1.330). A path with a control character gets no rule, as one that
+/// isn't UTF-8: gitignore reads a pattern per line, so a line break would leave a second pattern,
+/// relative and matching at any depth.
 fn pattern(p: &Path, folder: bool) -> Option<String> {
-    let s = p.to_str().filter(|s| s.starts_with('/'))?;
+    let s = p.to_str().filter(|s| s.starts_with('/') && !s.chars().any(char::is_control))?;
     let mut glob = String::from("/");
     for c in s.chars() {
         if matches!(c, '\\' | '*' | '?' | '[' | ']') {
@@ -1514,6 +1517,11 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
         let odd = Path::new(std::ffi::OsStr::from_bytes(b"/home/\xff/state"));
         assert_eq!(pattern(odd, true), None);
+        // A line break would leave a second pattern, matching `state/taskman` at any depth.
+        for odd in ["/home/tester\nstate/taskman", "/home/tester\r/state", "/home/a\u{1b}b"] {
+            assert_eq!(pattern(Path::new(odd), true), None, "{odd:?}");
+            assert_eq!(pattern(Path::new(odd), false), None, "{odd:?}");
+        }
     }
 
     #[test]
@@ -1559,18 +1567,21 @@ mod tests {
     }
 
     /// The path a gitignore pattern names literally, or None where a pattern character is left
-    /// unescaped, or a `\` escapes nothing.
+    /// unescaped, a `\` escapes nothing, a line break splits it, or it ends in an unescaped
+    /// space, which gitignore drops.
     fn gitignore_literal(pattern: &str) -> Option<String> {
         let mut out = String::new();
         let mut chars = pattern.chars();
+        let mut escaped = false;
         while let Some(c) = chars.next() {
+            escaped = c == '\\';
             match c {
                 '\\' => out.push(chars.next()?),
-                '*' | '?' | '[' | ']' => return None,
+                '*' | '?' | '[' | ']' | '\n' | '\r' => return None,
                 c => out.push(c),
             }
         }
-        Some(out)
+        (escaped || !out.ends_with(' ')).then_some(out)
     }
 
     /// The path a rule's content names, as Claude then gitignore read it.
@@ -1586,12 +1597,18 @@ mod tests {
             parts in proptest::collection::vec(r"[a-z\\()\[\]*? ]{1,8}|[^/\x00]{1,12}", 1..5),
         ) {
             let path = format!("/{}", parts.join("/"));
+            if path.chars().any(char::is_control) {
+                proptest::prop_assert_eq!(pattern(Path::new(&path), false), None);
+                proptest::prop_assert_eq!(pattern(Path::new(&path), true), None);
+                return Ok(());
+            }
             let p = pattern(Path::new(&path), false).unwrap();
             proptest::prop_assert!(p.starts_with("//"), "{p}");
             proptest::prop_assert_eq!(named(&p[1..]), Some(path.clone()));
+            // A folder's `/**` follows the path, so a file in it stands for what it matches.
             let f = pattern(Path::new(&path), true).unwrap();
             let base = f.strip_suffix("/**").unwrap();
-            proptest::prop_assert_eq!(named(&base[1..]), Some(path));
+            proptest::prop_assert_eq!(named(&format!("{}/f", &base[1..])), Some(path + "/f"));
         }
     }
 
