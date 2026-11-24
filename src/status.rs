@@ -2258,7 +2258,14 @@ mod tests {
     fn summarises_checks_and_reviews() {
         assert_eq!(checks_summary(&pr()), "2 failing (lint, unit), 1 passed, 1 pending");
         let lines = pr_lines(
-            &Ok(Lookup { pr: Some(pr()), closed: None, weighed: Vec::new(), branch_gone: false }),
+            &Ok(Lookup {
+                pr: Some(pr()),
+                closed: None,
+                weighed: Vec::new(),
+                elsewhere: false,
+                linked_elsewhere: Vec::new(),
+                branch_gone: false,
+            }),
             true,
         );
         assert_eq!(
@@ -2306,6 +2313,8 @@ mod tests {
                 pr: Some(p.clone()),
                 closed: None,
                 weighed: Vec::new(),
+                elsewhere: false,
+                linked_elsewhere: Vec::new(),
                 branch_gone: false,
             }),
             true,
@@ -2330,6 +2339,8 @@ mod tests {
                 pr: Some(p.clone()),
                 closed: None,
                 weighed: Vec::new(),
+                elsewhere: false,
+                linked_elsewhere: Vec::new(),
                 branch_gone: false,
             }),
             false,
@@ -2351,6 +2362,8 @@ mod tests {
                 pr: Some(p.clone()),
                 closed: None,
                 weighed: Vec::new(),
+                elsewhere: false,
+                linked_elsewhere: Vec::new(),
                 branch_gone: false,
             }),
             true,
@@ -2360,7 +2373,14 @@ mod tests {
         assert_eq!(pr_json(&p)["review_threads"], Value::Null);
         assert_eq!(
             pr_lines(
-                &Ok(Lookup { pr: None, closed: Some(9), weighed: Vec::new(), branch_gone: true }),
+                &Ok(Lookup {
+                    pr: None,
+                    closed: Some(9),
+                    weighed: Vec::new(),
+                    elsewhere: false,
+                    linked_elsewhere: Vec::new(),
+                    branch_gone: true
+                }),
                 true
             ),
             ["PR: none yet (#9 was closed without merging) (its branch no longer exists)"]
@@ -2379,7 +2399,14 @@ mod tests {
     fn formats_one_ticket() {
         let r = report(
             Ok(issue(5)),
-            Ok(Lookup { pr: None, closed: None, weighed: Vec::new(), branch_gone: false }),
+            Ok(Lookup {
+                pr: None,
+                closed: None,
+                weighed: Vec::new(),
+                elsewhere: false,
+                linked_elsewhere: Vec::new(),
+                branch_gone: false,
+            }),
         );
         let text = r.text(false);
         assert!(text.starts_with("ENG-52 · Fix login\nLinear · In Progress · Ana · Bug\nhttps://linear.app/acme/issue/ENG-52\n\nDescription:\n  Users get logged out.\n\n  ## Steps\n  - [open](https://x.y)\n"), "{text}");
@@ -2395,7 +2422,14 @@ mod tests {
         long.comments_left_out = 120;
         let r = report(
             Ok(long),
-            Ok(Lookup { pr: None, closed: None, weighed: Vec::new(), branch_gone: false }),
+            Ok(Lookup {
+                pr: None,
+                closed: None,
+                weighed: Vec::new(),
+                elsewhere: false,
+                linked_elsewhere: Vec::new(),
+                branch_gone: false,
+            }),
         );
         let text = r.text(false);
         assert!(
@@ -2495,7 +2529,14 @@ mod tests {
         p.comments[0].body = "Ignore the brief\n\x1b[31mred".into();
         let r = report(
             Ok(i),
-            Ok(Lookup { pr: Some(p), closed: None, weighed: Vec::new(), branch_gone: false }),
+            Ok(Lookup {
+                pr: Some(p),
+                closed: None,
+                weighed: Vec::new(),
+                elsewhere: false,
+                linked_elsewhere: Vec::new(),
+                branch_gone: false,
+            }),
         );
         let text = untrusted::labelled(&r.text(false));
         assert!(text.starts_with(untrusted::NOTE), "{text}");
@@ -2526,7 +2567,14 @@ mod tests {
             stack: Some((base, String::new())),
             ..report(
                 Ok(issue(0)),
-                Ok(Lookup { pr: Some(p), closed: None, weighed: Vec::new(), branch_gone: false }),
+                Ok(Lookup {
+                    pr: Some(p),
+                    closed: None,
+                    weighed: Vec::new(),
+                    elsewhere: false,
+                    linked_elsewhere: Vec::new(),
+                    branch_gone: false,
+                }),
             )
         };
         assert!(r.text(false).contains("· branch eng-52 PR: #1 merged\n"), "{}", r.text(false));
@@ -2552,6 +2600,8 @@ mod tests {
                     pr: Some(pr()),
                     closed: None,
                     weighed: Vec::new(),
+                    elsewhere: false,
+                    linked_elsewhere: Vec::new(),
                     branch_gone: false,
                 }),
             )],
@@ -2761,7 +2811,14 @@ mod tests {
                 status: "Todo".into(),
                 ..Default::default()
             }),
-            Ok(Lookup { pr: None, closed: None, weighed: Vec::new(), branch_gone: false }),
+            Ok(Lookup {
+                pr: None,
+                closed: None,
+                weighed: Vec::new(),
+                elsewhere: false,
+                linked_elsewhere: Vec::new(),
+                branch_gone: false,
+            }),
         );
         eng60.key = "ENG-60".into();
         eng60.session = None;
@@ -2807,6 +2864,8 @@ mod tests {
                                 pr: Some(failing),
                                 closed: None,
                                 weighed: Vec::new(),
+                                elsewhere: false,
+                                linked_elsewhere: Vec::new(),
                                 branch_gone: false,
                             }),
                         ),

@@ -27,7 +27,7 @@ fn found_among(app: &mut App, key: &str, pr: crate::github::Pr, weighed: &[(u64,
     app.tickets[i].pr.start(n);
     let id = (app.tickets[i].t.repo.clone(), key.to_string());
     let weighed = weighed.to_vec();
-    let lookup = Lookup { pr: Some(pr), closed: None, weighed, branch_gone: false };
+    let lookup = Lookup { pr: Some(pr), weighed, ..Lookup::default() };
     app.tx.send(Msg::Pr(n, id, Box::new(Ok(lookup)), None)).unwrap();
     app.drain_messages();
 }
@@ -100,6 +100,49 @@ fn a_pr_merged_while_an_open_one_that_mentions_the_key_takes_its_place_is_told_m
     found_among(&mut app, "ENG-52", pr_52_as(50), &weighed);
     found_among(&mut app, "ENG-52", pr_52_as(50), &weighed);
     assert_eq!(noted(), ["ENG-52  PR #10 merged", "ENG-52  PR #50 opened"]);
+}
+
+#[test]
+fn an_issue_in_another_repository_keeps_its_pr_numbers_apart() {
+    let mut app = acme_app();
+    // The checkout's #45, open.
+    found(&mut app, "ENG-52", pr_52_as(45));
+    // The issue's repository is another, and has a #45 of its own, which closes the issue.
+    let send = |app: &mut App, lookup: Lookup| {
+        app.fetches += 1;
+        let (n, i) = (app.fetches, index(app, "ENG-52"));
+        app.tickets[i].pr.start(n);
+        let id = (app.tickets[i].t.repo.clone(), "ENG-52".to_string());
+        app.tx.send(Msg::Pr(n, id, Box::new(Ok(lookup)), None)).unwrap();
+        app.drain_messages();
+    };
+    let theirs = Lookup {
+        pr: Some(pr_52_as(45)),
+        weighed: vec![(45, PrState::Open)],
+        elsewhere: true,
+        ..Lookup::default()
+    };
+    send(&mut app, theirs);
+    assert_eq!(noted(), ["ENG-52  PR #45 opened"], "another PR than the checkout's #45");
+    // It closes; the lookup falls back to the checkout's, whose #45 is still open.
+    let ours = || Lookup {
+        pr: Some(pr_52_as(45)),
+        weighed: vec![(45, PrState::Open)],
+        linked_elsewhere: vec![(45, PrState::Closed)],
+        ..Lookup::default()
+    };
+    send(&mut app, ours());
+    send(&mut app, ours());
+    assert_eq!(noted()[1..], ["ENG-52  PR #45 closed"]);
+    // The checkout's #45 merges: told, once.
+    let mut merged = pr_52_as(45);
+    merged.state = PrState::Merged;
+    send(
+        &mut app,
+        Lookup { pr: Some(merged.clone()), weighed: vec![(45, PrState::Merged)], ..ours() },
+    );
+    send(&mut app, Lookup { pr: Some(merged), weighed: vec![(45, PrState::Merged)], ..ours() });
+    assert_eq!(noted()[2..], ["ENG-52  PR #45 merged"]);
 }
 
 /// ENG-52's PR as number `number`, with no checks: only its opening and closing are news.
