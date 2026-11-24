@@ -599,6 +599,9 @@ fn gh_error(err: &str) -> String {
     err.to_string()
 }
 
+/// The PRs a lookup weighed for a ticket, by number, with their states (`Lookup::weighed`).
+pub type Weighed = Vec<(u64, PrState)>;
+
 /// What the PR lookup found for a ticket.
 pub struct Lookup {
     /// The PR to show: open if there is one, else merged.
@@ -608,7 +611,7 @@ pub struct Lookup {
     /// Every PR the lookup weighed for the ticket, by number, with its state, the one shown
     /// included: so `taskman events` hears of a PR merged or closed while another is shown in its
     /// place (an open one that mentions the key, an older merged one).
-    pub weighed: Vec<(u64, PrState)>,
+    pub weighed: Weighed,
     /// The remembered branch exists neither locally nor on the remote and has no open PR.
     pub branch_gone: bool,
 }
@@ -839,11 +842,14 @@ pub fn fetch_all(
     gh: impl Fn(&[&str]) -> Result<String, String> + Sync,
 ) -> Vec<Result<Lookup, String>> {
     let mut out: Vec<Option<Result<Lookup, String>>> = wanted.iter().map(|_| None).collect();
+    // The PRs linked as closing an issue when none of them is shown, for the list's lookup.
+    let mut also: Vec<Vec<(u64, PrState)>> = wanted.iter().map(|_| Vec::new()).collect();
     let closes: Vec<usize> = (0..wanted.len()).filter(|&i| wanted[i].closes.is_some()).collect();
-    let found =
-        each(&closes, |&i| wanted[i].closes.as_ref().and_then(|c| linked(&gh, &wanted[i], c)));
+    let found = each(&closes, |&i| wanted[i].closes.as_ref().map(|c| linked(&gh, &wanted[i], c)));
     for (&i, found) in closes.iter().zip(found) {
-        out[i] = found;
+        if let Some((lookup, linked)) = found {
+            (out[i], also[i]) = (lookup, linked);
+        }
     }
     let rest: Vec<usize> = (0..wanted.len()).filter(|&i| out[i].is_none()).collect();
     // gh picks the repository, but `gh api` takes its host from `--hostname`, not the remote.
@@ -864,7 +870,12 @@ pub fn fetch_all(
             })
         });
         for (&(_, i), found) in tickets.iter().zip(found) {
-            out[i] = found;
+            out[i] = found.map(|res| {
+                res.map(|mut l| {
+                    weigh_too(&mut l.weighed, std::mem::take(&mut also[i]));
+                    l
+                })
+            });
         }
     }
     out.into_iter().map(|r| r.unwrap_or_else(|| Err("the PR lookup crashed".into()))).collect()
@@ -881,16 +892,29 @@ fn each<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> Option<R> + Sync) -> Ve
 
 /// The open or merged PR GitHub links as closing the issue, viewed in the issue's repository.
 /// None when there's none, or the query failed: that only means falling back to the list, whose
-/// call says what's wrong.
+/// call says what's wrong. Either way, the PRs it found linked (`Lookup::weighed`), which the
+/// list's lookup adds to its own when it falls back: a PR that closes the issue, closed unmerged,
+/// is told closed though it's on no branch of the ticket's and doesn't mention the key.
 fn linked(
     gh: &(impl Fn(&[&str]) -> Result<String, String> + Sync),
     w: &Wanted,
     c: &Closes,
-) -> Option<Result<Lookup, String>> {
-    let found = closing(gh, c).ok()?;
+) -> (Option<Result<Lookup, String>>, Weighed) {
+    let Ok(found) = closing(gh, c) else { return (None, Vec::new()) };
     let weighed = weighed(&found);
-    let pr = details(gh, pick(&found).0?, w.shown.as_ref());
-    Some(pr.map(|pr| Lookup { pr: Some(pr), closed: None, weighed, branch_gone: false }))
+    let Some(best) = pick(&found).0 else { return (None, weighed) };
+    let pr = details(gh, best, w.shown.as_ref());
+    let lookup = pr.map(|pr| Lookup { pr: Some(pr), closed: None, weighed, branch_gone: false });
+    (Some(lookup), Vec::new())
+}
+
+/// `more` added to `weighed`, but for PRs it already has.
+fn weigh_too(weighed: &mut Vec<(u64, PrState)>, more: Vec<(u64, PrState)>) {
+    for (n, state) in more {
+        if !weighed.iter().any(|(m, _)| *m == n) {
+            weighed.push((n, state));
+        }
+    }
 }
 
 /// The ticket's PR among those listed for it: the PRs on its branch, and when none of them is
@@ -1782,6 +1806,8 @@ mod tests {
         let pr = found.pr.unwrap();
         assert_eq!((pr.number, pr.head.as_str(), pr.cross_repository), (45, "eng-52-login", false));
         assert_eq!((found.closed, found.branch_gone), (None, false));
+        // Every PR linked in the issue's repository was weighed, for `taskman events`.
+        assert_eq!(found.weighed, [(40, PrState::Closed), (45, PrState::Open)]);
         // The threads came with it, and the review its page.
         assert_eq!(pr.threads.as_ref().unwrap().list[0].path, "src/auth/link.rs");
         assert_eq!(pr.reviews[0].url, "https://github.com/acme/web/pull/45#pullrequestreview-1");
@@ -1798,14 +1824,21 @@ mod tests {
         let (res, calls) = lookup(Path::new("/src/acme"), None, Some(&acme_web_12()), &replies);
         assert_eq!(names(&calls), ["closing", "list", "details"]);
         assert_eq!(res.unwrap().pr.unwrap().number, 45);
-        // As when the issue links only a PR closed without merging.
+        // As when the issue links only PRs closed without merging: they're weighed beside the
+        // list's, once each (#40 is in both), so `taskman events` hears #77 closed, which is on
+        // no branch of the ticket's and doesn't mention the key.
         let closed = r#"{"data":{"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":[
-            {"number":40,"state":"CLOSED","updatedAt":"t","repository":{"nameWithOwner":"acme/web"}}]}}}}}"#;
+            {"number":40,"state":"CLOSED","updatedAt":"t","repository":{"nameWithOwner":"acme/web"}},
+            {"number":77,"state":"CLOSED","updatedAt":"t","repository":{"nameWithOwner":"acme/web"}}]}}}}}"#;
         let replies =
             [("closing", Ok(closed)), ("list", Ok(PR_SEARCH)), ("details", Ok(PR_DETAILS))];
         let (res, calls) = lookup(Path::new("/src/acme"), None, Some(&acme_web_12()), &replies);
         assert_eq!(names(&calls), ["closing", "list", "details"]);
-        assert_eq!(res.unwrap().pr.unwrap().number, 45);
+        let found = res.unwrap();
+        assert_eq!(found.pr.unwrap().number, 45);
+        assert!(found.weighed.contains(&(77, PrState::Closed)), "{:?}", found.weighed);
+        assert_eq!(found.weighed.iter().filter(|(n, _)| *n == 40).count(), 1);
+        assert!(found.weighed.contains(&(45, PrState::Open)), "{:?}", found.weighed);
     }
 
     #[test]

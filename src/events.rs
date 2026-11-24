@@ -404,14 +404,18 @@ impl Prs {
     /// The most PRs a ticket's memory keeps, the latest seen.
     const KEPT: usize = 50;
 
-    /// The changes in what a lookup found: the PR it shows, and every PR it weighed.
+    /// The changes in what a lookup found: the PR it shows, and every PR it weighed. The shown
+    /// PR as known is taken out before the weighed ones go in, and put back last, so however many
+    /// new ones a lookup weighs, they can't push it out and have it told opened again; the known
+    /// weighed ones move up too, so the PRs a ticket still has are the last to go.
     pub fn see(&mut self, shown: Option<PrSnap>, weighed: &[(u64, PrState)]) -> Vec<Event> {
         let mut events = Vec::new();
         let shown_number = shown.as_ref().map(|p| p.number);
+        let before = shown_number.and_then(|n| self.find(n)).map(|i| self.0.remove(i));
         for (n, state) in weighed.iter().filter(|(n, _)| Some(*n) != shown_number) {
-            match self.find(*n) {
+            let snap = match self.find(*n) {
                 Some(i) => {
-                    let known = &mut self.0[i];
+                    let mut known = self.0.remove(i);
                     if known.state == PrState::Open {
                         match state {
                             PrState::Merged => events.push(Event::PrMerged(*n)),
@@ -420,14 +424,15 @@ impl Prs {
                         }
                     }
                     known.state = state.clone();
+                    known
                 }
-                None => self.keep(None, PrSnap::bare(*n, state.clone())),
-            }
+                None => PrSnap::bare(*n, state.clone()),
+            };
+            self.keep(snap);
         }
         if let Some(after) = shown {
-            let i = self.find(after.number);
-            events.extend(pr_events(i.map(|i| &self.0[i]), &after));
-            self.keep(i, after);
+            events.extend(pr_events(before.as_ref(), &after));
+            self.keep(after);
         }
         events
     }
@@ -436,10 +441,8 @@ impl Prs {
         self.0.iter().position(|p| p.number == number)
     }
 
-    fn keep(&mut self, at: Option<usize>, snap: PrSnap) {
-        if let Some(i) = at {
-            self.0.remove(i);
-        }
+    /// `snap` as the latest seen, the oldest let go past `KEPT`.
+    fn keep(&mut self, snap: PrSnap) {
         self.0.push(snap);
         if self.0.len() > Prs::KEPT {
             self.0.remove(0);
@@ -1145,6 +1148,17 @@ mod tests {
         assert_eq!(prs.0.len(), Prs::KEPT);
         // The latest seen are kept: shown again, no news.
         assert_eq!(prs.see(Some(snap(99)), &[]), []);
+        // A lookup weighing more new PRs than it keeps, beside the one it shows (the oldest
+        // known): that one isn't pushed out, and isn't told opened again.
+        let mut prs = Prs::default();
+        prs.see(Some(snap(1)), &[(1, PrState::Open)]);
+        for n in 2..=u64::try_from(Prs::KEPT).unwrap() {
+            prs.see(Some(snap(n)), &[]);
+        }
+        let many: Vec<(u64, PrState)> = (1000..1100).map(|n| (n, PrState::Merged)).collect();
+        assert_eq!(prs.see(Some(snap(1)), &many), []);
+        assert_eq!(prs.see(Some(snap(1)), &many), []);
+        assert_eq!(prs.0.last().map(|p| p.number), Some(1));
     }
 
     #[test]
