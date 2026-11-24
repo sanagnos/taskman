@@ -233,7 +233,8 @@ fn agent_brief_head(
                  can carry an id, like alpha-web-3f2a/KEY) when another project has the same key (the list says so). Reach them with ListAgents and SendMessage (address a session by \
                  that name); pass notify_when_idle to hear when one finishes. Tickets marked \
                  Codex run in Codex and can't be messaged. A session `taskman status` lists as asleep was stopped to save memory \
-                 and can't be messaged until the user selects it in taskman: say so rather than retrying. A session's work, worktree and PR belong to it: ask it rather than \
+                 and can't be messaged until it runs again: `taskman wake <KEY>` starts it in taskman and answers once it's up, \
+                 then message it. A session's work, worktree and PR belong to it: ask it rather than \
                  editing its worktree yourself. The list below is a snapshot from when you started; ListAgents shows which sessions \
                  are live now. It leaves out titles and statuses: tracker text doesn't go into this brief, as others can write it."
         } else {
@@ -302,18 +303,21 @@ impl App {
 
     /// What `start_session` starts ticket `i` with at `now`: the command, and what the sleep
     /// decisions watch of it, which is fresh (`Watch::fresh`) when the command starts a new
-    /// conversation. Both from one look at the transcript, which for Codex walks its dated
-    /// folders, so they can't disagree.
+    /// conversation, or `woken` (`taskman wake` asked for it). Both from one look at the
+    /// transcript, which for Codex walks its dated folders, so they can't disagree.
     pub(super) fn starting(
         &self,
         i: usize,
         session: &str,
         start: &str,
         now: Instant,
+        woken: bool,
     ) -> (CommandBuilder, Watch) {
         let t = &self.tickets[i].t;
         let resume = self.resume_id(t);
-        (self.build_command(t, session, start, resume), Watch::new(now, resume.is_none()))
+        // A woken session waits for the agent that woke it, whatever conversation it resumes.
+        let fresh = resume.is_none() || woken;
+        (self.build_command(t, session, start, resume), Watch::new(now, fresh))
     }
 
     /// The command that starts `t`'s session in the pane, named `session`, as start `start`
@@ -764,7 +768,12 @@ mod tests {
         let settings: Value = serde_json::from_str(after(&l.args, "--settings")).unwrap();
         assert_eq!(
             settings["permissions"]["allow"],
-            json!(["Bash(taskman status:*)", "Bash(taskman add:*)", "Bash(taskman move:*)"]),
+            json!([
+                "Bash(taskman status:*)",
+                "Bash(taskman add:*)",
+                "Bash(taskman move:*)",
+                "Bash(taskman wake:*)"
+            ]),
             "`taskman close` stops sessions and removes worktrees, so the session's permission settings decide"
         );
         // Besides, only rules that keep the session's file tools off taskman's own files.

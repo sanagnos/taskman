@@ -62,6 +62,7 @@ mod ticket;
 mod tickets;
 pub mod toasts;
 mod turns;
+mod wake;
 
 pub use forms::{Field, Form, FormKind, List};
 pub use launch::{Gone, NESTED_ENV, launch_id};
@@ -305,6 +306,9 @@ pub struct App {
     /// `taskman close` requests whose PRs were looked up, by inbox id, waiting until nothing
     /// refers to a ticket by its place in the list (`close_next`).
     closing: std::collections::VecDeque<(String, add::Request)>,
+    /// `taskman wake` requests whose sessions are starting, one per ticket, until answered
+    /// (`answer_wakes`).
+    waking: Vec<wake::Waking>,
     /// Worktree removals still running, with the names of their tickets: quitting waits for them
     /// (`may_quit`).
     removing: Vec<(Vec<String>, std::thread::JoinHandle<()>)>,
@@ -432,6 +436,7 @@ impl App {
             close_unchecked: None,
             asking: Default::default(),
             closing: Default::default(),
+            waking: Vec::new(),
             removing: Vec::new(),
             reapers: Vec::new(),
             closed_creating: Default::default(),
@@ -579,6 +584,7 @@ impl App {
     /// rather than one per session, and waits for the CLIs of sessions stopped earlier that are
     /// still being reaped, so none runs on unattended.
     pub fn stop_sessions(&mut self) {
+        self.end_wakes();
         let sessions = self.tickets.iter_mut().filter_map(|tv| tv.session.take()).collect();
         let reapers = self
             .tickets
