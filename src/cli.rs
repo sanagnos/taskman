@@ -273,11 +273,11 @@ pub(crate) fn session_project(
 }
 
 /// Refuses project `p` in a session whose project is another, `own`: sessions run `taskman
-/// status`, `events`, `add` and `move` without asking (`hook::settings_json`), so text a session
-/// read could otherwise send them to another project's tracker, account, board or repository. The
-/// allow-list can't tell arguments apart (a quoted `--proj""ect` gets past an ask rule), so the
-/// line is drawn here, and only a command that leaves the session's environment, which the CLI's
-/// permission settings decide on (see `WIDER`), crosses it.
+/// status`, `events`, `add`, `move` and `wake` without asking (`hook::settings_json`), so text a
+/// session read could otherwise send them to another project's tracker, account, board,
+/// repository or sessions. The allow-list can't tell arguments apart (a quoted `--proj""ect` gets
+/// past an ask rule), so the line is drawn here, and only a command that leaves the session's
+/// environment, which the CLI's permission settings decide on (see `WIDER`), crosses it.
 pub(crate) fn confine(p: usize, own: Option<usize>, saved: &Saved) -> Result<(), String> {
     match own {
         Some(own) if own != p => Err(elsewhere(own, saved)),

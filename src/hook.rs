@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// The `--settings` JSON that wires every relevant hook event to `taskman hook`, and lets
-/// `taskman status`, `taskman events`, `taskman add` and `taskman move` run without a prompt.
+/// `taskman status`, `taskman events`, `taskman add`, `taskman move` and `taskman wake` run
+/// without a prompt.
 pub fn settings_json(exe: &Path) -> String {
     let cmd = |state: &str| {
         json!([{ "matcher": "*", "hooks": [{
@@ -35,16 +36,18 @@ pub fn settings_json(exe: &Path) -> String {
     // and prints nothing but ticket keys, PR numbers and fixed words (`events::Event`); move moves
     // a Local files ticket between columns; add opens tickets, but an agent or a role, which
     // becomes a system prompt, waits for the user to approve it in taskman (`App::take_inbox`), as
-    // text a session read may be what asked for it. All four keep to the session's own project
-    // (`cli::confine`), since the rules can't tell arguments apart. `taskman close` is left out on
-    // purpose: it stops sessions and removes worktrees, so the session's own permission settings
-    // decide. So is `taskman title`: what it writes shows on the user's card, so where Claude
-    // asks, the prompt shows them the text first, and they can allow it for good.
+    // text a session read may be what asked for it; wake starts a sleeping ticket session again,
+    // as selecting it does. All five keep to the session's own project (`cli::confine`), since
+    // the rules can't tell arguments apart. `taskman close` is left out on purpose: it stops
+    // sessions and removes worktrees, so the session's own permission settings decide. So is
+    // `taskman title`: what it writes shows on the user's card, so where Claude asks, the prompt
+    // shows them the text first, and they can allow it for good.
     "permissions": { "allow": [
         "Bash(taskman status:*)",
         "Bash(taskman events:*)",
         "Bash(taskman add:*)",
         "Bash(taskman move:*)",
+        "Bash(taskman wake:*)"
     ] }})
     .to_string()
 }
@@ -1361,7 +1364,8 @@ mod tests {
                 "Bash(taskman status:*)",
                 "Bash(taskman events:*)",
                 "Bash(taskman add:*)",
-                "Bash(taskman move:*)"
+                "Bash(taskman move:*)",
+                "Bash(taskman wake:*)"
             ])
         );
         assert_eq!(

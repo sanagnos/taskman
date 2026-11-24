@@ -50,6 +50,7 @@ mod uninstall;
 mod untrusted;
 mod update;
 mod util;
+mod wake;
 mod worktree;
 
 use crossterm::event::{
@@ -355,6 +356,7 @@ fn main() -> anyhow::Result<()> {
         Some("close") => Some(close::run),
         Some("move") => Some(local::run),
         Some("title") => Some(title::run),
+        Some("wake") => Some(wake::run),
         Some("resume") => Some(resume::run),
         Some("update") => Some(update::run),
         Some("uninstall") => Some(uninstall::run),
@@ -437,6 +439,12 @@ fn main() -> anyhow::Result<()> {
             );
             cli::out!(
                 "                            shell, taskman title KEY TEXT (--clear KEY; --help for more)"
+            );
+            cli::out!(
+                "       taskman wake KEY     start a ticket's sleeping session in its pane, so an agent"
+            );
+            cli::out!(
+                "                            can message it (--project NAME; --help for more)"
             );
             cli::out!(
                 "       taskman resume KEY   continue a ticket's or agent's session in this terminal, as"

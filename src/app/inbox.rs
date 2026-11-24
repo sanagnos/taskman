@@ -81,6 +81,10 @@ impl App {
             // taskman was closed. Decided here, as an agent's request is past it by the time the
             // user has read the dialog.
             let closed = add::queued(&req, util::now());
+            if req.wakes() {
+                self.wake_requested(id, req, closed);
+                continue;
+            }
             if req.close.is_some() {
                 self.close_requested(id, req);
                 continue;
@@ -107,6 +111,7 @@ impl App {
             toasts.extend(toast);
             self.dirty.store(true, Ordering::Relaxed);
         }
+        self.answer_wakes();
         if !toasts.is_empty() {
             self.toast(toasts.join(" · "));
         }
@@ -214,7 +219,9 @@ impl App {
                     }
                     add::Item::New { title, .. } => (untrusted::line(title), None),
                     // The command never closes one, but anything can write to the inbox.
-                    add::Item::Title { key, .. } => (untrusted::line(key), None),
+                    add::Item::Title { key, .. } | add::Item::Wake { key } => {
+                        (untrusted::line(key), None)
+                    }
                 })
                 .collect()
         };
@@ -630,6 +637,10 @@ impl App {
                     )),
                     Err(e) => add::Line::err(e),
                 },
+                // Taken before this (`wake_requested`), but anything can write to the inbox.
+                add::Item::Wake { key } => {
+                    add::Line::err(format!("{} wasn't woken", untrusted::line(key)))
+                }
             });
         }
         let toast = (!added.is_empty()).then(|| {

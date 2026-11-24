@@ -62,9 +62,13 @@ pub struct TicketView {
     pub(super) creation_id: u64,
     /// Added by `taskman add` and not selected since; the sidebar marks it.
     pub new: bool,
-    /// An agent `taskman add` just added: its session starts without being selected, so the
-    /// agent that added it can message it.
+    /// Its session starts without being selected, once its last CLI is gone: an agent `taskman
+    /// add` just added, or a ticket `taskman wake` asked for, so the agent that asked can message
+    /// it.
     pub(super) start: bool,
+    /// `taskman wake` asked for its next start, which gets the keep-awake grace even when it
+    /// resumes its conversation (`App::starting`): it waits for the agent's message.
+    pub(super) woken: bool,
     /// The name its session started with (`--name`), which can be the plain key while another
     /// project's ticket has the same key (see `store::session_name`).
     pub(super) name: Option<String>,
@@ -150,6 +154,7 @@ impl TicketView {
             creation_id: 0,
             new: false,
             start: false,
+            woken: false,
             name: None,
             hold: None,
             launch: None,
