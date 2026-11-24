@@ -7,10 +7,14 @@ use super::{App, Id, TicketView};
 use crate::add::{self, Item, Line, Request};
 use crate::{untrusted, util};
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
-/// How long before the command stops waiting a wake still starting is answered so: the reply
-/// must land while the command reads it (`add::reply` writes none after `reply_by`).
-const MARGIN: i64 = 2;
+/// How many whole seconds of the command's `reply_by` a wake still starting leaves before it's
+/// answered so: the reply must land while the command reads it (`add::reply` writes none after
+/// `reply_by`). The command sets `reply_by` a second past its own wait, in whole seconds, so this
+/// answers about 2 s before the command stops waiting, sooner by the time the request took to
+/// arrive.
+const MARGIN: i64 = 3;
 
 /// A wake taken from the inbox and not answered yet.
 pub(super) struct Waking {
@@ -20,6 +24,9 @@ pub(super) struct Waking {
     /// The start the session had before the wake, if any: any other start is the wake's. None
     /// for a session already starting when the wake came, whose own start counts.
     before: Option<String>,
+    /// When to answer that it's still starting: taken from `reply_by` once, as the wake comes,
+    /// and kept on the monotonic clock, as WSL steps its wall clock by seconds.
+    pub(super) until: Instant,
 }
 
 /// What a wake does for a ticket that can be woken.
@@ -96,22 +103,34 @@ impl App {
             add::reply(&id, &req, &[Line::ok(msg)]);
             return;
         }
+        let now = Instant::now();
+        let left = req.reply_by.saturating_sub(util::now()).saturating_sub(MARGIN).max(0);
+        let until = now + Duration::from_secs(left.unsigned_abs());
         match wake_answer(tv) {
             Err(e) => add::reply(&id, &req, &[Line::err(format!("{shown} wasn't woken: {e}"))]),
-            Ok(Wake::Awake) if tv.status.reported() => {
-                let msg = format!("{shown} is awake; message it as {name}");
-                add::reply(&id, &req, &[Line::ok(msg)]);
+            Ok(Wake::Awake) => {
+                let reported = tv.status.reported();
+                // As for a woken start: its idle time restarts, with the cap's grace
+                // (`sleep::FRESH`, or until its next turn), so a wake for another session doesn't
+                // put this one to sleep before the agent's message reaches it.
+                let watch = &mut self.tickets[i].watch;
+                (watch.selected, watch.fresh) = (now, true);
+                if reported {
+                    let msg = format!("{shown} is awake; message it as {name}");
+                    add::reply(&id, &req, &[Line::ok(msg)]);
+                } else {
+                    // Its CLI hasn't reported its start (still loading, or on its trust
+                    // question): it can't be messaged yet, so the answer waits for its start
+                    // as for one the wake starts.
+                    self.waking.push(Waking { id, req, ticket, before: None, until });
+                }
             }
-            // Running, but its CLI hasn't reported its start (still loading, or on its trust
-            // question): it can't be messaged yet, so the answer waits for its start as for one
-            // the wake starts.
-            Ok(Wake::Awake) => self.waking.push(Waking { id, req, ticket, before: None }),
             Ok(Wake::Start) => {
                 let before = tv.launch.clone();
                 let tv = &mut self.tickets[i];
                 // `ensure_selected_session` starts it, once its last CLI is gone.
                 (tv.start, tv.woken) = (true, true);
-                self.waking.push(Waking { id, req, ticket, before });
+                self.waking.push(Waking { id, req, ticket, before, until });
                 self.dirty.store(true, Ordering::Relaxed);
             }
         }
@@ -120,7 +139,7 @@ impl App {
     /// Answers the wakes whose sessions are up, couldn't start, or are taking too long. Runs on
     /// every status poll, after the hooks' reports are read.
     pub(super) fn answer_wakes(&mut self) {
-        let now = util::now();
+        let now = Instant::now();
         let waking = std::mem::take(&mut self.waking);
         for w in waking {
             match self.wake_state(&w, now) {
@@ -131,7 +150,7 @@ impl App {
     }
 
     /// The answer for wake `w` at `now`, or None while it waits.
-    fn wake_state(&self, w: &Waking, now: i64) -> Option<Line> {
+    fn wake_state(&self, w: &Waking, now: Instant) -> Option<Line> {
         let Some(i) = self.tickets.iter().position(|tv| tv.t.is(&w.ticket.0, &w.ticket.1)) else {
             let key = untrusted::line(&w.ticket.1);
             return Some(Line::err(format!("{key} was closed before its session was up")));
@@ -149,13 +168,21 @@ impl App {
         }
         if !started && !tv.start {
             // The start was tried and didn't happen: taken in another terminal meanwhile, or
-            // refused (a lock, a folder that's gone), which its pane says.
-            return Some(Line::err(match tv.away {
-                Some(_) => format!("{shown} runs in another terminal now; it wasn't woken"),
-                None => format!("{shown} couldn't start; taskman shows the user why in its pane"),
-            }));
+            // refused (a lock, a folder that's gone), which its pane says. Down and about to
+            // start again (the user restarted it: dormant, or its CLI still being reaped), it
+            // waits for that start instead.
+            if tv.away.is_some() {
+                return Some(Line::err(format!(
+                    "{shown} runs in another terminal now; it wasn't woken"
+                )));
+            }
+            if !(tv.session.is_none() && (tv.dormant() || tv.reaping())) {
+                return Some(Line::err(format!(
+                    "{shown} couldn't start; taskman shows the user why in its pane"
+                )));
+            }
         }
-        (now >= w.req.reply_by - MARGIN).then(|| {
+        (now >= w.until).then(|| {
             Line::ok(format!("{shown} is starting; message it as {name} once ListAgents lists it"))
         })
     }

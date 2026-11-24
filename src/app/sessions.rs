@@ -163,11 +163,11 @@ impl App {
     }
 
     fn start_session(&mut self, i: usize) {
-        // A wake's grace is for this start only, whether or not it happens.
-        let woken = std::mem::take(&mut self.tickets[i].woken);
         // Never in the main checkout in place of a worktree the user asked for, and never while
-        // it's away: running elsewhere, or handed off until the user brings it back.
+        // it's away: running elsewhere, or handed off until the user brings it back. Refused, a
+        // wake's grace goes with the start (`woken`).
         if self.tickets[i].waiting() || self.tickets[i].away.is_some() {
+            self.tickets[i].woken = false;
             return;
         }
         // Nor while its last CLI is still being reaped (a restart, say): the lock is taskman's,
@@ -176,6 +176,9 @@ impl App {
         if self.tickets[i].reaping() {
             return;
         }
+        // A wake's grace is for this start only, whether or not it then succeeds; one put off
+        // above, by the reaping, keeps it for the try that follows.
+        let woken = std::mem::take(&mut self.tickets[i].woken);
         // Starting wakes it, or it runs elsewhere now: either way it isn't asleep.
         self.tickets[i].rouse();
         // A restart keeps the pane's claim: taking it again would find it held, by taskman itself.
