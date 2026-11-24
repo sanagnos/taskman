@@ -291,7 +291,10 @@ impl World {
 
 /// What the lookups that counted read, and what was told, since taskman started: enough to say
 /// whether an event could be true, whether it was told too often and whether one is missing,
-/// without knowing what the code remembers.
+/// without knowing what the code remembers. Of the memory it assumes three things, all in
+/// `others_since`: that it holds `kept` PRs, that the ones read longest ago are the first to go,
+/// and that none goes before a whole lookup is in. So a PR may have been forgotten only once as
+/// many others have been read since, in earlier lookups than this one.
 #[derive(Clone, Debug)]
 pub(crate) struct Trace {
     kept: usize,
@@ -867,7 +870,8 @@ mod tests {
         Box::new(move |prs, seen| {
             let mut told = see(prs, seen);
             for e in more(seen) {
-                if !told.contains(&e) {
+                // But where it tells one of the kind of that PR anyway.
+                if !told.iter().any(|t| (t.kind(), t.pr()) == (e.kind(), e.pr())) {
                     told.push(e);
                 }
             }
@@ -886,8 +890,9 @@ mod tests {
     }
 
     /// The checks aren't ones that can't fail. A feed that does one thing wrong is caught by
-    /// `Trace`'s rules alone, which know nothing of how `Prs` works: so is a `Prs` with one of
-    /// its two guards of memory gone. What only `Model` can know, it catches.
+    /// `Trace`'s rules alone, and so is a `Prs` with one of its guards of memory gone. Of `Prs`,
+    /// those rules assume only what `Trace` says it assumes: a bound, the PRs read longest ago the
+    /// first to go, and none before a whole lookup is in. What only `Model` can know, it catches.
     #[test]
     fn a_feed_that_does_one_thing_wrong_is_caught() {
         assert!(!caught(&see, true), "the feed as it is");
@@ -945,6 +950,23 @@ mod tests {
                 }),
             ),
             (
+                "the shown PR, open, let go by the PRs weighed beside it",
+                Box::new(|prs, seen| {
+                    // As a memory cut to its bound as each PR goes in does it: when the lookup
+                    // weighs as many others as are remembered. And only an open one, so that
+                    // nothing but "opened" and its checks are told again: a merged one let go
+                    // would be caught as a merge untold, whatever a repeat is held to. This is
+                    // the case that holds `Trace` to not counting the current lookup's PRs.
+                    if let Some(shown) = seen.shown.as_ref().filter(|s| s.state == State::Open)
+                        && seen.weighed.iter().filter(|(n, _)| *n != shown.number).count()
+                            >= prs.kept
+                    {
+                        prs.seen.retain(|p| p.number != shown.number || p.state != PrState::Open);
+                    }
+                    see(prs, seen)
+                }),
+            ),
+            (
                 "opened untold",
                 Box::new(|prs, seen| {
                     let told = see(prs, seen);
@@ -996,9 +1018,7 @@ mod tests {
                 "a comment at each lookup that shows one",
                 adding(|seen| {
                     let one = |pr| Event::Comments { pr, count: 1 };
-                    let told = shown(seen, one, |s| s.comments > 0);
-                    // Not beside the comments it tells anyway.
-                    told.into_iter().filter(|_| seen.weighed.is_empty()).collect()
+                    shown(seen, one, |s| s.comments > 0)
                 }),
             ),
         ];
