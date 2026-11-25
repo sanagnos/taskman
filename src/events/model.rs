@@ -11,12 +11,12 @@
 //!   weighs may be read as still open after it merged or closed, GitHub's search index being
 //!   behind; a list that says closed after a reopen isn't modelled.
 //! - `Trace` holds the rules that need no memory of the code's kind, only what GitHub did, what
-//!   the lookups read and what was told. Nothing is told that didn't happen or wasn't watched
-//!   happening; nothing is told more often than it happened, unless the PR was forgotten in
-//!   between; a PR first read as the one shown, open, is told opened; and of a PR still
-//!   remembered, a merge is told, and a close when it was open for sure. It does hold two of the
-//!   feed's decisions: a PR is open again only once it's shown open, and a merge is told of a
-//!   closed PR too.
+//!   the lookups read and what was told. Nothing is told that didn't happen, nor of a PR no
+//!   lookup had read before; nothing is told more often than it happened, unless the PR was
+//!   forgotten in between; a PR first read as the one shown, open, is told opened; and of a PR
+//!   still remembered, a merge is told, and a close when it was open for sure. It does hold two
+//!   of the feed's decisions: a PR is open again only once it's shown open, and a merge is told
+//!   of a closed PR too.
 //! - `Model` is the events owed, exactly: a map of what each remembered PR last said, by number,
 //!   forgetting the ones seen longest ago past the bound. It follows `Prs`'s rules closely, so it
 //!   catches what the rules above can't know (a check untold), and they catch what it shares
