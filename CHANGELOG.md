@@ -2,6 +2,12 @@
 
 What changed in each release; a release's notes on GitHub are its section here. What's merged but not released yet is in [changelog.d/](changelog.d/), a file for each change, which the release moves in here. Versions follow Cargo's rule for 0.x: the patch number (0.1.1) for anything compatible, fixes and new features alike, and the minor (0.2.0) for breaking changes, such as changed keys, config or saved-state format, or a removed command.
 
+## 0.1.45 - 2026-11-25
+
+- `taskman events` no longer tells a PR closed a second time when a PR list still said it was open after the close; a PR that's reopened and merged while another is shown is told merged.
+- `taskman events` no longer misses a PR's merge or close when the ticket's memory of 50 PRs is full, or fills during the lookup, and the lookup that finds it lists a new PR first.
+- Jira and Linear connections fall back to the next address when IPv6 is down, and the bundled certificates drop six roots Mozilla no longer trusts for websites (ureq 3.5.2, webpki-roots 1.0.12).
+
 ## 0.1.44 - 2026-11-24
 
 - `taskman wake KEY` starts a ticket's sleeping session again in its own pane, as selecting it does, without switching your view, and answers once the session is up, so an agent can message a session taskman put to sleep instead of waiting for you to select it. Sessions run it without a prompt, in their own project only. It doesn't start a session handed to another terminal, one that ended, or a Codex session. The guide now also says that Claude Code's messaging between sessions isn't limited to a project.

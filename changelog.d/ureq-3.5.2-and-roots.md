@@ -1,1 +1,0 @@
-- Jira and Linear connections fall back to the next address when IPv6 is down, and the bundled certificates drop six roots Mozilla no longer trusts for websites (ureq 3.5.2, webpki-roots 1.0.12).
