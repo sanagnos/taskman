@@ -1,0 +1,1 @@
+- `taskman events` no longer misses a PR's merge or close when the ticket's memory of 50 PRs is full, or fills during the lookup, and the lookup that finds it lists a new PR first.

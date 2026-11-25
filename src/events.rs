@@ -397,36 +397,61 @@ pub fn pr_events(before: Option<&PrSnap>, after: &PrSnap) -> Vec<Event> {
 /// ones, or a merged one shown once a newer one closed) isn't new; one seen open that merges or
 /// closes while another is shown in its place (an open one that mentions the key, an older merged
 /// one) is told merged or closed; one never seen open is no news.
-#[derive(Debug, Default)]
-pub struct Prs(Vec<PrSnap>);
+#[derive(Debug)]
+#[cfg_attr(test, derive(Clone))]
+pub struct Prs {
+    seen: Vec<PrSnap>,
+    /// The most it keeps, the latest seen: `KEPT`, but in tests of what happens at the bound.
+    kept: usize,
+}
+
+impl Default for Prs {
+    fn default() -> Prs {
+        Prs { seen: Vec::new(), kept: Prs::KEPT }
+    }
+}
 
 impl Prs {
-    /// The most PRs a ticket's memory keeps, the latest seen.
+    /// The most PRs a ticket's memory keeps.
     const KEPT: usize = 50;
 
+    /// One that keeps `kept` PRs, so a test gets to the bound in a few lookups.
+    #[cfg(test)]
+    pub(crate) fn bounded(kept: usize) -> Prs {
+        Prs { seen: Vec::new(), kept }
+    }
+
     /// The changes in what a lookup found: the PR it shows, and every PR it weighed. The shown
-    /// PR as known is taken out before the weighed ones go in, and put back last, so however many
-    /// new ones a lookup weighs, they can't push it out and have it told opened again; the known
-    /// weighed ones move up too, so the PRs a ticket still has are the last to go.
+    /// PR as known is taken out before the weighed ones go in, and put back last, and the oldest
+    /// are let go only once the whole lookup is in: so however many new ones a lookup weighs, they
+    /// can't push out the shown one and have it told opened again, nor a known one the same lookup
+    /// then finds merged or closed, which would go untold. The known weighed ones move up too, so
+    /// the PRs a ticket still has are the last to go.
     pub fn see(&mut self, shown: Option<PrSnap>, weighed: &[(u64, PrState)]) -> Vec<Event> {
         let mut events = Vec::new();
         let shown_number = shown.as_ref().map(|p| p.number);
-        let before = shown_number.and_then(|n| self.find(n)).map(|i| self.0.remove(i));
+        let before = shown_number.and_then(|n| self.find(n)).map(|i| self.seen.remove(i));
         for (n, state) in weighed.iter().filter(|(n, _)| Some(*n) != shown_number) {
             let snap = match self.find(*n) {
                 Some(i) => {
-                    let mut known = self.0.remove(i);
-                    if known.state == PrState::Open {
-                        match state {
-                            PrState::Merged => events.push(Event::PrMerged(*n)),
-                            PrState::Closed => events.push(Event::PrClosed(*n)),
-                            PrState::Open | PrState::Other(_) => {}
+                    let mut known = self.seen.remove(i);
+                    match (&known.state, state) {
+                        (PrState::Open | PrState::Closed, PrState::Merged) => {
+                            events.push(Event::PrMerged(*n));
                         }
+                        (PrState::Open, PrState::Closed) => events.push(Event::PrClosed(*n)),
+                        _ => {}
                     }
-                    // Merged is for good: a list that still says open (GitHub's search index can
-                    // lag behind the PR itself) mustn't have it told merged again when it catches
-                    // up. Closed can be reopened.
-                    if known.state != PrState::Merged {
+                    // Merged is for good, and a list that says open isn't believed of a PR known
+                    // merged or closed: GitHub's search index can lag behind the PR itself, and
+                    // taking its word had the PR told merged, or closed, again when it caught up.
+                    // A closed PR is open again once it's the one shown (`pr_events`); one that
+                    // reopens unshown and merges is told merged from closed, above.
+                    let behind = matches!(
+                        (&known.state, state),
+                        (PrState::Merged, _) | (PrState::Closed, PrState::Open)
+                    );
+                    if !behind {
                         known.state = state.clone();
                     }
                     known
@@ -439,19 +464,18 @@ impl Prs {
             events.extend(pr_events(before.as_ref(), &after));
             self.keep(after);
         }
+        let over = self.seen.len().saturating_sub(self.kept);
+        self.seen.drain(..over);
         events
     }
 
     fn find(&self, number: u64) -> Option<usize> {
-        self.0.iter().position(|p| p.number == number)
+        self.seen.iter().position(|p| p.number == number)
     }
 
-    /// `snap` as the latest seen, the oldest let go past `KEPT`.
+    /// `snap` as the latest seen.
     fn keep(&mut self, snap: PrSnap) {
-        self.0.push(snap);
-        if self.0.len() > Prs::KEPT {
-            self.0.remove(0);
-        }
+        self.seen.push(snap);
     }
 }
 
@@ -938,6 +962,9 @@ fn reader_gone(fd: std::os::fd::RawFd) -> bool {
 }
 
 #[cfg(test)]
+pub(crate) mod model;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::AgentState;
@@ -1161,11 +1188,20 @@ mod tests {
         // The search index lags: #10 listed open again, then merged once it catches up.
         assert_eq!(prs.see(Some(snap(11)), &[(10, Open), (11, Open)]), []);
         assert_eq!(prs.see(Some(snap(11)), &[(10, Merged), (11, Open)]), [], "once");
-        // A closed one reopened, and closed again, is told closed again.
+        // A closed one listed open again isn't believed either, so it isn't told closed twice.
         assert_eq!(prs.see(Some(snap(11)), &[(10, Merged), (12, Open)]), []);
         assert_eq!(prs.see(Some(snap(11)), &[(12, Closed)]), [Event::PrClosed(12)]);
         assert_eq!(prs.see(Some(snap(11)), &[(12, Open)]), []);
-        assert_eq!(prs.see(Some(snap(11)), &[(12, Closed)]), [Event::PrClosed(12)]);
+        assert_eq!(prs.see(Some(snap(11)), &[(12, Closed)]), [], "once");
+        // Had it reopened and merged meanwhile, that's told: no list says merged falsely.
+        assert_eq!(prs.see(Some(snap(11)), &[(12, Open)]), []);
+        assert_eq!(prs.see(Some(snap(11)), &[(12, Merged)]), [Event::PrMerged(12)]);
+        assert_eq!(prs.see(Some(snap(11)), &[(12, Merged)]), [], "once");
+        // Reopened and shown, it's open again, and its next close is told.
+        assert_eq!(prs.see(Some(snap(11)), &[(13, Open)]), []);
+        assert_eq!(prs.see(Some(snap(11)), &[(13, Closed)]), [Event::PrClosed(13)]);
+        assert_eq!(prs.see(Some(snap(13)), &[(11, Open)]), [Event::PrOpened(13)]);
+        assert_eq!(prs.see(Some(snap(11)), &[(13, Closed)]), [Event::PrClosed(13)]);
     }
 
     #[test]
@@ -1195,7 +1231,7 @@ mod tests {
         for n in 0..100 {
             prs.see(Some(snap(n)), &[]);
         }
-        assert_eq!(prs.0.len(), Prs::KEPT);
+        assert_eq!(prs.seen.len(), Prs::KEPT);
         // The latest seen are kept: shown again, no news.
         assert_eq!(prs.see(Some(snap(99)), &[]), []);
         // A lookup weighing more new PRs than it keeps, beside the one it shows (the oldest
@@ -1208,7 +1244,22 @@ mod tests {
         let many: Vec<(u64, PrState)> = (1000..1100).map(|n| (n, PrState::Merged)).collect();
         assert_eq!(prs.see(Some(snap(1)), &many), []);
         assert_eq!(prs.see(Some(snap(1)), &many), []);
-        assert_eq!(prs.0.last().map(|p| p.number), Some(1));
+        assert_eq!(prs.seen.last().map(|p| p.number), Some(1));
+    }
+
+    #[test]
+    fn a_pr_seen_merged_by_the_lookup_that_fills_the_memory_is_still_told() {
+        use PrState::{Merged, Open};
+        // As many PRs as are kept, #1 the one seen longest ago, and open.
+        let mut prs = Prs::default();
+        for n in 1..=u64::try_from(Prs::KEPT).unwrap() {
+            prs.see(None, &[(n, Open)]);
+        }
+        // A lookup lists a new PR before #1, now merged: the new one doesn't push #1 out before
+        // the lookup gets to it. (Found by the model's tests, `events::model`.)
+        assert_eq!(prs.see(None, &[(1000, Open), (1, Merged)]), [Event::PrMerged(1)]);
+        assert_eq!(prs.seen.len(), Prs::KEPT);
+        assert_eq!(prs.see(None, &[(1000, Open), (1, Merged)]), [], "once");
     }
 
     #[test]

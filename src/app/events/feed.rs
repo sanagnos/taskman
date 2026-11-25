@@ -284,3 +284,231 @@ fn events_of_a_project_go_to_its_own_file() {
     assert_eq!(lines.len(), 1);
     assert_eq!((lines[0].key.to_string(), lines[0].event), ("ENG-52".into(), Event::YourTurn));
 }
+
+// ---- the feed against a model ---------------------------------------------------------------
+
+mod modelled {
+    //! Random sequences of what happens to a ticket's PRs on GitHub and of lookups of them
+    //! (`events::model`), through the TUI as a lookup's thread would send them: after each
+    //! lookup, what the events file gained is what the model owes, and what its rules allow.
+
+    use super::*;
+    use crate::events::Overall;
+    use crate::events::model::{self, Action, Model, Reached, Seen, Shown, Trace, World};
+    use crate::github::{Pr, PrComment, Review, ReviewState, Stamp};
+    use proptest::prelude::*;
+    use proptest::test_runner::{RngSeed, TestRunner};
+    use proptest_state_machine::{ReferenceStateMachine, StateMachineTest};
+    use std::cell::RefCell;
+
+    /// How many PRs the feed under test remembers: fewer than the sequences have (`model::PRS`),
+    /// so they get past the bound. With three, 2000 sequences didn't find a merge the memory lost
+    /// at its bound; with two, the first few dozen do.
+    const KEPT: usize = 2;
+
+    thread_local! {
+        /// What this thread's run has got to so far (`run`).
+        static REACHED: RefCell<Reached> = RefCell::default();
+    }
+
+    /// The model's side: GitHub's PRs, and for the last action, when it was a lookup, what it
+    /// read and the events owed for it.
+    #[derive(Clone, Debug)]
+    struct Owed {
+        world: World,
+        model: Model,
+        last: Option<(Seen, Vec<Event>)>,
+    }
+
+    impl ReferenceStateMachine for Owed {
+        type State = Owed;
+        type Transition = Action;
+
+        fn init_state() -> BoxedStrategy<Owed> {
+            let model = Model::new(KEPT, false);
+            Just(Owed { world: World::default(), model, last: None }).boxed()
+        }
+
+        fn transitions(state: &Owed) -> BoxedStrategy<Action> {
+            model::action(&state.world).boxed()
+        }
+
+        fn apply(mut state: Owed, action: &Action) -> Owed {
+            state.last = None;
+            match action {
+                Action::Move(m) => {
+                    state.world.apply(m);
+                }
+                Action::Restart => state.model.restart(),
+                Action::Look(look) => {
+                    let seen = state.world.read(look);
+                    let owed = state.model.expect(&seen);
+                    state.last = Some((seen, owed));
+                }
+            }
+            state
+        }
+    }
+
+    /// The TUI, the rules its events are held to, how many of the file's events were read, and
+    /// how many PRs the model had forgotten.
+    struct Tui {
+        app: App,
+        trace: Trace,
+        read: usize,
+        forgotten: u32,
+    }
+
+    /// The shown PR as the lookup's thread would send it.
+    fn pr_of(shown: &Shown) -> Pr {
+        let reviews = |prefix: &'static str, n: u32, state: ReviewState| {
+            (0..n).map(move |i| Review {
+                id: format!("{prefix}{i}"),
+                state: state.clone(),
+                ..pr_52().reviews[0].clone()
+            })
+        };
+        let rollup = match shown.checks {
+            Overall::None => "",
+            Overall::Pending => "PENDING",
+            Overall::Pass => "SUCCESS",
+            Overall::Fail => "FAILURE",
+        };
+        Pr {
+            number: shown.number,
+            state: shown.state.pr_state(),
+            head_oid: format!("h{}", shown.head),
+            checks: Vec::new(),
+            stamp: Stamp { checks: rollup.into(), ..Stamp::default() },
+            reviews: reviews("a", shown.approvals, ReviewState::Approved)
+                .chain(reviews("x", shown.change_requests, ReviewState::ChangesRequested))
+                .collect(),
+            comments: (0..shown.comments)
+                .map(|i| PrComment { id: format!("c{i}"), ..PrComment::default() })
+                .collect(),
+            ..pr_52()
+        }
+    }
+
+    fn lookup_of(seen: &Seen) -> Lookup {
+        Lookup {
+            pr: seen.shown.as_ref().map(pr_of),
+            weighed: seen.weighed(),
+            elsewhere: seen.elsewhere,
+            ..Lookup::default()
+        }
+    }
+
+    impl StateMachineTest for Tui {
+        type SystemUnderTest = Tui;
+        type Reference = Owed;
+
+        fn init_test(_: &Owed) -> Tui {
+            // The case before's, in this thread's state folder.
+            let _ = std::fs::remove_file(events::path(Path::new("/src/acme")));
+            let mut app = acme_app();
+            let i = index(&app, "ENG-52");
+            app.tickets[i].restart_feed(KEPT);
+            Tui { app, trace: Trace::new(KEPT, false), read: 0, forgotten: 0 }
+        }
+
+        fn apply(mut tui: Tui, owed: &Owed, action: Action) -> Tui {
+            let app = &mut tui.app;
+            let mut told = Vec::new();
+            match &action {
+                Action::Move(_) => {}
+                Action::Restart => {
+                    let i = index(app, "ENG-52");
+                    app.tickets[i].restart_feed(KEPT);
+                    tui.trace.restart();
+                }
+                Action::Look(_) => {
+                    let (seen, owed_now) = owed.last.clone().expect("a lookup read something");
+                    // An agent finds the same, and has no events.
+                    let agent = app.tickets.iter().position(|tv| tv.t.agent.is_some()).unwrap();
+                    app.tickets[agent].take_pr(Ok(lookup_of(&seen)), None);
+                    app.fetches += 1;
+                    let (n, i) = (app.fetches, index(app, "ENG-52"));
+                    app.tickets[i].pr.start(n);
+                    let id = (app.tickets[i].t.repo.clone(), "ENG-52".to_string());
+                    app.tx.send(Msg::Pr(n, id, Box::new(Ok(lookup_of(&seen))), None)).unwrap();
+                    app.drain_messages();
+                    let path = events::path(Path::new("/src/acme"));
+                    let text = std::fs::read_to_string(path).unwrap_or_default();
+                    let lines: Vec<Line> = text.lines().filter_map(Line::parse).collect();
+                    let new = &lines[tui.read..];
+                    assert!(new.iter().all(|l| l.key.to_string() == "ENG-52"), "{new:?}");
+                    told = new.iter().map(|l| l.event).collect();
+                    tui.read = lines.len();
+                    if let Err(why) = tui.trace.check(&owed.world, &seen, &told) {
+                        panic!("{why}: read {seen:?}");
+                    }
+                    assert_eq!(model::sorted(&told), model::sorted(&owed_now), "read {seen:?}");
+                }
+            }
+            REACHED.with_borrow_mut(|reached| {
+                reached.note(&owed.world, &action, &told);
+                reached.forgotten += owed.model.forgotten.saturating_sub(tui.forgotten);
+            });
+            tui.forgotten = owed.model.forgotten;
+            tui
+        }
+    }
+
+    /// Sequences of up to 40 actions through the TUI, 64 of them or as many as `PROPTEST_CASES`
+    /// says, from `seed` or a new one: what they got to, when none went wrong.
+    fn run(seed: Option<u64>) -> Reached {
+        let config = ProptestConfig {
+            cases: match std::env::var_os("PROPTEST_CASES") {
+                Some(_) if seed.is_none() => ProptestConfig::default().cases,
+                _ => 64,
+            },
+            rng_seed: seed.map_or(RngSeed::Random, RngSeed::Fixed),
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        };
+        REACHED.take();
+        let mut runner = TestRunner::new(config.clone());
+        let sequences = <Owed as ReferenceStateMachine>::sequential_strategy(1..40);
+        let result = runner.run(&sequences, |(start, actions, seen)| {
+            Tui::test_sequential(config.clone(), start, actions, seen);
+            Ok(())
+        });
+        if let Err(why) = result {
+            panic!("{why}\n{runner}");
+        }
+        REACHED.take()
+    }
+
+    #[test]
+    fn the_feed_tells_what_the_model_owes() {
+        run(None);
+    }
+
+    /// The same run with one seed, counted: its sequences make every move, tell every event,
+    /// read lists that are behind and other repositories' PRs, restart and forget. Sequences that
+    /// never merged a PR would pass every rule about merges.
+    #[test]
+    fn its_sequences_reach_every_move_and_event() {
+        let reached = run(Some(52));
+        let moves =
+            ["open", "merge", "close", "reopen", "push", "checks", "approve", "request changes"];
+        for name in moves.into_iter().chain(["comment"]) {
+            assert!(reached.moves.get(name).is_some_and(|n| *n >= 5), "{name}: {reached:?}");
+        }
+        for kind in [
+            "pr_opened",
+            "pr_closed",
+            "pr_merged",
+            "checks_passed",
+            "checks_failed",
+            "approved",
+            "changes_requested",
+            "comments",
+        ] {
+            assert!(reached.events.get(kind).is_some_and(|n| *n >= 5), "{kind}: {reached:?}");
+        }
+        let rest = [reached.lookups, reached.behind, reached.elsewhere, reached.restarts];
+        assert!(rest.iter().all(|n| *n >= 5) && reached.forgotten >= 5, "{reached:?}");
+    }
+}
