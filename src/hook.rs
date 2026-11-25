@@ -11,9 +11,110 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// The `--settings` JSON that wires every relevant hook event to `taskman hook`, and lets
-/// `taskman status`, `taskman add` and `taskman move` run without a prompt.
-pub fn settings_json(exe: &Path) -> String {
+/// taskman's own files, which a Claude session's file tools may not change: what taskman reads
+/// back as its state, config and tokens. taskman's commands write them as a process of their
+/// own, which no rule sees, so `taskman add` and the hooks still reach them.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Guarded {
+    /// Folders nothing under may be edited: the state folder, and the config folder when it's
+    /// taskman's own.
+    pub folders: Vec<PathBuf>,
+    /// Single files that may not be edited: config.json, when `TASKMAN_CONFIG` puts it in a
+    /// folder that may hold other things.
+    pub files: Vec<PathBuf>,
+    /// Folders nothing under may be read either: the token files, which `folders` covers for
+    /// edits.
+    pub secret: Vec<PathBuf>,
+}
+
+impl Guarded {
+    /// taskman's files as it finds them itself: the state folder, and the config folder or, with
+    /// `TASKMAN_CONFIG`, the file and its tokens folder.
+    pub fn current() -> Self {
+        let mut g = Guarded::default();
+        g.folders.extend(forms(&crate::store::state_dir()));
+        match crate::store::own_config_dir() {
+            Some(dir) => g.folders.extend(forms(&dir)),
+            None => {
+                g.files.extend(forms(&crate::store::config_path()));
+                g.folders.extend(forms(&crate::token_file::dir()));
+            }
+        }
+        g.secret.extend(forms(&crate::token_file::dir()));
+        g
+    }
+
+    /// Claude's permission rules for these: `deny` rules, which no other settings or mode can
+    /// allow (code.claude.com/docs/en/permissions). An `Edit` rule covers every tool that edits
+    /// files, Write included, and redirects in a shell command Claude can read; a `Write` rule
+    /// would match nothing. A path that isn't UTF-8, or holds a control character, gets no rule
+    /// and is left out.
+    pub fn deny_rules(&self) -> Vec<String> {
+        let folders = self.folders.iter().filter_map(|p| pattern(p, true));
+        let files = self.files.iter().filter_map(|p| pattern(p, false));
+        let edit = folders.chain(files).map(|r| format!("Edit({r})"));
+        let secret = self.secret.iter().filter_map(|p| pattern(p, true));
+        let read = secret.map(|r| format!("Read({r})"));
+        let mut seen = std::collections::HashSet::new();
+        edit.chain(read).filter(|r| seen.insert(r.clone())).collect()
+    }
+}
+
+/// `p` made absolute against the folder taskman was started in, as taskman opens it, then also as
+/// the system resolves it when that differs: a deny rule matches either the path a tool is given or
+/// the file it resolves to, so a path through a link (macOS's `/var`, a linked home) needs both
+/// forms to cover a tool given the other. A file not made yet resolves through its folder.
+fn forms(p: &Path) -> Vec<PathBuf> {
+    let Ok(abs) = std::path::absolute(p) else { return vec![] };
+    let real = std::fs::canonicalize(&abs).ok().or_else(|| {
+        let real = std::fs::canonicalize(abs.parent()?).ok()?;
+        Some(real.join(abs.file_name()?))
+    });
+    let mut out = vec![abs];
+    out.extend(real.filter(|r| *r != out[0]));
+    out
+}
+
+/// Absolute path `p` as a rule's content, for everything under it when it's a `folder`: `//` then
+/// the path, since one leading `/` would mean the folder of the settings. Escaped twice, in this
+/// order. First for gitignore, which rules' patterns follow: `\ * ? [ ]`, and a file's trailing
+/// space, which gitignore would drop. Then for Claude, which undoes `\\`, `\(` and `\)` in a rule's
+/// content before gitignore sees it, and whose own rule writer escapes those three the same way.
+/// With only the first, a path holding `\` named another path, and its rule matched nothing
+/// (checked with Claude Code 2.1.330). A path with a control character gets no rule, as one that
+/// isn't UTF-8: gitignore reads a pattern per line, so a line break would leave a second pattern,
+/// relative and matching at any depth.
+fn pattern(p: &Path, folder: bool) -> Option<String> {
+    let s = p.to_str().filter(|s| s.starts_with('/') && !s.chars().any(char::is_control))?;
+    let mut glob = String::from("/");
+    for c in s.chars() {
+        if matches!(c, '\\' | '*' | '?' | '[' | ']') {
+            glob.push('\\');
+        }
+        glob.push(c);
+    }
+    let glob = if folder {
+        // `/` itself would leave `/**`, which is the settings' folder, not the root.
+        let base = glob.trim_end_matches('/');
+        (base.len() > 1).then(|| format!("{base}/**"))?
+    } else {
+        let trimmed = glob.trim_end_matches(' ');
+        format!("{trimmed}{}", r"\ ".repeat(glob.len() - trimmed.len()))
+    };
+    let mut content = String::new();
+    for c in glob.chars() {
+        if matches!(c, '\\' | '(' | ')') {
+            content.push('\\');
+        }
+        content.push(c);
+    }
+    Some(content)
+}
+
+/// The `--settings` JSON that wires every relevant hook event to `taskman hook`, lets
+/// `taskman status`, `taskman events`, `taskman add`, `taskman move` and `taskman wake` run without
+/// a prompt, and keeps the session's file tools off `guarded`.
+pub fn settings_json(exe: &Path, guarded: &Guarded) -> String {
     let cmd = |state: &str| {
         json!([{ "matcher": "*", "hooks": [{
             "type": "command",
@@ -31,15 +132,26 @@ pub fn settings_json(exe: &Path) -> String {
         "Stop": cmd("done"),
         "SessionEnd": cmd("ended"),
     },
-    // The briefs point sessions here. status only reads; move moves a Local files ticket between
-    // columns; add opens tickets, but an agent or a role, which becomes a system prompt, waits
-    // for the user to approve it in taskman (`App::take_inbox`), as text a session read may be
-    // what asked for it. All three keep to the session's own project (`cli::confine`), since the
-    // rules can't tell arguments apart. `taskman close` is left out on purpose: it stops sessions and removes
-    // worktrees, so the session's own permission settings decide. So is `taskman title`: what it
-    // writes shows on the user's card, so where Claude asks, the prompt shows them the text first,
-    // and they can allow it for good.
-    "permissions": { "allow": ["Bash(taskman status:*)", "Bash(taskman add:*)", "Bash(taskman move:*)"] }})
+    // The briefs point sessions here. status only reads; events only reads a file the TUI writes,
+    // and prints nothing but ticket keys, PR numbers and fixed words (`events::Event`); move moves
+    // a Local files ticket between columns; add opens tickets, but an agent or a role, which
+    // becomes a system prompt, waits for the user to approve it in taskman (`App::take_inbox`), as
+    // text a session read may be what asked for it; wake starts a sleeping ticket session again,
+    // as selecting it does. All five keep to the session's own project (`cli::confine`), since
+    // the rules can't tell arguments apart. `taskman close` is left out on purpose: it stops
+    // sessions and removes worktrees, so the session's own permission settings decide. So is
+    // `taskman title`: what it writes shows on the user's card, so where Claude asks, the prompt
+    // shows them the text first, and they can allow it for good.
+    "permissions": {
+        "allow": [
+            "Bash(taskman status:*)",
+            "Bash(taskman events:*)",
+            "Bash(taskman add:*)",
+            "Bash(taskman move:*)",
+            "Bash(taskman wake:*)"
+        ],
+        "deny": guarded.deny_rules(),
+    }})
     .to_string()
 }
 
@@ -164,15 +276,30 @@ fn session_dir(started: Option<std::ffi::OsString>, v: &Value) -> Option<PathBuf
         .or_else(|| std::env::current_dir().ok())
 }
 
-/// How long a hook waits for one git call. Tests run real git on machines that may be busy, and a
-/// hook's limit isn't what they're about.
-const GIT_WAIT: Duration =
-    if cfg!(test) { Duration::from_secs(60) } else { Duration::from_millis(800) };
+/// How long a hook gives one git call to answer before asking it to end, and all a prompt's start
+/// waits for its one call, stopping it included: so that call is asked to end at 550 ms
+/// ([`git_limit`]), which is plenty for `rev-parse HEAD`.
+const RELEASE_GIT_WAIT: Duration = Duration::from_millis(800);
 
-/// How long a turn's end waits for all its git calls together: the CLIs give a hook 3 s (Codex) or
-/// 5 s, and a hook they end hasn't written the turn's line, which matters more than what git says.
-const STOP_WAIT: Duration =
-    if cfg!(test) { Duration::from_secs(300) } else { Duration::from_millis(2500) };
+/// How long a turn's end waits for all its git calls together, stopping those that hang included:
+/// the CLIs give a hook 3 s (Codex, as taskman sets it) or 5 s, and a hook they end hasn't written
+/// the turn's line, which matters more than what git says. The 0.7 s left of Codex's 3 covers
+/// starting the hook and a busy machine: under heavy load, starting and ending the hook and
+/// stopping its git took up to about 0.3 s beyond the calls' own time. A pause of the whole
+/// machine, as a virtual machine's host can make, can still take the hook past it.
+const RELEASE_STOP_WAIT: Duration = Duration::from_millis(2300);
+
+// The unit tests run real git on machines that may be busy, and a hook's limit isn't what they're
+// about, so they get longer limits; a unit test checks the release values against the CLIs'.
+
+/// [`RELEASE_GIT_WAIT`], but for the unit tests.
+const GIT_WAIT: Duration = if cfg!(test) { Duration::from_secs(60) } else { RELEASE_GIT_WAIT };
+
+/// [`RELEASE_STOP_WAIT`], but for the unit tests.
+const STOP_WAIT: Duration = if cfg!(test) { Duration::from_secs(300) } else { RELEASE_STOP_WAIT };
+
+/// The least time a git call is started with: less starts git only to stop it.
+const GIT_FLOOR: Duration = Duration::from_millis(50);
 
 /// How a git call came out.
 #[derive(Debug, PartialEq)]
@@ -185,13 +312,24 @@ enum Git {
     NoAnswer,
 }
 
-/// Runs `git args` in `dir`, by the time `until` at the latest and within `GIT_WAIT`.
+/// The limit to give a git call that has `left` to be over in, at most `wait`: a git that doesn't
+/// end when asked at its limit takes `proc::STOP_GRACE` more before it's killed, which comes off
+/// what's left, so the call is over in time either way. Off what's left, not off `wait`: a slow
+/// git still answering at a turn's end gets its whole `wait` while there's time for the grace
+/// after it. Zero when that leaves too little to run it in ([`GIT_FLOOR`]).
+fn git_limit(left: Duration, wait: Duration) -> Duration {
+    let limit = left.saturating_sub(crate::proc::STOP_GRACE).min(wait);
+    if limit < GIT_FLOOR { Duration::ZERO } else { limit }
+}
+
+/// Runs `git args` in `dir`, over by the time `until` at the latest, the stopping of a git that
+/// hangs included, and asked to end after `GIT_WAIT` at most ([`git_limit`]).
 fn git_call(dir: &Path, args: &[&str], until: Instant) -> Git {
-    let left = until.saturating_duration_since(Instant::now()).min(GIT_WAIT);
-    if left.is_zero() {
+    let limit = git_limit(until.saturating_duration_since(Instant::now()), GIT_WAIT);
+    if limit.is_zero() {
         return Git::NoAnswer;
     }
-    match git::run(dir, args, left) {
+    match git::run(dir, args, limit) {
         Ok(out) if out.status.success() => {
             Git::Out(String::from_utf8_lossy(&out.stdout).into_owned())
         }
@@ -1321,11 +1459,20 @@ mod tests {
 
     #[test]
     fn lets_sessions_run_taskman_status() {
-        let v: Value =
-            serde_json::from_str(&settings_json(Path::new("/usr/local/bin/taskman"))).unwrap();
+        let v: Value = serde_json::from_str(&settings_json(
+            Path::new("/usr/local/bin/taskman"),
+            &Guarded::default(),
+        ))
+        .unwrap();
         assert_eq!(
             v["permissions"]["allow"],
-            json!(["Bash(taskman status:*)", "Bash(taskman add:*)", "Bash(taskman move:*)"])
+            json!([
+                "Bash(taskman status:*)",
+                "Bash(taskman events:*)",
+                "Bash(taskman add:*)",
+                "Bash(taskman move:*)",
+                "Bash(taskman wake:*)"
+            ])
         );
         assert_eq!(
             v["hooks"]["Stop"][0]["hooks"][0]["command"],
@@ -1338,9 +1485,154 @@ mod tests {
     }
 
     #[test]
-    fn quotes_the_binary_path_for_the_shell() {
+    fn denies_edits_to_taskmans_files_and_reads_of_its_tokens() {
+        let guarded = Guarded {
+            folders: vec!["/home/tester/.local/state/taskman".into(), "/srv/cfg/tokens".into()],
+            files: vec!["/srv/cfg/config.json".into()],
+            secret: vec!["/srv/cfg/tokens".into()],
+        };
         let v: Value =
-            serde_json::from_str(&settings_json(Path::new("/home/o'neil/bin/taskman"))).unwrap();
+            serde_json::from_str(&settings_json(Path::new("/usr/local/bin/taskman"), &guarded))
+                .unwrap();
+        // `//` is the root; one `/` would be the settings' folder. Edit covers Write, and a
+        // `Write(...)` rule would match nothing.
+        assert_eq!(
+            v["permissions"]["deny"],
+            json!([
+                "Edit(//home/tester/.local/state/taskman/**)",
+                "Edit(//srv/cfg/tokens/**)",
+                "Edit(//srv/cfg/config.json)",
+                "Read(//srv/cfg/tokens/**)",
+            ])
+        );
+        assert_eq!(v["permissions"]["allow"].as_array().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn rule_paths_are_literal() {
+        let folder = |p: &str| pattern(Path::new(p), true);
+        let file = |p: &str| pattern(Path::new(p), false);
+        // Escaped for gitignore (`\[`), then that escaped again for Claude (`\\[`), which undoes
+        // the second before gitignore reads it.
+        assert_eq!(
+            folder("/home/a[1]/st*te?/x\\y").unwrap(),
+            r"//home/a\\[1\\]/st\\*te\\?/x\\\\y/**"
+        );
+        assert_eq!(folder("/home/tester/state/").unwrap(), "//home/tester/state/**");
+        assert_eq!(
+            file("/home/tester/My Config (2)/c.json").unwrap(),
+            r"//home/tester/My Config \(2\)/c.json"
+        );
+        assert_eq!(file("/home/tester/c.json  ").unwrap(), r"//home/tester/c.json\\ \\ ");
+        // Never a rule that means something else: relative to the settings' folder or the
+        // session's, or the root's every file.
+        assert_eq!(folder("state/taskman"), None);
+        assert_eq!(folder("/"), None);
+        use std::os::unix::ffi::OsStrExt;
+        let odd = Path::new(std::ffi::OsStr::from_bytes(b"/home/\xff/state"));
+        assert_eq!(pattern(odd, true), None);
+        // A line break would leave a second pattern, matching `state/taskman` at any depth.
+        for odd in ["/home/tester\nstate/taskman", "/home/tester\r/state", "/home/a\u{1b}b"] {
+            assert_eq!(pattern(Path::new(odd), true), None, "{odd:?}");
+            assert_eq!(pattern(Path::new(odd), false), None, "{odd:?}");
+        }
+    }
+
+    #[test]
+    fn guards_a_path_through_a_link_in_both_forms() {
+        let dir = crate::store::state_dir().join("forms");
+        std::fs::create_dir_all(dir.join("real")).unwrap();
+        let link = dir.join("link");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(dir.join("real"), &link).unwrap();
+        let real = std::fs::canonicalize(dir.join("real")).unwrap();
+        assert_eq!(forms(&link), [link.clone(), real.clone()]);
+        // A config file not made yet resolves through its folder.
+        assert_eq!(
+            forms(&link.join("config.json")),
+            [link.join("config.json"), real.join("config.json")]
+        );
+        assert_eq!(forms(&real), std::slice::from_ref(&real));
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(forms(Path::new("no-such-config.json"))[0], cwd.join("no-such-config.json"));
+    }
+
+    #[test]
+    fn guards_the_state_and_config_taskman_uses() {
+        let g = Guarded::current();
+        assert!(g.folders.contains(&crate::store::state_dir()), "{g:?}");
+        assert!(g.secret.contains(&crate::token_file::dir()), "{g:?}");
+    }
+
+    /// What Claude makes of a rule's content before matching (Claude Code 2.1.330): `\\`, `\(`
+    /// and `\)` undone, any other `\` left for gitignore. None for a bare parenthesis, which
+    /// `pattern` never leaves, as a parser looking for the rule's end could stop there.
+    fn claude_unescape(content: &str) -> Option<String> {
+        let mut out = String::new();
+        let mut chars = content.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' if matches!(chars.peek(), Some('\\' | '(' | ')')) => out.push(chars.next()?),
+                '(' | ')' => return None,
+                c => out.push(c),
+            }
+        }
+        Some(out)
+    }
+
+    /// The path a gitignore pattern names literally, or None where a pattern character is left
+    /// unescaped, a `\` escapes nothing, a line break splits it, or it ends in an unescaped
+    /// space, which gitignore drops.
+    fn gitignore_literal(pattern: &str) -> Option<String> {
+        let mut out = String::new();
+        let mut chars = pattern.chars();
+        let mut escaped = false;
+        while let Some(c) = chars.next() {
+            escaped = c == '\\';
+            match c {
+                '\\' => out.push(chars.next()?),
+                '*' | '?' | '[' | ']' | '\n' | '\r' => return None,
+                c => out.push(c),
+            }
+        }
+        (escaped || !out.ends_with(' ')).then_some(out)
+    }
+
+    /// The path a rule's content names, as Claude then gitignore read it.
+    fn named(content: &str) -> Option<String> {
+        gitignore_literal(&claude_unescape(content)?)
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn a_rule_names_exactly_its_path(
+            parts in proptest::collection::vec(r"[a-z\\()\[\]*? ]{1,8}|[^/\x00]{1,12}", 1..5),
+        ) {
+            let path = format!("/{}", parts.join("/"));
+            if path.chars().any(char::is_control) {
+                proptest::prop_assert_eq!(pattern(Path::new(&path), false), None);
+                proptest::prop_assert_eq!(pattern(Path::new(&path), true), None);
+                return Ok(());
+            }
+            let p = pattern(Path::new(&path), false).unwrap();
+            proptest::prop_assert!(p.starts_with("//"), "{p}");
+            proptest::prop_assert_eq!(named(&p[1..]), Some(path.clone()));
+            // A folder's `/**` follows the path, so a file in it stands for what it matches.
+            let f = pattern(Path::new(&path), true).unwrap();
+            let base = f.strip_suffix("/**").unwrap();
+            proptest::prop_assert_eq!(named(&format!("{}/f", &base[1..])), Some(path + "/f"));
+        }
+    }
+
+    #[test]
+    fn quotes_the_binary_path_for_the_shell() {
+        let v: Value = serde_json::from_str(&settings_json(
+            Path::new("/home/o'neil/bin/taskman"),
+            &Guarded::default(),
+        ))
+        .unwrap();
         assert_eq!(
             v["hooks"]["Stop"][0]["hooks"][0]["command"],
             r"'/home/o'\''neil/bin/taskman' hook done"
@@ -1374,5 +1666,54 @@ mod tests {
             r#""/<session-flags>/config.toml:stop:0:0"={trusted_hash="sha256:2a1ea95d0889e9ae2c4b8a730a664ca38e62e54d157d2793d44062ff7e62d03d"}"#
         ));
         assert_eq!(state.matches("trusted_hash").count(), CODEX_HOOKS.len());
+    }
+
+    /// With the limits a release keeps to: a git call is over within the time it has, the grace a
+    /// hung git gets when it's stopped included; a turn's end with every git hung, even ones that
+    /// ignore the request to end, is over within its time, which is inside Codex's limit for a
+    /// hook; a slow git still answering gets all of the wait while there's room; and a prompt's
+    /// start runs its one call, over within its time.
+    #[test]
+    fn a_git_calls_limit_leaves_time_to_stop_it() {
+        let grace = crate::proc::STOP_GRACE;
+        let (wait, total) = (RELEASE_GIT_WAIT, RELEASE_STOP_WAIT);
+        // Starting taskman, writing the line and a busy machine need some of what the CLI gives
+        // the hook (`RELEASE_STOP_WAIT`).
+        assert!(total + Duration::from_millis(700) <= Duration::from_secs(CODEX_HOOK_TIMEOUT));
+        // The limits a turn's end gives its three calls (`log_turn`) when each git hangs and takes
+        // `cost(limit)` before it's over; one left too little isn't run.
+        let calls = |cost: &dyn Fn(Duration) -> Duration| {
+            let mut left = total;
+            let mut limits = Vec::new();
+            for call in 0..3 {
+                let limit = git_limit(left, wait);
+                if limit.is_zero() {
+                    break;
+                }
+                assert!(limit + grace <= left, "call {call}: {limit:?} with {left:?} left");
+                left = left.saturating_sub(cost(limit));
+                limits.push(limit);
+            }
+            limits
+        };
+        // Every git ignoring the request to end: two calls, each with the whole wait, and none
+        // for the third, the note of the commit the next turn starts from.
+        assert_eq!(calls(&|limit| limit + grace), [wait, wait]);
+        // Every git ending when asked: the third still runs, with what the first two left.
+        let ms = Duration::from_millis;
+        assert_eq!(calls(&|limit| limit), [wait, wait, ms(450)]);
+        // The first call gets all of the wait, as a slow git should.
+        assert_eq!(git_limit(total, wait), wait);
+        // A prompt's start: one call, run and over within `wait` itself.
+        let prompt = git_limit(wait, wait);
+        assert!(!prompt.is_zero() && prompt + grace <= wait, "{prompt:?}");
+        // However much is left, a call and its stopping fit in it, and one that would get less
+        // than the floor isn't started.
+        for left in (0..3000).map(Duration::from_millis) {
+            let limit = git_limit(left, wait);
+            assert!(limit <= wait);
+            assert!(limit.is_zero() || (limit >= GIT_FLOOR && limit + grace <= left), "{left:?}");
+        }
+        assert_eq!(git_limit(grace + GIT_FLOOR / 2, wait), Duration::ZERO);
     }
 }

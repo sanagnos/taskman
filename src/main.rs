@@ -12,6 +12,7 @@ mod background;
 mod cli;
 mod close;
 mod coding_cli;
+mod events;
 mod events_log;
 mod git;
 mod github;
@@ -49,6 +50,7 @@ mod uninstall;
 mod untrusted;
 mod update;
 mod util;
+mod wake;
 mod worktree;
 
 use crossterm::event::{
@@ -349,10 +351,12 @@ fn main() -> anyhow::Result<()> {
     }
     let command: Option<fn(&[String]) -> i32> = match args.get(1).map(String::as_str) {
         Some("status") => Some(status::run),
+        Some("events") => Some(events::run),
         Some("add") => Some(add::run),
         Some("close") => Some(close::run),
         Some("move") => Some(local::run),
         Some("title") => Some(title::run),
+        Some("wake") => Some(wake::run),
         Some("resume") => Some(resume::run),
         Some("update") => Some(update::run),
         Some("uninstall") => Some(uninstall::run),
@@ -365,6 +369,10 @@ fn main() -> anyhow::Result<()> {
     }
     match args.get(1).map(String::as_str) {
         Some("hook") => {
+            // A CLI that ends a hook with a signal it can catch (Claude Code sends SIGTERM, then
+            // SIGKILL; Codex only SIGKILL) has it stop its git first, which is in a session of its
+            // own and might otherwise run on, if the CLI's own cleanup misses it.
+            proc::stop_on_signals();
             hook::run(args.get(2).map(String::as_str).unwrap_or("idle"));
             return Ok(());
         }
@@ -401,6 +409,12 @@ fn main() -> anyhow::Result<()> {
                 "                            project (--project NAME, --json; --help for more)"
             );
             cli::out!(
+                "       taskman events       the project's PR and session changes as taskman sees them;"
+            );
+            cli::out!(
+                "                            --follow waits for each new one (--json; --help for more)"
+            );
+            cli::out!(
                 "       taskman add KEY...   add tickets to taskman without switching to them, with the"
             );
             cli::out!(
@@ -425,6 +439,12 @@ fn main() -> anyhow::Result<()> {
             );
             cli::out!(
                 "                            shell, taskman title KEY TEXT (--clear KEY; --help for more)"
+            );
+            cli::out!(
+                "       taskman wake KEY     start a ticket's sleeping session in its pane, so an agent"
+            );
+            cli::out!(
+                "                            can message it (--project NAME; --help for more)"
             );
             cli::out!(
                 "       taskman resume KEY   continue a ticket's or agent's session in this terminal, as"

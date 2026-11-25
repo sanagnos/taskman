@@ -28,6 +28,15 @@ fn heartbeat_due(last: Option<Instant>, now: Instant) -> bool {
     last.is_none_or(|t| now.saturating_duration_since(t) >= HEARTBEAT_EVERY)
 }
 
+/// A reply's line for a toast: as it was built, from parts each cleaned for where it stands (a
+/// title on one line, a folder as it's named). Cleaning the whole line again as one field
+/// (`untrusted::line`) joined the spaces in a folder's name, so the toast named another folder
+/// than the reply did. Only what breaks a line, which no reply line has, is taken out: line
+/// breaks, tabs, and the line and paragraph separators.
+pub(super) fn toast_line(text: &str) -> String {
+    untrusted::clean(text).replace(['\n', '\t', '\u{2028}', '\u{2029}'], " ")
+}
+
 /// The reply for agent `t`, just added by `taskman add` to `project`: its session starts at once,
 /// named `session`.
 fn added_agent_line(t: &Ticket, project: &str, session: &str) -> String {
@@ -72,6 +81,10 @@ impl App {
             // taskman was closed. Decided here, as an agent's request is past it by the time the
             // user has read the dialog.
             let closed = add::queued(&req, util::now());
+            if req.wakes() {
+                self.wake_requested(id, req, closed);
+                continue;
+            }
             if req.close.is_some() {
                 self.close_requested(id, req);
                 continue;
@@ -98,6 +111,7 @@ impl App {
             toasts.extend(toast);
             self.dirty.store(true, Ordering::Relaxed);
         }
+        self.answer_wakes();
         if !toasts.is_empty() {
             self.toast(toasts.join(" · "));
         }
@@ -205,7 +219,9 @@ impl App {
                     }
                     add::Item::New { title, .. } => (untrusted::line(title), None),
                     // The command never closes one, but anything can write to the inbox.
-                    add::Item::Title { key, .. } => (untrusted::line(key), None),
+                    add::Item::Title { key, .. } | add::Item::Wake { key } => {
+                        (untrusted::line(key), None)
+                    }
                 })
                 .collect()
         };
@@ -475,7 +491,7 @@ impl App {
             // Its toast isn't used, so whether the request waited for taskman doesn't matter.
             let (added, _) = self.add_requested(&add::Request { items, ..req.clone() }, false);
             if let Some(e) = added.iter().find(|l| !l.ok) {
-                let e = untrusted::line(&e.text);
+                let e = toast_line(&e.text);
                 failed.get_or_insert_with(|| format!("Created {}, but {e}", keys.join(", ")));
             }
             lines.extend(added);
@@ -500,7 +516,10 @@ impl App {
         let req = &ask.req;
         let name = req.agent().map(|(n, _)| store::slug(n)).unwrap_or_default();
         if !yes {
-            let from = req.from.as_ref().map_or(String::new(), |f| format!(" from {f}"));
+            let from = req
+                .from
+                .as_deref()
+                .map_or(String::new(), |f| format!(" from {}", untrusted::line(f)));
             self.toast(format!("Declined ✦ {name}{from}"));
             return;
         }
@@ -513,7 +532,7 @@ impl App {
         }
         let (lines, toast) = self.add_requested(req, ask.closed);
         match lines.iter().find(|l| !l.ok) {
-            Some(err) => self.error(format!("✦ {name}: {}", untrusted::line(&err.text))),
+            Some(err) => self.error(format!("✦ {name}: {}", toast_line(&err.text))),
             None => {
                 self.toast(toast.unwrap_or_else(|| {
                     format!("✦ {name}'s new role applies when its session next starts")
@@ -618,10 +637,17 @@ impl App {
                     )),
                     Err(e) => add::Line::err(e),
                 },
+                // Taken before this (`wake_requested`), but anything can write to the inbox.
+                add::Item::Wake { key } => {
+                    add::Line::err(format!("{} wasn't woken", untrusted::line(key)))
+                }
             });
         }
         let toast = (!added.is_empty()).then(|| {
-            let who = req.from.as_ref().map_or("Added".to_string(), |f| format!("{f} added"));
+            let who = req
+                .from
+                .as_deref()
+                .map_or("Added".to_string(), |f| format!("{} added", untrusted::line(f)));
             let queued = if closed { " while taskman was closed" } else { "" };
             format!("{who} {}{queued}", added.join(", "))
         });

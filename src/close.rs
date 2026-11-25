@@ -50,7 +50,9 @@ fn close(args: &[String]) -> Result<bool, String> {
     let me = session
         .as_deref()
         .and_then(|s| store::session_ticket(&saved.tickets, s, session_repo.as_deref()));
-    let plan = plan(&a, &saved, me, Here::current().as_ref())?;
+    // Its refusal says the way round it, as status's and resume's do.
+    let own = cli::session_project(&saved, session_repo.as_deref())?;
+    let plan = plan(&a, &saved, me, Here::current().as_ref(), own)?;
     let codex = std::env::var(status::CODEX_NO_NETWORK).is_ok_and(|v| v == "1");
     let mut all_ok = true;
     let mut show = |line: Line| {
@@ -144,12 +146,21 @@ impl Plan {
 }
 
 /// Finds each ticket's project as `taskman status` does (`status::locate`), so a key open in two
-/// projects is never closed in the wrong one; keys that aren't open are answered here.
-fn plan(a: &Args, saved: &Saved, me: Option<&Ticket>, here: Option<&Here>) -> Result<Plan, String> {
-    let named = a.project.as_deref().map(|n| cli::project_named(&saved.projects, n)).transpose()?;
+/// projects is never closed in the wrong one; keys that aren't open are answered here. A session
+/// taskman started (`own`, its project) closes only its own project's tickets, as every command
+/// there keeps to its project (`cli::confine`): `env -u TASKMAN_REPO` in front goes wider, as its
+/// permission settings decide.
+fn plan(
+    a: &Args,
+    saved: &Saved,
+    me: Option<&Ticket>,
+    here: Option<&Here>,
+    own: Option<usize>,
+) -> Result<Plan, String> {
+    let named = a.project.as_deref().map(|n| cli::own_named(saved, n, own)).transpose()?;
     let mut plan = Plan::default();
     if let Some(name) = &a.agent {
-        let p = cli::pick_project(a.project.as_deref(), &[], me, saved, here)?;
+        let p = cli::pick_project(named, &[], me, saved, here, own)?;
         let project = &saved.projects[p];
         let name = store::slug(name);
         if store::find_agent(&saved.tickets, &project.repo, &name).is_some() {
@@ -164,7 +175,7 @@ fn plan(a: &Args, saved: &Saved, me: Option<&Ticket>, here: Option<&Here>) -> Re
     }
     if a.inputs.is_empty() {
         // --merged alone: taskman picks the merged tickets from those it has open.
-        let projects: Vec<usize> = match named.or_else(|| cli::context(me, saved, here)) {
+        let projects: Vec<usize> = match named.or(own).or_else(|| cli::context(me, saved, here)) {
             Some(p) => vec![p],
             None => (0..saved.projects.len()).collect(),
         };
@@ -186,14 +197,15 @@ fn plan(a: &Args, saved: &Saved, me: Option<&Ticket>, here: Option<&Here>) -> Re
         return Ok(plan);
     }
     for input in &a.inputs {
-        let located = cli::locate_ticket(input, a.project.as_deref(), named, me, saved, here);
+        let located = cli::locate_ticket(input, named, me, saved, here, own);
         match located {
             Err(e) => plan.lines.push(Line::err(e)),
             Ok((key, (None, project))) => {
-                plan.lines.push(Line::ok(format!(
-                    "{key} isn't open in {}",
-                    untrusted::line(&project.name)
-                )));
+                let line = format!("{key} isn't open in {}", untrusted::line(&project.name));
+                // In a session, always the way round: a plain shell may have found it open in
+                // another project, and saying so only when one has it would tell the session.
+                let line = if own.is_some() { cli::with_way_round(line) } else { line };
+                plan.lines.push(Line::ok(line));
             }
             Ok((_, (Some(t), project))) => {
                 let p =
@@ -509,7 +521,8 @@ mod tests {
     #[test]
     fn plans_each_ticket_in_its_own_project() {
         let s = saved();
-        let plan_of = |line: &str, here: Option<&Here>| plan(&args(line).unwrap(), &s, None, here);
+        let plan_of =
+            |line: &str, here: Option<&Here>| plan(&args(line).unwrap(), &s, None, here, None);
         // Keys go to the project that has them open, one request per project.
         assert_eq!(
             plan_of("ENG-52 API-7 eng-53 ENG-52", None).unwrap().requests,
@@ -537,7 +550,7 @@ mod tests {
         );
         // A phrase, as one argument, names no ticket, even with an open one's key in it.
         let phrase = Args { inputs: vec!["Fix ENG-52 now".into()], ..Default::default() };
-        let p = plan(&phrase, &s, None, Some(&here("/src/acme-web"))).unwrap();
+        let p = plan(&phrase, &s, None, Some(&here("/src/acme-web")), None).unwrap();
         assert!(p.requests.is_empty());
         assert_eq!(
             p.lines,
@@ -549,9 +562,10 @@ mod tests {
         let mut two = saved();
         two.projects.push(project("acme-legacy", "/src/legacy", "ENG"));
         two.tickets.push(ticket("ENG-52", "/src/legacy", None));
-        let p = plan(&args("ENG-52").unwrap(), &two, None, None).unwrap();
+        let p = plan(&args("ENG-52").unwrap(), &two, None, None, None).unwrap();
         assert!(p.lines[0].text.contains("pass --project"), "{:?}", p.lines);
-        let p = plan(&args("ENG-52 --project acme-legacy").unwrap(), &two, None, None).unwrap();
+        let p =
+            plan(&args("ENG-52 --project acme-legacy").unwrap(), &two, None, None, None).unwrap();
         assert_eq!(p.requests, vec![(2, vec![ticket_item("ENG-52")])]);
     }
 
@@ -561,7 +575,8 @@ mod tests {
         let mut s = saved();
         let t = s.projects[0].tracker.as_mut().unwrap();
         (t.provider, t.site, t.key) = (Provider::Github, "acme/ENG-52".into(), "ENG".into());
-        let of = |line: &str| plan(&args(line).unwrap(), &s, None, Some(&here("/src/acme-web")));
+        let of =
+            |line: &str| plan(&args(line).unwrap(), &s, None, Some(&here("/src/acme-web")), None);
         let link = "https://github.com/acme/ENG-52/issues/53";
         assert_eq!(of(link).unwrap().requests, vec![(0, vec![ticket_item("ENG-53")])]);
         assert_eq!(of("#53").unwrap().requests, vec![(0, vec![ticket_item("ENG-53")])]);
@@ -572,34 +587,34 @@ mod tests {
         let s = saved();
         // --merged alone: the folder's project, else every project with tickets open.
         assert_eq!(
-            plan(&args("--merged").unwrap(), &s, None, Some(&here("/src/acme-api")))
+            plan(&args("--merged").unwrap(), &s, None, Some(&here("/src/acme-api")), None)
                 .unwrap()
                 .requests,
             vec![(1, vec![])]
         );
         assert_eq!(
-            plan(&args("--merged").unwrap(), &s, None, None).unwrap().requests,
+            plan(&args("--merged").unwrap(), &s, None, None, None).unwrap().requests,
             vec![(0, vec![]), (1, vec![])]
         );
         let mut empty = saved();
         empty.tickets.retain(|t| t.agent.is_some());
-        let p = plan(&args("--merged").unwrap(), &empty, None, None).unwrap();
+        let p = plan(&args("--merged").unwrap(), &empty, None, None, None).unwrap();
         assert_eq!(p.lines, vec![Line::ok("no tickets are open in taskman")]);
         // An agent, by name in the session's project.
         let me = store::session_ticket(&s.tickets, "API-7", None);
         assert_eq!(
-            plan(&args("--agent Planner").unwrap(), &s, me, None).unwrap().requests,
+            plan(&args("--agent Planner").unwrap(), &s, me, None, None).unwrap().requests,
             vec![(1, vec![Item::Agent { name: "planner".into(), role: None, fork: None }])]
         );
         assert_eq!(
-            plan(&args("--agent tester").unwrap(), &s, me, None).unwrap().lines,
+            plan(&args("--agent tester").unwrap(), &s, me, None, None).unwrap().lines,
             vec![Line::ok("✦ tester isn't open in acme-api")]
         );
         // By name, not by a key made from the project's name, which may have changed since.
         let mut renamed = saved();
         renamed.projects[1].name = "api".into();
         assert_eq!(
-            plan(&args("--agent planner").unwrap(), &renamed, me, None).unwrap().requests,
+            plan(&args("--agent planner").unwrap(), &renamed, me, None, None).unwrap().requests,
             vec![(1, vec![Item::Agent { name: "planner".into(), role: None, fork: None }])]
         );
     }
@@ -615,7 +630,7 @@ mod tests {
         let (s, mut empty) = (named(), named());
         empty.tickets.retain(|t| t.repo != Path::new("/src/acme-web"));
         let web = Some(here("/src/acme-web"));
-        let lines = |line: &str, s: &Saved| plan(&args(line).unwrap(), s, None, web.as_ref());
+        let lines = |line: &str, s: &Saved| plan(&args(line).unwrap(), s, None, web.as_ref(), None);
         let replies = [
             lines("--agent tester", &s).unwrap().lines,
             lines("ENG-60", &s).unwrap().lines,

@@ -123,8 +123,9 @@ impl App {
         // An agent can only message sessions that are running: once a project's agent that
         // messages runs, start its ticket sessions that can be messaged too, one per tick. A
         // ticket that's away won't start, and finding it every tick would hold up the rest. One
-        // asleep stays asleep: waking it would undo the memory it was put to sleep to save, and
-        // the agent is told it can't be messaged (`taskman status` says "asleep").
+        // asleep stays asleep: waking them all would undo the memory they were put to sleep to
+        // save. The agent sees it asleep (`taskman status`) and wakes the one it needs (`taskman
+        // wake`).
         if area.width > 0
             && let Some(i) = (0..self.tickets.len()).find(|&i| {
                 let tv = &self.tickets[i];
@@ -151,18 +152,22 @@ impl App {
             && let Some(i) = self.tickets.iter().position(|tv| tv.start && !tv.reaping())
         {
             self.tickets[i].start = false;
-            if self.tickets[i].session.is_none()
-                && self.tickets[i].status.state == AgentState::NotStarted
-            {
+            // Not started yet, or asleep (`taskman wake`). Otherwise it started some other way
+            // meanwhile, and a wake's grace goes with the start it asked for.
+            if self.tickets[i].dormant() {
                 self.start_session(i);
+            } else {
+                self.tickets[i].woken = false;
             }
         }
     }
 
     fn start_session(&mut self, i: usize) {
         // Never in the main checkout in place of a worktree the user asked for, and never while
-        // it's away: running elsewhere, or handed off until the user brings it back.
+        // it's away: running elsewhere, or handed off until the user brings it back. Refused, a
+        // wake's grace goes with the start (`woken`).
         if self.tickets[i].waiting() || self.tickets[i].away.is_some() {
+            self.tickets[i].woken = false;
             return;
         }
         // Nor while its last CLI is still being reaped (a restart, say): the lock is taskman's,
@@ -171,6 +176,9 @@ impl App {
         if self.tickets[i].reaping() {
             return;
         }
+        // A wake's grace is for this start only, whether or not it then succeeds; one put off
+        // above, by the reaping, keeps it for the try that follows.
+        let woken = std::mem::take(&mut self.tickets[i].woken);
         // Starting wakes it, or it runs elsewhere now: either way it isn't asleep.
         self.tickets[i].rouse();
         // A restart keeps the pane's claim: taking it again would find it held, by taskman itself.
@@ -229,7 +237,7 @@ impl App {
         let area = self.areas.claude;
         let name = self.qualified(&self.tickets[i].t);
         let launch = super::launch::launch_id();
-        let cmd = self.build_command(&self.tickets[i].t, &name, &launch);
+        let (cmd, watch) = self.starting(i, &name, &launch, Instant::now(), woken);
         // What the status file says is an earlier start's: at taskman's next start it would pass
         // for the session's latest conversation (`take_leftover_status`).
         let status = store::status_file(&self.tickets[i].t.repo, &self.tickets[i].t.key);
@@ -248,7 +256,7 @@ impl App {
                 tv.hold = Some(hold);
                 tv.name = Some(name);
                 tv.launch = Some(launch);
-                tv.watch = super::sleep::Watch::new(Instant::now());
+                tv.watch = watch;
                 tv.status.started();
             }
             // The pane says why; the toast only points there from another ticket.

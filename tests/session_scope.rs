@@ -131,8 +131,9 @@ fn a_session_reaches_only_its_own_project() {
         assert!(!ok, "{what}: {out}\n{err}");
         assert!(!out.contains("private plans"), "{what}: {out}");
         assert!(
-            err.contains("that's project private, and this session works in acme")
-                && err.contains("`env -u TASKMAN_REPO`"),
+            err.contains("this session works in acme: a session keeps to its own project")
+                && err.contains("`env -u TASKMAN_REPO`")
+                && !err.contains("private"),
             "{what}: {err}"
         );
     };
@@ -143,8 +144,15 @@ fn a_session_reaches_only_its_own_project() {
         assert!(out.contains("ENG-1 test"), "{session}: {out}\n{err}");
         let (_, out, err) = run(&dir, &acme, Some(session), &["status"]);
         assert!(out.contains("ENG-1"), "{session}: {out}\n{err}");
-        // Another project's, by its prefix or by name, is refused.
-        refused(run(&dir, &acme, Some(session), &["status", "SEC-7"]), "status SEC-7");
+        // A key with another prefix than the session's tracker's is refused, nothing read.
+        let (ok, out, err) = run(&dir, &acme, Some(session), &["status", "SEC-7"]);
+        assert!(!ok && out.is_empty(), "{session}: {out}\n{err}");
+        assert!(
+            err.starts_with("taskman status: SEC-7 doesn't belong to acme's tracker (ENG). ")
+                && err.contains("`env -u TASKMAN_REPO`"),
+            "{err}"
+        );
+        // By name, it's refused.
         refused(
             run(&dir, &acme, Some(session), &["status", "--project=private"]),
             "status --project",
@@ -174,4 +182,300 @@ fn a_session_reaches_only_its_own_project() {
     // Outside the session's environment (a plain shell, or `env -u TASKMAN_REPO`), any project.
     let (_, out, err) = run(&dir, &acme, None, &["status", "SEC-7"]);
     assert!(out.contains("private plans"), "{out}\n{err}");
+}
+
+/// What a session is told about anything outside its project is the same, output and exit status,
+/// whether another project has the name or the ticket prefix asked for, two have, or none has: so
+/// nothing it runs without a prompt says which projects taskman has, or whether there are others.
+#[test]
+fn a_sessions_answers_dont_depend_on_the_other_projects() {
+    let dir = common::scratch_dir("session-sweep");
+    let (acme, private) = two_projects(&dir);
+    // SEC-7 open in private, and two more projects that share a slug and a prefix.
+    let state = dir.join("state/taskman/tickets.json");
+    let mut saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
+    saved["tickets"].as_array_mut().unwrap().push(serde_json::json!(
+        {"key": "SEC-7", "repo": private, "cwd": private}
+    ));
+    for name in ["Side Project", "side-project"] {
+        let repo = dir.join(name);
+        std::fs::create_dir_all(repo.join("workplan/todo")).unwrap();
+        std::fs::write(repo.join("workplan/todo/DUP-3-shared.md"), "# DUP-3 shared\n").unwrap();
+        saved["projects"].as_array_mut().unwrap().push(serde_json::json!({
+            "name": name, "repo": repo,
+            "tracker": {"provider": "local", "site": "workplan", "key": "DUP"},
+        }));
+    }
+    // And one with acme's own prefix, with ENG-5 open: a plain shell may find a key there.
+    let mirror = dir.join("mirror");
+    std::fs::create_dir_all(mirror.join("workplan/todo")).unwrap();
+    std::fs::write(mirror.join("workplan/todo/ENG-5-mirrored.md"), "# ENG-5 mirrored\n").unwrap();
+    saved["projects"].as_array_mut().unwrap().push(serde_json::json!({
+        "name": "mirror", "repo": mirror,
+        "tracker": {"provider": "local", "site": "workplan", "key": "ENG"},
+    }));
+    saved["tickets"].as_array_mut().unwrap().push(serde_json::json!(
+        {"key": "ENG-5", "repo": mirror, "cwd": mirror}
+    ));
+    std::fs::write(&state, saved.to_string()).unwrap();
+
+    // The exit status, and what was printed, with `asked` (the name or key) written as `ASKED`.
+    let answer = |session: Option<&str>, args: &[&str], asked: &str| {
+        let mut cmd = common::taskman(&dir);
+        if let Some(s) = session {
+            cmd.env("TASKMAN_TICKET", s).env("TASKMAN_REPO", &acme);
+        }
+        let out = cmd.args(args).current_dir(&acme).stdin(Stdio::null()).output().unwrap();
+        let text = |b: &[u8]| String::from_utf8_lossy(b).replace(asked, "ASKED");
+        (out.status.code(), text(&out.stdout), text(&out.stderr))
+    };
+    // Nothing of the other projects: their names, their prefixes, their tickets.
+    let others = ["private", "Side Project", "side-project", "SEC", "DUP", "shared", "mirror"];
+    let silent = |what: &str, (_, out, err): &(Option<i32>, String, String)| {
+        let said: Vec<_> = others.iter().filter(|o| out.contains(*o) || err.contains(*o)).collect();
+        assert!(said.is_empty(), "{what} says {said:?}:\n{out}\n{err}");
+    };
+    // Another project's name, one two projects' slug matches, and nobody's.
+    let names = ["private", "Side_Project", "nobody"];
+    let named: [&[&str]; 9] = [
+        &["status", "--project", "NAME"],
+        &["status", "--project", "NAME", "--json"],
+        &["status", "ENG-1", "--project", "NAME"],
+        &["status", "ENG-1", "--json", "--project=NAME"],
+        &["add", "ENG-9", "--project", "NAME"],
+        &["move", "ENG-1", "doing", "--project", "NAME"],
+        &["title", "ENG-1", "Fix login", "--project", "NAME"],
+        &["close", "ENG-1", "--project", "NAME"],
+        &["resume", "ENG-1", "--project", "NAME"],
+    ];
+    // Another project's key (open there), one with a prefix two projects use, and nobody's.
+    let keys = ["SEC-7", "DUP-3", "ZZZ-7"];
+    let keyed: [&[&str]; 9] = [
+        &["status", "KEY"],
+        &["status", "KEY", "--json"],
+        &["add", "KEY"],
+        &["add", "ENG-9", "--on", "KEY"],
+        &["add", "--agent", "tester", "--fork", "KEY"],
+        &["move", "KEY", "doing"],
+        &["title", "KEY", "Fix login"],
+        &["close", "KEY"],
+        &["resume", "KEY"],
+    ];
+    let put = |args: &[&str], hole: &str, with: &str| -> Vec<String> {
+        args.iter().map(|a| a.replace(hole, with)).collect()
+    };
+    for session in ["ENG-1", "acme-lead"] {
+        for (templates, hole, asked) in [(&named, "NAME", &names), (&keyed, "KEY", &keys)] {
+            for template in templates {
+                let answers: Vec<_> = asked
+                    .iter()
+                    .map(|a| {
+                        let args = put(template, hole, a);
+                        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                        answer(Some(session), &args, a)
+                    })
+                    .collect();
+                let what = format!("{session}: taskman {}", template.join(" "));
+                assert_ne!(answers[0].0, Some(0), "{what}: {answers:#?}");
+                assert_eq!(answers[0], answers[1], "{what}");
+                assert_eq!(answers[0], answers[2], "{what}");
+                silent(&what, &answers[0]);
+                // `title` has a refusal of its own, which offers no way round; every other says
+                // how to go wider, as a plain shell would have answered otherwise.
+                if hole == "NAME" && template[0] != "title" {
+                    let refusal = "this session works in acme: a session keeps to its own project";
+                    assert!(answers[0].1.is_empty() && answers[0].2.contains(refusal), "{what}");
+                }
+                // `--fork` names a session in the folder's project from a plain shell too.
+                let wider = answers[0].2.contains("`env -u TASKMAN_REPO`");
+                let differs = template[0] != "title" && !template.contains(&"--fork");
+                assert_eq!(wider, differs, "{what}: {answers:#?}");
+            }
+        }
+        // What it's shown of its own project names no other either, as text or JSON.
+        for args in [&["status"][..], &["status", "--json"], &["status", "ENG-1"], &["status", "7"]]
+        {
+            silent(
+                &format!("{session}: taskman {}", args.join(" ")),
+                &answer(Some(session), args, "ASKED"),
+            );
+        }
+    }
+    // A key with the session's own prefix that another project has open, and one open nowhere:
+    // `close` answers both alike, with the way round, as a plain shell may have found the first.
+    for session in ["ENG-1", "acme-lead"] {
+        let open = answer(Some(session), &["close", "ENG-5"], "ENG-5");
+        assert_eq!(open, answer(Some(session), &["close", "ENG-6"], "ENG-6"), "{session}");
+        assert!(open.1.contains("ASKED isn't open in acme"), "{session}: {open:#?}");
+        assert!(open.1.contains("`env -u TASKMAN_REPO`"), "{session}: {open:#?}");
+        silent(&format!("{session}: taskman close ENG-5"), &open);
+    }
+    assert!(mirror.join("workplan/todo/ENG-5-mirrored.md").exists());
+    // Nothing was moved or asked of the running taskman.
+    assert!(private.join("workplan/todo/SEC-7-secret.md").exists());
+    assert!(acme.join("workplan/todo/ENG-1-test.md").exists());
+
+    // From the user's own shell, the lists and hints as before.
+    let (code, _, err) = answer(None, &["status", "--project", "nobody"], "ASKED");
+    assert_eq!(code, Some(1));
+    assert!(err.contains("taskman has acme, private, Side Project, side-project, mirror"), "{err}");
+    let (_, _, err) = answer(None, &["status", "--project", "Side_Project"], "ASKED");
+    assert!(err.contains("could mean projects Side Project or side-project"), "{err}");
+    let (_, _, err) = answer(None, &["add", "SEC-7", "--project", "acme"], "ASKED");
+    assert!(err.contains("for project private, pass --project private"), "{err}");
+    let (_, out, err) = answer(None, &["status", "SEC-7"], "ASKED");
+    assert!(out.contains("private plans"), "{out}\n{err}");
+}
+
+/// In a session `--project` takes the session's own project by its exact name only: another
+/// spelling may be another project's (`ACME` beside `acme`), so every command refuses it, in the
+/// same words with or without such a project, and acts on nothing.
+#[test]
+fn a_session_takes_its_own_project_by_its_exact_name_only() {
+    let dir = common::scratch_dir("session-own-name");
+    let (acme, _) = two_projects(&dir);
+    type Answer = (Option<i32>, String, String);
+    let answer = |args: &[String]| -> Answer {
+        let mut cmd = common::taskman(&dir);
+        cmd.env("TASKMAN_TICKET", "ENG-1").env("TASKMAN_REPO", &acme);
+        let out = cmd.args(args).current_dir(&acme).stdin(Stdio::null()).output().unwrap();
+        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        (out.status.code(), text(&out.stdout), text(&out.stderr))
+    };
+    let with = |template: &[&str], name: &str| -> Vec<String> {
+        template.iter().map(|a| a.replace("NAME", name)).collect()
+    };
+    // Read-only, or with nothing to do: safe to run with the exact name too.
+    let reads: [&[&str]; 4] = [
+        &["status", "--project", "NAME"],
+        &["status", "ENG-1", "--json", "--project", "NAME"],
+        &["status", "SEC-7", "--project", "NAME"],
+        &["add", "ENG-1", "--project", "NAME"],
+    ];
+    // Ones that would act on acme's ENG-1 if taken: run only with spellings that must be refused.
+    let acts: [&[&str]; 4] = [
+        &["move", "ENG-1", "doing", "--project", "NAME"],
+        &["title", "ENG-1", "Fix login", "--project", "NAME"],
+        &["close", "ENG-1", "--project", "NAME"],
+        &["resume", "ENG-1", "--project", "NAME"],
+    ];
+    let variants = ["ACME", "Acme", "acme!", " acme ", "acme "];
+    let run_all = || {
+        let exact: Vec<Answer> = reads.iter().map(|t| answer(&with(t, "acme"))).collect();
+        let refused: Vec<Vec<Answer>> = reads
+            .iter()
+            .chain(&acts)
+            .map(|t| variants.iter().map(|v| answer(&with(t, v))).collect())
+            .collect();
+        (exact, refused)
+    };
+    let (exact, refused) = run_all();
+    // The exact name is its own project: its overview, its ticket.
+    assert_eq!(exact[0].0, Some(0), "{exact:#?}");
+    assert!(exact[0].1.contains("ENG-1") && exact[1].1.contains("\"key\": \"ENG-1\""));
+    // Every other spelling is refused, the same for each, nothing printed but the refusal: the
+    // session's own one with the way round, or `title`'s, which offers none.
+    for (template, answers) in reads.iter().chain(&acts).zip(&refused) {
+        let what = template.join(" ");
+        assert_eq!(answers[0].0, Some(1), "{what}: {answers:#?}");
+        assert!(answers[0].1.is_empty(), "{what}: {answers:#?}");
+        assert!(answers.iter().all(|a| a == &answers[0]), "{what}: {answers:#?}");
+        let err = &answers[0].2;
+        let command = template[0];
+        if command == "title" {
+            assert_eq!(
+                err,
+                "taskman title: that's not this session's project, and a session sets only its \
+                 own ticket's title\n"
+            );
+        } else {
+            let refusal = format!(
+                "taskman {command}: this session works in acme: a session keeps to its own \
+                 project. If the user asked for it, run the same command with `env -u \
+                 TASKMAN_REPO` in front"
+            );
+            assert!(err.starts_with(&refusal) && err.ends_with(".\n"), "{what}: {err}");
+            assert_eq!(err.lines().count(), 1, "{what}: {err}");
+        }
+    }
+    assert!(acme.join("workplan/todo/ENG-1-test.md").exists(), "a refused move moved it");
+    // Projects named like some of those spellings change nothing in its session.
+    let state = dir.join("state/taskman/tickets.json");
+    let mut saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
+    for name in variants {
+        let repo = dir.join(format!("look-alike {name}"));
+        std::fs::create_dir_all(repo.join("workplan/todo")).unwrap();
+        saved["projects"].as_array_mut().unwrap().push(serde_json::json!({
+            "name": name, "repo": repo,
+            "tracker": {"provider": "local", "site": "workplan", "key": "ENG"},
+        }));
+    }
+    std::fs::write(&state, saved.to_string()).unwrap();
+    assert_eq!(run_all(), (exact, refused));
+    assert!(acme.join("workplan/todo/ENG-1-test.md").exists(), "a refused move moved it");
+    // From the user's own shell they're told apart, as before.
+    let mut cmd = common::taskman(&dir);
+    let out = cmd.args(["status", "--project", "aCmE"]).current_dir(&acme).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("could mean projects acme or ACME or Acme"), "{err}");
+}
+
+/// In a session of a project on GitHub Issues, another repository's issue (`acme/api#3`, or its
+/// link) is refused by the project's own tracker with the way round, in the same words whether a
+/// project has that repository or none has: a plain shell may have found the project.
+#[test]
+fn another_repositorys_issue_gets_the_way_round_alike() {
+    let dir = common::scratch_dir("session-other-repo");
+    let state = dir.join("state/taskman");
+    std::fs::create_dir_all(&state).unwrap();
+    let (web, api) = (dir.join("web"), dir.join("api"));
+    for repo in [&web, &api] {
+        std::fs::create_dir_all(repo).unwrap();
+    }
+    let github =
+        |site: &str, key: &str| serde_json::json!({"provider": "github", "site": site, "key": key});
+    let write = |with_api: bool| {
+        let mut projects = vec![serde_json::json!(
+            {"name": "web", "repo": web, "tracker": github("acme/web", "WEB")}
+        )];
+        if with_api {
+            projects.push(serde_json::json!(
+                {"name": "api", "repo": api, "tracker": github("acme/api", "API")}
+            ));
+        }
+        let saved = serde_json::json!({
+            "projects": projects,
+            "tickets": [{"key": "WEB-1", "repo": web, "cwd": web}],
+        });
+        std::fs::write(state.join("tickets.json"), saved.to_string()).unwrap();
+    };
+    let answer = |args: &[&str]| {
+        let mut cmd = common::taskman(&dir);
+        cmd.env("TASKMAN_TICKET", "WEB-1").env("TASKMAN_REPO", &web);
+        let out = cmd.args(args).current_dir(&web).stdin(Stdio::null()).output().unwrap();
+        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        (out.status.code(), text(&out.stdout), text(&out.stderr))
+    };
+    let asks: [&[&str]; 4] = [
+        &["close", "acme/api#3"],
+        &["close", "https://github.com/acme/api/issues/3"],
+        &["add", "acme/api#3"],
+        &["add", "https://github.com/acme/api/issues/3"],
+    ];
+    write(false);
+    let alone: Vec<_> = asks.iter().map(|a| answer(a)).collect();
+    write(true);
+    let beside: Vec<_> = asks.iter().map(|a| answer(a)).collect();
+    for ((ask, a), b) in asks.iter().zip(&alone).zip(&beside) {
+        assert_eq!(a, b, "{ask:?}");
+        let said = format!("{}{}", a.1, a.2);
+        assert!(said.contains("that's an issue of acme/api") || said.contains("is an issue of"));
+        assert!(said.contains("`env -u TASKMAN_REPO`"), "{ask:?}: {said}");
+        assert!(!said.contains("api,") && !said.contains("project api"), "{ask:?}: {said}");
+    }
+    // A pull request's link is refused alike from a plain shell, so with no way round.
+    let pull = answer(&["close", "https://github.com/acme/web/pull/4"]);
+    assert!(!format!("{}{}", pull.1, pull.2).contains("env -u"), "{pull:?}");
 }

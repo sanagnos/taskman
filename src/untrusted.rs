@@ -13,13 +13,72 @@ pub fn labelled(text: &str) -> String {
     format!("{NOTE}\n\n{}", clean(text))
 }
 
-/// The JSON form of `labelled`: the label as a `note` field, and control characters a terminal
-/// would act on gone (JSON escapes C0 but leaves C1 and DEL as they are).
+/// The JSON form of `labelled`: the label as a `note` field, every string cleaned as `clean`
+/// does (JSON escapes C0 but leaves C1, DEL and the characters that hide text as they are), and
+/// the paths `exact` marked kept as they are, since whoever reads the JSON opens the file there:
+/// what `clean` would drop from one is written as a JSON escape (`\u200b`), which reads back as
+/// the character, so the text holds nothing a terminal acts on and nothing hidden, and the path
+/// it parses to is the real one.
 pub fn labelled_json(mut v: serde_json::Value) -> String {
     if let Some(map) = v.as_object_mut() {
         map.insert("note".into(), NOTE.into());
     }
-    clean(&serde_json::to_string_pretty(&v).unwrap_or_default())
+    let text = serde_json::to_string_pretty(&cleaned(v)).unwrap_or_default();
+    // serde_json escapes C0 inside strings, so a newline here is its own, between values, and
+    // everything else `sift` finds is inside a string, where an escape is valid JSON. A cleaned
+    // string gains escapes for its direction marks, which `sift` always escapes, and for a
+    // character that draws as nothing right after an escape (a jamo filler after `\n`, say); a
+    // marked path gains them for whatever `clean` would drop. Each reads back as it was.
+    let mut parts = Vec::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        parts.push(match c {
+            // serde_json's own escapes (`\u0010`, `\n`, `\\`), only ever inside a string: as
+            // they are, and, as `sift`'s own, not a character what follows is judged beside.
+            '\\' => {
+                let mut escape = String::from(c);
+                if let Some(kind) = chars.next() {
+                    escape.push(kind);
+                    if kind == 'u' {
+                        escape.extend(chars.by_ref().take(4));
+                    }
+                }
+                Sifted::Escape(escape)
+            }
+            '\n' => Sifted::Kept(c),
+            c if c.is_control() => Sifted::Dropped(c),
+            c => Sifted::Asked(c),
+        });
+    }
+    sift(parts.into_iter())
+}
+
+/// The key of the one-entry object `exact` makes. No text from a tracker can pass for one: what
+/// others wrote is only ever a string in `taskman status`'s JSON.
+const EXACT: &str = "taskman:exact-path";
+
+/// Folder or file `p` for `labelled_json`, which keeps it exactly where it cleans other strings.
+/// A name that isn't UTF-8 can't be a JSON string: its odd bytes become U+FFFD, as nothing else
+/// in JSON could say them, and `path` in the text output tells such names apart.
+pub fn exact(p: &std::path::Path) -> serde_json::Value {
+    serde_json::json!({ EXACT: p.to_string_lossy() })
+}
+
+/// `v` with every string and key cleaned, and each path `exact` marked put back as a string, as
+/// it is.
+fn cleaned(v: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match v {
+        Value::String(s) => Value::String(clean(&s)),
+        Value::Array(a) => Value::Array(a.into_iter().map(cleaned).collect()),
+        Value::Object(mut m) if m.len() == 1 && m.get(EXACT).is_some_and(Value::is_string) => {
+            m.remove(EXACT).unwrap_or_default()
+        }
+        Value::Object(m) => {
+            Value::Object(m.into_iter().map(|(k, v)| (clean(&k), cleaned(v))).collect())
+        }
+        v => v,
+    }
 }
 
 /// A character that hides text from a reader without being a control character, dropped wherever
@@ -28,12 +87,24 @@ pub fn labelled_json(mut v: serde_json::Value) -> String {
 /// model may still read; the zero-width space, word joiner, invisible operators, byte order mark
 /// and the like, which draw as nothing too; and the bidirectional embeddings, overrides and
 /// isolates (U+202A to U+202E, U+2066 to U+2069), which display text in another order than the
-/// one it's read in. All are known ways to put instructions in text where a person looking at it
-/// won't see them. Direction marks (U+200E, U+200F, U+061C) stay: they only nudge the characters
-/// beside them, and right-to-left text uses them.
+/// one it's read in; and the Hangul fillers no running text needs (U+3164, U+FFA0), which are
+/// letters to Unicode and draw as blanks; and the other characters Unicode marks as drawing
+/// nothing that no text needs (Khmer's U+17B4 and U+17B5, U+2065, the shorthand format controls).
+/// All are known ways to put instructions in text where a person looking at it won't see them.
+/// Direction marks (U+200E, U+200F, U+061C) stay wherever they are, one at a time (`kept`): they
+/// only nudge the characters beside them, can't reverse text as the embeddings, overrides and
+/// isolates can, and right-to-left text uses them. The conjoining jamo fillers have a job in some
+/// text, so they stay where they have it (`kept`).
 fn hidden(c: char) -> bool {
     matches!(c,
         '\u{AD}' | '\u{34F}' | '\u{180E}' | '\u{200B}' | '\u{2060}'..='\u{2064}'
+        | '\u{3164}' | '\u{FFA0}'
+        // Khmer's inherent vowels, which Unicode advises against using; the reserved invisible
+        // operator; the shorthand format controls.
+        | '\u{17B4}' | '\u{17B5}' | '\u{2065}' | '\u{1BCA0}'..='\u{1BCA3}'
+        // Unassigned code points Unicode already says to draw as nothing: whatever is put there
+        // later, it won't be text anyone needs to see.
+        | '\u{FFF0}'..='\u{FFF8}' | '\u{E0080}'..='\u{E00FF}' | '\u{E01F0}'..='\u{E0FFF}'
         | '\u{206A}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}'
         | '\u{1D173}'..='\u{1D17A}' | '\u{E0000}'..='\u{E007F}' | '\u{E0100}'..='\u{E01EF}'
         | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
@@ -58,28 +129,134 @@ fn emoji_base(c: char) -> bool {
     if c.is_ascii() {
         return c.is_ascii_digit() || c == '#' || c == '*';
     }
-    !(c.is_alphabetic() || c.is_whitespace() || c.is_control() || selector(c) || joiner(c))
+    !(c.is_alphabetic()
+        || c.is_whitespace()
+        || c.is_control()
+        || selector(c)
+        || joiner(c)
+        || mark(c))
 }
 
 /// A character a joiner can stand beside: a visible one outside ASCII, as joiners only join emoji
-/// and the letters of scripts that aren't written in ASCII.
+/// and the letters of scripts that aren't written in ASCII. Not a direction mark or jamo filler,
+/// which draw as nothing and join nothing a person sees: a filler may go itself and leave the
+/// joiner beside nothing, and `--json` escapes every mark, which would leave it raw before one.
 fn joinable(c: char) -> bool {
-    !(c.is_ascii() || c.is_whitespace() || c.is_control() || hidden(c) || joiner(c))
+    !(c.is_ascii()
+        || c.is_whitespace()
+        || c.is_control()
+        || hidden(c)
+        || joiner(c)
+        || mark(c)
+        || matches!(c, NO_CONSONANT | NO_VOWEL))
 }
 
-/// Whether `c`, after the kept character `prev` and before `next`, stays. A selector or joiner
-/// draws as nothing, so one that has no job where it is could carry hidden text, a run of them a
-/// whole message. So a selector stays only straight after an emoji, one at a time, and a joiner
-/// only between two characters it can join.
+/// The direction marks (U+200E, U+200F, U+061C): they draw as nothing and only nudge the
+/// characters beside them, and right-to-left text uses them.
+fn mark(c: char) -> bool {
+    matches!(c, '\u{200E}' | '\u{200F}' | '\u{61C}')
+}
+
+/// A character that draws as nothing beside another and stays only where it has a job there (a
+/// selector, joiner or jamo filler; `kept`), or one `sift` always escapes (a direction mark).
+fn job_only(c: char) -> bool {
+    selector(c) || joiner(c) || mark(c) || matches!(c, NO_CONSONANT | NO_VOWEL)
+}
+
+/// The conjoining jamo fillers: U+115F stands in for a Hangul syllable's missing first consonant
+/// and U+1160 for its missing vowel. Each draws as nothing.
+const NO_CONSONANT: char = '\u{115F}';
+const NO_VOWEL: char = '\u{1160}';
+
+/// A conjoining first consonant, which a vowel filler can follow.
+fn jamo_consonant(c: char) -> bool {
+    matches!(c, '\u{1100}'..='\u{115E}' | '\u{A960}'..='\u{A97C}')
+}
+
+/// A conjoining vowel, which a consonant filler can stand before.
+fn jamo_vowel(c: char) -> bool {
+    matches!(c, '\u{1161}'..='\u{11A7}' | '\u{D7B0}'..='\u{D7C6}')
+}
+
+/// Whether `c`, after the kept character `prev` and before `next`, stays. A selector, joiner or
+/// jamo filler draws as nothing, so one that has no job where it is could carry hidden text, a
+/// run of them a whole message. So a selector stays only straight after an emoji, one at a time;
+/// a joiner only between two characters it can join; and a jamo filler only in the syllable it
+/// completes, before a vowel or after a first consonant. A direction mark stays wherever it is,
+/// but not straight after another that draws as nothing, a mark included (`job_only`): a run of
+/// them, with or without selectors and joiners between, has no job one doesn't do, and could
+/// spell out a message. Nor is a mark an emoji a selector follows, or a character a joiner joins.
 fn kept(prev: Option<char>, c: char, next: Option<char>) -> bool {
     if selector(c) {
         prev.is_some_and(emoji_base)
     } else if joiner(c) {
         prev.is_some_and(|p| joinable(p) || selector(p))
             && next.is_some_and(|n| joinable(n) && !selector(n))
+    } else if mark(c) {
+        !prev.is_some_and(job_only)
+    } else if c == NO_CONSONANT {
+        // Not after a mark or selector, which would make two that draw as nothing in a row; after
+        // a vowel filler it starts the next syllable.
+        next.is_some_and(jamo_vowel) && !prev.is_some_and(|p| mark(p) || selector(p))
+    } else if c == NO_VOWEL {
+        prev.is_some_and(jamo_consonant)
     } else {
         !hidden(c)
     }
+}
+
+/// A character on its way through `sift`.
+enum Sifted {
+    /// Stays, whatever it is.
+    Kept(char),
+    /// Goes, whatever it is.
+    Dropped(char),
+    /// Stays if `kept` says so, where it is.
+    Asked(char),
+    /// An escape already written (serde_json's), kept as it is.
+    Escape(String),
+}
+
+/// The characters that stay, in order, and each that goes written as a JSON escape (`\u200b`):
+/// `labelled_json`'s output, where a marked path must read back as it was. After an escape a
+/// character that has a job only beside another (`job_only`) is escaped too, not judged as one
+/// after the escape's last digit (`1️⃣` takes a selector) or by what follows alone (a jamo filler
+/// before a vowel), and a direction mark is always escaped, as it draws as nothing and an escaped
+/// one still reads back as itself.
+fn sift(s: impl Iterator<Item = Sifted>) -> String {
+    let mut chars = s.peekable();
+    let mut out = String::new();
+    // The last character written as itself, None after an escape.
+    let mut prev = None;
+    while let Some(c) = chars.next() {
+        let next = chars.peek().map(|n| match n {
+            Sifted::Kept(n) | Sifted::Dropped(n) | Sifted::Asked(n) => *n,
+            Sifted::Escape(_) => '\\',
+        });
+        match c {
+            Sifted::Kept(c) => {
+                out.push(c);
+                prev = Some(c);
+            }
+            Sifted::Escape(escape) => {
+                out.push_str(&escape);
+                prev = None;
+            }
+            Sifted::Asked(c)
+                if !mark(c) && (prev.is_some() || !job_only(c)) && kept(prev, c, next) =>
+            {
+                out.push(c);
+                prev = Some(c);
+            }
+            Sifted::Dropped(c) | Sifted::Asked(c) => {
+                for unit in c.encode_utf16(&mut [0; 2]) {
+                    out.push_str(&format!("\\u{unit:04x}"));
+                }
+                prev = None;
+            }
+        }
+    }
+    out
 }
 
 /// `s` without what `kept` drops.
@@ -103,14 +280,17 @@ pub fn clean(s: &str) -> String {
 }
 
 /// Whether `c` is one a reader can't see or one that breaks or acts on a line: a control
-/// character, one that hides text (`hidden`), a selector or joiner, a direction mark, or the line
-/// and paragraph separators.
+/// character, one that hides text (`hidden`), a selector, joiner, direction mark or jamo filler,
+/// or the line and paragraph separators. Stricter than `kept`, which leaves a selector, joiner,
+/// mark or filler where text needs it: a name is told apart from another by every character in
+/// it, so in a path each of these shows, wherever it stands.
 fn unseen(c: char) -> bool {
     c.is_control()
         || hidden(c)
         || selector(c)
         || joiner(c)
-        || matches!(c, '\u{200E}' | '\u{200F}' | '\u{61C}' | '\u{2028}' | '\u{2029}')
+        || mark(c)
+        || matches!(c, NO_CONSONANT | NO_VOWEL | '\u{2028}' | '\u{2029}')
 }
 
 /// Whether `path` would write any of text `s`, a folder's name say, as an escape: a character
@@ -123,9 +303,33 @@ pub fn hides(s: &str) -> bool {
 /// character stays as it is, spaces of any kind and how many included, so the path names the real
 /// folder; only those `unseen` finds are written as escapes (`\n`, `\u{200b}`), so a line break
 /// can't start a line of its own and nothing hides. A backslash is written `\\`, so a folder named
-/// `a\nb` isn't taken for one with a line break.
+/// `a\nb` isn't taken for one with a line break. A byte that isn't UTF-8 (a name in another
+/// encoding) is written `\xff`, so two such names never print alike, as they would as U+FFFD.
+/// A `~` that starts a path not under the home folder (a relative one, such as a board's file
+/// shown from the board's folder, or a folder named `~`) is written `\x7e`, so only the home
+/// folder prints as `~`.
 pub fn path(p: &std::path::Path) -> String {
-    escaped(&crate::store::tilde(p))
+    match p.strip_prefix(crate::store::home()) {
+        Ok(rest) => format!("~/{}", escaped_bytes(rest.as_os_str().as_encoded_bytes())),
+        Err(_) => match escaped_bytes(p.as_os_str().as_encoded_bytes()) {
+            s if s.starts_with('~') => format!("\\x7e{}", &s[1..]),
+            s => s,
+        },
+    }
+}
+
+/// `escaped`, for a name's bytes: its text escaped, and each byte that isn't UTF-8 written `\xff`.
+/// Still one result per name: `\x` is always two hex digits naming one byte (`path` also writes a
+/// leading `~` so, as `\x7e`), and a backslash in a name is doubled, so none reads as one.
+fn escaped_bytes(name: &[u8]) -> String {
+    let mut out = String::new();
+    for chunk in name.utf8_chunks() {
+        out.push_str(&escaped(chunk.valid()));
+        for byte in chunk.invalid() {
+            out.push_str(&format!("\\x{byte:02x}"));
+        }
+    }
+    out
 }
 
 /// `s` with what `path` escapes written as escapes. No two texts give the same result, so a
@@ -206,6 +410,96 @@ mod tests {
         assert_eq!(clean("\u{200F}عربي\u{200E}"), "\u{200F}عربي\u{200E}");
     }
 
+    /// Direction marks stay as the text has them: they only nudge the characters beside them,
+    /// and right-to-left text uses them, after the neutrals ending a run and beside digits too.
+    #[test]
+    fn keeps_direction_marks_as_text_has_them() {
+        for s in [
+            "\u{200F}عربي\u{200E}",
+            "שלום\u{200F}!",
+            "\u{200E}עברית (Hebrew)",
+            "אני אוהב C++\u{200F} מאוד",
+            "مرحبا بالويب!\u{200F}",
+            "السعر \u{61C}١٢٣\u{61C}+",
+            "Windows\u{200E} בגרסה 11",
+            "Fix\u{200E} login",
+        ] {
+            assert_eq!(clean(s), s);
+            assert_eq!(line(s), s);
+        }
+        // One at a time: a run keeps its first, wherever it is, so no gap holds more than one.
+        let run: String =
+            (0..64).map(|i| if i % 3 == 0 { '\u{200E}' } else { '\u{200F}' }).collect();
+        assert_eq!(clean(&format!("Fix{run} login")), "Fix\u{200E} login");
+        assert_eq!(line(&format!("עברית{run}!")), "עברית\u{200E}!");
+        assert_eq!(clean("a\u{200E}\u{200B}\u{200F}b"), "a\u{200E}b");
+        // A joiner beside a mark joins nothing a person sees, so it goes, and the mark stays: in
+        // JSON, which escapes every mark, a joiner kept before one would come out raw.
+        assert_eq!(clean("é\u{200D}\u{200E}\u{200F}x"), "é\u{200E}x");
+        let json = labelled_json(serde_json::json!({ "title": "é\u{200D}\u{200E}x" }));
+        assert!(!json.contains('\u{200D}'), "{json:?}");
+        // Nor do marks run with selectors or joiners between them: each pair would add hidden
+        // bits. Only the first mark of such a run stays.
+        let pairs = |p: &str, n| p.repeat(n);
+        assert_eq!(
+            clean(&format!("Fix{} login", pairs("\u{200E}\u{FE0F}", 8))),
+            "Fix\u{200E} login"
+        );
+        assert_eq!(
+            clean(&format!("Fix{}\u{200E} login", pairs("\u{200E}\u{200D}", 8))),
+            "Fix\u{200E} login"
+        );
+        assert_eq!(clean(&format!("{}x", pairs("\u{200F}\u{FE0F}\u{200D}", 8))), "\u{200F}x");
+        assert_eq!(
+            line(&format!("⚠\u{FE0F}\u{200E}{}", pairs("\u{FE0F}\u{200E}", 4))),
+            "⚠\u{FE0F}"
+        );
+        // In a path each is escaped, as it draws as nothing; in JSON it's an escape too.
+        assert_eq!(path(std::path::Path::new("/src/a\u{200f}b")), "/src/a\\u{200f}b");
+        let json = labelled_json(serde_json::json!({ "title": "עברית\u{200F}!" }));
+        assert!(json.contains("עברית\\u200f!") && !json.contains('\u{200F}'), "{json}");
+    }
+
+    #[test]
+    fn keeps_hangul_fillers_only_in_their_syllables() {
+        // A vowel with no first consonant, and a consonant with no vowel.
+        for s in ["\u{115F}\u{1161}", "\u{1100}\u{1160}\u{11A8}", "한글 \u{1112}\u{1161}\u{11AB}"]
+        {
+            assert_eq!(clean(s), s);
+            assert_eq!(line(s), s);
+        }
+        assert_eq!(clean("Fix\u{3164}\u{FFA0}\u{115F}\u{1160} login"), "Fix login");
+        assert_eq!(clean("a\u{115F}b\u{1160}c"), "abc");
+        // Nor after a mark or selector, where it would make two that draw as nothing in a row;
+        // after a vowel filler it starts the next syllable, as old Korean text writes them.
+        for (s, kept) in [
+            ("\u{200E}\u{115F}\u{1161}", "\u{200E}\u{1161}"),
+            ("\u{200F}\u{115F}\u{1161}", "\u{200F}\u{1161}"),
+            ("\u{61C}\u{115F}\u{1161}", "\u{61C}\u{1161}"),
+            ("⚠\u{FE0F}\u{115F}\u{1161}", "⚠\u{FE0F}\u{1161}"),
+            ("⚠\u{FE0E}\u{115F}\u{1161}", "⚠\u{FE0E}\u{1161}"),
+            ("\u{1100}\u{1160}\u{115F}\u{1161}", "\u{1100}\u{1160}\u{115F}\u{1161}"),
+        ] {
+            assert_eq!(clean(s), kept, "{s:?}");
+            assert_eq!(line(s), kept, "{s:?}");
+        }
+        let p = "1\u{FE0E}\u{115F}\u{1161}";
+        let json = labelled_json(serde_json::json!({ "p": exact(std::path::Path::new(p)) }));
+        assert!(json.contains("1\u{FE0E}\\u115f\u{1161}"), "{json:?}");
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&json).unwrap()["p"], p);
+        // A syllable of two fillers is a blank: neither completes anything.
+        assert_eq!(clean("한\u{115F}\u{1160}글"), "한글");
+        let run: String =
+            (0..32).map(|i| if i % 2 == 0 { '\u{115F}' } else { '\u{1160}' }).collect();
+        assert_eq!(clean(&format!("Fix{run} login")), "Fix login");
+        // In a path each shows, wherever it stands.
+        assert_eq!(
+            path(std::path::Path::new("/src/a\u{3164}b\u{1100}\u{1160}")),
+            "/src/a\\u{3164}b\u{1100}\\u{1160}"
+        );
+        assert!(hides("a\u{FFA0}b") && hides("a\u{115F}b"));
+    }
+
     /// `text` followed by the bytes of `hidden` as variation selectors, one each: invisible after
     /// the text, and read back by anything that knows the code.
     fn smuggled(text: &str, hidden: &str) -> String {
@@ -239,6 +533,11 @@ mod tests {
         let invisible = "\u{AD}\u{34F}\u{180E}\u{2060}\u{2061}\u{2062}\u{2063}\u{2064}\u{206A}\u{FEFF}\u{FFF9}\u{1D173}";
         assert_eq!(clean(&format!("a{invisible}b")), "ab");
         assert_eq!(clean("Fix \u{180B}\u{FE00}\u{FE0D}login"), "Fix login");
+        let more = concat!(
+            "\u{17B4}\u{17B5}\u{2065}\u{1BCA0}\u{1BCA3}",
+            "\u{FFF0}\u{FFF8}\u{E0080}\u{E00FF}\u{E01F0}\u{E0FFF}"
+        );
+        assert_eq!(clean(&format!("Fix{more} login")), "Fix login");
     }
 
     /// Emoji built with selectors and joiners, keycaps, and the scripts that need joiners: as they
@@ -261,28 +560,122 @@ mod tests {
         }
     }
 
-    /// `escaped` read back: what a reader of a path does.
-    fn unescaped(s: &str) -> String {
-        let mut out = String::new();
+    /// `escaped_bytes` read back: what a reader of a path does.
+    fn unescaped_bytes(s: &str) -> Vec<u8> {
+        let mut out = Vec::new();
         let mut chars = s.chars();
+        let push = |out: &mut Vec<u8>, c: char| out.extend(c.encode_utf8(&mut [0; 4]).bytes());
         while let Some(c) = chars.next() {
             if c != '\\' {
-                out.push(c);
+                push(&mut out, c);
                 continue;
             }
             match chars.next() {
-                Some('\\') => out.push('\\'),
-                Some('n') => out.push('\n'),
-                Some('r') => out.push('\r'),
-                Some('t') => out.push('\t'),
+                Some('\\') => push(&mut out, '\\'),
+                Some('n') => push(&mut out, '\n'),
+                Some('r') => push(&mut out, '\r'),
+                Some('t') => push(&mut out, '\t'),
                 Some('u') => {
                     let code: String = chars.by_ref().skip(1).take_while(|&c| c != '}').collect();
-                    out.push(char::from_u32(u32::from_str_radix(&code, 16).unwrap()).unwrap());
+                    push(
+                        &mut out,
+                        char::from_u32(u32::from_str_radix(&code, 16).unwrap()).unwrap(),
+                    );
+                }
+                Some('x') => {
+                    let code: String = chars.by_ref().take(2).collect();
+                    assert_eq!(code.len(), 2, "{s:?}");
+                    out.push(u8::from_str_radix(&code, 16).unwrap());
                 }
                 other => panic!("no escape starts \\{other:?} in {s:?}"),
             }
         }
         out
+    }
+
+    /// `escaped` read back.
+    fn unescaped(s: &str) -> String {
+        String::from_utf8(unescaped_bytes(s)).unwrap()
+    }
+
+    /// A folder named with `bytes`, as a disk in another encoding names one.
+    fn named(bytes: &[u8]) -> std::path::PathBuf {
+        use std::os::unix::ffi::OsStrExt;
+        std::path::PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
+    }
+
+    #[test]
+    fn a_path_tells_names_that_arent_utf8_apart() {
+        assert_eq!(path(&named(b"/src/a\xff")), "/src/a\\xff");
+        assert_eq!(path(&named(b"/src/a\xfe")), "/src/a\\xfe");
+        // Latin-1's é between text, a cut-off UTF-8 sequence, and the text around them as it is.
+        assert_eq!(path(&named(b"/src/caf\xe9 x/\xe2\x82")), "/src/caf\\xe9 x/\\xe2\\x82");
+        assert_eq!(path(&named("/src/café\n".as_bytes())), "/src/café\\n");
+        // A name that spells the escape reads differently from the byte, and U+FFFD is itself.
+        assert_eq!(path(&named(b"/src/a\\xff")), "/src/a\\\\xff");
+        assert_eq!(path(&named("/src/a\u{FFFD}".as_bytes())), "/src/a\u{FFFD}");
+        // Under the home folder too.
+        assert_eq!(path(&named(b"/home/tester/a\xff")), "~/a\\xff");
+        // Only the home folder prints as `~`: a path that starts with one of its own doesn't.
+        assert_eq!(path(std::path::Path::new("/home/tester/a")), "~/a");
+        assert_eq!(path(std::path::Path::new("~/a")), "\\x7e/a");
+        assert_eq!(path(std::path::Path::new("~")), "\\x7e");
+        assert_eq!(path(std::path::Path::new("a/~")), "a/~");
+    }
+
+    /// Paths `exact` marks come out of the JSON as they are, the character `clean` would drop
+    /// written as an escape, while every other string is cleaned.
+    #[test]
+    fn json_keeps_marked_paths_exactly() {
+        let odd = "/src/a\u{200b}b\u{202e}c\u{7f}\u{9b}d\u{e0041}  e\u{a0}\u{200f}";
+        let json = labelled_json(serde_json::json!({
+            "worktree": exact(std::path::Path::new(odd)),
+            "title": odd,
+            "tickets": [{ "url": exact(std::path::Path::new(odd)), "branch": odd }],
+            odd: 1,
+        }));
+        // In the text: an escape for each, a surrogate pair past U+FFFF, and nothing raw.
+        let shown = r"/src/a\u200bb\u202ec\u007f\u009bd\udb40\udc41  e\u{a0}\u200f";
+        let shown = shown.replace(r"\u{a0}", "\u{a0}");
+        assert!(json.contains(&format!("\"worktree\": \"{shown}\"")), "{json}");
+        assert!(!json.chars().any(|c| (c.is_control() && c != '\n') || hidden(c)), "{json:?}");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["worktree"], odd);
+        assert_eq!(v["tickets"][0]["url"], odd);
+        // A direction mark stays in a cleaned string, as text has it (and is escaped in the text).
+        assert_eq!(v["title"], "/src/abcd  e\u{a0}\u{200f}");
+        assert_eq!(v["tickets"][0]["branch"], "/src/abcd  e\u{a0}\u{200f}");
+        assert_eq!(v["/src/abcd  e\u{a0}\u{200f}"], 1);
+        assert_eq!(v["note"], NOTE);
+        // Nor after serde_json's own escape of a control character (`\u0010`), whose last digit
+        // would read as a keycap's.
+        let json = labelled_json(
+            serde_json::json!({ "p": exact(std::path::Path::new("\u{10}\u{FE0E}")) }),
+        );
+        assert!(json.contains(r#""p": "\u0010\ufe0e""#), "{json:?}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&json).unwrap()["p"],
+            "\u{10}\u{FE0E}"
+        );
+        // A selector after an escape is escaped too, not taken for one after the escape's digit.
+        for p in [
+            "/a\u{2060}\u{FE0F}",
+            "/a\u{7f}\u{FE0F}x",
+            "/a\u{200b}\u{200d}é",
+            "/a\u{2060}\u{1160}",
+            "/a\u{200b}\u{115f}\u{1161}",
+            "/א\u{200f}\u{115f}\u{1161}",
+        ] {
+            let json = labelled_json(serde_json::json!({ "p": exact(std::path::Path::new(p)) }));
+            assert!(!json.chars().any(placed), "{json:?}");
+            let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(v["p"], p);
+        }
+        // Text a tracker wrote is a string, and a string never passes for a marked path.
+        let forged =
+            labelled_json(serde_json::json!({ "title": format!("{{\"{EXACT}\":\"{odd}\"}}") }));
+        let v: serde_json::Value = serde_json::from_str(&forged).unwrap();
+        assert!(v["title"].as_str().is_some_and(|t| !t.chars().any(hidden)), "{forged}");
     }
 
     #[test]
@@ -352,6 +745,11 @@ mod tests {
                 "\u{202e}", "\u{202c}", "\u{2066}", "\u{2069}",
                 "\u{e0001}", "\u{e0020}", "\u{e007f}", "\u{200b}", "\u{200c}", "\u{200d}", "\u{2060}",
                 "\u{feff}", "\u{fe0e}", "\u{fe0f}", "\u{fe0f}\u{fe0f}", "\u{fe00}", "\u{e0100}", "⚠", "👩", "1",
+                "\u{200e}", "\u{200f}", "\u{61c}", "\u{200f}\u{200e}", "א", "ب",
+                "\u{115f}", "\u{1160}", "\u{3164}", "\u{ffa0}", "\u{1100}", "\u{1161}",
+                "\u{115f}\u{1160}", "\\", "\\x", "\\u{",
+                "\u{17b4}", "\u{2065}", "\u{1bca0}", "~", "~/", "+", "!", "١", "/home/tester/",
+                "\u{5b0}", "\u{64b}", "\u{610}", "\u{fff0}", "\u{e0080}", "\u{e01f0}",
             ])
             .prop_map(String::from),
             1 => prop::char::range('\0', '\x1f').prop_map(String::from),
@@ -372,12 +770,17 @@ mod tests {
         c.is_control() || hidden(c)
     }
 
-    /// A selector or joiner where it has no job, the first at fault in `s`.
+    fn placed(c: char) -> bool {
+        job_only(c)
+    }
+
+    /// A selector, joiner, direction mark or jamo filler where it has no job, the first at fault
+    /// in `s`.
     fn out_of_place(s: &str) -> Option<usize> {
         let c: Vec<char> = s.chars().collect();
         (0..c.len()).find(|&i| {
             let (prev, next) = (i.checked_sub(1).map(|p| c[p]), c.get(i + 1).copied());
-            (selector(c[i]) || joiner(c[i])) && !kept(prev, c[i], next)
+            placed(c[i]) && !kept(prev, c[i], next)
         })
     }
 
@@ -388,6 +791,7 @@ mod tests {
             1 => prop::sample::select(vec![
                 "⚠\u{FE0F}", "☺\u{FE0E}", "✅", "👩\u{200D}💻", "🏳\u{FE0F}\u{200D}🌈", "👩🏽", "🇬🇷",
                 "1\u{FE0F}\u{20E3}", "Ünïcode", "日本語", "عربي", "क्\u{200D}ष", "می\u{200C}خواهم", "\n", "\t",
+                "한글", "\u{1112}\u{1161}\u{11AB}",
             ])
             .prop_map(String::from),
         ];
@@ -399,9 +803,17 @@ mod tests {
     fn nothing_hidden(out: &str) -> Result<(), TestCaseError> {
         prop_assert!(!out.chars().any(hidden), "{out:?}");
         prop_assert_eq!(out_of_place(out), None, "{:?}", out);
-        prop_assert!(
-            !out.chars().zip(out.chars().skip(1)).any(|(a, b)| selector(a) && selector(b))
-        );
+        // No two that draw as nothing side by side, which `out_of_place`, judging each on its
+        // own, can't see: a run of them could spell out a message. Only an emoji's selector
+        // followed by the joiner to its next part (🏳️‍🌈) is two in a row.
+        // Nor a syllable lacking its vowel before one lacking its first consonant (`ᄀᅠᅟᅡ`).
+        let together = |(a, b): (char, char)| {
+            placed(a)
+                && placed(b)
+                && !(selector(a) && joiner(b))
+                && !(a == NO_VOWEL && b == NO_CONSONANT)
+        };
+        prop_assert!(!out.chars().zip(out.chars().skip(1)).any(together), "{:?}", out);
         Ok(())
     }
 
@@ -415,16 +827,15 @@ mod tests {
             nothing_hidden(&out)?;
             prop_assert_eq!(clean(&out), out.clone());
             // Everything else stays, in order.
-            let shown = |s: &str| {
-                s.chars().filter(|&c| !(acts(c) || selector(c) || joiner(c))).collect::<String>()
-            };
+            let shown =
+                |s: &str| s.chars().filter(|&c| !(acts(c) || placed(c))).collect::<String>();
             prop_assert_eq!(shown(&out), shown(&s));
         }
 
         #[test]
         fn clean_keeps_text_without_controls(s in "\\PC*") {
-            // Selectors and joiners aside: `\PC` takes them anywhere, as no text has them.
-            let s: String = s.chars().filter(|&c| !(hidden(c) || selector(c) || joiner(c))).collect();
+            // Selectors, joiners and fillers aside: `\PC` takes them anywhere, as no text has them.
+            let s: String = s.chars().filter(|&c| !(hidden(c) || placed(c))).collect();
             prop_assert_eq!(clean(&s), s);
         }
 
@@ -443,12 +854,113 @@ mod tests {
             }
         }
 
+        /// Korean as it's written: whole syllables, conjoining jamo, and old-style syllables with
+        /// a filler for the consonant or vowel they lack.
+        #[test]
+        fn korean_text_keeps_its_jamo(
+            parts in prop::collection::vec(
+                prop_oneof![
+                    "[가-힣]{1,4}",
+                    // First consonant, vowel, and maybe a final consonant.
+                    "[\u{1100}-\u{1112}][\u{1161}-\u{1175}][\u{11A8}-\u{11C2}]?",
+                    "\u{115F}[\u{1161}-\u{1175}][\u{11A8}-\u{11C2}]?",
+                    "[\u{1100}-\u{1112}]\u{1160}[\u{11A8}-\u{11C2}]?",
+                    "[A-Za-z0-9 .,]{1,4}",
+                ],
+                1..10,
+            ),
+        ) {
+            let s = parts.concat();
+            prop_assert_eq!(clean(&s), s.clone());
+            prop_assert_eq!(line(&s), s.split_whitespace().collect::<Vec<_>>().join(" "));
+        }
+
+        /// A name's bytes, UTF-8 or not, read back from what `path` prints, so no two names
+        /// print alike; and what's printed is text with nothing hidden.
+        #[test]
+        fn a_path_of_any_bytes_reads_back_as_it_was(
+            a in prop_oneof![
+                prop::collection::vec(any::<u8>(), 0..24),
+                hostile().prop_map(String::into_bytes),
+                (hostile(), prop::collection::vec(any::<u8>(), 0..6), hostile())
+                    .prop_map(|(s, b, t)| [s.as_bytes(), &b, t.as_bytes()].concat()),
+            ],
+            b in prop::collection::vec(any::<u8>(), 0..24),
+        ) {
+            // Not under the home folder, which prints as `~`, and no NUL, which no name has.
+            let name = |bytes: &[u8]| {
+                let bytes: Vec<u8> = bytes.iter().copied().filter(|&b| b != 0).collect();
+                [b"/src/", &bytes[..]].concat()
+            };
+            let (a, b) = (name(&a), name(&b));
+            let out = path(&named(&a));
+            prop_assert_eq!(unescaped_bytes(&out), a.clone(), "{:?}", out);
+            prop_assert!(!out.chars().any(unseen), "{out:?}");
+            if a != b {
+                prop_assert_ne!(out.clone(), path(&named(&b)));
+            }
+            // A name that is text prints as it always did.
+            if let Ok(text) = std::str::from_utf8(&a) {
+                prop_assert_eq!(out, escaped(text));
+            }
+            // Only a path under the home folder prints starting with `~`, and reads back as
+            // the home folder; any other reads back as itself.
+            for rest in [&a[5..], &b[5..]] {
+                let relative = named(&[b"~", rest].concat());
+                let shown = path(&relative);
+                prop_assert!(!shown.starts_with('~'), "{shown:?}");
+                prop_assert_eq!(unescaped_bytes(&shown), [b"~", rest].concat());
+                let home = path(&named(&[b"/home/tester/", rest].concat()));
+                prop_assert!(home.starts_with("~/"), "{home:?}");
+                prop_assert_ne!(home, shown);
+            }
+        }
+
+        /// Whatever a path holds, the JSON is valid, parses back to the path exactly, and its
+        /// text has nothing a terminal acts on and nothing hidden; a string beside it is cleaned.
+        #[test]
+        fn json_gives_a_marked_path_back_exactly(s in hostile(), t in hostile(), key in hostile()) {
+            let p = std::path::Path::new(&s);
+            let json = labelled_json(serde_json::json!({
+                "worktree": exact(p),
+                "title": t,
+                "projects": [{ "repo": exact(p), key.clone(): [exact(p), t] }],
+            }));
+            prop_assert!(!json.chars().any(|c| acts(c) && c != '\n'), "{json:?}");
+            nothing_hidden(&json)?;
+            // Nor a selector, joiner, mark or filler right after an escape, which `nothing_hidden`
+            // would take for one after the escape's last character.
+            let raw: Vec<(usize, char)> = json.char_indices().collect();
+            for (n, &(at, c)) in raw.iter().enumerate() {
+                let escaped = n >= 6 && {
+                    let before = &json[raw[n - 6].0..at];
+                    before.starts_with("\\u") && before[2..].chars().all(|d| d.is_ascii_hexdigit())
+                };
+                prop_assert!(!(placed(c) && escaped), "{json:?}");
+            }
+            let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(v["worktree"].as_str(), Some(s.as_str()));
+            prop_assert_eq!(v["projects"][0]["repo"].as_str(), Some(s.as_str()));
+            let (title, key) = (clean(&t), clean(&key));
+            prop_assert_eq!(v["title"].as_str(), Some(title.as_str()));
+            // A key that cleans to "repo" replaces it, as two alike in any JSON object would.
+            if key != "repo" {
+                prop_assert_eq!(v["projects"][0][&key][0].as_str(), Some(s.as_str()));
+                prop_assert_eq!(v["projects"][0][&key][1].as_str(), Some(title.as_str()));
+            }
+            prop_assert_eq!(v["note"].as_str(), Some(NOTE));
+        }
+
         #[test]
         fn a_path_is_one_line_with_nothing_hidden(s in hostile()) {
             let out = path(std::path::Path::new(&s));
             prop_assert!(!out.chars().any(unseen), "{out:?}");
             // What hides nothing is the path exactly.
             let plain: String = s.chars().filter(|&c| c != '\\' && !unseen(c)).collect();
+            // Except where it starts: only the home folder prints as `~`, a `~` of its own as
+            // `\x7e` (`a_path_of_any_bytes_reads_back_as_it_was` covers both).
+            let home = std::path::Path::new(&plain).starts_with(crate::store::home());
+            prop_assume!(!plain.starts_with('~') && !home);
             prop_assert_eq!(path(std::path::Path::new(&plain)), plain);
         }
 

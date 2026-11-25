@@ -456,8 +456,8 @@ impl Client {
             Client::Local(board) => {
                 return local::create(board, prefix, title, description).map(|f| Created {
                     key: f.key,
-                    at: f.path.display().to_string(),
-                    file: true,
+                    at: String::new(),
+                    file: Some(f.path),
                 });
             }
         };
@@ -469,18 +469,20 @@ impl Client {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Created {
     pub key: String,
+    /// Its link on the tracker; empty for a file on a board.
     pub at: String,
-    /// `at` is the path of a file on a Local files board, not a link.
-    pub file: bool,
+    /// Its file on a Local files board: kept a path, as its name may not be text, for
+    /// `untrusted::path` to show as it is.
+    pub file: Option<PathBuf>,
 }
 
 impl Created {
     /// Where the ticket is, for a line of output: a file's path as it's named
     /// (`untrusted::path`), or the tracker's link kept to one line.
     pub fn shown(&self) -> String {
-        match self.file {
-            true => crate::untrusted::path(Path::new(&self.at)),
-            false => crate::untrusted::line(&self.at),
+        match &self.file {
+            Some(file) => crate::untrusted::path(file),
+            None => crate::untrusted::line(&self.at),
         }
     }
 
@@ -489,7 +491,7 @@ impl Created {
     pub(crate) fn read(key: Option<&str>, at: &str, place: &str) -> Result<Created, String> {
         match key {
             Some(key) if ticket_key::well_formed(key) => {
-                Ok(Created { key: key.into(), at: at.into(), file: false })
+                Ok(Created { key: key.into(), at: at.into(), file: None })
             }
             _ => Err(maybe_created(
                 &format!("the answer gave no ticket key taskman can read ({key:?})"),
@@ -1062,6 +1064,12 @@ impl Tracker {
         github_issues::key_from_input(input, &self.key, &self.github_repo()?)
     }
 
+    /// Whether `input` is written this tracker's own way but names another repository's issue,
+    /// which `key_from_input` refuses where a plain shell may find the project it belongs to.
+    pub fn names_others_issue(&self, input: &str) -> bool {
+        self.github_repo().is_some_and(|repo| github_issues::names_others_issue(input, &repo))
+    }
+
     /// Whether `input` is written this tracker's own way and names one of its issues, whatever the
     /// project's prefix: `key_from_input` gives its key, or would once a prefix is set.
     pub fn names_issue(&self, input: &str) -> bool {
@@ -1280,12 +1288,15 @@ mod tests {
         let file = board.join("todo/ENG-1-fix-login.md");
         assert_eq!(
             made,
-            Created { key: "ENG-1".into(), at: file.display().to_string(), file: true }
+            Created { key: "ENG-1".into(), at: String::new(), file: Some(file.clone()) }
         );
         assert_eq!(made.shown(), crate::untrusted::path(&file));
         assert!(made.shown().contains("My  Projects/acme\u{a0}web/workplan/todo/"));
         let link = Created::read(Some("ENG-2"), "https://example.com/ENG-2\nx", "Linear").unwrap();
-        assert_eq!((link.file, link.shown().as_str()), (false, "https://example.com/ENG-2 x"));
+        assert_eq!(
+            (link.file.is_none(), link.shown().as_str()),
+            (true, "https://example.com/ENG-2 x")
+        );
     }
 
     /// A refused certificate won't change by asking again, so it isn't worded as a network problem

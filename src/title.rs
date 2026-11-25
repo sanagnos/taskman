@@ -163,11 +163,26 @@ fn target(
     own: Option<usize>,
     here: Option<&Here>,
 ) -> Result<(usize, String), String> {
-    let named = a.project.as_deref().map(|n| cli::project_named(&saved.projects, n)).transpose()?;
+    // In a session, its own project's ticket or none: named so, another project is never looked
+    // in, and no answer says what the others are. The refusal is this command's own, the same
+    // for any name but the session's project's, and offers no way round (see below).
+    let named = match &a.project {
+        Some(n) => Some(cli::own_named(saved, n, own).map_err(|e| {
+            match own {
+                Some(_) => "that's not this session's project, and a session sets only its own \
+                        ticket's title"
+                    .to_string(),
+                None => e,
+            }
+        })?),
+        None => own,
+    };
     let t = match &a.input {
         Some(input) => {
-            let (key, (t, project)) =
-                cli::locate_ticket(input, a.project.as_deref(), named, me, saved, here)?;
+            // A key of another prefix is refused as status refuses it, but without the way
+            // round, which this command doesn't offer (below).
+            let (key, (t, project)) = cli::locate_ticket(input, named, me, saved, here, own)
+                .map_err(|e| if own.is_some() { cli::no_way_round(e) } else { e })?;
             t.ok_or_else(|| format!("{key} isn't open in {}", untrusted::line(&project.name)))?
         }
         None => {
@@ -321,17 +336,21 @@ mod tests {
         ] {
             assert_eq!(of(a), Ok((0, "ENG-52".into())), "{a:?}");
         }
-        // Another ticket of its project, or another project's by its prefix or by name: refused,
-        // with no way around it offered.
+        // Another ticket of its project, or another project's by name: refused, with no way around
+        // it offered. A key with another prefix than its tracker's can't be its project's.
         let refused = "and a session sets only its own ticket's title";
         assert_eq!(of(&["ENG-53", "Fix"]), Err(format!("that's ENG-53, {refused}")));
         assert_eq!(of(&["53", "Fix"]), Err(format!("that's ENG-53, {refused}")));
         assert_eq!(of(&["--clear", "53"]), Err(format!("that's ENG-53, {refused}")));
-        assert_eq!(of(&["API-7", "Fix"]), Err(format!("that's API-7, {refused}")));
-        assert_eq!(
-            of(&["API-7", "Fix", "--project", "acme-api"]),
-            Err(format!("that's API-7, {refused}"))
-        );
+        let foreign = |k: &str| Err(format!("{k} doesn't belong to acme-web's tracker (ENG)."));
+        assert_eq!(of(&["API-7", "Fix"]), foreign("API-7"));
+        assert_eq!(of(&["OPS-7", "Fix"]), foreign("OPS-7"));
+        for name in ["acme-api", "nobody"] {
+            assert_eq!(
+                of(&["API-7", "Fix", "--project", name]),
+                Err(format!("that's not this session's project, {refused}"))
+            );
+        }
     }
 
     /// A key is unique only within its project: `Ticket::is`, the repo's first rule.

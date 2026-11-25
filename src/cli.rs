@@ -109,26 +109,24 @@ impl<'a> Lexer<'a> {
     }
 }
 
-/// The project a command means: the one named, else the session's (`me`), else the folder's, else
-/// the one whose ticket prefix the first key has.
+/// The project a command means: the one named (`named`, from `project_named` or, in a session,
+/// `own_named`), else the session's (`own`, then `me`), else the folder's, else
+/// the one whose ticket prefix the first key has. In a session taskman started it's the session's
+/// own unless one is named: neither the folder nor a key's prefix picks another, so no answer
+/// there says which projects use a prefix.
 pub(crate) fn pick_project(
-    named: Option<&str>,
+    named: Option<usize>,
     inputs: &[String],
     me: Option<&Ticket>,
     saved: &Saved,
     here: Option<&Here>,
+    own: Option<usize>,
 ) -> Result<usize, String> {
     let projects = &saved.projects;
     if projects.is_empty() {
-        return Err(format!(
-            "taskman has no projects yet; add one in taskman ({} P)",
-            crate::keys::prefix()
-        ));
+        return Err(no_projects());
     }
-    if let Some(name) = named {
-        return project_named(projects, name);
-    }
-    if let Some(p) = context(me, saved, here) {
+    if let Some(p) = named.or(own).or_else(|| context(me, saved, here)) {
         return Ok(p);
     }
     let Some(prefix) = inputs
@@ -163,8 +161,31 @@ pub(crate) fn pick_project(
 /// else the one whose name's slug (as in session names) is its slug. A looser match only counts
 /// when one project has it, so another project's exact name is never shadowed by a slug.
 pub(crate) fn project_named(projects: &[Project], name: &str) -> Result<usize, String> {
+    if projects.is_empty() {
+        return Err(no_projects());
+    }
     let names =
         |ps: &[usize]| ps.iter().map(|&p| untrusted::line(&projects[p].name)).collect::<Vec<_>>();
+    match find_named(projects, name) {
+        Ok(p) => Ok(p),
+        Err(found) if found.is_empty() => {
+            let all: Vec<usize> = (0..projects.len()).collect();
+            Err(format!("no project is named {name}; taskman has {}", names(&all).join(", ")))
+        }
+        Err(found) => Err(format!(
+            "{name} could mean projects {}; pass --project with the exact name",
+            names(&found).join(" or ")
+        )),
+    }
+}
+
+fn no_projects() -> String {
+    format!("taskman has no projects yet; add one in taskman ({} P)", crate::keys::prefix())
+}
+
+/// `project_named`'s search: the project, else the several a looser match finds (none when no
+/// project goes by the name).
+fn find_named(projects: &[Project], name: &str) -> Result<usize, Vec<usize>> {
     let slug = store::slug(name);
     let matches = |p: &Project, tier| match tier {
         0 => p.name == name,
@@ -177,16 +198,42 @@ pub(crate) fn project_named(projects: &[Project], name: &str) -> Result<usize, S
         match found[..] {
             [] => continue,
             [p] => return Ok(p),
-            _ => {
-                return Err(format!(
-                    "{name} could mean projects {}; pass --project with the exact name",
-                    names(&found).join(" or ")
-                ));
-            }
+            _ => return Err(found),
         }
     }
-    let all: Vec<usize> = (0..projects.len()).collect();
-    Err(format!("no project is named {name}; taskman has {}", names(&all).join(", ")))
+    Err(Vec::new())
+}
+
+/// `--project NAME` in a session taskman started, whose project is `own` (None outside one, where
+/// it's `project_named`): the session's own project by its exact name, or `elsewhere`'s refusal.
+/// Not by case or slug, as outside a session: names need only differ exactly, so `ACME` can be
+/// another project beside `acme` (and `c++` and `c#` slug alike), and a looser match would act on
+/// the session's project when another was meant. Any other spelling gets the refusal, which is the
+/// same whether a project has that name or none has, so the session isn't told which exist.
+pub(crate) fn own_named(saved: &Saved, name: &str, own: Option<usize>) -> Result<usize, String> {
+    match own {
+        None => project_named(&saved.projects, name),
+        Some(own) if saved.projects[own].name == name => Ok(own),
+        Some(own) => Err(elsewhere(own, saved)),
+    }
+}
+
+/// `e`, an answer in a session that a plain shell, looking in every project, could have answered
+/// otherwise, with the way round it (`WIDER`) once.
+pub(crate) fn with_way_round(e: String) -> String {
+    if e.ends_with(&format!(" {WIDER}.")) {
+        return e;
+    }
+    format!("{}. {WIDER}.", e.trim_end_matches('.'))
+}
+
+/// `e`, a refusal in a session, without the way round it (`WIDER`), for a command that offers
+/// none (`taskman title`).
+pub(crate) fn no_way_round(e: String) -> String {
+    match e.strip_suffix(&format!(" {WIDER}.")) {
+        Some(bare) => bare.to_string(),
+        None => e,
+    }
 }
 
 /// The project of the session the command runs in, else of the repository the folder is in.
@@ -200,12 +247,16 @@ pub(crate) fn context(me: Option<&Ticket>, saved: &Saved, here: Option<&Here>) -
     status::project_here(&saved.projects, here?)
 }
 
-/// What lifts `confine` and `confine_all`. A command written this way matches no rule of the
+/// What lifts `confine`, `confine_all` and every other refusal a session gets that a plain shell
+/// would have answered otherwise (`status::session_key`'s of another prefix, `resolve_key`'s,
+/// close's and resume's that nothing was found). A command written this way matches no rule of the
 /// allow-list, so the CLI's own permission settings decide: Claude Code asks the user, runs it
 /// (auto mode's classifier, a mode that skips prompts, a rule of the user's) or refuses it
 /// (`dontAsk`); Codex runs it, asks or refuses as its sandbox, approval policy and rules say. The
 /// refusal says only that much, as taskman can't tell which applies; the guide says more.
-const WIDER: &str = "If the user asked for it, run the same command with `env -u TASKMAN_REPO` in front; the session's permission settings decide whether it runs, asks the user or is refused";
+pub(crate) const WIDER: &str = "If the user asked for it, run the same command with `env -u \
+     TASKMAN_REPO` in front; the session's permission settings decide whether it runs, asks the \
+     user or is refused";
 
 /// The project of the session taskman started that the command runs in, by `TASKMAN_REPO`; None
 /// outside one.
@@ -222,20 +273,26 @@ pub(crate) fn session_project(
 }
 
 /// Refuses project `p` in a session whose project is another, `own`: sessions run `taskman
-/// status`, `add` and `move` without asking (`hook::settings_json`), so text a session read could
-/// otherwise send them to another project's tracker, account, board or repository. The allow-list
-/// can't tell arguments apart (a quoted `--proj""ect` gets past an ask rule), so the line is drawn
-/// here, and only a command that leaves the session's environment, which the CLI's permission
-/// settings decide on (see `WIDER`), crosses it.
+/// status`, `events`, `add`, `move` and `wake` without asking (`hook::settings_json`), so text a
+/// session read could otherwise send them to another project's tracker, account, board,
+/// repository or sessions. The allow-list can't tell arguments apart (a quoted `--proj""ect` gets
+/// past an ask rule), so the line is drawn here, and only a command that leaves the session's
+/// environment, which the CLI's permission settings decide on (see `WIDER`), crosses it.
 pub(crate) fn confine(p: usize, own: Option<usize>, saved: &Saved) -> Result<(), String> {
     match own {
-        Some(own) if own != p => Err(format!(
-            "that's project {}, and this session works in {}: a session keeps to its own project. {WIDER}.",
-            untrusted::line(&saved.projects[p].name),
-            untrusted::line(&saved.projects[own].name)
-        )),
+        Some(own) if own != p => Err(elsewhere(own, saved)),
         _ => Ok(()),
     }
+}
+
+/// The refusal of anything but the session's own project, `own`. It names only that one: a
+/// session's answers say nothing of the other projects taskman has, not their names, their ticket
+/// prefixes or whether there are any, so it reads the same whatever was asked for.
+fn elsewhere(own: usize, saved: &Saved) -> String {
+    format!(
+        "this session works in {}: a session keeps to its own project. {WIDER}.",
+        untrusted::line(&saved.projects[own].name)
+    )
 }
 
 /// Refuses every project (`status --all-projects`) in any session (`own`), as `confine` refuses one
@@ -254,16 +311,19 @@ pub(crate) fn confine_all(own: Option<usize>) -> Result<(), String> {
 /// The key `input` names and where it's open, as `taskman close` and `taskman title` read a ticket:
 /// a number takes the prefix of the project the command means, the tracker's own way of writing one
 /// (GitHub's `#12` and issue links) is read by that tracker, and any other key or link goes by
-/// `status::locate`, so a key open in two projects needs the project. `named` is `project`'s index.
+/// `status::locate`, so a key open in two projects needs the project. `named` is `--project`'s.
 /// Only the whole input counts (`ticket_key::exact`): a key in a phrase is refused, never closed.
+/// In a session taskman started (`own`, its project) only that project's tickets are found
+/// (`Scope::Session`), and no answer depends on the other projects.
 pub(crate) fn locate_ticket<'a>(
     input: &str,
-    project: Option<&str>,
     named: Option<usize>,
     me: Option<&Ticket>,
     saved: &'a Saved,
     here: Option<&Here>,
+    own: Option<usize>,
 ) -> Result<(String, (Option<&'a Ticket>, &'a Project)), String> {
+    let quiet = own.is_some();
     let input = input.trim();
     let not_a_ticket =
         || format!("\"{input}\" isn't a ticket: pass just its number (52), key (ENG-52) or link");
@@ -273,15 +333,15 @@ pub(crate) fn locate_ticket<'a>(
         return Err(not_a_ticket());
     }
     if ticket_key::is_number(input) {
-        let p = pick_project(project, &[], me, saved, here)?;
-        let key = resolve_key(input, p, &saved.projects)?;
+        let p = pick_project(named, &[], me, saved, here, own)?;
+        let key = resolve_key(input, p, &saved.projects, quiet)?;
         let located = status::locate(&key, saved, status::Scope::Named(&saved.projects[p].repo))?;
         return Ok((key, located));
     }
     // Before `ticket_key::exact`: a GitHub issue's link is its tracker's to read, and another
     // project's is refused naming it, rather than refused as a link to nobody's ticket.
-    let place = named.or_else(|| context(me, saved, here));
-    if let Some((key, p)) = tracker_key(input, place, saved)? {
+    let place = named.or(own).or_else(|| context(me, saved, here));
+    if let Some((key, p)) = tracker_key(input, place, saved, quiet)? {
         let located = status::locate(&key, saved, status::Scope::Named(&saved.projects[p].repo))?;
         return Ok((key, located));
     }
@@ -297,20 +357,34 @@ pub(crate) fn locate_ticket<'a>(
             not_a_ticket()
         }
     })?;
-    let located = status::locate(&key, saved, status::scope(named, None, me, saved, here))?;
+    let scope = match own {
+        Some(p) => status::Scope::Session(&saved.projects[p].repo),
+        None => status::scope(named, None, me, saved, here),
+    };
+    let located = status::locate(&key, saved, scope)?;
     Ok((key, located))
 }
 
 /// The key and project of `input` when it's written a tracker's own way: `place`'s tracker's, else
 /// the one tracker's that names it as its issue (`Tracker::names_issue`), which with a project to
-/// go by is refused, naming the other project. None when no tracker reads it.
+/// go by is refused, naming the other project. None when no tracker reads it. In a session
+/// (`quiet`) only `place`'s tracker is asked, so the answer says nothing of the other projects'.
 fn tracker_key(
     input: &str,
     place: Option<usize>,
     saved: &Saved,
+    quiet: bool,
 ) -> Result<Option<(String, usize)>, String> {
     let tracker = |p: usize| saved.projects[p].tracker.as_ref();
     let read = |p: usize| tracker(p)?.key_from_input(input);
+    if quiet && let Some(p) = place {
+        // Another repository's issue: a plain shell may find the project whose it is.
+        let wider = |e: String| match tracker(p).is_some_and(|t| t.names_others_issue(input)) {
+            true => with_way_round(e),
+            false => e,
+        };
+        return read(p).transpose().map(|key| key.map(|k| (k, p))).map_err(wider);
+    }
     let names = |p: usize| tracker(p).is_some_and(|t| t.names_issue(input));
     let others = (0..saved.projects.len()).filter(|&q| Some(q) != place);
     let theirs: Vec<usize> = others.clone().filter(|&q| names(q)).collect();
@@ -355,12 +429,25 @@ fn has_prefix(p: &Project, prefix: &str) -> bool {
 }
 
 /// The ticket key `input` names in project `p`: a bare number gets the project's prefix, a key
-/// with another prefix is refused, naming the project it may belong to, and the tracker's own
-/// ways (GitHub's `#12` and issue links) are read by the tracker.
-pub(crate) fn resolve_key(input: &str, p: usize, projects: &[Project]) -> Result<String, String> {
+/// with another prefix is refused, naming the project it may belong to (not in a session, `quiet`,
+/// which isn't told what the other projects are), and the tracker's own ways (GitHub's `#12` and
+/// issue links) are read by the tracker.
+pub(crate) fn resolve_key(
+    input: &str,
+    p: usize,
+    projects: &[Project],
+    quiet: bool,
+) -> Result<String, String> {
     let project = &projects[p];
-    if let Some(key) = project.tracker.as_ref().and_then(|t| t.key_from_input(input)) {
-        return key;
+    if let Some(t) = &project.tracker
+        && let Some(key) = t.key_from_input(input)
+    {
+        // In a session, another repository's issue has the way round, as a plain shell may find
+        // the project whose it is; a pull request's link is refused alike either way.
+        return match quiet && t.names_others_issue(input) {
+            true => key.map_err(with_way_round),
+            false => key,
+        };
     }
     let prefix = project.tracker.as_ref().map(|t| t.key.to_uppercase()).filter(|k| !k.is_empty());
     if ticket_key::is_number(input) {
@@ -379,11 +466,13 @@ pub(crate) fn resolve_key(input: &str, p: usize, projects: &[Project]) -> Result
     }
     let theirs = projects
         .iter()
-        .find(|q| has_prefix(q, ticket_key::prefix_of(&key)))
+        .find(|q| !quiet && has_prefix(q, ticket_key::prefix_of(&key)))
         .map(|q| format!("; for project {0}, pass --project {0}", untrusted::line(&q.name)))
         .unwrap_or_default();
+    // In a session, the way round it, as outside one this names the project to pass.
+    let wider = if quiet { format!(". {WIDER}.") } else { String::new() };
     Err(format!(
-        "{key} doesn't belong to {}'s tracker ({pre}){theirs}",
+        "{key} doesn't belong to {}'s tracker ({pre}){theirs}{wider}",
         untrusted::line(&project.name)
     ))
 }
@@ -521,31 +610,33 @@ pub(crate) mod tests {
     #[test]
     fn resolves_numbers_keys_and_links() {
         let s = saved();
-        assert_eq!(resolve_key("52", 0, &s.projects), Ok("ENG-52".into()));
-        assert_eq!(resolve_key("eng-52", 0, &s.projects), Ok("ENG-52".into()));
+        assert_eq!(resolve_key("52", 0, &s.projects, false), Ok("ENG-52".into()));
+        assert_eq!(resolve_key("eng-52", 0, &s.projects, false), Ok("ENG-52".into()));
         assert_eq!(
-            resolve_key("https://linear.app/acme/issue/ENG-52/fix-login", 0, &s.projects),
+            resolve_key("https://linear.app/acme/issue/ENG-52/fix-login", 0, &s.projects, false),
             Ok("ENG-52".into())
         );
         assert_eq!(
-            resolve_key("https://example.atlassian.net/browse/ENG-52", 0, &s.projects),
+            resolve_key("https://example.atlassian.net/browse/ENG-52", 0, &s.projects, false),
             Ok("ENG-52".into())
         );
         assert_eq!(
-            resolve_key("API-7", 0, &s.projects),
+            resolve_key("API-7", 0, &s.projects, false),
             Err("API-7 doesn't belong to acme-web's tracker (ENG); for project acme-api, pass --project acme-api"
                 .into())
         );
         assert_eq!(
-            resolve_key("OPS-1", 0, &s.projects),
+            resolve_key("OPS-1", 0, &s.projects, false),
             Err("OPS-1 doesn't belong to acme-web's tracker (ENG)".into())
         );
         assert!(
-            resolve_key("login", 0, &s.projects).unwrap_err().contains("isn't a ticket number")
+            resolve_key("login", 0, &s.projects, false)
+                .unwrap_err()
+                .contains("isn't a ticket number")
         );
         // A project without a prefix takes any key, but not a bare number.
-        assert_eq!(resolve_key("OPS-1", 2, &s.projects), Ok("OPS-1".into()));
-        assert!(resolve_key("1", 2, &s.projects).unwrap_err().contains("no ticket prefix"));
+        assert_eq!(resolve_key("OPS-1", 2, &s.projects, false), Ok("OPS-1".into()));
+        assert!(resolve_key("1", 2, &s.projects, false).unwrap_err().contains("no ticket prefix"));
     }
 
     #[test]
@@ -553,7 +644,7 @@ pub(crate) mod tests {
         let mut projects = vec![project("web", "/src/web", "WEB")];
         let t = projects[0].tracker.as_mut().unwrap();
         (t.provider, t.site) = (Provider::Github, "acme/web".into());
-        let key = |input: &str| resolve_key(input, 0, &projects);
+        let key = |input: &str| resolve_key(input, 0, &projects, false);
         for input in ["12", "#12", "web-12", "acme/web#12", "https://github.com/acme/web/issues/12"]
         {
             assert_eq!(key(input), Ok("WEB-12".into()), "{input}");
@@ -573,49 +664,61 @@ pub(crate) mod tests {
         let s = saved();
         let keys = |k: &[&str]| k.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         // Named, case and spacing aside.
-        assert_eq!(pick_project(Some("Acme-API"), &keys(&["52"]), None, &s, None), Ok(1));
+        assert_eq!(project_named(&s.projects, "Acme-API"), Ok(1));
+        assert_eq!(pick_project(Some(1), &keys(&["52"]), None, &s, None, None), Ok(1));
         assert!(
-            pick_project(Some("blog"), &keys(&["52"]), None, &s, None)
-                .unwrap_err()
-                .contains("acme-web, acme-api, notes")
+            project_named(&s.projects, "blog").unwrap_err().contains("acme-web, acme-api, notes")
         );
         // The session's project wins over the key's prefix: an agent, or a ticket.
         let me = |key: &str| store::session_ticket(&s.tickets, key, None);
-        assert_eq!(pick_project(None, &keys(&["ENG-60"]), me("acme-api-planner"), &s, None), Ok(1));
         assert_eq!(
-            pick_project(None, &keys(&["API-1"]), me("ENG-52"), &s, Some(&here("/src/acme-api"))),
+            pick_project(None, &keys(&["ENG-60"]), me("acme-api-planner"), &s, None, None),
+            Ok(1)
+        );
+        assert_eq!(
+            pick_project(
+                None,
+                &keys(&["API-1"]),
+                me("ENG-52"),
+                &s,
+                Some(&here("/src/acme-api")),
+                None
+            ),
             Ok(0)
         );
         // Then the folder's repository.
         assert_eq!(
-            pick_project(None, &keys(&["7"]), None, &s, Some(&here("/src/acme-api"))),
+            pick_project(None, &keys(&["7"]), None, &s, Some(&here("/src/acme-api")), None),
             Ok(1)
         );
         // Then the prefix.
         assert_eq!(
-            pick_project(None, &keys(&["API-7"]), None, &s, Some(&here("/home/you"))),
+            pick_project(None, &keys(&["API-7"]), None, &s, Some(&here("/home/you")), None),
             Ok(1)
         );
         assert!(
-            pick_project(None, &keys(&["OPS-7"]), None, &s, None)
+            pick_project(None, &keys(&["OPS-7"]), None, &s, None, None)
                 .unwrap_err()
                 .contains("no project has the ticket prefix OPS")
         );
         assert!(
-            pick_project(None, &keys(&["7"]), None, &s, None).unwrap_err().contains("--project")
+            pick_project(None, &keys(&["7"]), None, &s, None, None)
+                .unwrap_err()
+                .contains("--project")
         );
         let mut two = saved();
         two.projects.push(project("acme-web-legacy", "/src/legacy", "ENG"));
         assert!(
-            pick_project(None, &keys(&["ENG-7"]), None, &two, None)
+            pick_project(None, &keys(&["ENG-7"]), None, &two, None, None)
                 .unwrap_err()
                 .contains("acme-web and acme-web-legacy both use ENG")
         );
-        assert!(
-            pick_project(None, &keys(&["7"]), None, &Saved::default(), None)
-                .unwrap_err()
-                .contains("no projects yet")
-        );
+        for none in [
+            pick_project(None, &keys(&["7"]), None, &Saved::default(), None, None),
+            project_named(&[], "acme"),
+        ] {
+            assert!(none.unwrap_err().contains("no projects yet"));
+        }
     }
 
     /// Project acme on GitHub's `repo`, with ENG-52 and ENG-88 open.
@@ -635,8 +738,7 @@ pub(crate) mod tests {
         // A repository named like a key: the issue's number decides, not the name.
         let s = on_github("acme/ENG-52");
         let key = |input: &str, named: Option<usize>, here: Option<&Here>| {
-            let project = named.map(|_| "acme");
-            locate_ticket(input, project, named, None, &s, here)
+            locate_ticket(input, named, None, &s, here, None)
                 .map(|(k, (t, p))| (k, t.map(|t| t.key.clone()), p.name.clone()))
         };
         let open = |k: &str| Ok((k.to_string(), Some(k.to_string()), "acme".to_string()));
@@ -648,8 +750,7 @@ pub(crate) mod tests {
         // The usual ways of writing one.
         let s = on_github("acme/web");
         let key = |input: &str, named: Option<usize>, here: Option<&Here>| {
-            let project = named.map(|_| "acme");
-            locate_ticket(input, project, named, None, &s, here)
+            locate_ticket(input, named, None, &s, here, None)
                 .map(|(k, (t, p))| (k, t.map(|t| t.key.clone()), p.name.clone()))
         };
         for input in ["#88", "acme/web#88", "https://github.com/acme/web/issues/88", "88", "ENG-88"]
@@ -680,7 +781,7 @@ pub(crate) mod tests {
             (t.provider, t.site) = (Provider::Github, "acme/api".into());
             p
         };
-        let e = locate_ticket("#88", None, None, None, &two, None).unwrap_err();
+        let e = locate_ticket("#88", None, None, &two, None, None).unwrap_err();
         assert_eq!(e, "#88 could mean projects acme or api; pass --project");
         // In acme's folder, api's issue: refused, naming api. `#88` stays acme's, and so it does
         // with no prefix to make a key of it, rather than going to api.
@@ -688,12 +789,12 @@ pub(crate) mod tests {
         let acme = Some(&acme);
         let link = "https://github.com/acme/api/issues/3";
         assert_eq!(
-            locate_ticket(link, None, None, None, &two, acme).unwrap_err(),
+            locate_ticket(link, None, None, &two, acme, None).unwrap_err(),
             format!("{link} is an issue of project api, not acme; pass --project api")
         );
-        assert_eq!(locate_ticket("#88", None, None, None, &two, acme).unwrap().0, "ENG-88");
+        assert_eq!(locate_ticket("#88", None, None, &two, acme, None).unwrap().0, "ENG-88");
         two.projects[0].tracker.as_mut().unwrap().key.clear();
-        let e = locate_ticket("#88", None, None, None, &two, acme).unwrap_err();
+        let e = locate_ticket("#88", None, None, &two, acme, None).unwrap_err();
         assert!(e.contains("set one in its settings"), "{e}");
     }
 
@@ -728,7 +829,7 @@ pub(crate) mod tests {
             (&github, acme, "see #88"),
             (&github, acme, "88 and 52"),
         ] {
-            let e = locate_ticket(input, None, None, None, s, here).map(|(k, _)| k).unwrap_err();
+            let e = locate_ticket(input, None, None, s, here, None).map(|(k, _)| k).unwrap_err();
             assert!(e.starts_with(&format!("\"{input}\" isn't a")), "{input:?}: {e}");
         }
         // A web link that names its ticket elsewhere, or with a host `exact` doesn't take, says
@@ -740,7 +841,7 @@ pub(crate) mod tests {
             "HTTP://[::1]:8080/browse/ENG-52",
         ] {
             assert_eq!(
-                locate_ticket(&format!(" {link}\n"), None, None, None, &jira, web).unwrap_err(),
+                locate_ticket(&format!(" {link}\n"), None, None, &jira, web, None).unwrap_err(),
                 format!(
                     "\"{link}\" isn't a link taskman reads a ticket from: pass the ticket's key, \
                      like ENG-52"
@@ -748,7 +849,7 @@ pub(crate) mod tests {
             );
         }
         // Either refusal quotes the input as trimmed.
-        let e = locate_ticket("\tfix/ENG-52 ", None, None, None, &jira, web).unwrap_err();
+        let e = locate_ticket("\tfix/ENG-52 ", None, None, &jira, web, None).unwrap_err();
         assert!(e.starts_with("\"fix/ENG-52\" isn't a ticket: pass just"), "{e}");
     }
 
@@ -757,7 +858,7 @@ pub(crate) mod tests {
         let s = saved();
         let web = here("/src/acme-web");
         let web = Some(&web);
-        let key = |input: &str| locate_ticket(input, None, None, None, &s, web).map(|(k, _)| k);
+        let key = |input: &str| locate_ticket(input, None, None, &s, web, None).map(|(k, _)| k);
         for input in [
             "ENG-52",
             "eng-52",
@@ -785,7 +886,7 @@ pub(crate) mod tests {
             "https://github.com/acme/web/issues/88",
             "HTTPS://github.com/acme/web/issues/88",
         ] {
-            let got = locate_ticket(input, None, None, None, &github, acme).map(|(k, _)| k);
+            let got = locate_ticket(input, None, None, &github, acme, None).map(|(k, _)| k);
             assert_eq!(got, Ok("ENG-88".into()), "{input:?}");
         }
     }
@@ -802,7 +903,7 @@ pub(crate) mod tests {
         });
         let web = here("/src/acme-web");
         let web = Some(&web);
-        let key = |input: &str, here| locate_ticket(input, None, None, None, &s, here);
+        let key = |input: &str, here| locate_ticket(input, None, None, &s, here, None);
         // In acme-web, on Linear: another project's issue.
         for input in ["https://github.com/acme/ENG-52/issues/88", "acme/ENG-52#88", "#88"] {
             assert_eq!(
@@ -820,25 +921,11 @@ pub(crate) mod tests {
             );
         }
         // With no GitHub project at all, still never the repository's name.
-        let e = locate_ticket(
-            "https://github.com/acme/ENG-52/issues/88",
-            None,
-            None,
-            None,
-            &saved(),
-            web,
-        )
-        .unwrap_err();
+        let link = "https://github.com/acme/ENG-52/issues/88";
+        let e = locate_ticket(link, None, None, &saved(), web, None).unwrap_err();
         assert!(e.contains("isn't a link taskman reads a ticket from"), "{e}");
         // Named, it's that project's.
-        let named = locate_ticket(
-            "https://github.com/acme/ENG-52/issues/88",
-            Some("acme"),
-            Some(3),
-            None,
-            &s,
-            web,
-        );
+        let named = locate_ticket(link, Some(3), None, &s, web, None);
         assert_eq!(named.map(|(k, _)| k), Ok("GH-88".into()));
     }
 
@@ -851,7 +938,7 @@ pub(crate) mod tests {
         for (dir, here) in
             [("none", None), ("acme", Some(&here("/src/acme"))), ("home", Some(&here("/home/you")))]
         {
-            let e = locate_ticket("#52", None, None, None, &s, here).unwrap_err();
+            let e = locate_ticket("#52", None, None, &s, here, None).unwrap_err();
             assert!(e.contains("set one in its settings"), "{dir}: {e}");
             if here.is_none() {
                 assert_eq!(e, "#52: project acme has no ticket prefix; set one in its settings");
@@ -869,10 +956,12 @@ pub(crate) mod tests {
         let own = session_project(&s, Some(Path::new("/src/acme-web"))).unwrap();
         assert_eq!(own, Some(0));
         assert_eq!(confine(0, own, &s), Ok(()));
-        assert_eq!(
-            confine(1, own, &s).unwrap_err(),
-            "that's project acme-api, and this session works in acme-web: a session keeps to its own project. If the user asked for it, run the same command with `env -u TASKMAN_REPO` in front; the session's permission settings decide whether it runs, asks the user or is refused."
-        );
+        let refusal = "this session works in acme-web: a session keeps to its own project. If the \
+            user asked for it, run the same command with `env -u TASKMAN_REPO` in front; the \
+            session's permission settings decide whether it runs, asks the user or is refused.";
+        // The refusal names the session's project only, whichever other was meant.
+        assert_eq!(confine(1, own, &s).unwrap_err(), refusal);
+        assert_eq!(confine(2, own, &s).unwrap_err(), refusal);
         // A session whose project was removed reaches none.
         assert_eq!(
             session_project(&s, Some(Path::new("/src/gone"))).unwrap_err(),
@@ -884,10 +973,136 @@ pub(crate) mod tests {
             store::session_ticket(&s.tickets, "acme-api-planner", Some(Path::new("/src/acme-api")));
         let own = session_project(&s, Some(Path::new("/src/acme-api"))).unwrap();
         let keys = |k: &[&str]| k.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let picked = |named, me| pick_project(named, &keys(&["ENG-60"]), me, &s, None).unwrap();
-        assert_eq!(confine(picked(None, me), own, &s), Ok(()));
-        assert!(confine(picked(Some("acme-web"), me), own, &s).is_err());
+        let picked = |own, me| pick_project(None, &keys(&["ENG-60"]), me, &s, None, own).unwrap();
+        assert_eq!(picked(own, me), 1);
+        // The session's project, not the one the key's prefix names, even when the session's
+        // ticket is no longer in taskman; without a session's project, the prefix's, refused.
+        assert_eq!(picked(own, None), 1);
         assert!(confine(picked(None, None), own, &s).is_err());
+        assert!(own_named(&s, "acme-web", own).is_err());
+    }
+
+    /// In a session, what a command answers about anything but its own project is the same
+    /// whether another project has the name, the prefix or the issue, several have, or none has.
+    #[test]
+    fn a_sessions_refusals_say_nothing_of_other_projects() {
+        let mut s = saved();
+        s.projects.push(project("Notes", "/src/notes-2", "API"));
+        let own = Some(0);
+        let refusal = confine(1, own, &s).unwrap_err();
+        // --project: another project's name, a name two have, a slug two have, nobody's.
+        for name in ["acme-api", "notes", "Notes", "NOTES", "nobody", "acme web legacy"] {
+            assert_eq!(own_named(&s, name, own).unwrap_err(), refusal, "{name}");
+        }
+        // Its own by its exact name only.
+        assert_eq!(own_named(&s, "acme-web", own), Ok(0));
+        for name in ["Acme-Web", "acme web"] {
+            assert_eq!(own_named(&s, name, own).unwrap_err(), refusal, "{name}");
+        }
+        // Outside a session, the lists as they were.
+        assert!(own_named(&s, "nobody", None).unwrap_err().contains("taskman has acme-web, "));
+        assert!(own_named(&s, "NOTES", None).unwrap_err().contains("projects notes or Notes"));
+        // A key with a prefix two other projects use, one uses (leave Notes out), or none does.
+        let one = saved();
+        let none = Saved { projects: vec![one.projects[0].clone()], ..Default::default() };
+        let foreign: Vec<_> = [&s, &one, &none]
+            .map(|s| resolve_key("API-7", 0, &s.projects, true).unwrap_err())
+            .into_iter()
+            .collect();
+        assert_eq!(
+            foreign[0],
+            format!("API-7 doesn't belong to acme-web's tracker (ENG). {WIDER}.")
+        );
+        assert!(foreign.iter().all(|e| *e == foreign[0]), "{foreign:?}");
+    }
+
+    /// In a session `--project` takes the session's project by its exact name only: another
+    /// spelling may be another project's (`ACME` beside `acme`), so it gets the refusal, the same
+    /// with or without such a project.
+    #[test]
+    fn a_session_takes_only_its_own_projects_exact_name() {
+        let alone = saved();
+        let mut twins = saved();
+        for name in ["Acme-Web", "ACME WEB", "acme_web"] {
+            twins.projects.push(project(name, &format!("/src/{name}"), "ENG"));
+        }
+        for s in [&alone, &twins] {
+            assert_eq!(own_named(s, "acme-web", Some(0)), Ok(0));
+            let refusal = confine(1, Some(0), s).unwrap_err();
+            for name in [
+                "ACME-WEB",
+                "Acme-Web",
+                "acme web",
+                "Acme_Web",
+                "acme  web!",
+                "acme",
+                " acme-web",
+                "",
+            ] {
+                assert_eq!(own_named(s, name, Some(0)).unwrap_err(), refusal, "{name:?}");
+            }
+        }
+        // A look-alike's own session takes its exact name, and not acme-web's.
+        assert_eq!(own_named(&twins, "ACME WEB", Some(4)), Ok(4));
+        assert!(own_named(&twins, "acme-web", Some(4)).is_err());
+        // In a session the way round is offered; `no_way_round` takes it off for `title`.
+        let refusal = confine(1, Some(0), &alone).unwrap_err();
+        assert!(refusal.ends_with(&format!(" {WIDER}.")), "{refusal}");
+        assert_eq!(
+            no_way_round(refusal),
+            "this session works in acme-web: a session keeps to its own project."
+        );
+        assert_eq!(no_way_round("other".into()), "other");
+        let found = with_way_round("no agent named lead is open in taskman".into());
+        assert_eq!(found, format!("no agent named lead is open in taskman. {WIDER}."));
+        assert_eq!(with_way_round(found.clone()), found);
+        // Outside a session, the look-alikes are told apart as before.
+        assert_eq!(own_named(&twins, "acme-web", None), Ok(0));
+        assert!(own_named(&twins, "ACME-WEB", None).unwrap_err().contains("could mean projects"));
+    }
+
+    /// In a session only the meant project's tracker reads a link or `#12`, so the answer doesn't
+    /// depend on which other projects would take it.
+    #[test]
+    fn a_session_asks_only_its_own_tracker() {
+        let two = {
+            let mut s = on_github("acme/web");
+            s.projects[1] = {
+                let mut p = project("api", "/src/api", "API");
+                let t = p.tracker.as_mut().unwrap();
+                (t.provider, t.site) = (Provider::Github, "acme/api".into());
+                p
+            };
+            s
+        };
+        let one = on_github("acme/web");
+        let acme = here("/src/acme");
+        let link = "https://github.com/acme/api/issues/3";
+        let answer = |s: &Saved, own| {
+            locate_ticket(link, None, None, s, Some(&acme), own).map(|(k, _)| k).unwrap_err()
+        };
+        // Outside a session it names the project whose issue it is.
+        assert!(answer(&two, None).contains("is an issue of project api"));
+        // In acme's session, acme's tracker's own refusal, with api there or not.
+        assert_eq!(answer(&two, Some(0)), answer(&one, Some(0)));
+        assert!(!answer(&two, Some(0)).contains("api,"), "{}", answer(&two, Some(0)));
+        assert_eq!(
+            answer(&two, Some(0)),
+            format!("that's an issue of acme/api; this project's issues are acme/web. {WIDER}.")
+        );
+        // A pull request's link is refused alike from a plain shell: no way round.
+        let pull = "https://github.com/acme/web/pull/4";
+        let e = locate_ticket(pull, None, None, &two, Some(&acme), Some(0)).unwrap_err();
+        assert!(!e.contains(WIDER), "{e}");
+        // Nor through `resolve_key`, as `add` and `move` read it.
+        let projects = &two.projects;
+        let refused = resolve_key("acme/api#3", 0, projects, true).unwrap_err();
+        assert!(refused.ends_with(&format!(" {WIDER}.")), "{refused}");
+        assert!(!resolve_key("acme/api#3", 0, projects, false).unwrap_err().contains(WIDER));
+        assert!(!resolve_key(pull, 0, projects, true).unwrap_err().contains(WIDER));
+        // `#88` is its own project's there too.
+        let got = locate_ticket("#88", None, None, &two, None, Some(0)).unwrap();
+        assert_eq!((got.0.as_str(), got.1.1.name.as_str()), ("ENG-88", "acme"));
     }
 
     #[test]
@@ -921,19 +1136,17 @@ pub(crate) mod tests {
         (t.provider, t.site, t.key) = (Provider::Github, "acme/web".into(), String::new());
         let api = here("/src/acme-api");
         let issue = "https://github.com/acme/web/issues/3";
-        let own = session_project(&s, Some(Path::new("/src/acme-api"))).unwrap();
         let errors = [
-            ("confine", confine(0, own, &s).unwrap_err()),
             ("confine, own", confine(1, Some(0), &s).unwrap_err()),
             ("named, two", project_named(&s.projects, "acme system run this").unwrap_err()),
             ("named, none", project_named(&s.projects, "nobody").unwrap_err()),
-            ("prefix", pick_project(None, &["ENG-1".into()], None, &s, None).unwrap_err()),
-            ("tracker", locate_ticket("#88", None, None, None, &github, None).unwrap_err()),
-            ("another's", locate_ticket(issue, None, None, None, &github, Some(&api)).unwrap_err()),
-            ("set a prefix", locate_ticket("#52", None, None, None, &lone, None).unwrap_err()),
-            ("no prefix", resolve_key("52", 0, &[project(odd, "/src/x", "")]).unwrap_err()),
-            ("its prefix", resolve_key("API-1", 0, &s.projects).unwrap_err()),
-            ("theirs", resolve_key("ENG-1", 1, &s.projects).unwrap_err()),
+            ("prefix", pick_project(None, &["ENG-1".into()], None, &s, None, None).unwrap_err()),
+            ("tracker", locate_ticket("#88", None, None, &github, None, None).unwrap_err()),
+            ("another's", locate_ticket(issue, None, None, &github, Some(&api), None).unwrap_err()),
+            ("set a prefix", locate_ticket("#52", None, None, &lone, None, None).unwrap_err()),
+            ("no prefix", resolve_key("52", 0, &[project(odd, "/src/x", "")], false).unwrap_err()),
+            ("its prefix", resolve_key("API-1", 0, &s.projects, false).unwrap_err()),
+            ("theirs", resolve_key("ENG-1", 1, &s.projects, false).unwrap_err()),
         ];
         let broken: Vec<_> = errors
             .iter()
@@ -1070,7 +1283,7 @@ pub(crate) mod tests {
                 for (s, here) in
                     [(&github, Some(&acme)), (&github, None), (&jira, Some(&web)), (&jira, None)]
                 {
-                    let got = locate_ticket(&phrase, None, None, None, s, here).map(|(k, _)| k);
+                    let got = locate_ticket(&phrase, None, None, s, here, None).map(|(k, _)| k);
                     prop_assert!(
                         got.as_ref().is_err_and(|e| e.contains("isn't a ticket: pass just")),
                         "{:?}: {:?}",

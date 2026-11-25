@@ -182,6 +182,11 @@ impl Status {
         self.trusting = false;
     }
 
+    /// A hook of this start has reported: its CLI is up (SessionStart comes first).
+    pub(super) fn reported(&self) -> bool {
+        self.last_event.is_some()
+    }
+
     /// A hook wrote the status file: whatever a key or the screen suggested is settled by it.
     fn hook_fired(&mut self) {
         self.last_event = Some(Instant::now());
@@ -625,6 +630,7 @@ impl App {
         if changed {
             self.save();
         }
+        self.note_events(true);
     }
 
     /// Session `i` just started waiting on the user: the bell if it's out of sight, and a

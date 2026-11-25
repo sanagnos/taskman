@@ -62,9 +62,13 @@ pub struct TicketView {
     pub(super) creation_id: u64,
     /// Added by `taskman add` and not selected since; the sidebar marks it.
     pub new: bool,
-    /// An agent `taskman add` just added: its session starts without being selected, so the
-    /// agent that added it can message it.
+    /// Its session starts without being selected, once its last CLI is gone: an agent `taskman
+    /// add` just added, or a ticket `taskman wake` asked for, so the agent that asked can message
+    /// it.
     pub(super) start: bool,
+    /// `taskman wake` asked for its next start, which gets the keep-awake grace even when it
+    /// resumes its conversation (`App::starting`): it waits for the agent's message.
+    pub(super) woken: bool,
     /// The name its session started with (`--name`), which can be the plain key while another
     /// project's ticket has the same key (see `store::session_name`).
     pub(super) name: Option<String>,
@@ -106,6 +110,8 @@ pub struct TicketView {
     fresh_gh: Vec<String>,
     /// When its session's refused clipboard requests were last toasted, by why (`take_clipboards`).
     pub(super) clipboard_warned: Vec<(crate::session::Refused, Instant)>,
+    /// What `taskman events` was last told of it (`App::note_events`).
+    pub(super) feed: super::feed::Feed,
 }
 
 /// A session that ended because its conversation runs as a Claude background session.
@@ -148,6 +154,7 @@ impl TicketView {
             creation_id: 0,
             new: false,
             start: false,
+            woken: false,
             name: None,
             hold: None,
             launch: None,
@@ -160,10 +167,11 @@ impl TicketView {
             last_screen: None,
             switched: None,
             asleep: false,
-            watch: Watch::new(Instant::now()),
+            watch: Watch::new(Instant::now(), false),
             fresh_jira: Vec::new(),
             fresh_gh: Vec::new(),
             clipboard_warned: Vec::new(),
+            feed: Default::default(),
         }
     }
 
@@ -383,6 +391,12 @@ impl TicketView {
                 self.status.seen = false;
             }
             waits = state == AgentState::Needs;
+            // A turn ends the cap's grace (`sleep::FRESH`). Not "done": Claude's idle_prompt
+            // notification reports that too, for a session waiting on input, which isn't a turn.
+            // A turn too short for any poll to see it working counts from its next one.
+            if matches!(state, AgentState::Working | AgentState::Needs) {
+                self.watch.fresh = false;
+            }
             self.status.state = state;
             // A repeated "needs" (Claude's reminder after a prompt) keeps the first one's time.
             self.status.waiting_since =
@@ -407,6 +421,7 @@ impl TicketView {
     ) -> bool {
         let mut changed = false;
         let res = res.map(|found| {
+            self.feed_pr(&found);
             // Adopt an open PR's branch; forget a remembered branch that's gone. A fork's branch
             // isn't the ticket's: anyone can open a PR that says it closes the issue.
             if let Some(p) = &found.pr
@@ -1209,7 +1224,7 @@ mod tests {
     }
 
     fn found(pr: Option<Pr>, closed: Option<u64>, branch_gone: bool) -> Result<Lookup, String> {
-        Ok(Lookup { pr, closed, branch_gone })
+        Ok(Lookup { pr, closed, weighed: Vec::new(), elsewhere: false, branch_gone })
     }
 
     #[test]
@@ -1457,5 +1472,35 @@ mod tests {
         assert_eq!(tv.status.input.as_deref(), Some("cargo test"));
         tv.hook_reported(rec("working"), false);
         assert_eq!((tv.status.waiting_since, tv.status.input), (None, None));
+    }
+
+    /// The cap's grace (`sleep::FRESH`) lasts until the session's first turn, whichever hook
+    /// reports it. "done" alone isn't one, as Claude's idle_prompt notification reports it for a
+    /// session waiting on input, nor is a session that ended.
+    #[test]
+    fn a_turn_ends_the_grace() {
+        let rec = |state: &str| parse(&format!(r#"{{"state":"{state}","ts":1}}"#)).unwrap();
+        let fresh = |t: Ticket| {
+            let mut tv = TicketView::new(t);
+            tv.watch = Watch::new(Instant::now(), true);
+            tv
+        };
+        let mut tv = fresh(ticket());
+        for state in ["idle", "done", "ended"] {
+            tv.hook_reported(rec(state), false);
+            assert!(tv.watch.fresh, "{state}");
+        }
+        tv.hook_reported(rec("working"), false);
+        assert!(!tv.watch.fresh);
+        let mut tv = fresh(ticket());
+        tv.hook_reported(rec("needs"), false);
+        assert!(!tv.watch.fresh, "a prompt is part of a turn");
+        // Codex's reviewer: a permission request shows as working, which is a turn too.
+        let mut tv = fresh(Ticket { cli: store::Cli::Codex, ..ticket() });
+        let permission =
+            parse(r#"{"state":"needs","reason":"permission","message":"","ts":1}"#).unwrap();
+        tv.hook_reported(permission, false);
+        assert_eq!(tv.status.state, AgentState::Working);
+        assert!(!tv.watch.fresh);
     }
 }

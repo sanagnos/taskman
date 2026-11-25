@@ -476,6 +476,7 @@ impl App {
         }
         if fetched {
             changed |= self.mark_selected();
+            self.note_events(false);
         }
         if changed {
             self.save();

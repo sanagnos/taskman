@@ -1,0 +1,1 @@
+- `taskman events` no longer tells a PR closed a second time when a PR list still said it was open after the close; a PR that's reopened and merged while another is shown is told merged.

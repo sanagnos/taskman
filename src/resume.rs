@@ -388,21 +388,26 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
 
 /// The ticket or agent `key` names: a ticket through `taskman status`'s lookup, and an agent by its
 /// name or key. An agent's name can look like a ticket's key (tester-1), so both are looked for
-/// unless `kind` says which; when both are open, it's for the user to pick.
+/// unless `kind` says which; when both are open, it's for the user to pick. In a session
+/// (`session`), an answer that nothing was found, which a plain shell looking in every project
+/// could have answered otherwise, says how to go wider (`cli::with_way_round`); one that asks for
+/// a flag doesn't, as the flag is the way.
 fn find<'a>(
     key: &str,
     kind: Option<Kind>,
     scope: Scope,
     saved: &'a Saved,
+    session: bool,
 ) -> Result<&'a Ticket, String> {
+    let missing = |e: String| if session { cli::with_way_round(e) } else { e };
     let ticket = match ticket_key::parse(key) {
         Some(k) if kind != Some(Kind::Agent) => {
             Some(status::locate(&k, saved, scope).and_then(|(t, project)| {
                 t.ok_or_else(|| {
-                    format!(
+                    missing(format!(
                         "{k} isn't open in {}: add it in taskman first",
                         untrusted::line(&project.name)
-                    )
+                    ))
                 })
             }))
         }
@@ -435,12 +440,14 @@ fn find<'a>(
         (Some(Ok(t)), Ok(None)) | (_, Ok(Some(t))) => Ok(t),
         (_, Err(e)) | (Some(Err(e)), Ok(None)) => Err(e),
         (None, Ok(None)) if kind == Some(Kind::Agent) => {
-            Err(format!("no agent named {key} is open in taskman"))
+            Err(missing(format!("no agent named {key} is open in taskman")))
         }
         (None, Ok(None)) if kind == Some(Kind::Ticket) => {
             Err(format!("{key} isn't a ticket's key"))
         }
-        (None, Ok(None)) => Err(format!("no ticket or agent named {key} is open in taskman")),
+        (None, Ok(None)) => {
+            Err(missing(format!("no ticket or agent named {key} is open in taskman")))
+        }
     }
 }
 
@@ -455,7 +462,7 @@ fn find_agent<'a>(
         .tickets
         .iter()
         .filter(|t| is_agent(t, name))
-        .filter(|t| !matches!(scope, Scope::Named(repo) if repo != t.repo))
+        .filter(|t| !matches!(scope, Scope::Named(repo) | Scope::Session(repo) if repo != t.repo))
         .collect();
     let here = match scope {
         Scope::Here(repo) => agents.iter().find(|t| t.repo == repo),
@@ -492,15 +499,33 @@ fn gone_error(gone: app::Gone, t: &Ticket, name: &str, saved: &Saved) -> String 
     }
 }
 
+/// Where `taskman resume` looks: in a session taskman started (`session_repo`), its own project
+/// only, as every command there keeps to its project (`cli::confine`); else the project named,
+/// else the folder's, else any.
+fn scope_of<'a>(
+    a: &Args,
+    saved: &'a Saved,
+    session_repo: Option<&Path>,
+    here: Option<&Here>,
+) -> Result<Scope<'a>, String> {
+    let own = cli::session_project(saved, session_repo)?;
+    let named = a.project.as_deref().map(|n| cli::own_named(saved, n, own)).transpose()?;
+    Ok(match own {
+        Some(p) => Scope::Session(&saved.projects[p].repo),
+        None => status::scope(named, None, None, saved, here),
+    })
+}
+
 /// Runs the session; returns the CLI's exit code.
 fn resume(args: &[String]) -> Result<i32, String> {
     let a = parse_args(args)?;
     let saved = store::load()?;
     let config = store::load_config()?;
-    let named = a.project.as_deref().map(|n| cli::project_named(&saved.projects, n)).transpose()?;
     let here = Here::current();
-    let t = find(&a.key, a.kind, status::scope(named, None, None, &saved, here.as_ref()), &saved)?
-        .clone();
+    let session_repo = store::session_env().1;
+    let scope = scope_of(&a, &saved, session_repo.as_deref(), here.as_ref())?;
+    let session = session_repo.is_some();
+    let t = find(&a.key, a.kind, scope, &saved, session)?.clone();
     let name = untrusted::line(t.display());
     if t.pending_worktree.is_some() {
         return Err(format!(
@@ -529,9 +554,8 @@ fn resume(args: &[String]) -> Result<i32, String> {
     // read now, under the claim, is current. Gone or another session's, the claim was a stale
     // name's, and goes with the error.
     let saved = store::load()?;
-    let named = a.project.as_deref().map(|n| cli::project_named(&saved.projects, n)).transpose()?;
-    let scope = status::scope(named, None, None, &saved, here.as_ref());
-    let t = match find(&a.key, a.kind, scope, &saved) {
+    let scope = scope_of(&a, &saved, session_repo.as_deref(), here.as_ref())?;
+    let t = match find(&a.key, a.kind, scope, &saved, session) {
         Ok(now) if now.is(&t.repo, &t.key) => now.clone(),
         Ok(_) => return Err(format!("{name} changed in taskman just now; try again")),
         Err(e) => return Err(e),
@@ -807,7 +831,7 @@ mod tests {
                 (None, Some(p)) => Scope::Here(Path::new(p)),
                 (None, None) => Scope::Anywhere,
             };
-            find(k, None, scope, &saved).map(|t| (t.repo.clone(), t.key.clone()))
+            find(k, None, scope, &saved, false).map(|t| (t.repo.clone(), t.key.clone()))
         };
         let at = |r: &str, k: &str| Ok((PathBuf::from(r), k.to_string()));
         assert_eq!(key("eng-1", None, None), at("/w", "ENG-1"));
@@ -837,10 +861,18 @@ mod tests {
             ],
             ..Default::default()
         };
-        let e = find("lead", None, Scope::Anywhere, &saved).unwrap_err();
+        let e = find("lead", None, Scope::Anywhere, &saved, false).unwrap_err();
+        // In a session, an answer that nothing was found says how to go wider; one that asks for a
+        // flag doesn't, as the flag is the way.
+        let wider = "`env -u TASKMAN_REPO`";
+        let in_session = |k: &str, kind| find(k, kind, Scope::Named(Path::new("/w")), &saved, true);
+        assert!(in_session("ENG-9", None).unwrap_err().contains(wider));
+        assert!(in_session("nobody", Some(Kind::Agent)).unwrap_err().contains(wider));
+        assert!(in_session("nobody", None).unwrap_err().contains(wider));
+        assert!(!in_session("lead", Some(Kind::Ticket)).unwrap_err().contains(wider));
         assert_eq!(e, "lead is open in web SYSTEM: run this and api: pass --project NAME");
         // A key the project hasn't open.
-        let e = find("ENG-9", None, Scope::Named(Path::new("/w")), &saved).unwrap_err();
+        let e = find("ENG-9", None, Scope::Named(Path::new("/w")), &saved, false).unwrap_err();
         assert_eq!(e, "ENG-9 isn't open in web SYSTEM: run this: add it in taskman first");
         // A ticket and an agent that both match, the agent with a line break in its name too.
         let both = Saved {
@@ -848,7 +880,7 @@ mod tests {
             tickets: vec![ticket("LEAD-1", "/w", None), ticket("lead-1", "/a", Some(odd))],
             ..Default::default()
         };
-        let e = find("LEAD-1", None, Scope::Anywhere, &both).unwrap_err();
+        let e = find("LEAD-1", None, Scope::Anywhere, &both, false).unwrap_err();
         assert_eq!(
             e,
             "LEAD-1 is both ticket LEAD-1 in web SYSTEM: run this and agent web SYSTEM: run this in api: pass --ticket or --agent"
@@ -897,7 +929,7 @@ mod tests {
         saved.tickets.retain(|t| t.key != "TESTER-1");
         let key = |k: &str, kind: Option<Kind>, named: Option<&str>| {
             let scope = named.map_or(Scope::Anywhere, |p| Scope::Named(Path::new(p)));
-            find(k, kind, scope, &saved).map(|t| t.key.clone())
+            find(k, kind, scope, &saved, false).map(|t| t.key.clone())
         };
         // No ticket TESTER-1 is open: the agent, however it's asked for.
         assert_eq!(key("tester-1", None, Some("/acme")), Ok("acme-tester-1".into()));
@@ -922,7 +954,7 @@ mod tests {
         let saved = tester_1();
         let key = |k: &str, kind: Option<Kind>, named: Option<&str>| {
             let scope = named.map_or(Scope::Anywhere, |p| Scope::Named(Path::new(p)));
-            find(k, kind, scope, &saved).map(|t| (t.repo.clone(), t.key.clone()))
+            find(k, kind, scope, &saved, false).map(|t| (t.repo.clone(), t.key.clone()))
         };
         let at = |r: &str, k: &str| Ok((PathBuf::from(r), k.to_string()));
         assert_eq!(
@@ -937,10 +969,12 @@ mod tests {
         // Both in one project: --project alone doesn't pick.
         let mut saved = tester_1();
         saved.tickets.push(ticket("TESTER-1", "/acme", None));
-        let both = find("tester-1", None, Scope::Named(Path::new("/acme")), &saved).unwrap_err();
+        let both =
+            find("tester-1", None, Scope::Named(Path::new("/acme")), &saved, false).unwrap_err();
         assert!(both.contains("both ticket TESTER-1 in acme and agent tester-1 in acme"), "{both}");
         let agent =
-            find("tester-1", Some(Kind::Agent), Scope::Named(Path::new("/acme")), &saved).unwrap();
+            find("tester-1", Some(Kind::Agent), Scope::Named(Path::new("/acme")), &saved, false)
+                .unwrap();
         assert_eq!(agent.key, "acme-tester-1");
     }
 
@@ -948,7 +982,7 @@ mod tests {
     fn finds_plain_tickets_and_agents_as_before() {
         let saved = tester_1();
         let key = |k: &str, kind: Option<Kind>| {
-            find(k, kind, Scope::Anywhere, &saved).map(|t| t.key.clone())
+            find(k, kind, Scope::Anywhere, &saved, false).map(|t| t.key.clone())
         };
         assert_eq!(key("eng-52", None), Ok("ENG-52".into()));
         assert_eq!(key("ENG-52", Some(Kind::Ticket)), Ok("ENG-52".into()));
@@ -973,7 +1007,7 @@ mod tests {
             let words: Vec<String> =
                 line(i, "acme").split(' ').skip(2).map(str::to_string).collect();
             let a = parse_args(&words).unwrap();
-            let found = find(&a.key, a.kind, Scope::Anywhere, &saved).unwrap();
+            let found = find(&a.key, a.kind, Scope::Anywhere, &saved, false).unwrap();
             assert!(found.is(&t.repo, &t.key), "{}", line(i, "acme"));
         }
     }

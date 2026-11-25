@@ -252,7 +252,7 @@ fn a_fork_added_again_still_keeps_its_own_system_prompt() {
     assert!(matches!(added, Ok(crate::app::ticket::Added::New(_))));
     let t = app.tickets[index(&app, "acme-deep-dive")].t.clone();
     let argv: Vec<String> = app
-        .build_command(&t, "acme-deep-dive", "start")
+        .build_command(&t, "acme-deep-dive", "start", app.resume_id(&t))
         .get_argv()
         .iter()
         .map(|a| a.to_string_lossy().into_owned())

@@ -18,6 +18,17 @@ const SETTLE: Duration = Duration::from_secs(30);
 /// than twice this (`recheck`).
 const RECHECK: Duration = Duration::from_secs(60);
 
+/// How long after it starts or was last selected the cap leaves alone a session that hasn't had a
+/// turn since (`Watch::fresh`) and is waiting for an agent: one that started a new conversation, a
+/// start `taskman wake` asked for, or a running session a wake answered for (`app::wake`). A ticket
+/// an agent just added or woke waits for the agent's message, and without this it would be the
+/// first to go whenever the rest are working or agents, 30 s after it started (`SETTLE`). Bounded,
+/// not until its first turn: a session nobody ever writes to would otherwise hold its memory for
+/// good, which is what the cap is for. A session that resumes its conversation otherwise (taskman
+/// starting again, a sleeping ticket selected) gets none, or every start would keep all of a
+/// project's tickets up for this long.
+const FRESH: Duration = Duration::from_secs(10 * 60);
+
 /// What the Settings presets for sleeping offer, in seconds; None never.
 const AFTER: [Option<u64>; 6] = [Some(900), Some(1800), Some(3600), Some(7200), Some(14_400), None];
 
@@ -37,11 +48,16 @@ pub(super) struct Watch {
     pub(super) scanning: bool,
     /// When the process tree last showed work running.
     pub(super) busy: Option<Instant>,
+    /// It started a new conversation, or `taskman wake` asked for its start or answered for it
+    /// running, and its hooks haven't reported a turn (working or needs you) since: the cap leaves
+    /// it for `FRESH`.
+    pub(super) fresh: bool,
 }
 
 impl Watch {
-    pub(super) fn new(now: Instant) -> Self {
-        Self { selected: now, started: now, baseline: None, scanning: false, busy: None }
+    /// A session started at `now`; `fresh` if it starts a new conversation.
+    pub(super) fn new(now: Instant, fresh: bool) -> Self {
+        Self { selected: now, started: now, baseline: None, scanning: false, busy: None, fresh }
     }
 }
 
@@ -75,6 +91,8 @@ pub(super) struct Facts {
     pub seen: bool,
     /// Since it started or was last selected.
     pub idle: Duration,
+    /// It waits for an agent's first message, with no turn since (`Watch::fresh`).
+    pub fresh: bool,
 }
 
 impl Facts {
@@ -108,8 +126,9 @@ pub(super) struct Due {
 }
 
 /// The sessions to put to sleep: the restful ones unselected for `after`, and, past `cap`
-/// sessions running, the longest-unselected restful ones until it's met. And the ended ones to
-/// let go of, once seen and then unselected for `after`.
+/// sessions running, the longest-unselected restful ones until it's met, leaving out a fresh one
+/// for `FRESH` after it started or was last selected. And the ended ones to let go of, once seen
+/// and then unselected for `after`.
 pub(super) fn due(facts: &[Facts], after: Option<Duration>, cap: Option<usize>) -> Due {
     let long = |f: &Facts| after.is_some_and(|a| f.idle >= a);
     let release = (0..facts.len()).filter(|&i| facts[i].spent() && long(&facts[i])).collect();
@@ -117,7 +136,9 @@ pub(super) fn due(facts: &[Facts], after: Option<Duration>, cap: Option<usize>) 
         (0..facts.len()).filter(|&i| facts[i].restful() && long(&facts[i])).collect();
     if let Some(cap) = cap {
         let excess = facts.iter().filter(|f| f.running).count().saturating_sub(cap);
-        let mut oldest: Vec<usize> = (0..facts.len()).filter(|&i| facts[i].restful()).collect();
+        let waiting = |f: &Facts| f.fresh && f.idle < FRESH;
+        let mut oldest: Vec<usize> =
+            (0..facts.len()).filter(|&i| facts[i].restful() && !waiting(&facts[i])).collect();
         // Longest idle first; the earlier in the list among equals, so the order is stable.
         oldest.sort_by_key(|&i| (std::cmp::Reverse(facts[i].idle), i));
         out.extend(oldest.into_iter().take(excess));
@@ -242,6 +263,7 @@ impl App {
                     && tv.status.state == AgentState::Exited,
                 seen: tv.status.seen,
                 idle: now.saturating_duration_since(tv.watch.selected),
+                fresh: tv.watch.fresh,
             })
             .collect()
     }
@@ -327,6 +349,7 @@ mod tests {
             ended: false,
             seen: false,
             idle: Duration::from_secs(mins * 60),
+            fresh: false,
         }
     }
 
@@ -398,6 +421,25 @@ mod tests {
         s[1].state = Working;
         s[3].selected = true;
         assert_eq!(sleeps(&s, None, Some(3)), [0, 2]);
+    }
+
+    #[test]
+    fn past_the_cap_a_session_with_no_turn_yet_is_left_for_a_while() {
+        // An agent and a working session fill the cap of two; the third just started and waits
+        // for its first message.
+        let agent = Facts { agent: true, ..idle_for(30) };
+        let working = Facts { state: Working, ..idle_for(30) };
+        let fresh = |mins| Facts { fresh: true, ..idle_for(mins) };
+        assert!(sleeps(&[agent, working, fresh(1)], None, Some(2)).is_empty());
+        assert!(sleeps(&[agent, working, fresh(9)], None, Some(2)).is_empty());
+        // Not for good: past the grace it's picked as any other.
+        assert_eq!(sleeps(&[agent, working, fresh(10)], None, Some(2)), [2]);
+        // One that has had a turn is picked at once, as before.
+        assert_eq!(sleeps(&[agent, working, idle_for(1)], None, Some(2)), [2]);
+        // The cap takes the next oldest rather than the fresh one.
+        assert_eq!(sleeps(&[fresh(1), idle_for(0), idle_for(5)], None, Some(1)), [1, 2]);
+        // The time setting still applies to it.
+        assert_eq!(sleeps(&[fresh(60)], Some(HOUR), None), [0]);
     }
 
     #[test]
